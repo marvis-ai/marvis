@@ -1,5 +1,5 @@
 {
-  "name": "my-turborepo",
+  "name": "marvis-ai",
   "private": true,
   "scripts": {
     "build": "turbo run build",

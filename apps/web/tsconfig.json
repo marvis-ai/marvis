@@ -5,7 +5,12 @@
       {
         "name": "next"
       }
-    ]
+    ],
+    "paths": {
+      "@/*": ["./src/*"],
+      "@marvis-ai/ui": ["../../packages/ui/src/index.ts"],
+      "@marvis-ai/ui/*": ["../../packages/ui/src/*"]
+    }
   },
   "include": [
     "**/*.ts",

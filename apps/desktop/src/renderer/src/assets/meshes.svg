@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1400 800">
+  <defs>
+    <radialGradient id="mesh1" cx="8%" cy="12%" r="90%">
+      <stop offset="0%" stop-color="rgba(0, 255, 255, 0.95)"/>
+      <stop offset="45%" stop-color="rgba(0, 220, 255, 0.45)"/>
+      <stop offset="100%" stop-color="rgba(0, 0, 0, 0)"/>
+    </radialGradient>
+
+
+    <radialGradient id="mesh2" cx="70%" cy="60%" r="60%">
+      <stop offset="0%" stop-color="rgba(255, 70, 230, 0.95)"/>
+      <stop offset="45%" stop-color="rgba(255, 40, 210, 0.45)"/>
+      <stop offset="100%" stop-color="rgba(0, 0, 0, 0.1)"/>
+    </radialGradient>
+
+    <radialGradient id="mesh3" cx="55%" cy="95%" r="85%">
+      <stop offset="0%" stop-color="rgba(120, 255, 180, 0.95)"/>
+      <stop offset="45%" stop-color="rgba(120, 255, 180, 0.45)"/>
+      <stop offset="100%" stop-color="rgba(0, 0, 0, 0)"/>
+    </radialGradient>
+  </defs>
+
+  <rect width="1400" height="800" fill="rgba(10, 12, 20, 0.8)"/>
+
+  <circle cx="-200" cy="-180" r="720" fill="url(#mesh1)" opacity="0.95"/>
+  <circle cx="1120" cy="520" r="520" fill="url(#mesh2)" opacity="0.80"/>
+  <circle cx="700" cy="860" r="720" fill="url(#mesh3)" opacity="0.75"/>
+</svg>

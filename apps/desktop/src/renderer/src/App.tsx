@@ -1,35 +1,36 @@
-import Versions from './components/Versions'
-import electronLogo from './assets/electron.svg'
+import { useEffect, useState } from "react";
+import { Onboarding } from "@renderer/components/Onboarding";
 
-function App(): React.JSX.Element {
-  const ipcHandle = (): void => window.electron.ipcRenderer.send('ping')
+const App = (): React.JSX.Element => {
+  const [isOnboarding, setIsOnboarding] = useState<boolean>(false);
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setIsOnboarding(true);
+    }, 4000);
+
+    return () => {
+      clearTimeout(timer);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (isOnboarding) {
+      console.log(window.electron);
+    }
+  }, [isOnboarding]);
 
   return (
-    <>
-      <img alt="logo" className="logo" src={electronLogo} />
-      <div className="creator">Powered by electron-vite</div>
-      <div className="text">
-        Build an Electron app with <span className="react">React</span>
-        &nbsp;and <span className="ts">TypeScript</span>
-      </div>
-      <p className="tip">
-        Please try pressing <code>F12</code> to open the devTool
-      </p>
-      <div className="actions">
-        <div className="action">
-          <a href="https://electron-vite.org/" target="_blank" rel="noreferrer">
-            Documentation
-          </a>
-        </div>
-        <div className="action">
-          <a target="_blank" rel="noreferrer" onClick={ipcHandle}>
-            Send IPC
-          </a>
-        </div>
-      </div>
-      <Versions></Versions>
-    </>
-  )
-}
+    <main className="flex w-full h-full flex-col items-center justify-center relative px-6 py-2 draggable">
+      {isOnboarding ? (
+        <Onboarding />
+      ) : (
+        <h1 className="text-6xl font-bold text-center text-white/90">
+          Marvis AI
+        </h1>
+      )}
+    </main>
+  );
+};
 
-export default App
+export default App;

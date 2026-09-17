@@ -1,9 +1,9 @@
 [package]
-name = "marvis"
+name = "Marvis"
 version = "0.1.0"
-description = "A Tauri App"
-authors = ["you"]
-edition = "2021"
+description = "Private and Personal AI for all on desktop"
+authors = ["Allen Chan <chenillen@gmail.com>"]
+edition = "2026"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 

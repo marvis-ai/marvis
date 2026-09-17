@@ -23,7 +23,7 @@ function createWindow(): void {
       preload: join(__dirname, "../preload/index.js"),
       sandbox: false,
       nodeIntegration: true,
-      contextIsolation: false,
+      contextIsolation: true,
     },
   });
 

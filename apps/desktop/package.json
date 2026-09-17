@@ -26,6 +26,7 @@
   "dependencies": {
     "@electron-toolkit/preload": "^3.0.2",
     "@electron-toolkit/utils": "^4.0.0",
+    "@headlessui/react": "^2.2.9",
     "@marvis-ai/ui": "workspace:*",
     "@tailwindcss/vite": "^4.1.17",
     "electron-liquid-glass": "^1.1.1",

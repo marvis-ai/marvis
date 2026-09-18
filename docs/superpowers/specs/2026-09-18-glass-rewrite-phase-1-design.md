@@ -138,9 +138,15 @@ src/
 - `Cmd+Arrow` step-move bar (children follow); `Cmd+Shift+Arrow` snap to
   display edge; `Cmd+Shift+<n>` move bar to display n (hardcoded, Glass
   parity); display-remove → re-clamp to primary.
-- Vibrancy: macOS window effects (NSVisualEffectView via Tauri `effects`)
-  for the Glass-like translucent material — visual parity, no
-  electron-liquid-glass equivalent needed.
+- Liquid glass: `tauri-plugin-liquid-glass` (hkandala) — the Tauri
+  equivalent of Glass's `electron-liquid-glass`, same private
+  `NSGlassEffectView` API. Applied **from Rust** at window creation
+  (`app.liquid_glass().set_effect(window, LiquidGlassConfig{ variant:
+  GlassMaterialVariant::Bubbles, corner_radius: … })`) — the webview is
+  not involved. `Bubbles` variant matches Glass's choice; macOS <26
+  automatically falls back to `NSVisualEffectView`. Requires
+  `app.macOSPrivateApi: true` + `transparent: true` in tauri.conf.json
+  and `liquid-glass:default` in capabilities.
 - Header-state gate (Glass parity): panels only exist once keystore is
   unlocked AND screen permission granted; otherwise bar renders the
   unlock/permission card and only `Cmd+/` stays registered.
@@ -263,6 +269,10 @@ ai_messages(id INTEGER PK, session_id INT FK, role TEXT, content TEXT, ts INT)
 4. **Markdown rendering**: `react-markdown` + `remark-gfm` in `apps/native`
    (no markdown lib exists in the repo today); streamed chunks append to a
    single markdown document rendered incrementally.
+5. **Liquid-glass private API**: `NSGlassEffectView` is undocumented —
+   could break on future macOS (plugin no-ops/falls back, acceptable) and
+   would block App Store distribution (we notarize/distribute outside the
+   App Store anyway, like Glass).
 
 ## Out of scope for Phase 1
 

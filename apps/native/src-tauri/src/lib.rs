@@ -1,3 +1,4 @@
+mod ask;
 mod capture;
 mod config;
 mod hotkey;

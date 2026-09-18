@@ -35,7 +35,7 @@ flow end-to-end. Listen/STT/summary and advanced settings are Phase 2/3.
 
 All core logic in `apps/native/src-tauri/src/`:
 
-```
+```text
 src-tauri/src/
 ├── lib.rs            # builder, plugin/command/event registration, app state
 ├── main.rs           # entry
@@ -73,7 +73,7 @@ src-tauri/src/
 The webview (`apps/native/src/`) is one Vite/React app; `?view=` selects the
 component per window:
 
-```
+```text
 src/
 ├── App.tsx            # view router by ?view=bar|ask|listen|settings
 ├── views/
@@ -194,7 +194,7 @@ bar_y = 21
 
 ## keys.enc format (per rule 1)
 
-```
+```text
 [16B salt][12B nonce][AES-256-GCM ciphertext || 16B GCM tag appended]
 key = Argon2id(passphrase, salt, t=3, m=64MB, p=4)
 plaintext = JSON: { "openai": "sk-...", "anthropic": "...", "gemini": "...", "deepgram": "..." }

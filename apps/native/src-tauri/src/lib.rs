@@ -96,8 +96,8 @@ pub struct AppState {
     capture: Mutex<Option<MacosCapture>>,
     ask: Arc<AskService>,
     pool: Mutex<WindowPool>,
-    /// Currently registered set — replaced via the register-then-
-    /// unregister swap in [`swap_hotkeys`].
+    /// Currently live set — delta-swapped in place by [`swap_hotkeys`]
+    /// (shared pairs are never re-registered; macOS refuses duplicates).
     hotkeys: Mutex<Option<RegisteredHotkeys>>,
     gate: Mutex<Gate>,
     click_through: AtomicBool,
@@ -199,7 +199,11 @@ fn enter_main(app: &AppHandle) {
 /// downgrade hotkeys to the gated limited set.
 fn leave_main(app: &AppHandle) {
     let state = app.state::<AppState>();
-    if let Some(capture) = state.capture.lock().take() {
+    // Take the capture out and release the lock BEFORE `stop()` — it
+    // joins the capture worker, which must not hold `state.capture`
+    // while `capture_status` waits on it.
+    let capture = state.capture.lock().take();
+    if let Some(capture) = capture {
         capture.stop();
     }
     {
@@ -211,25 +215,26 @@ fn leave_main(app: &AppHandle) {
     swap_hotkeys(app, false);
 }
 
-/// Register the full (`all = true`) or limited set, then unregister the
-/// previous set — the registration contract: the old set stays live when
-/// registration fails, so the swap always happens new-first.
+/// Delta-swap to the full (`all = true`) or limited set via
+/// [`hotkey::swap_hotkey_set`]: pairs shared with the live set stay
+/// registered untouched (macOS Carbon refuses duplicate registration of
+/// a combo, so a register-everything-then-unregister swap can never
+/// succeed — the limited set is a subset of the full one). On failure
+/// the swap has already rolled back; the returned `restored` set is what
+/// the OS still has bound, so it's stored either way.
 fn swap_hotkeys(app: &AppHandle, all: bool) {
     let state = app.state::<AppState>();
     let binds = state.config.lock().hotkeys.clone();
     let dispatch = hotkey_dispatch(app);
-    let registered = if all {
-        hotkey::register_all(app, &binds, dispatch)
-    } else {
-        hotkey::register_limited(app, &binds, dispatch)
-    };
-    match registered {
-        Ok(new_set) => {
-            if let Some(old) = state.hotkeys.lock().replace(new_set) {
-                old.unregister_all(app);
-            }
+    let prev = state.hotkeys.lock().take().unwrap_or_default();
+    match hotkey::swap_hotkey_set(app, &binds, !all, dispatch, prev) {
+        Ok(set) => {
+            state.hotkeys.lock().replace(set);
         }
-        Err(e) => log::warn!("hotkey registration failed (all={all}): {e}"),
+        Err(e) => {
+            log::warn!("hotkey swap failed (all={all}): {e}");
+            state.hotkeys.lock().replace(e.restored);
+        }
     }
 }
 
@@ -395,11 +400,17 @@ fn keystore_status(state: State<'_, AppState>) -> serde_json::Value {
 
 /// First-run: create `keys.enc` (empty keyring) and leave the store
 /// unlocked, then re-evaluate the gate. Returns the new status payload.
+/// Refuses to run once a keystore exists — `Keystore::init` overwrites
+/// `keys.enc`, so a stray invoke while Locked/Unlocked would destroy
+/// every stored key.
 #[tauri::command]
 fn keystore_init(app: AppHandle, pass: String) -> Result<serde_json::Value, String> {
     let state = app.state::<AppState>();
     {
         let mut ks = state.keystore.lock();
+        if !matches!(ks.state(), KeystoreState::Unset) {
+            return Err("keystore already initialized".to_string());
+        }
         ks.init(&pass).map_err(|e| e.to_string())?;
         emit_keystore_changed(&app, &ks);
     }

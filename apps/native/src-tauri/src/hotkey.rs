@@ -192,18 +192,22 @@ enum Scope {
     Limited,
 }
 
-/// The shortcuts one `register_*` call installed; the caller's handle for
-/// tearing them down.
+/// The `(shortcut, action)` pairs one registration pass installed; the
+/// caller's handle for tearing them down or delta-swapping to a new set.
+/// `Default` is the empty set — what's live before the first register.
+#[derive(Debug, Default)]
 pub struct RegisteredHotkeys {
-    shortcuts: Vec<Shortcut>,
+    pairs: Vec<(Shortcut, Action)>,
 }
 
 impl RegisteredHotkeys {
     /// Unregister every shortcut in this set. Errors are logged and
     /// skipped — a shortcut the OS already dropped shouldn't block the
-    /// rest.
+    /// rest. Kept for full teardown (e.g. shutdown); set transitions go
+    /// through [`swap_hotkey_set`]'s delta path instead.
+    #[allow(dead_code)]
     pub fn unregister_all(&self, app: &AppHandle) {
-        for shortcut in &self.shortcuts {
+        for (shortcut, _) in &self.pairs {
             if let Err(e) = app.global_shortcut().unregister(*shortcut) {
                 log::warn!("hotkey: unregister {shortcut} failed: {e}");
             }
@@ -218,10 +222,11 @@ impl RegisteredHotkeys {
 /// **Re-registration contract:** on any register error this call
 /// unregisters only the shortcuts it registered during this call and
 /// returns `Err` — a previously returned [`RegisteredHotkeys`] is never
-/// touched, so the old set stays fully active. Callers swapping sets must
-/// therefore call [`RegisteredHotkeys::unregister_all`] on the old set
-/// *after* the new set registers successfully (on failure keep the old
-/// set; optionally retry).
+/// touched, so the old set stays fully active. Callers swapping sets
+/// should prefer [`swap_hotkey_set`], which keeps shared pairs live and
+/// never re-registers them (macOS refuses duplicate registrations).
+/// Signature kept for the startup path / callers that predate the swap.
+#[allow(dead_code)]
 pub fn register_all(
     app: &AppHandle,
     binds: &BTreeMap<String, String>,
@@ -241,21 +246,131 @@ pub fn register_limited(
     register(app, binds, Scope::Limited, dispatch)
 }
 
-/// Shared registration loop. Each shortcut gets its own `on_shortcut`
-/// handler (the crate supports per-shortcut closures) that fires
-/// `dispatch(action)` on `Pressed` only — `Released` is ignored.
-/// On any register error, shortcuts already registered *by this call*
-/// are unregistered and the error propagates.
+/// [`swap_hotkey_set`] failure: a new pair failed to register and the
+/// swap rolled back. `restored` is the surviving live set (kept pairs
+/// plus whatever dropped pairs could be re-registered) — the caller must
+/// store it so its handle still reflects what's actually bound.
+#[derive(Debug)]
+pub struct SwapError {
+    pub restored: RegisteredHotkeys,
+    pub source: anyhow::Error,
+}
+
+impl std::fmt::Display for SwapError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.source)
+    }
+}
+
+impl std::error::Error for SwapError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.source.as_ref())
+    }
+}
+
+/// Delta-swap to a new binding set: pairs already live with the same
+/// `(shortcut, action)` stay registered untouched (their handler still
+/// dispatches correctly); pairs absent from the new set are unregistered;
+/// new pairs are registered. This ordering is what makes the swap work
+/// on macOS — Carbon's `RegisterEventHotKey` fails with
+/// `eventHotKeyExistsErr` on a duplicate combo, so register-then-
+/// unregister can never succeed when the sets overlap (limited ⊂ all).
+///
+/// On register failure, the newly-registered pairs are unwound AND the
+/// dropped old pairs are re-registered (best-effort rollback), then a
+/// [`SwapError`] carrying the surviving set is returned — the caller's
+/// state is as close to the old set as the OS allows.
+pub fn swap_hotkey_set(
+    app: &AppHandle,
+    binds: &BTreeMap<String, String>,
+    limited: bool,
+    dispatch: impl Fn(Action) + Send + Sync + 'static,
+    prev: RegisteredHotkeys,
+) -> Result<RegisteredHotkeys, SwapError> {
+    let scope = if limited { Scope::Limited } else { Scope::All };
+    let new_bindings = bindings(binds, scope);
+    let (keep, drop_old, add) = plan_swap(&prev.pairs, &new_bindings);
+
+    for (shortcut, _) in &drop_old {
+        if let Err(e) = app.global_shortcut().unregister(*shortcut) {
+            log::warn!("hotkey: unregister {shortcut} failed: {e}");
+        }
+    }
+
+    let dispatch: Arc<dyn Fn(Action) + Send + Sync> = Arc::new(dispatch);
+    match register_pairs(app, &add, &dispatch) {
+        Ok(added) => Ok(RegisteredHotkeys {
+            pairs: keep.into_iter().chain(added).collect(),
+        }),
+        Err(err) => {
+            // Best-effort rollback: the just-added pairs were already
+            // unwound inside `register_pairs`; re-register the dropped
+            // old pairs. Failures are logged — `restored` records only
+            // what's actually live.
+            let mut restored = keep;
+            for &(shortcut, action) in &drop_old {
+                match register_pairs(app, &[(shortcut, action)], &dispatch) {
+                    Ok(pair) => restored.extend(pair),
+                    Err(e) => {
+                        log::warn!("hotkey: rollback re-register {shortcut} failed: {e}")
+                    }
+                }
+            }
+            Err(SwapError {
+                restored: RegisteredHotkeys { pairs: restored },
+                source: err,
+            })
+        }
+    }
+}
+
+/// Pure delta computation for [`swap_hotkey_set`], split out for tests:
+/// `keep` = prev pairs still wanted (stay registered untouched);
+/// `drop` = prev pairs absent from `new` (unregister); `add` = `new`
+/// pairs not already live (register). Comparison is pair-level — the
+/// same shortcut bound to a different action is drop + add, not keep.
+fn plan_swap(
+    prev: &[(Shortcut, Action)],
+    new: &[(Shortcut, Action)],
+) -> (
+    Vec<(Shortcut, Action)>,
+    Vec<(Shortcut, Action)>,
+    Vec<(Shortcut, Action)>,
+) {
+    let keep: Vec<_> = prev.iter().copied().filter(|p| new.contains(p)).collect();
+    let drop: Vec<_> = prev.iter().copied().filter(|p| !new.contains(p)).collect();
+    let add: Vec<_> = new.iter().copied().filter(|p| !prev.contains(p)).collect();
+    (keep, drop, add)
+}
+
+/// Resolve `binds` for `scope` and register the whole set (the
+/// `register_*` startup path — equivalent to `swap_hotkey_set` with an
+/// empty prev, kept separate so those signatures stay stable).
 fn register(
     app: &AppHandle,
     binds: &BTreeMap<String, String>,
     scope: Scope,
     dispatch: impl Fn(Action) + Send + Sync + 'static,
 ) -> anyhow::Result<RegisteredHotkeys> {
-    let dispatch = Arc::new(dispatch);
+    let dispatch: Arc<dyn Fn(Action) + Send + Sync> = Arc::new(dispatch);
+    let pairs = register_pairs(app, &bindings(binds, scope), &dispatch)?;
+    Ok(RegisteredHotkeys { pairs })
+}
+
+/// Shared registration loop over concrete `(shortcut, action)` pairs.
+/// Each shortcut gets its own `on_shortcut` handler (the crate supports
+/// per-shortcut closures) that fires `dispatch(action)` on `Pressed`
+/// only — `Released` is ignored. On any register error, shortcuts
+/// already registered *by this call* are unregistered and the error
+/// propagates.
+fn register_pairs(
+    app: &AppHandle,
+    pairs: &[(Shortcut, Action)],
+    dispatch: &Arc<dyn Fn(Action) + Send + Sync>,
+) -> anyhow::Result<Vec<(Shortcut, Action)>> {
     let mut registered = Vec::new();
-    for (shortcut, action) in bindings(binds, scope) {
-        let dispatch = Arc::clone(&dispatch);
+    for &(shortcut, action) in pairs {
+        let dispatch = Arc::clone(dispatch);
         let result = app.global_shortcut().on_shortcut(
             shortcut,
             move |_app: &AppHandle, _shortcut: &Shortcut, event| {
@@ -265,16 +380,14 @@ fn register(
             },
         );
         if let Err(err) = result {
-            for s in &registered {
+            for (s, _) in &registered {
                 let _ = app.global_shortcut().unregister(*s);
             }
             return Err(err.into());
         }
-        registered.push(shortcut);
+        registered.push((shortcut, action));
     }
-    Ok(RegisteredHotkeys {
-        shortcuts: registered,
-    })
+    Ok(registered)
 }
 
 #[cfg(test)]
@@ -399,5 +512,74 @@ mod tests {
         assert!(actions.contains(&Action::ScreenOnly));
         assert!(actions.contains(&Action::NextStep));
         assert_eq!(got.len(), 9 + 2 + 9 + 1);
+    }
+
+    #[test]
+    fn plan_swap_downgrade_drops_only_nongated_pairs() {
+        // All → Limited (leave_main): every limited pair is already live
+        // in the full set, so keep = the whole limited set — nothing may
+        // be re-registered (macOS would error on the duplicate combo).
+        let binds = config::default_hotkeys();
+        let all = bindings(&binds, Scope::All);
+        let limited = bindings(&binds, Scope::Limited);
+        let (keep, drop, add) = plan_swap(&all, &limited);
+        assert_eq!(keep, limited);
+        assert!(add.is_empty());
+        assert_eq!(drop.len(), all.len() - limited.len());
+        // The dropped pairs are exactly the LLM/capture-touching ones.
+        let dropped: Vec<Action> = drop.iter().map(|(_, a)| *a).collect();
+        assert!(dropped.contains(&Action::ScreenOnly));
+        assert!(dropped.contains(&Action::NextStep));
+        assert!(dropped.contains(&Action::ToggleClickThrough));
+        assert!(!dropped.contains(&Action::ToggleVisibility));
+    }
+
+    #[test]
+    fn plan_swap_upgrade_adds_only_new_pairs() {
+        // Limited → All (enter_main): shared pairs stay live; only the
+        // newly allowed actions register.
+        let binds = config::default_hotkeys();
+        let all = bindings(&binds, Scope::All);
+        let limited = bindings(&binds, Scope::Limited);
+        let (keep, drop, add) = plan_swap(&limited, &all);
+        assert_eq!(keep, limited);
+        assert!(drop.is_empty());
+        assert_eq!(add.len(), all.len() - limited.len());
+        let added: Vec<Action> = add.iter().map(|(_, a)| *a).collect();
+        assert!(added.contains(&Action::ScreenOnly));
+        assert!(added.contains(&Action::NextStep));
+    }
+
+    #[test]
+    fn plan_swap_identical_sets_is_noop() {
+        let binds = config::default_hotkeys();
+        let all = bindings(&binds, Scope::All);
+        let (keep, drop, add) = plan_swap(&all, &all.clone());
+        assert_eq!(keep, all);
+        assert!(drop.is_empty());
+        assert!(add.is_empty());
+    }
+
+    #[test]
+    fn plan_swap_rebound_shortcut_is_drop_plus_add() {
+        // `scroll_up = "Cmd+M"` collides with `toggle_click_through`'s
+        // default — `bindings` dedup gives Cmd+M to `scroll_up` (first in
+        // map order). The live Cmd+M pair changes action, so it must be
+        // dropped and re-registered: keeping it would leave the old
+        // handler firing the wrong action, and re-registering over it
+        // would hit the OS duplicate error.
+        let mut binds = config::default_hotkeys();
+        let prev = bindings(&binds, Scope::All);
+        binds.insert("scroll_up".to_string(), "Cmd+M".to_string());
+        let new = bindings(&binds, Scope::All);
+        let (keep, drop, add) = plan_swap(&prev, &new);
+        let cmd_m = accelerator_for("Cmd+M").unwrap();
+        assert_eq!(add, vec![(cmd_m, Action::ScrollUp)]);
+        assert_eq!(drop.len(), 2);
+        assert!(drop.contains(&(cmd_m, Action::ToggleClickThrough)));
+        // The old scroll_up binding (Cmd+Shift+Up) is gone entirely.
+        let shift_up = accelerator_for("Cmd+Shift+Up").unwrap();
+        assert!(drop.contains(&(shift_up, Action::ScrollUp)));
+        assert_eq!(keep.len() + drop.len(), prev.len());
     }
 }

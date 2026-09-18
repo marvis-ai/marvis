@@ -192,6 +192,26 @@ Events (Rust → webview):
 
 Secrets and image bytes never appear in commands or events.
 
+## Data locations (`~/.marvis`)
+
+All app data lives under a single dotdir — `~/.marvis` — created at first
+launch with `0700` permissions. This consolidates Glass's three scattered
+locations (`~/.pickleglass/config.json`, `~/.glass/whisper/*`, and
+`~/Library/Application Support/Glass/pickleglass.db`).
+
+```text
+~/.marvis/
+├── keys.enc        # 0600 — Argon2id + AES-256-GCM keyring (rule 1)
+├── config.toml     # 0644 — non-secret prefs (rule 4)
+├── marvis.db       # 0600 — SQLite sessions/messages/(Phase 2: transcripts, summaries)
+└── models/         # Phase 2/3 — whisper.cpp binary + model files, etc.
+    └── whisper/
+```
+
+Nothing is written elsewhere: no `~/Library/Application Support`, no temp
+screenshots, no plaintext fallbacks. `storage::db_path()`,
+`config::path()`, and `keystore::path()` all resolve inside `~/.marvis`.
+
 ## config.toml (non-secret, per rule 4)
 
 ```toml
@@ -211,7 +231,7 @@ bar_x = 812                      # remembered position
 bar_y = 21
 ```
 
-## keys.enc format (per rule 1)
+## `~/.marvis/keys.enc` format (per rule 1)
 
 ```text
 [16B salt][12B nonce][AES-256-GCM ciphertext || 16B GCM tag appended]
@@ -222,7 +242,7 @@ plaintext = JSON: { "openai": "sk-...", "anthropic": "...", "gemini": "...", "de
 Unlocked keyring lives in `Zeroizing<HashMap>` in app state; `keystore_lock`
 drops it. No key material in logs, events, or config.toml.
 
-## Persistence (SQLite, `marvis.db`)
+## Persistence (SQLite, `~/.marvis/marvis.db`)
 
 ```sql
 sessions(id INTEGER PK, type TEXT /*'ask'|'listen'*/, title TEXT,

@@ -15,9 +15,10 @@
 //! }
 //! ```
 //!
-//! The four adapters under this module are stubs: they hold credentials and
-//! a shared `reqwest::Client` (120s timeout) but every call returns
-//! [`LlmError::NoModel`]. Real HTTP/SSE streaming lands in Task 6.
+//! The four adapters share the private [`stream_sse`] / [`stream_ndjson`]
+//! helpers below: they send one request, verify the status, then drain the
+//! byte stream into complete events — UTF-8 decoding only ever runs on a
+//! complete event, so multibyte chars split across TCP chunks survive.
 
 mod anthropic;
 mod gemini;
@@ -28,6 +29,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::time::Duration;
 
+use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -211,6 +213,210 @@ pub fn make_provider(
     }
 }
 
+// ---------------------------------------------------------------------------
+// Shared streaming machinery
+//
+// All four adapters stream tokens the same way: POST → status check → read
+// `bytes_stream()` into a byte buffer → split at protocol boundaries →
+// decode each COMPLETE piece as UTF-8 → run the adapter's line parser.
+// Byte-level buffering is the correctness-critical part: a multibyte char
+// split across two chunks must never see a per-chunk lossy decode.
+// ---------------------------------------------------------------------------
+
+/// Bytes of an error response body kept for `LlmError::Http::message`.
+const ERROR_BODY_CAP: usize = 4096;
+
+/// A line parser: one drained line → a token (`Ok(Some)`), a non-token line
+/// (`Ok(None)`), or a stream-aborting failure (`Err`) — e.g. a `data:`
+/// payload carrying an `error` field, or malformed JSON.
+type LineParser = fn(&str) -> Result<Option<String>, LlmError>;
+
+/// Send `req` as an SSE stream (`\n\n` / `\r\n\r\n` event boundaries) and
+/// fold parsed tokens into `on_token` + the returned full reply.
+pub(crate) async fn stream_sse(
+    req: reqwest::RequestBuilder,
+    parse: LineParser,
+    on_token: &mut (dyn FnMut(&str) + Send),
+) -> Result<String, LlmError> {
+    stream_lines(req, drain_sse_lines, parse, on_token).await
+}
+
+/// Same as [`stream_sse`] but for NDJSON (Ollama): `\n`-delimited objects.
+pub(crate) async fn stream_ndjson(
+    req: reqwest::RequestBuilder,
+    parse: LineParser,
+    on_token: &mut (dyn FnMut(&str) + Send),
+) -> Result<String, LlmError> {
+    stream_lines(req, drain_ndjson_lines, parse, on_token).await
+}
+
+/// Shared streaming core behind [`stream_sse`] / [`stream_ndjson`].
+async fn stream_lines(
+    req: reqwest::RequestBuilder,
+    drain: fn(&mut Vec<u8>) -> Vec<String>,
+    parse: LineParser,
+    on_token: &mut (dyn FnMut(&str) + Send),
+) -> Result<String, LlmError> {
+    let resp = check_status(req.send().await?).await?;
+    let mut stream = resp.bytes_stream();
+    let mut buf: Vec<u8> = Vec::new();
+    let mut full = String::new();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk?;
+        buf.extend_from_slice(&chunk);
+        for line in drain(&mut buf) {
+            if let Some(token) = parse(&line)? {
+                on_token(&token);
+                full.push_str(&token);
+            }
+        }
+    }
+    // Flush an unterminated tail — a final event/line without a trailing
+    // delimiter still gets parsed.
+    for line in take_tail_lines(&mut buf) {
+        if let Some(token) = parse(&line)? {
+            on_token(&token);
+            full.push_str(&token);
+        }
+    }
+    Ok(full)
+}
+
+/// Drain every complete SSE event in `buf` into its constituent lines.
+/// Events end at `\n\n` or `\r\n\r\n`; an incomplete tail stays buffered.
+pub(crate) fn drain_sse_lines(buf: &mut Vec<u8>) -> Vec<String> {
+    let mut lines = Vec::new();
+    while let Some((end, sep_len)) = find_event_boundary(buf) {
+        let event: Vec<u8> = buf.drain(..end + sep_len).collect();
+        for line in decode_complete(&event[..end]).lines() {
+            lines.push(line.strip_suffix('\r').unwrap_or(line).to_string());
+        }
+    }
+    lines
+}
+
+/// Drain every complete `\n`-terminated line in `buf`; tail stays buffered.
+pub(crate) fn drain_ndjson_lines(buf: &mut Vec<u8>) -> Vec<String> {
+    let mut lines = Vec::new();
+    while let Some(end) = buf.iter().position(|b| *b == b'\n') {
+        let line: Vec<u8> = buf.drain(..=end).collect();
+        let s = decode_complete(&line[..line.len() - 1]);
+        lines.push(s.strip_suffix('\r').unwrap_or(&s).to_string());
+    }
+    lines
+}
+
+/// Earliest `\n\n` or `\r\n\r\n` in `buf` → (event_end, separator_len).
+fn find_event_boundary(buf: &[u8]) -> Option<(usize, usize)> {
+    let lf = find_subslice(buf, b"\n\n").map(|i| (i, 2));
+    let crlf = find_subslice(buf, b"\r\n\r\n").map(|i| (i, 4));
+    match (lf, crlf) {
+        (Some(a), Some(b)) => Some(if a.0 <= b.0 { a } else { b }),
+        (Some(a), None) => Some(a),
+        (None, Some(b)) => Some(b),
+        (None, None) => None,
+    }
+}
+
+fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack.windows(needle.len()).position(|w| w == needle)
+}
+
+/// Decode bytes that form ONE complete event/line. Boundaries are found at
+/// byte level, so a multibyte char can only straddle two events — never sit
+/// half-decoded inside this slice.
+fn decode_complete(bytes: &[u8]) -> String {
+    match String::from_utf8(bytes.to_vec()) {
+        Ok(s) => s,
+        Err(e) => String::from_utf8_lossy(e.as_bytes()).into_owned(),
+    }
+}
+
+/// Decode whatever `buf` still holds at end-of-stream into lines.
+fn take_tail_lines(buf: &mut Vec<u8>) -> Vec<String> {
+    if buf.is_empty() {
+        return Vec::new();
+    }
+    let s = decode_complete(buf);
+    buf.clear();
+    s.lines()
+        .map(|l| l.strip_suffix('\r').unwrap_or(l).to_string())
+        .collect()
+}
+
+/// Pass a 2xx response through; otherwise read the body (capped) and map
+/// the status to an [`LlmError`].
+pub(crate) async fn check_status(
+    resp: reqwest::Response,
+) -> Result<reqwest::Response, LlmError> {
+    if resp.status().is_success() {
+        return Ok(resp);
+    }
+    let status = resp.status().as_u16();
+    let body = resp.text().await.unwrap_or_default();
+    let body: String = body.chars().take(ERROR_BODY_CAP).collect();
+    Err(map_http_error(status, &body))
+}
+
+/// 401/403 → [`LlmError::Auth`]; bodies matching a provider's "no image
+/// support" phrasing → [`LlmError::MultimodalUnsupported`] (via
+/// [`LlmError::is_multimodal`]); anything else → [`LlmError::Http`] with
+/// the body text, or the status's reason phrase when the body is empty.
+pub(crate) fn map_http_error(status: u16, body: &str) -> LlmError {
+    if status == 401 || status == 403 {
+        return LlmError::Auth;
+    }
+    let probe = LlmError::Http {
+        status,
+        message: body.to_string(),
+    };
+    if probe.is_multimodal() {
+        return LlmError::MultimodalUnsupported;
+    }
+    let message = if body.trim().is_empty() {
+        reqwest::StatusCode::from_u16(status)
+            .ok()
+            .and_then(|s| s.canonical_reason())
+            .unwrap_or("unknown error")
+            .to_string()
+    } else {
+        body.trim().to_string()
+    };
+    LlmError::Http { status, message }
+}
+
+/// Build the abort error for an `error` value inside a `data:` payload.
+/// Handles both object shapes (`{"error":{"code":n,"message":…}}` — OpenAI,
+/// Anthropic, Gemini) and Ollama's bare `{"error":"…"}` string. A missing
+/// numeric code maps to status 0 — the error came from the stream body,
+/// not an HTTP status line.
+pub(crate) fn stream_error(err: &serde_json::Value) -> LlmError {
+    if let Some(msg) = err.as_str() {
+        return map_http_error(0, msg);
+    }
+    let message = err
+        .get("message")
+        .and_then(|m| m.as_str())
+        .unwrap_or("provider stream error")
+        .to_string();
+    let status = err
+        .get("code")
+        .and_then(|c| c.as_u64())
+        .or_else(|| err.get("status").and_then(|s| s.as_u64()))
+        .unwrap_or(0)
+        .min(u16::MAX as u64) as u16;
+    map_http_error(status, &message)
+}
+
+/// A `data:` line that isn't JSON means a corrupt stream — abort loudly
+/// rather than silently dropping tokens. Status 0: no HTTP status applies.
+pub(crate) fn malformed_stream(provider: &str, e: serde_json::Error) -> LlmError {
+    LlmError::Http {
+        status: 0,
+        message: format!("{provider}: malformed stream json: {e}"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -319,24 +525,192 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn every_stub_provider_returns_no_model_through_dyn() {
+    async fn providers_fail_fast_without_keys_or_server_through_dyn() {
         // Calls go through `Box<dyn Provider>` — proves the trait is
-        // object-safe and the factory dispatches every kind.
-        for kind in [
-            ProviderKind::OpenAi,
-            ProviderKind::Anthropic,
-            ProviderKind::Gemini,
-            ProviderKind::Ollama,
-        ] {
+        // object-safe and the factory dispatches every kind. Missing keys
+        // map to `Auth` before any network I/O; Ollama has no key gate but
+        // a nonsense model must still error (connection refused or a 404
+        // from a real local server — both are `Err`).
+        for kind in [ProviderKind::OpenAi, ProviderKind::Anthropic, ProviderKind::Gemini] {
             let provider: Box<dyn Provider> = make_provider(kind, None, "some-model".into());
-            let mut on_token = |tok: &str| panic!("stub emitted token {tok:?}");
+            let mut on_token = |tok: &str| panic!("emitted token {tok:?} without a key");
             let err = provider
                 .stream_chat(&[ChatMessage::text(Role::User, "hi")], &mut on_token)
                 .await
                 .unwrap_err();
-            assert!(matches!(err, LlmError::NoModel), "{kind:?}");
+            assert!(matches!(err, LlmError::Auth), "{kind:?}: {err:?}");
             let err = provider.validate().await.unwrap_err();
-            assert!(matches!(err, LlmError::NoModel), "{kind:?}");
+            assert!(matches!(err, LlmError::Auth), "{kind:?}: {err:?}");
         }
+
+        let provider: Box<dyn Provider> = make_provider(
+            ProviderKind::Ollama,
+            None,
+            "definitely-not-a-real-model-xyz".into(),
+        );
+        let mut on_token = |_: &str| {};
+        assert!(provider
+            .stream_chat(&[ChatMessage::text(Role::User, "hi")], &mut on_token)
+            .await
+            .is_err());
+        // Ollama's /api/tags is unauthenticated — whether it answers depends
+        // on a local server actually running, so no assertion on the result.
+        let _ = provider.validate().await;
+    }
+
+    #[test]
+    fn drain_sse_lines_holds_incomplete_events_and_split_chars() {
+        // 'é' is 0xC3 0xA9. Splitting mid-char across two pushes must not
+        // corrupt it: decoding only ever runs on COMPLETE events, never on
+        // raw stream chunks (a lossy per-chunk decode would mangle this).
+        let event = "data: {\"choices\":[{\"delta\":{\"content\":\"héllo\"}}]}\n\n";
+        let bytes = event.as_bytes();
+        let split = bytes.iter().position(|b| *b == 0xC3).unwrap() + 1;
+
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&bytes[..split]);
+        assert!(drain_sse_lines(&mut buf).is_empty());
+
+        buf.extend_from_slice(&bytes[split..]);
+        let lines = drain_sse_lines(&mut buf);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(
+            openai::OpenAiProvider::parse_stream_line(&lines[0]),
+            Some("héllo".into())
+        );
+        assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn drain_sse_lines_tolerates_crlf_boundaries() {
+        let mut buf = b"data: {\"a\":1}\r\n\r\ndata: {\"b\":2}\n\n".to_vec();
+        let lines = drain_sse_lines(&mut buf);
+        assert_eq!(lines, vec!["data: {\"a\":1}", "data: {\"b\":2}"]);
+        assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn drain_ndjson_lines_splits_on_newlines_holding_tail() {
+        let mut buf = b"{\"a\":1}\n{\"b\":2}\n{\"part".to_vec();
+        let lines = drain_ndjson_lines(&mut buf);
+        assert_eq!(lines, vec!["{\"a\":1}", "{\"b\":2}"]);
+        assert_eq!(buf, b"{\"part");
+    }
+
+    /// One-shot HTTP server: reads the request head, writes `writes` in
+    /// order, returns the URL. Lets tests control exactly how the response
+    /// body is fragmented on the wire.
+    async fn serve_once(writes: Vec<Vec<u8>>) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut head = Vec::new();
+            let mut byte = [0u8; 1];
+            while !head.ends_with(b"\r\n\r\n") {
+                if sock.read(&mut byte).await.unwrap_or(0) == 0 {
+                    return;
+                }
+                head.push(byte[0]);
+            }
+            for w in writes {
+                if sock.write_all(&w).await.is_err() {
+                    return;
+                }
+            }
+        });
+        format!("http://{addr}/")
+    }
+
+    fn sse_response(body: &str) -> Vec<u8> {
+        format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        )
+        .into_bytes()
+    }
+
+    #[tokio::test]
+    async fn stream_sse_aborts_when_an_event_carries_error() {
+        // Tokens already emitted are delivered, then the stream dies on the
+        // error payload — a silent `None` would swallow a provider failure.
+        let body = concat!(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"Hi\"}}]}\n\n",
+            "data: {\"error\":{\"message\":\"boom\",\"code\":500}}\n\n"
+        );
+        let url = serve_once(vec![sse_response(body)]).await;
+        let req = reqwest::Client::new().get(&url);
+        let mut tokens: Vec<String> = Vec::new();
+        let mut on_token = |t: &str| tokens.push(t.to_string());
+        let err = stream_sse(req, openai::OpenAiProvider::parse_event, &mut on_token)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, LlmError::Http { status: 500, .. }), "{err:?}");
+        assert_eq!(tokens, vec!["Hi"]);
+    }
+
+    #[tokio::test]
+    async fn stream_sse_decodes_chars_split_across_tcp_writes() {
+        // Same guarantee as the drain test, but through the real
+        // bytes_stream() path with the body fragmented into two writes.
+        let body = "data: {\"choices\":[{\"delta\":{\"content\":\"héllo\"}}]}\n\n";
+        let head = format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\n\r\n",
+            body.len()
+        );
+        let bytes = body.as_bytes();
+        let split = bytes.iter().position(|b| *b == 0xC3).unwrap() + 1;
+        let url = serve_once(vec![
+            head.into_bytes(),
+            bytes[..split].to_vec(),
+            bytes[split..].to_vec(),
+        ])
+        .await;
+        let req = reqwest::Client::new().get(&url);
+        let mut tokens: Vec<String> = Vec::new();
+        let mut on_token = |t: &str| tokens.push(t.to_string());
+        let full = stream_sse(req, openai::OpenAiProvider::parse_event, &mut on_token)
+            .await
+            .unwrap();
+        assert_eq!(full, "héllo");
+        assert_eq!(tokens, vec!["héllo"]);
+    }
+
+    #[tokio::test]
+    async fn stream_sse_maps_401_to_auth() {
+        let resp = b"HTTP/1.1 401 Unauthorized\r\ncontent-length: 2\r\n\r\nno".to_vec();
+        let url = serve_once(vec![resp]).await;
+        let req = reqwest::Client::new().get(&url);
+        let mut on_token = |_: &str| {};
+        let err = stream_sse(req, openai::OpenAiProvider::parse_event, &mut on_token)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, LlmError::Auth), "{err:?}");
+    }
+
+    #[tokio::test]
+    async fn stream_ndjson_accumulates_lines_until_done() {
+        let body = concat!(
+            "{\"message\":{\"content\":\"Hel\"},\"done\":false}\n",
+            "{\"message\":{\"content\":\"lo\"},\"done\":false}\n",
+            "{\"message\":{\"content\":\"\"},\"done\":true}\n"
+        );
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: application/x-ndjson\r\ncontent-length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        )
+        .into_bytes();
+        let url = serve_once(vec![resp]).await;
+        let req = reqwest::Client::new().get(&url);
+        let mut tokens: Vec<String> = Vec::new();
+        let mut on_token = |t: &str| tokens.push(t.to_string());
+        let full = stream_ndjson(req, ollama::OllamaProvider::parse_event, &mut on_token)
+            .await
+            .unwrap();
+        assert_eq!(full, "Hello");
+        assert_eq!(tokens, vec!["Hel", "lo"]);
     }
 }

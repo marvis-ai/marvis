@@ -1,6 +1,12 @@
-@import "tailwindcss";
+@import '@marvis/ui/index.css';
 
-html, body, #root {
+/* Tailwind v4 auto-detection only scans this app's tree — register the
+   ui package so its component classes (button variants, etc.) generate. */
+@source "../../../packages/ui/src";
+
+html,
+body,
+#root {
   background: transparent;
   height: 100%;
   overflow: hidden;

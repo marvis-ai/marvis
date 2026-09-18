@@ -40,6 +40,9 @@ toml = "0.8"
 dirs = "6"
 image = { version = "0.25", default-features = false, features = ["jpeg"] }
 screencapturekit = "10"
+objc2 = "0.6"
+block2 = "0.6"
+objc2-av-foundation = { version = "0.3", default-features = false, features = ["AVCaptureDevice", "AVMediaFormat", "block2"] }
 thiserror = "2"
 anyhow = "1"
 parking_lot = "0.12"

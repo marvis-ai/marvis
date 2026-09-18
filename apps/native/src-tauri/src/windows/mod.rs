@@ -215,7 +215,7 @@ impl WindowPool {
             log::warn!("windows::show({:?}): panel not created", panel);
             return;
         };
-        self.refresh_bar_rect();
+        self.reclamp();
         self.visible.insert(panel);
         let targets = self.layout_targets();
         let Some(&target) = targets.get(&panel) else {
@@ -243,7 +243,7 @@ impl WindowPool {
 
     /// Hide `panel` and restack the remaining visible panels.
     pub fn hide(&mut self, panel: Panel) {
-        self.refresh_bar_rect();
+        self.reclamp();
         if let Some(win) = self.panels.get(&panel) {
             let _ = win.hide();
         }

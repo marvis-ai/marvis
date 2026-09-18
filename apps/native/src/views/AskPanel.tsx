@@ -20,6 +20,7 @@
  * window pool moves panels programmatically.
  */
 import { useEffect, useRef, useState } from 'react';
+import { openUrl } from '@tauri-apps/plugin-opener';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Button, X } from '@marvis/ui';
@@ -210,7 +211,21 @@ export default function AskPanel() {
           )}
           {response && (
             <div className='ask-md text-sm text-foreground'>
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>
+              <ReactMarkdown
+                remarkPlugins={[remarkGfm]}
+                disallowedElements={['img']}
+                components={{
+                  a: ({ href, children }) => (
+                    <a
+                      href={href}
+                      onClick={(e) => {
+                        e.preventDefault();
+                        if (href) void openUrl(href);
+                      }}>
+                      {children}
+                    </a>
+                  ),
+                }}>
                 {response}
               </ReactMarkdown>
             </div>

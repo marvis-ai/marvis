@@ -49,7 +49,7 @@ function Shell({ children }: { children: ReactNode }) {
       className='h-full p-1'
       data-tauri-drag-region>
       <div
-        data-tauri-drag-region
+        data-tauri-drag-region='deep'
         className='flex h-full flex-col justify-center gap-0.5 rounded-full border border-border bg-card/80 px-3 shadow-lg backdrop-blur select-none'>
         {children}
       </div>

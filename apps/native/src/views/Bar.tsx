@@ -28,6 +28,7 @@ import {
 } from '../lib/commands';
 import {
   EV_APP_STATE,
+  EV_CAPTURE_PERMISSION_NEEDED,
   EV_KEYSTORE_CHANGED,
   useTauriEvent,
 } from '../lib/events';
@@ -89,6 +90,11 @@ export default function Bar() {
     setError(null);
   });
   useTauriEvent<KeystoreStatus>(EV_KEYSTORE_CHANGED, setKeystore);
+  // Mid-session screen-permission revocation (ask.rs detects it when a
+  // stale frame would have shipped): flip back to the permission card.
+  useTauriEvent<{ permission: string }>(EV_CAPTURE_PERMISSION_NEEDED, () =>
+    setGate('needs_permission'),
+  );
 
   const submitPassphrase = async (e: FormEvent) => {
     e.preventDefault();

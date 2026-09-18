@@ -100,6 +100,11 @@ pub struct AppState {
     /// (shared pairs are never re-registered; macOS refuses duplicates).
     hotkeys: Mutex<Option<RegisteredHotkeys>>,
     gate: Mutex<Gate>,
+    /// Serializes `transition_gate` — the gate swap, its side-effects
+    /// (enter/leave Main), and the `app:state` emit must be one critical
+    /// section or two overlapping transitions can interleave (stale
+    /// emit landing last, or hotkeys/capture from a dead gate state).
+    gate_transition: Mutex<()>,
     click_through: AtomicBool,
 }
 
@@ -132,6 +137,7 @@ impl AppState {
             pool: Mutex::new(WindowPool::new_empty()),
             hotkeys: Mutex::new(None),
             gate: Mutex::new(Gate::NeedsUnlock),
+            gate_transition: Mutex::new(()),
             click_through: AtomicBool::new(false),
         }
     }
@@ -161,6 +167,10 @@ fn app_gate(state: &AppState) -> Gate {
 /// change the gate and once at startup.
 fn transition_gate(app: &AppHandle) {
     let state = app.state::<AppState>();
+    // Serialize the whole transition: the gate read+swap, the Main
+    // side-effects, and the `app:state` emit are one critical section.
+    // Nothing else locks `gate_transition`, so this cannot deadlock.
+    let _transition = state.gate_transition.lock();
     let new_gate = app_gate(&state);
     let old_gate = std::mem::replace(&mut *state.gate.lock(), new_gate);
     if old_gate != new_gate {
@@ -188,7 +198,14 @@ fn enter_main(app: &AppHandle) {
             Ok(capture) => {
                 let ring = Arc::clone(&state.ring);
                 capture.start(Box::new(move |frame| ring.lock().push(frame)));
-                *slot = Some(capture);
+                // Store only on success — a silently-failed start must
+                // not block a later retry (`is_running` is false when
+                // SCStream rejected the handler or `start_capture` failed).
+                if capture.is_running() {
+                    *slot = Some(capture);
+                } else {
+                    log::warn!("gate: screen capture failed to start");
+                }
             }
             Err(e) => log::warn!("gate: screen capture failed to init: {e}"),
         }
@@ -199,6 +216,10 @@ fn enter_main(app: &AppHandle) {
 /// downgrade hotkeys to the gated limited set.
 fn leave_main(app: &AppHandle) {
     let state = app.state::<AppState>();
+    // Cancel any in-flight ask — an unbounded stream left running would
+    // hold `AskState::Streaming` past re-unlock and wedge every future
+    // send on the busy-check until it resolves on its own.
+    state.ask.close(&state.pool);
     // Take the capture out and release the lock BEFORE `stop()` — it
     // joins the capture worker, which must not hold `state.capture`
     // while `capture_status` waits on it.
@@ -285,11 +306,18 @@ fn deeplink_dispatch(app: &AppHandle) -> impl Fn(deeplink::Action) + Send + Sync
     move |action| match action {
         deeplink::Action::Ask(text) => {
             let state = app.state::<AppState>();
+            let bar = state.pool.lock().bar().cloned();
+            if let Some(bar) = bar {
+                let _ = bar.set_focus();
+            }
             if *state.gate.lock() == Gate::Main {
                 state.ask.send(&app, &state.deps(), &text);
             } else {
+                // Not ready yet — the spec's catch-all applies: surface
+                // the bar so the user lands on the unlock/permission card
+                // instead of the link silently going nowhere.
                 log::warn!(
-                    "deeplink: ask dropped while gate = {:?}",
+                    "deeplink: ask gated off (gate = {:?}); focused bar",
                     *state.gate.lock()
                 );
             }
@@ -563,6 +591,13 @@ async fn model_list_available(provider: String) -> Vec<String> {
 #[tauri::command]
 fn ask_send(app: AppHandle, text: String) {
     let state = app.state::<AppState>();
+    // Crafted-invoke guard: the shipped UI gates sends behind `Main`,
+    // but an Ollama-configured ask would otherwise proceed while locked —
+    // DB writes, network, and emits to a hidden window. Drop instead.
+    if *state.gate.lock() != Gate::Main {
+        log::warn!("ask_send dropped while gate != Main");
+        return;
+    }
     state.ask.send(&app, &state.deps(), &text);
 }
 
@@ -570,6 +605,13 @@ fn ask_send(app: AppHandle, text: String) {
 #[tauri::command]
 fn ask_close(state: State<'_, AppState>) {
     state.ask.close(&state.pool);
+}
+
+/// Phase-2 placeholder on the command surface — the listen pipeline
+/// (dual STT + live summary) isn't implemented yet.
+#[tauri::command]
+fn listen_stub() -> &'static str {
+    "listen arrives in Phase 2"
 }
 
 // ---------------------------------------------------------------------------
@@ -774,6 +816,7 @@ pub fn run() {
                 pool: Mutex::new(pool),
                 hotkeys: Mutex::new(None),
                 gate: Mutex::new(Gate::NeedsUnlock),
+                gate_transition: Mutex::new(()),
                 click_through: AtomicBool::new(false),
             });
             deeplink::init(handle, deeplink_dispatch(handle))?;
@@ -804,6 +847,7 @@ pub fn run() {
             model_list_available,
             ask_send,
             ask_close,
+            listen_stub,
             window_toggle_all,
             window_show_settings,
             window_hide_settings,

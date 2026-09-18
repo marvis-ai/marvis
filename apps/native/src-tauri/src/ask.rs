@@ -17,6 +17,9 @@
 //! - `ask:chunk` `{"text": token}` per token.
 //! - `ask:done` `{"full": full_reply}` on success.
 //! - `ask:error` `{"message": ..., "needs_unlock": bool?}` on failure.
+//! Broadcast (all windows): `capture:permission-needed` when a frame
+//! exists but screen permission was revoked mid-session — the ring's
+//! stale frame is dropped and the ask continues text-only.
 //!
 //! Wiring note for Task 14: `send`/`send_screen_only`/`close` take a
 //! [`Deps`] bundle of `AppState` fields so this module never names the
@@ -188,7 +191,18 @@ impl AskService {
                 }),
             );
         }
-        let frame = deps.ring.lock().latest();
+        let mut frame = deps.ring.lock().latest();
+        // Mid-session screen-permission revocation: SCStream stops
+        // delivering but the ring keeps serving its last frames — a
+        // stale screenshot silently shipped is worse than no image.
+        // Emit the spec'd signal and answer text-only instead.
+        if frame.is_some() && !crate::permissions::screen_status() {
+            let _ = app.emit(
+                "capture:permission-needed",
+                json!({ "permission": "screen" }),
+            );
+            frame = None;
+        }
         if frame_required && frame.is_none() {
             return self.pre_spawn_error(
                 app,

@@ -137,9 +137,16 @@ fn bindings(binds: &BTreeMap<String, String>, scope: Scope) -> Vec<(Shortcut, Ac
         }
         match accelerator_for(accel) {
             Some(shortcut) => out.push((shortcut, action)),
-            None => log::warn!(
-                "hotkey: accelerator {accel:?} for action {name:?} didn't parse; skipping"
-            ),
+            None => {
+                log::warn!("hotkey: accelerator {accel:?} for action {name:?} didn't parse");
+                // Fall back to the spec default — a bad hand-edit must not
+                // leave the action (e.g. `toggle_visibility`) unbound.
+                if let Some(default_accel) = crate::config::default_hotkeys().get(name.as_str()) {
+                    if let Some(shortcut) = accelerator_for(default_accel) {
+                        out.push((shortcut, action));
+                    }
+                }
+            }
         }
     }
 

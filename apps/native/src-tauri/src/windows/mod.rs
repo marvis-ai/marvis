@@ -216,7 +216,6 @@ impl WindowPool {
         self.bar.as_ref()
     }
 
-    #[allow(dead_code)] // panel accessors for later status/debug consumers
     pub fn panel_window(&self, panel: Panel) -> Option<&WebviewWindow> {
         self.panels.get(&panel)
     }
@@ -374,6 +373,10 @@ impl WindowPool {
     /// animates the bounds keeping the top edge anchored; result is re-clamped
     /// so the bottom stays inside the work area.
     pub fn adjust_height(&mut self, name: &str, px: f64) {
+        if !px.is_finite() {
+            log::warn!("windows::adjust_height: non-finite height {px} for {name:?}");
+            return;
+        }
         let Some(panel) = Panel::from_label(name) else {
             log::warn!("windows::adjust_height: unknown window label {name:?}");
             return;

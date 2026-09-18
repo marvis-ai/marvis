@@ -183,10 +183,17 @@ impl Db {
         content: &str,
     ) -> anyhow::Result<i64> {
         let conn = self.conn.lock();
+        let ts = now();
         conn.execute(
             "INSERT INTO ai_messages (session_id, role, content, ts)
              VALUES (?1, ?2, ?3, ?4)",
-            params![session_id, role, content, now()],
+            params![session_id, role, content, ts],
+        )?;
+        // Activity bumps the session to the top of `session_list` — done
+        // here rather than via `session_touch` so writers can't forget it.
+        conn.execute(
+            "UPDATE sessions SET last_active_at = ?1 WHERE id = ?2",
+            params![ts, session_id],
         )?;
         Ok(conn.last_insert_rowid())
     }

@@ -142,14 +142,18 @@ impl AskService {
     /// Shared pre-flight + spawn behind `send`/`send_screen_only`.
     /// `frame_required` is the screen-only variant's no-frame→error rule.
     fn kick(self: &Arc<Self>, app: &AppHandle, deps: &Deps<'_>, text: &str, frame_required: bool) {
-        {
+        let gen = {
             let mut state = self.state.lock();
             if *state != AskState::Idle {
                 log::warn!("ask::send: busy ({state:?}); ignoring new send");
                 return;
             }
+            // State flip and generation bump share one critical section —
+            // the emit closure's guarded fold can then never interleave
+            // (a stale emit lands before this lock or sees the new gen).
             *state = AskState::Loading;
-        }
+            self.generation.fetch_add(1, Ordering::SeqCst) + 1
+        };
         *self.current_question.lock() = text.to_string();
         // Show first so any pre-flight error still renders in the panel.
         deps.pool.lock().show(Panel::Ask);
@@ -187,7 +191,6 @@ impl AskService {
 
         let provider = make_provider(kind, api_key, model);
         let cancel = self.cancel.lock().clone();
-        let gen = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
         let svc = Arc::clone(self);
         let app = app.clone();
         let db = Arc::clone(&deps.db);
@@ -197,8 +200,24 @@ impl AskService {
             // while this run is the current generation; a cancelled
             // task's trailing emits must not clobber a newer send.
             let emit = move |name: &str, payload: serde_json::Value| {
-                if svc.generation.load(Ordering::SeqCst) != gen {
-                    return;
+                {
+                    // The generation check and the `ask:state` fold share
+                    // this critical section: a stale task either lands
+                    // its emit BEFORE `kick`'s atomic flip+bump, or sees
+                    // the new generation and drops. Check-then-act across
+                    // separate locks would let a cancelled task clobber a
+                    // newer send's state.
+                    let mut state = svc.state.lock();
+                    if svc.generation.load(Ordering::SeqCst) != gen {
+                        return;
+                    }
+                    if name == EV_STATE {
+                        *state = match payload["state"].as_str() {
+                            Some("loading") => AskState::Loading,
+                            Some("streaming") => AskState::Streaming,
+                            _ => AskState::Idle,
+                        };
+                    }
                 }
                 svc.observe(name, &payload);
                 let _ = app.emit_to("ask", name, payload);
@@ -225,24 +244,14 @@ impl AskService {
         let _ = app.emit_to("ask", EV_STATE, json!({"state": "idle"}));
     }
 
-    /// Fold one outgoing event into Rust-side state: `ask:state` is the
-    /// busy-check source of truth; `ask:done` records the reply.
+    /// Fold one outgoing event into Rust-side state: `ask:state` is
+    /// folded by the emit closure under its generation-guarded lock (the
+    /// busy-check source of truth); `ask:done` records the reply here.
     fn observe(&self, name: &str, payload: &serde_json::Value) {
-        match name {
-            EV_STATE => {
-                let next = match payload["state"].as_str() {
-                    Some("loading") => AskState::Loading,
-                    Some("streaming") => AskState::Streaming,
-                    _ => AskState::Idle,
-                };
-                *self.state.lock() = next;
+        if name == EV_DONE {
+            if let Some(full) = payload["full"].as_str() {
+                *self.current_response.lock() = full.to_string();
             }
-            EV_DONE => {
-                if let Some(full) = payload["full"].as_str() {
-                    *self.current_response.lock() = full.to_string();
-                }
-            }
-            _ => {}
         }
     }
 }

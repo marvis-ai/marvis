@@ -149,7 +149,7 @@ impl Db {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
             "SELECT id, type, title, started_at, ended_at, last_active_at
-             FROM sessions ORDER BY last_active_at DESC",
+             FROM sessions ORDER BY last_active_at DESC, id DESC",
         )?;
         let rows = stmt.query_map([], |row| {
             Ok(Session {

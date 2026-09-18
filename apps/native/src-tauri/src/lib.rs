@@ -584,7 +584,12 @@ fn window_toggle_all(state: State<'_, AppState>) {
 
 #[tauri::command]
 fn window_show_settings(state: State<'_, AppState>) {
-    state.pool.lock().show(Panel::Settings);
+    let pool = state.pool.lock();
+    let mut pool = pool;
+    pool.show(Panel::Settings);
+    if let Some(win) = pool.panel_window(Panel::Settings) {
+        let _ = win.set_focus();
+    }
 }
 
 #[tauri::command]

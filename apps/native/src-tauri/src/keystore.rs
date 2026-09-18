@@ -204,16 +204,18 @@ impl Keystore {
         Ok(())
     }
 
-    /// Delete `keys.enc` and drop any held DEK → `Unset`. The recovery
-    /// path for `Obsolete` stores; a missing file is fine (already
-    /// `Unset`). The keychain item is intentionally kept — the next
-    /// `init` reuses it.
+    /// Delete `keys.enc`, the keychain DEK item(s), and any held DEK →
+    /// `Unset`. The recovery path for `Obsolete`/`CannotDecrypt` stores —
+    /// a missing file is fine (already `Unset`). Deleting the items
+    /// guarantees the next `init` can't pick up a DEK written by a
+    /// different backend (signed vs unsigned builds share `~/.marvis`).
     pub fn reset(&mut self) -> Result<(), KeystoreError> {
         match std::fs::remove_file(&self.path) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => return Err(KeystoreError::Io(e)),
         }
+        self.dek_provider.delete();
         self.dek = None;
         self.state = KeystoreState::Unset;
         Ok(())
@@ -424,6 +426,22 @@ mod tests {
         assert!(err.to_string().contains("reset required"));
         // The keystore stays Locked — a failed parse changes nothing.
         assert!(matches!(ks.state(), KeystoreState::Locked));
+        let _ = std::fs::remove_dir_all(p.parent().unwrap());
+    }
+
+    #[test]
+    fn old_file_with_colliding_source_byte_is_cannot_decrypt() {
+        // 1/256 of old passphrase files have salt[0] = 0x01 — they pass
+        // the source check, then fail AEAD open. The error must be
+        // `CannotDecrypt` (accurate), surfaced so the Reset affordance
+        // shows — not a misleading "obsolete" or a panic.
+        let p = tmp_path("keys.enc");
+        let mut old = vec![0x01u8]; // colliding "salt" byte → passes check
+        old.extend_from_slice(&[0u8; NONCE_LEN]);
+        old.extend_from_slice(&[0u8; TAG_LEN]);
+        std::fs::write(&p, old).unwrap();
+        let mut ks = ks_at(&p, TEST_DEK);
+        assert!(matches!(ks.unlock(), Err(KeystoreError::CannotDecrypt)));
         let _ = std::fs::remove_dir_all(p.parent().unwrap());
     }
 

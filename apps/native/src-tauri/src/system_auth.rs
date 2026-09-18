@@ -48,7 +48,7 @@ use security_framework_sys::item::{
     kSecAttrAccessControl, kSecAttrAccount, kSecAttrService, kSecClass, kSecClassGenericPassword,
     kSecMatchLimit, kSecReturnData, kSecValueData,
 };
-use security_framework_sys::keychain_item::{SecItemAdd, SecItemCopyMatching};
+use security_framework_sys::keychain_item::{SecItemAdd, SecItemCopyMatching, SecItemDelete};
 use thiserror::Error;
 use zeroize::Zeroizing;
 
@@ -114,6 +114,10 @@ pub enum DekError {
     /// to callers of `get`/`get_or_create`.
     #[error("ACL keychain unavailable (OSStatus {0})")]
     AclUnavailable(OSStatus),
+    /// A `SecItemAdd` raced an existing item — the caller re-reads.
+    /// Internal marker like `AclUnavailable`; never surfaces to UI.
+    #[error("keychain item already exists")]
+    Duplicate,
 }
 
 /// The `keys.enc` DEK source contract.
@@ -129,6 +133,11 @@ pub trait DekProvider: Send + Sync {
     fn get(&self) -> Result<Zeroizing<[u8; DEK_LEN]>, DekError>;
     /// Retrieve the DEK, creating the item first if none exists.
     fn get_or_create(&self) -> Result<Zeroizing<[u8; DEK_LEN]>, DekError>;
+    /// Delete the backing item(s) — the `keystore_reset` escape: clears
+    /// any stored DEK so the next `init` can't pick up a divergent one
+    /// (e.g. an ACL item and a fallback item written by different runs).
+    /// Best-effort — failures are logged, not returned.
+    fn delete(&self);
 }
 
 /// Production provider: random DEK in the macOS Keychain, gated by
@@ -227,8 +236,8 @@ impl SystemAuthDekProvider {
     /// (keys.enc reset, reinstall) degrades to `acl_get`.
     fn acl_get_or_create(&self) -> Result<Zeroizing<[u8; DEK_LEN]>, DekError> {
         let access = sec_access_control()?;
-        let dek: [u8; DEK_LEN] = rand::random();
-        let data = CFData::from_buffer(&dek);
+        let dek = Zeroizing::new(rand::random::<[u8; DEK_LEN]>());
+        let data = CFData::from_buffer(&dek[..]);
         // SAFETY: extern `kSec*` statics are live immutable CFStringRefs;
         // `attrs` is a live CFDictionary; result out-param unused.
         let status = unsafe {
@@ -248,7 +257,7 @@ impl SystemAuthDekProvider {
             SecItemAdd(attrs.as_concrete_TypeRef(), ptr::null_mut())
         };
         match status {
-            0 => Ok(Zeroizing::new(dek)),
+            0 => Ok(dek),
             // Item already exists — fetch it (this does prompt, which is
             // correct: we're about to trust that DEK).
             ERR_SEC_USER_CANCELED => Err(DekError::Canceled),
@@ -281,11 +290,12 @@ impl SystemAuthDekProvider {
                 &block,
             );
         }
-        match rx.recv() {
+        match rx.recv_timeout(std::time::Duration::from_secs(300)) {
             Ok((true, _)) => Ok(()),
             Ok((false, Some(code))) if code == LA_ERROR_USER_CANCEL => Err(DekError::Canceled),
             Ok((false, code)) => Err(DekError::AuthFailed(code.unwrap_or(0))),
-            // Reply never fired (context dropped) — treat as failure.
+            // Reply never fired or timed out — treat as failure rather
+            // than holding the keystore mutex forever.
             Err(_) => Err(DekError::AuthFailed(0)),
         }
     }
@@ -303,9 +313,14 @@ impl SystemAuthDekProvider {
         match self.copy_item(KEYCHAIN_ACCOUNT_FALLBACK) {
             Ok(_) => self.la_get(),
             Err(DekError::Missing) => {
-                let dek: [u8; DEK_LEN] = rand::random();
-                self.add_plain_item(&dek)?;
-                Ok(Zeroizing::new(dek))
+                let dek = Zeroizing::new(rand::random::<[u8; DEK_LEN]>());
+                match self.add_plain_item(&dek) {
+                    Ok(()) => Ok(dek),
+                    // Lost an add-race — the winner's DEK is the truth;
+                    // returning our fresh one would wedge every decrypt.
+                    Err(DekError::Duplicate) => self.la_get(),
+                    Err(e) => Err(e),
+                }
             }
             Err(e) => Err(e),
         }
@@ -360,8 +375,30 @@ impl SystemAuthDekProvider {
             SecItemAdd(attrs.as_concrete_TypeRef(), ptr::null_mut())
         };
         match status {
-            s if s == 0 || s == errSecDuplicateItem => Ok(()),
+            0 => Ok(()),
+            s if s == errSecDuplicateItem => Err(DekError::Duplicate),
             s => Err(DekError::Keychain(s)),
+        }
+    }
+
+    /// `SecItemDelete` for both accounts — best-effort, used by reset.
+    fn delete_item(account: &str) {
+        // SAFETY: extern `kSec*` statics are live immutable CFStringRefs;
+        // `query` is a live CFDictionary. Deleting an ACL item may itself
+        // prompt — acceptable on an explicit user reset.
+        let status = unsafe {
+            let query = CFDictionary::from_CFType_pairs(&[
+                (sec_str(kSecClass), sec_str(kSecClassGenericPassword)),
+                (
+                    sec_str(kSecAttrService),
+                    CFString::new(KEYCHAIN_SERVICE).as_CFType(),
+                ),
+                (sec_str(kSecAttrAccount), CFString::new(account).as_CFType()),
+            ]);
+            SecItemDelete(query.as_concrete_TypeRef())
+        };
+        if status != 0 && status != errSecItemNotFound {
+            log::warn!("keystore: SecItemDelete({account}) failed: {status}");
         }
     }
 }
@@ -383,6 +420,13 @@ impl DekProvider for SystemAuthDekProvider {
 
     fn get_or_create(&self) -> Result<Zeroizing<[u8; DEK_LEN]>, DekError> {
         self.with_backend(|| self.acl_get_or_create(), || self.la_get_or_create())
+    }
+
+    fn delete(&self) {
+        // Both accounts, whichever backend wrote them — a reset must not
+        // leave a divergent DEK behind for the next `init` to pick up.
+        Self::delete_item(KEYCHAIN_ACCOUNT);
+        Self::delete_item(KEYCHAIN_ACCOUNT_FALLBACK);
     }
 }
 
@@ -413,6 +457,8 @@ impl DekProvider for StaticDekProvider {
     fn get_or_create(&self) -> Result<Zeroizing<[u8; DEK_LEN]>, DekError> {
         Ok(Zeroizing::new(self.0))
     }
+
+    fn delete(&self) {}
 }
 
 // ---------------------------------------------------------------------------
@@ -445,6 +491,10 @@ fn sec_access_control() -> Result<CFType, DekError> {
         )
     };
     if access.is_null() {
+        if !error.is_null() {
+            // SAFETY: non-null CFErrorRef we own (Create rule).
+            let _ = unsafe { CFType::wrap_under_create_rule(error as CFTypeRef) };
+        }
         // Can't even build the ACL object — the whole ACL path is
         // suspect, so route through the fallback detection.
         return Err(DekError::AclUnavailable(-1));
@@ -456,11 +506,12 @@ fn sec_access_control() -> Result<CFType, DekError> {
 /// OSStatus values that mean "this binary can't do ACL keychain ops"
 /// (unsigned dev build, no user interaction possible) — the trigger for
 /// the `LaGate` fallback. `errSecUserCanceled` is deliberately NOT here:
-/// a cancel is a user action, not an environment failure.
+/// a cancel is a user action, not an environment failure. Neither is
+/// `errSecAuthFailed`: on a *signed* build it can mean the user's auth
+/// simply failed, and flipping the backend then would hunt for a
+/// fallback item that was never written — a misleading reset wedge.
 fn acl_env_failure(status: OSStatus) -> bool {
-    status == ERR_SEC_MISSING_ENTITLEMENT
-        || status == ERR_SEC_INTERACTION_NOT_ALLOWED
-        || status == errSecAuthFailed
+    status == ERR_SEC_MISSING_ENTITLEMENT || status == ERR_SEC_INTERACTION_NOT_ALLOWED
 }
 
 /// Extract a 32-byte DEK from a `SecItemCopyMatching` result (a
@@ -503,14 +554,16 @@ mod tests {
         assert!(!format!("{p:?}").contains("171")); // 0xAB == 171
     }
 
-    /// The env-failure trigger list is exactly the three documented
-    /// unsigned-build codes — user cancel must never trigger a fallback
-    /// swap (it would silently weaken auth after a dismissed prompt).
+    /// The env-failure trigger list is exactly the two unambiguous
+    /// unsigned-build codes — user cancel and auth failure must never
+    /// trigger a fallback swap (the former is a user action; the latter
+    /// is ambiguous on signed builds and would wedge on a missing
+    /// fallback item).
     #[test]
     fn acl_env_failure_is_exact() {
         assert!(acl_env_failure(ERR_SEC_MISSING_ENTITLEMENT));
         assert!(acl_env_failure(ERR_SEC_INTERACTION_NOT_ALLOWED));
-        assert!(acl_env_failure(errSecAuthFailed));
+        assert!(!acl_env_failure(errSecAuthFailed));
         assert!(!acl_env_failure(ERR_SEC_USER_CANCELED));
         assert!(!acl_env_failure(errSecItemNotFound));
         assert!(!acl_env_failure(errSecDuplicateItem));

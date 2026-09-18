@@ -440,8 +440,8 @@ fn keystore_status(state: State<'_, AppState>) -> serde_json::Value {
 /// unlocked, then re-evaluate the gate. Returns the new status payload.
 /// Refuses to run once a keystore exists — `Keystore::init` overwrites
 /// `keys.enc`, so a stray invoke while Locked/Unlocked would destroy
-/// every stored key. `init` is silent — the DEK keychain item is created
-/// without an auth prompt (the next `keystore_unlock` prompts).
+/// every stored key. `init` only prompts when a DEK item already exists
+/// (`SecItemAdd` on first run never prompts; the read-back does).
 #[tauri::command]
 fn keystore_init(app: AppHandle) -> Result<serde_json::Value, String> {
     let state = app.state::<AppState>();
@@ -474,9 +474,10 @@ fn keystore_unlock(app: AppHandle) -> Result<serde_json::Value, String> {
     Ok(payload)
 }
 
-/// Delete `keys.enc` → `Unset` — the recovery path when the file is
-/// `Obsolete`/corrupt or the keychain DEK is lost. The keychain item is
-/// kept; the next `keystore_init` reuses it.
+/// Delete `keys.enc` + the keychain DEK item(s) → `Unset` — the recovery
+/// path when the file is `Obsolete`/corrupt or the DEK is lost. The next
+/// `keystore_init` mints a fresh DEK (deleting an ACL item may prompt —
+/// acceptable on an explicit reset).
 #[tauri::command]
 fn keystore_reset(app: AppHandle) -> Result<serde_json::Value, String> {
     let state = app.state::<AppState>();

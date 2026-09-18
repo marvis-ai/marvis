@@ -15,6 +15,7 @@ import { Button, Mic, Settings, ShieldAlert } from '@marvis/ui';
 import {
   askSend,
   keystoreInit,
+  keystoreReset,
   keystoreStatus,
   keystoreUnlock,
   permissionsOpenPrefs,
@@ -191,9 +192,26 @@ export default function Bar() {
           </Button>
         </div>
         {error && (
-          <p className='truncate text-center text-[10px] leading-3 text-destructive'>
-            {error}
-          </p>
+          <div className='flex items-center justify-center gap-1.5'>
+            <p className='truncate text-[10px] leading-3 text-destructive'>
+              {error}
+            </p>
+            {!error.includes('cancel') && (
+              <button
+                type='button'
+                className='shrink-0 text-[10px] leading-3 text-muted-foreground underline hover:text-foreground'
+                onClick={() => {
+                  // Obsolete/corrupt store or a lost DEK — the only way
+                  // forward. Deletes keys.enc + the keychain item(s).
+                  setError(null);
+                  void keystoreReset()
+                    .then(setKeystore)
+                    .catch(() => setError('Reset failed'));
+                }}>
+                Reset
+              </button>
+            )}
+          </div>
         )}
       </Shell>
     );

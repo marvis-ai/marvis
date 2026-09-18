@@ -1,5 +1,6 @@
 mod config;
 mod keystore;
+mod llm;
 mod paths;
 mod storage;
 

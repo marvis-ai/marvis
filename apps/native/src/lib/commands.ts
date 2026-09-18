@@ -99,13 +99,18 @@ export interface AiMessage {
 
 export const keystoreStatus = () => invoke<KeystoreStatus>('keystore_status');
 
-/** First-run only — creates `keys.enc`. Errors once a keystore exists. */
-export const keystoreInit = (pass: string) =>
-  invoke<KeystoreStatus>('keystore_init', { pass });
+/**
+ * First-run only — creates `keys.enc` and the Keychain DEK item. Silent
+ * (no auth prompt — the next `keystoreUnlock` prompts). Errors once a
+ * keystore exists.
+ */
+export const keystoreInit = () => invoke<KeystoreStatus>('keystore_init');
 
-/** `'wrong passphrase'` surfaces as the invoke error string. */
-export const keystoreUnlock = (pass: string) =>
-  invoke<KeystoreStatus>('keystore_unlock', { pass });
+/** Triggers the system-auth prompt (Touch ID / password). */
+export const keystoreUnlock = () => invoke<KeystoreStatus>('keystore_unlock');
+
+/** Deletes `keys.enc` → `Unset` (recovery for obsolete/corrupt stores). */
+export const keystoreReset = () => invoke<KeystoreStatus>('keystore_reset');
 
 export const keystoreLock = () => invoke<KeystoreStatus>('keystore_lock');
 

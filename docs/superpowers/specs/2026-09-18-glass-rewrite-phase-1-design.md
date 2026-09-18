@@ -18,10 +18,10 @@ flow end-to-end. Listen/STT/summary and advanced settings are Phase 2/3.
 | Overlay windows (header bar + ask/listen/settings/shortcut-settings panels) | **1** | `header` → `bar`. Shortcut-settings panel deferred to Phase 3 (keybind editor UI). |
 | Ask (screenshot → prompt → SSE stream → persist) | **1** | Uses ring-buffer frame instead of on-disk `screencapture` temp files. |
 | Screen capture | **1** | Continuous ScreenCaptureKit stream → in-memory ring buffer (arch rule 2). |
-| API-key management (AES-GCM, model selection, validation) | **1** | `keys.enc` + Argon2id passphrase instead of keychain (arch rule 1/4). |
+| API-key management (AES-GCM, model selection, validation) | **1** | `keys.enc` encrypted with a random DEK stored in the macOS Keychain behind a `userPresence` ACL — unlock = Touch ID / Face ID / system password (arch rule 1/4). |
 | LLM providers: OpenAI, Anthropic, Gemini, Ollama | **1** | Rust `Provider` trait + SSE adapters. `openai-glass`/Portkey **dropped** (hosted service). |
 | Global shortcuts | **1** | `tauri-plugin-global-shortcut`; keybinds in `config.toml`; editor UI in Phase 3. |
-| macOS permissions (screen recording, mic, keychain gate) | **1** | Screen-recording + mic checks; keychain gate not applicable (keys.enc instead). |
+| macOS permissions (screen recording, mic, keychain gate) | **1** | Screen-recording + mic checks; keychain gate = the DEK item's `SecAccessControl` ACL (user presence per read). |
 | Session/message persistence (SQLite) | **1** | rusqlite; `sessions`, `ai_messages`, `provider_keys` (encrypted blobs live in `keys.enc`, not DB). |
 | Deep links | **1** | `marvis://` scheme (replaces `pickleglass://`). Route: focus bar; `marvis://ask?text=` prefills Ask. No auth callbacks (no Firebase). |
 | Listen (mic + system audio STT, debounced turns, WS session renewal) | 2 | Mic via cpal; system audio via ScreenCaptureKit audio or `SystemAudioDump`-style helper — decided in Phase 2 spec. |
@@ -46,7 +46,8 @@ src-tauri/src/
 │   ├── layout.rs     # layout math: stack under bar, edge snap, clamp to display work area
 │   └── movement.rs   # animated position/bounds interpolation (tick-based)
 ├── keystore/
-│   └── mod.rs        # keys.enc load/save, Argon2id derive, AES-256-GCM, unlock state
+│   └── mod.rs        # keys.enc load/save, AES-256-GCM, unlock state
+├── system_auth.rs    # DekProvider: Keychain DEK behind userPresence ACL (+ LA-eval fallback for unsigned dev builds)
 ├── capture/
 │   ├── mod.rs        # FrameSource trait, RingBuffer (≤120 frames / 64 MB, changed frames)
 │   └── macos.rs      # ScreenCaptureKit impl (screencapturekit or cidre binding)
@@ -92,12 +93,17 @@ src/
 ### Unlock (keystore)
 
 1. App starts → `keystore_status` → `Locked | Unset | Unlocked`.
-2. `Unset` (no `keys.enc`): UI prompts new passphrase → `keystore_init(passphrase)`
-   → Argon2id(salt) → encrypt empty keyring → `keys.enc` (`salt|nonce|ct`, os
-   0600). `Locked`: `keystore_unlock(passphrase)` → derive → decrypt → keyring in
+2. `Unset` (no `keys.enc`): `keystore_init()` creates a random 32-byte DEK in
+   the macOS Keychain (`kSecClassGenericPassword`, `userPresence` ACL — silent
+   `SecItemAdd`, no prompt) → encrypt empty keyring → `keys.enc`
+   (`source|nonce|ct`, os 0600). `Locked`: `keystore_unlock()` → Keychain
+   `SecItemCopyMatching` on the ACL item — **this is the one system-auth
+   prompt** (Touch ID / Face ID / system password) → AES-GCM open → keyring in
    Rust memory (`Zeroizing`).
 3. React only ever sees masked status: `openai: set ••••1234 | unset`.
 4. `keystore_set_key(provider, key)` validates (test call) then re-encrypts file.
+5. `keystore_reset()` deletes `keys.enc` → `Unset` — the recovery path for
+   obsolete/corrupt files (the Keychain DEK item is kept and reused).
 
 ### Ask
 
@@ -175,8 +181,8 @@ src/
 ## Command/event surface (Tauri)
 
 Commands (webview → Rust):
-`keystore_status`, `keystore_init`, `keystore_unlock`, `keystore_lock`,
-`keystore_set_key`, `keystore_remove_key`, `model_validate_key`,
+`keystore_status`, `keystore_init`, `keystore_unlock`, `keystore_reset`,
+`keystore_lock`, `keystore_set_key`, `keystore_remove_key`, `model_validate_key`,
 `model_get_selected`, `model_set_selected`, `model_list_available`,
 `ask_send`, `ask_close`, `listen_stub` (Phase 2 placeholder),
 `window_toggle_all`, `window_show_settings`, `window_hide_settings`,
@@ -201,7 +207,7 @@ locations (`~/.pickleglass/config.json`, `~/.glass/whisper/*`, and
 
 ```text
 ~/.marvis/
-├── keys.enc        # 0600 — Argon2id + AES-256-GCM keyring (rule 1)
+├── keys.enc        # 0600 — Keychain-DEK + AES-256-GCM keyring (rule 1)
 ├── config.toml     # 0644 — non-secret prefs (rule 4)
 ├── marvis.db       # 0600 — SQLite sessions/messages/(Phase 2: transcripts, summaries)
 └── models/         # Phase 2/3 — whisper.cpp binary + model files, etc.
@@ -234,10 +240,20 @@ bar_y = 21
 ## `~/.marvis/keys.enc` format (per rule 1)
 
 ```text
-[16B salt][12B nonce][AES-256-GCM ciphertext || 16B GCM tag appended]
-key = Argon2id(passphrase, salt, t=3, m=64MB, p=4)
+[1B dek_source][12B nonce][AES-256-GCM ciphertext || 16B GCM tag appended]
+dek_source 0x01 = system-auth DEK; 0x02 reserved (future server-issued key)
+DEK = random 32 bytes in the macOS Keychain, gated by a userPresence ACL
 plaintext = JSON: { "openai": "sk-...", "anthropic": "...", "gemini": "...", "deepgram": "..." }
 ```
+
+The DEK source sits behind a `DekProvider` trait (`system_auth.rs`) so the
+keystore never knows how the key is obtained: `SystemAuthDekProvider`
+(Keychain + `kSecAccessControlUserPresence`, plus an `LAContext.evaluatePolicy`
+fallback for unsigned dev builds) is the production impl; source `0x02` is
+reserved for a server-issued key arriving with the future auth system.
+
+UX note: every `keystore_unlock` prompts once — the ACL makes macOS demand
+user presence per read; no session caching, and that is the point.
 
 Unlocked keyring lives in `Zeroizing<HashMap>` in app state; `keystore_lock`
 drops it. No key material in logs, events, or config.toml.
@@ -268,9 +284,10 @@ ai_messages(id INTEGER PK, session_id INT FK, role TEXT, content TEXT, ts INT)
 ## Testing
 
 - `cargo test`: ring buffer (caps, eviction, change-detection), keystore
-  round-trip + wrong-passphrase + tamper detection, config load/save,
-  prompt builder, per-provider SSE chunk parsing (recorded fixtures),
-  layout math (stack, snap, clamp).
+  round-trip + wrong-DEK + tamper detection + obsolete-format handling
+  (via `StaticDekProvider` — Keychain/LA paths are manual-verify only),
+  config load/save, prompt builder, per-provider SSE chunk parsing
+  (recorded fixtures), layout math (stack, snap, clamp).
 - Manual: `bun run build:dev` — unlock, set key, ask w/ frame, hotkeys,
   click-through, multi-window animation, `marvis://ask?text=hi`.
 - vitest for views in a later pass (harness not yet present).
@@ -283,9 +300,12 @@ ai_messages(id INTEGER PK, session_id INT FK, role TEXT, content TEXT, ts INT)
 2. **Animated window moves**: Tauri has no bounds animation; movement.rs
    interpolates `set_position`/`set_size` on a 60 Hz task — validate perf on
    Retina.
-3. **Passphrase UX**: required each launch (nothing in keychain — deliberate).
-   If that annoys, Phase 3 can add an optional keychain wrap of the passphrase
-   — flag for later, not Phase 1.
+3. **Unlock UX**: one system-auth prompt (Touch ID / Face ID / system
+   password) per `keystore_unlock` — the Keychain DEK's `userPresence` ACL
+   demands presence on every read, by design. Unsigned `tauri dev` binaries
+   can't enforce the ACL, so they fall back to an in-process
+   `LAContext.evaluatePolicy` gate over a plain keychain item (same UX,
+   weaker enforcement, dev only — logged once at detection).
 4. **Markdown rendering**: `react-markdown` + `remark-gfm` in `apps/native`
    (no markdown lib exists in the repo today); streamed chunks append to a
    single markdown document rendered incrementally.

@@ -36,6 +36,7 @@ mod paths;
 mod permissions;
 mod prompts;
 mod storage;
+mod system_auth;
 mod windows;
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -125,10 +126,14 @@ impl AppState {
     /// Headless constructor for tests: filesystem-bound fields bind under
     /// `root` so tests never touch `~/.marvis`; windows/capture/hotkeys
     /// need a runtime, so the pool is empty and those slots stay `None`.
+    /// The keystore gets a `StaticDekProvider` — no Keychain/LA in tests.
     #[cfg(test)]
     fn for_test(root: &std::path::Path) -> Self {
         Self {
-            keystore: Mutex::new(Keystore::at(root.join("keys.enc"))),
+            keystore: Mutex::new(Keystore::at(
+                root.join("keys.enc"),
+                Arc::new(system_auth::StaticDekProvider([7; 32])),
+            )),
             config: Mutex::new(Config::load_from(root.join("config.toml")).unwrap_or_default()),
             db: Arc::new(Db::at(root.join("marvis.db")).expect("test db")),
             ring: Arc::new(Mutex::new(RingBuffer::new(RING_MAX_FRAMES, RING_MAX_BYTES))),
@@ -435,16 +440,17 @@ fn keystore_status(state: State<'_, AppState>) -> serde_json::Value {
 /// unlocked, then re-evaluate the gate. Returns the new status payload.
 /// Refuses to run once a keystore exists — `Keystore::init` overwrites
 /// `keys.enc`, so a stray invoke while Locked/Unlocked would destroy
-/// every stored key.
+/// every stored key. `init` is silent — the DEK keychain item is created
+/// without an auth prompt (the next `keystore_unlock` prompts).
 #[tauri::command]
-fn keystore_init(app: AppHandle, pass: String) -> Result<serde_json::Value, String> {
+fn keystore_init(app: AppHandle) -> Result<serde_json::Value, String> {
     let state = app.state::<AppState>();
     {
         let mut ks = state.keystore.lock();
         if !matches!(ks.state(), KeystoreState::Unset) {
             return Err("keystore already initialized".to_string());
         }
-        ks.init(&pass).map_err(|e| e.to_string())?;
+        ks.init().map_err(|e| e.to_string())?;
         emit_keystore_changed(&app, &ks);
     }
     transition_gate(&app);
@@ -452,14 +458,31 @@ fn keystore_init(app: AppHandle, pass: String) -> Result<serde_json::Value, Stri
     Ok(payload)
 }
 
-/// Decrypt `keys.enc` into memory (`WrongPassphrase` surfaces as the
-/// command error), then re-evaluate the gate.
+/// Decrypt `keys.enc` into memory — fetching the DEK shows the
+/// system-auth prompt (Touch ID / password); cancels and keychain errors
+/// surface as the command error. Re-evaluates the gate on success.
 #[tauri::command]
-fn keystore_unlock(app: AppHandle, pass: String) -> Result<serde_json::Value, String> {
+fn keystore_unlock(app: AppHandle) -> Result<serde_json::Value, String> {
     let state = app.state::<AppState>();
     {
         let mut ks = state.keystore.lock();
-        ks.unlock(&pass).map_err(|e| e.to_string())?;
+        ks.unlock().map_err(|e| e.to_string())?;
+        emit_keystore_changed(&app, &ks);
+    }
+    transition_gate(&app);
+    let payload = keystore_status_payload(&state.keystore.lock());
+    Ok(payload)
+}
+
+/// Delete `keys.enc` → `Unset` — the recovery path when the file is
+/// `Obsolete`/corrupt or the keychain DEK is lost. The keychain item is
+/// kept; the next `keystore_init` reuses it.
+#[tauri::command]
+fn keystore_reset(app: AppHandle) -> Result<serde_json::Value, String> {
+    let state = app.state::<AppState>();
+    {
+        let mut ks = state.keystore.lock();
+        ks.reset().map_err(|e| e.to_string())?;
         emit_keystore_changed(&app, &ks);
     }
     transition_gate(&app);
@@ -838,6 +861,7 @@ pub fn run() {
             keystore_status,
             keystore_init,
             keystore_unlock,
+            keystore_reset,
             keystore_lock,
             keystore_set_key,
             keystore_remove_key,

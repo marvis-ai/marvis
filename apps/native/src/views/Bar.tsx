@@ -64,7 +64,6 @@ export default function Bar() {
   const [bootError, setBootError] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [pass, setPass] = useState('');
   const [text, setText] = useState('');
 
   const bootstrap = useCallback(async () => {
@@ -96,20 +95,20 @@ export default function Bar() {
     setGate('needs_permission'),
   );
 
-  const submitPassphrase = async (e: FormEvent) => {
-    e.preventDefault();
-    if (busy || !pass) {
+  const unlockKeystore = async () => {
+    if (busy) {
       return;
     }
     setBusy(true);
     setError(null);
     try {
+      // First run creates the Keychain DEK silently, then the uniform
+      // unlock path shows the one system-auth prompt.
       const ks =
         keystore?.state === 'Unset'
-          ? await keystoreInit(pass)
-          : await keystoreUnlock(pass);
+          ? await keystoreInit().then(() => keystoreUnlock())
+          : await keystoreUnlock();
       setKeystore(ks);
-      setPass('');
       // `transition_gate` emits `app:state`, but resync anyway in case
       // the emit raced us.
       await bootstrap();
@@ -172,30 +171,25 @@ export default function Bar() {
   }
 
   if (gate === 'needs_unlock') {
-    const unset = keystore?.state === 'Unset';
     return (
       <Shell>
-        <form
-          onSubmit={(e) => void submitPassphrase(e)}
+        <div
           className='flex items-center gap-2'
           data-tauri-drag-region>
           <LogoMark className='size-4 shrink-0 text-foreground' />
-          <input
-            type='password'
-            autoFocus
-            value={pass}
-            onChange={(e) => setPass(e.target.value)}
-            placeholder={unset ? 'Create a passphrase' : 'Passphrase'}
-            disabled={busy}
-            className='min-w-0 flex-1 select-text bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground'
-          />
+          <span
+            className='min-w-0 flex-1 truncate text-xs text-muted-foreground'
+            title='Marvis unlocks with Touch ID, Face ID, or your Mac password'
+            data-tauri-drag-region>
+            Unlock with Touch ID / password
+          </span>
           <Button
-            type='submit'
             size='xs'
-            disabled={busy || !pass}>
-            {unset ? 'Set passphrase' : 'Unlock'}
+            onClick={() => void unlockKeystore()}
+            disabled={busy}>
+            Unlock
           </Button>
-        </form>
+        </div>
         {error && (
           <p className='truncate text-center text-[10px] leading-3 text-destructive'>
             {error}

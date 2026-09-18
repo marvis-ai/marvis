@@ -13,7 +13,7 @@
  * key either).
  *
  * While the keystore isn't `Unlocked` the panel renders a compact
- * notice — the bar owns all passphrase UX. `keystore_lock` additionally
+ * notice — the bar owns all system-auth unlock UX. `keystore_lock` additionally
  * drops the app out of the `Main` gate, which hides every panel, so the
  * unlocked UI below only ever runs against an unlocked store.
  *
@@ -287,7 +287,7 @@ export default function SettingsPanel() {
         {status === null ? (
           <p className='px-3 py-3 text-xs text-muted-foreground'>Loading…</p>
         ) : status.state !== 'Unlocked' ? (
-          // Passphrase UX belongs to the bar — this is only a pointer.
+          // Unlock UX belongs to the bar — this is only a pointer.
           <div className='flex items-center gap-2 px-3 py-3'>
             <ShieldAlert className='size-4 shrink-0 text-muted-foreground' />
             <p className='min-w-0 flex-1 text-xs text-muted-foreground'>

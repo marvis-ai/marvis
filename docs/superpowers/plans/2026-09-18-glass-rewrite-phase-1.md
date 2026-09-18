@@ -130,7 +130,7 @@ env_logger = "0.11"
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Marvis",
   "version": "0.1.0",
-  "identifier": "com.marvis.app",
+  "identifier": "com.getmarvis.marvis",
   "build": {
     "beforeDevCommand": "bun run dev",
     "devUrl": "http://localhost:1420",

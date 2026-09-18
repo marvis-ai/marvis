@@ -7,8 +7,8 @@ use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 use serde_json::{json, Value};
 
 use super::{
-    check_status, stream_sse, ChatMessage, ContentPart, LlmError, Provider, Role,
-    REQUEST_TIMEOUT,
+    check_status, stream_sse, ChatMessage, CONNECT_TIMEOUT, ContentPart, LlmError, Provider,
+    Role, VALIDATE_TIMEOUT,
 };
 
 const MESSAGES_URL: &str = "https://api.anthropic.com/v1/messages";
@@ -16,7 +16,7 @@ const MODELS_URL: &str = "https://api.anthropic.com/v1/models";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 
 /// `api_key` is `None` when the keystore has no entry for this provider;
-/// `client` carries the shared 120s request timeout.
+/// `client` carries only a connect timeout — streamed bodies run unbounded.
 pub struct AnthropicProvider {
     api_key: Option<String>,
     model: String,
@@ -29,7 +29,7 @@ impl AnthropicProvider {
             api_key,
             model,
             client: reqwest::Client::builder()
-                .timeout(REQUEST_TIMEOUT)
+                .connect_timeout(CONNECT_TIMEOUT)
                 .build()
                 .expect("reqwest client builder failed"),
         }
@@ -133,7 +133,8 @@ impl AnthropicProvider {
             .client
             .get(MODELS_URL)
             .header("x-api-key", key)
-            .header("anthropic-version", ANTHROPIC_VERSION);
+            .header("anthropic-version", ANTHROPIC_VERSION)
+            .timeout(VALIDATE_TIMEOUT);
         check_status(req.send().await?).await?;
         Ok(())
     }

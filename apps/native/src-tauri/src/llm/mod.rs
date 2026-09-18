@@ -33,9 +33,14 @@ use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-/// Request timeout shared by every adapter's client — generous because a
-/// slow local Ollama model may take a while to produce its first token.
-pub(crate) const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
+/// Connect timeout shared by every adapter's client. No total-request
+/// timeout is set: a streamed generation may legitimately run long (slow
+/// local Ollama inference), so stream lifetime is governed by caller abort.
+pub(crate) const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Per-request timeout applied only to `validate()` calls, which must
+/// return promptly for UI key-checks.
+pub(crate) const VALIDATE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// The four supported LLM backends; string form matches `config.toml`'s
 /// `models.llm_provider`.

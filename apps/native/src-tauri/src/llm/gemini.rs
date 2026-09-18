@@ -11,14 +11,14 @@ use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 use serde_json::{json, Value};
 
 use super::{
-    check_status, stream_sse, ChatMessage, ContentPart, LlmError, Provider, Role,
-    REQUEST_TIMEOUT,
+    check_status, stream_sse, ChatMessage, CONNECT_TIMEOUT, ContentPart, LlmError, Provider,
+    Role, VALIDATE_TIMEOUT,
 };
 
 const MODELS_URL: &str = "https://generativelanguage.googleapis.com/v1beta/models";
 
 /// `api_key` is `None` when the keystore has no entry for this provider;
-/// `client` carries the shared 120s request timeout.
+/// `client` carries only a connect timeout — streamed bodies run unbounded.
 pub struct GeminiProvider {
     api_key: Option<String>,
     model: String,
@@ -31,7 +31,7 @@ impl GeminiProvider {
             api_key,
             model,
             client: reqwest::Client::builder()
-                .timeout(REQUEST_TIMEOUT)
+                .connect_timeout(CONNECT_TIMEOUT)
                 .build()
                 .expect("reqwest client builder failed"),
         }
@@ -140,7 +140,11 @@ impl GeminiProvider {
 
     async fn validate_inner(&self) -> Result<(), LlmError> {
         let key = self.api_key.as_deref().ok_or(LlmError::Auth)?;
-        let req = self.client.get(MODELS_URL).header("x-goog-api-key", key);
+        let req = self
+            .client
+            .get(MODELS_URL)
+            .header("x-goog-api-key", key)
+            .timeout(VALIDATE_TIMEOUT);
         check_status(req.send().await?).await?;
         Ok(())
     }

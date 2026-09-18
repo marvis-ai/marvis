@@ -7,14 +7,15 @@ use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 use serde_json::{json, Value};
 
 use super::{
-    check_status, stream_sse, ChatMessage, ContentPart, LlmError, Provider, REQUEST_TIMEOUT,
+    check_status, stream_sse, ChatMessage, CONNECT_TIMEOUT, ContentPart, LlmError, Provider,
+    VALIDATE_TIMEOUT,
 };
 
 const CHAT_URL: &str = "https://api.openai.com/v1/chat/completions";
 const MODELS_URL: &str = "https://api.openai.com/v1/models";
 
 /// `api_key` is `None` when the keystore has no entry for this provider;
-/// `client` carries the shared 120s request timeout.
+/// `client` carries only a connect timeout — streamed bodies run unbounded.
 pub struct OpenAiProvider {
     api_key: Option<String>,
     model: String,
@@ -27,7 +28,7 @@ impl OpenAiProvider {
             api_key,
             model,
             client: reqwest::Client::builder()
-                .timeout(REQUEST_TIMEOUT)
+                .connect_timeout(CONNECT_TIMEOUT)
                 .build()
                 .expect("reqwest client builder failed"),
         }
@@ -109,7 +110,11 @@ impl OpenAiProvider {
 
     async fn validate_inner(&self) -> Result<(), LlmError> {
         let key = self.api_key.as_deref().ok_or(LlmError::Auth)?;
-        let req = self.client.get(MODELS_URL).bearer_auth(key);
+        let req = self
+            .client
+            .get(MODELS_URL)
+            .bearer_auth(key)
+            .timeout(VALIDATE_TIMEOUT);
         check_status(req.send().await?).await?;
         Ok(())
     }

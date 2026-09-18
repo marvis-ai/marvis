@@ -8,14 +8,16 @@ use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 use serde_json::{json, Value};
 
 use super::{
-    check_status, stream_ndjson, ChatMessage, ContentPart, LlmError, Provider, REQUEST_TIMEOUT,
+    check_status, stream_ndjson, ChatMessage, CONNECT_TIMEOUT, ContentPart, LlmError, Provider,
+    VALIDATE_TIMEOUT,
 };
 
 const CHAT_URL: &str = "http://localhost:11434/api/chat";
 const TAGS_URL: &str = "http://localhost:11434/api/tags";
 
 /// Local Ollama needs no key, but the field stays for a uniform
-/// `make_provider` signature; `client` carries the shared 120s timeout.
+/// `make_provider` signature; `client` carries only a connect timeout —
+/// streamed bodies run unbounded.
 pub struct OllamaProvider {
     api_key: Option<String>,
     model: String,
@@ -28,7 +30,7 @@ impl OllamaProvider {
             api_key,
             model,
             client: reqwest::Client::builder()
-                .timeout(REQUEST_TIMEOUT)
+                .connect_timeout(CONNECT_TIMEOUT)
                 .build()
                 .expect("reqwest client builder failed"),
         }
@@ -103,7 +105,7 @@ impl OllamaProvider {
     }
 
     async fn validate_inner(&self) -> Result<(), LlmError> {
-        let req = self.client.get(TAGS_URL);
+        let req = self.client.get(TAGS_URL).timeout(VALIDATE_TIMEOUT);
         check_status(req.send().await?).await?;
         Ok(())
     }

@@ -134,7 +134,17 @@ impl Keystore {
         self.salt = Some(salt);
         self.dek = Some(dek);
         self.state = KeystoreState::Unlocked(Keyring::default());
-        self.persist()
+        if let Err(e) = self.persist() {
+            self.dek = None;
+            self.salt = None;
+            self.state = if self.path.exists() {
+                KeystoreState::Locked
+            } else {
+                KeystoreState::Unset
+            };
+            return Err(e);
+        }
+        Ok(())
     }
 
     /// Decrypt `keys.enc` into memory. `WrongPassphrase` on passphrase or
@@ -143,6 +153,8 @@ impl Keystore {
         let raw = match std::fs::read(&self.path) {
             Ok(raw) => raw,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                self.dek = None;
+                self.salt = None;
                 self.state = KeystoreState::Unset;
                 return Err(KeystoreError::Unset);
             }

@@ -226,14 +226,19 @@ fn swap_hotkeys(app: &AppHandle, all: bool) {
     let state = app.state::<AppState>();
     let binds = state.config.lock().hotkeys.clone();
     let dispatch = hotkey_dispatch(app);
-    let prev = state.hotkeys.lock().take().unwrap_or_default();
+    // Hold the guard across the swap: a concurrent swap seeing `None`
+    // would compute a full `add` set against still-live OS bindings and
+    // wedge every future swap. `state.hotkeys` is locked nowhere else,
+    // so holding it here cannot deadlock.
+    let mut slot = state.hotkeys.lock();
+    let prev = slot.take().unwrap_or_default();
     match hotkey::swap_hotkey_set(app, &binds, !all, dispatch, prev) {
         Ok(set) => {
-            state.hotkeys.lock().replace(set);
+            *slot = Some(set);
         }
         Err(e) => {
             log::warn!("hotkey swap failed (all={all}): {e}");
-            state.hotkeys.lock().replace(e.restored);
+            *slot = Some(e.restored);
         }
     }
 }

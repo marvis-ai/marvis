@@ -1,6 +1,7 @@
 mod ask;
 mod capture;
 mod config;
+mod deeplink;
 mod hotkey;
 mod keystore;
 mod llm;

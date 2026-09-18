@@ -19,11 +19,17 @@ use std::collections::VecDeque;
 pub struct Frame {
     /// JPEG bytes (quality 80), `width`×`height` after downscale.
     pub jpeg: Vec<u8>,
+    /// Frame metadata below is produced for later consumers (status/debug
+    /// UIs); only `jpeg` feeds the ask pipeline today.
+    #[allow(dead_code)]
     pub width: u32,
+    #[allow(dead_code)]
     pub height: u32,
     /// Unix epoch seconds when the frame was encoded.
+    #[allow(dead_code)]
     pub ts: i64,
     /// [`frame_hash`] of the pre-resize BGRA buffer.
+    #[allow(dead_code)]
     pub hash: u64,
 }
 
@@ -71,6 +77,7 @@ impl RingBuffer {
     }
 
     /// Sum of `jpeg.len()` over all held frames.
+    #[allow(dead_code)] // diagnostic accessor; status consumers land later
     pub fn total_bytes(&self) -> usize {
         self.bytes
     }

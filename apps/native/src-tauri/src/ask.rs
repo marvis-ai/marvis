@@ -98,14 +98,17 @@ impl AskService {
         }
     }
 
+    #[allow(dead_code)] // status consumers land with the webview tasks
     pub fn state(&self) -> AskState {
         *self.state.lock()
     }
 
+    #[allow(dead_code)] // status consumers land with the webview tasks
     pub fn current_response(&self) -> String {
         self.current_response.lock().clone()
     }
 
+    #[allow(dead_code)] // status consumers land with the webview tasks
     pub fn current_question(&self) -> String {
         self.current_question.lock().clone()
     }

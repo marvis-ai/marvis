@@ -143,6 +143,7 @@ pub enum LlmError {
     Auth,
     /// No model selected/configured.
     #[error("no model configured")]
+    #[allow(dead_code)] // reserved variant — no adapter produces this yet
     NoModel,
     /// The provider explicitly refused image input.
     #[error("model does not support image input")]
@@ -182,6 +183,7 @@ impl LlmError {
 
     /// True for the `Auth` variant — 401/403s are mapped to it, so `Http`
     /// never needs checking here.
+    #[allow(dead_code)] // auth-flow consumers (re-unlock UX) land later
     pub fn is_auth(&self) -> bool {
         matches!(self, Self::Auth)
     }

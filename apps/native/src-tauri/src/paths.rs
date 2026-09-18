@@ -27,6 +27,7 @@ pub fn db_file() -> PathBuf {
 }
 
 /// Path only — callers create the directory when they need it.
+#[allow(dead_code)] // Phase 2 models/ directory
 pub fn models_dir() -> PathBuf {
     root().join("models")
 }

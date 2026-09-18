@@ -68,6 +68,7 @@ impl GeminiProvider {
 
     /// Test seam per the task brief — same decode as [`Self::parse_event`]
     /// but errors collapse to `None`.
+    #[allow(dead_code)] // test-only seam
     pub fn parse_stream_line(line: &str) -> Option<String> {
         Self::parse_event(line).ok().flatten()
     }

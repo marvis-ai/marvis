@@ -48,8 +48,9 @@ const SCHEMA: &str = "
 ";
 
 /// A row of `sessions`. `kind` maps to the `type` column (`type` is a Rust
-/// keyword); `title`/`ended_at` are `NULL` until set.
-#[derive(Debug, Clone, PartialEq)]
+/// keyword); `title`/`ended_at` are `NULL` until set. `Serialize` so the
+/// `session_list` command can return rows to the webview.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct Session {
     pub id: i64,
     pub kind: String,
@@ -59,8 +60,8 @@ pub struct Session {
     pub last_active_at: i64,
 }
 
-/// A row of `ai_messages`.
-#[derive(Debug, Clone, PartialEq)]
+/// A row of `ai_messages`. `Serialize` for the `session_get` command.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct AiMessage {
     pub id: i64,
     pub session_id: i64,
@@ -126,6 +127,7 @@ impl Db {
     }
 
     /// Bump `last_active_at` to now — keeps the session on top of the list.
+    #[allow(dead_code)] // Phase 2 session lifecycle
     pub fn session_touch(&self, id: i64) -> anyhow::Result<()> {
         self.conn.lock().execute(
             "UPDATE sessions SET last_active_at = ?1 WHERE id = ?2",
@@ -136,6 +138,7 @@ impl Db {
 
     /// Mark the session ended (`ended_at = now`); a later
     /// `session_get_or_create_active` for the same kind starts a new one.
+    #[allow(dead_code)] // Phase 2 session lifecycle
     pub fn session_end(&self, id: i64) -> anyhow::Result<()> {
         self.conn.lock().execute(
             "UPDATE sessions SET ended_at = ?1 WHERE id = ?2",

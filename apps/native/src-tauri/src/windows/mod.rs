@@ -42,6 +42,7 @@ impl Rect {
     pub fn contains_point(&self, px: f64, py: f64) -> bool {
         px >= self.x && px <= self.right() && py >= self.y && py <= self.bottom()
     }
+    #[allow(dead_code)] // reserved geometry helper (overlap checks)
     pub fn intersects(&self, other: &Rect) -> bool {
         self.x < other.right()
             && other.x < self.right()
@@ -180,6 +181,21 @@ impl WindowPool {
         Ok(pool)
     }
 
+    /// Windowless pool — the `AppState::for_test` seam: state needs a pool
+    /// value even when no runtime (and thus no windows) exists.
+    #[cfg(test)]
+    pub fn new_empty() -> Self {
+        Self {
+            bar: None,
+            panels: BTreeMap::new(),
+            visible: BTreeSet::new(),
+            remembered: BTreeSet::new(),
+            bar_rect: DEFAULT_WORK,
+            heights: BTreeMap::new(),
+            click_through: false,
+        }
+    }
+
     /// Build the three feature panels HIDDEN. Must not be called before the
     /// Task-14 gate opens; panels must not exist earlier.
     pub fn create_feature_windows(&mut self, app: &AppHandle) -> anyhow::Result<()> {
@@ -200,10 +216,12 @@ impl WindowPool {
         self.bar.as_ref()
     }
 
+    #[allow(dead_code)] // panel accessors for later status/debug consumers
     pub fn panel_window(&self, panel: Panel) -> Option<&WebviewWindow> {
         self.panels.get(&panel)
     }
 
+    #[allow(dead_code)] // panel accessors for later status/debug consumers
     pub fn is_visible(&self, panel: Panel) -> bool {
         self.visible.contains(&panel)
     }
@@ -302,6 +320,35 @@ impl WindowPool {
         if let Some(bar) = &self.bar {
             set_rect(bar, b);
         }
+        self.restack();
+    }
+
+    /// `Cmd+Shift+<n>`: move the bar to the `n`th monitor (1-indexed,
+    /// `available_monitors` order) — centered horizontally, `BAR_TOP_OFFSET`
+    /// px below the work-area top; panels follow. `n` out of range is a
+    /// warn + no-op; nothing is persisted (session-only placement).
+    pub fn move_bar_to_display(&mut self, n: usize) {
+        let Some(bar) = self.bar.clone() else {
+            return;
+        };
+        let Ok(monitors) = bar.available_monitors() else {
+            return;
+        };
+        if n == 0 || n > monitors.len() {
+            log::warn!(
+                "windows::move_bar_to_display({n}): only {} monitor(s)",
+                monitors.len()
+            );
+            return;
+        }
+        self.refresh_bar_rect();
+        let work = logical_work_area(&monitors[n - 1]);
+        self.bar_rect = Rect {
+            x: work.center_x() - self.bar_rect.w / 2.0,
+            y: work.y + BAR_TOP_OFFSET,
+            ..self.bar_rect
+        };
+        set_rect(&bar, self.bar_rect);
         self.restack();
     }
 

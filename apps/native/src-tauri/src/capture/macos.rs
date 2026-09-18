@@ -157,6 +157,12 @@ impl MacosCapture {
             }),
         })
     }
+
+    /// Whether the stream + worker are live — false after a failed `start`
+    /// (the error path never fills `running`) or after `stop`.
+    pub fn is_running(&self) -> bool {
+        self.state.lock().running.is_some()
+    }
 }
 
 impl FrameSource for MacosCapture {

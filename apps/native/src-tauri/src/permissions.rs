@@ -67,6 +67,9 @@ pub fn mic_status() -> PermissionState {
 /// Ask for microphone permission, blocking until the user answers. When the
 /// status was already determined the completion handler fires right away,
 /// so this only actually waits on a live prompt.
+///
+/// MUST NOT be called on the main/UI thread — AVFoundation can dispatch the
+/// completion to the main queue, which would deadlock the blocked caller.
 pub fn mic_request() -> bool {
     let Some(media_type) = audio_media_type() else {
         return false;

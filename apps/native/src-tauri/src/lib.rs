@@ -1,5 +1,6 @@
 mod capture;
 mod config;
+mod hotkey;
 mod keystore;
 mod llm;
 mod paths;

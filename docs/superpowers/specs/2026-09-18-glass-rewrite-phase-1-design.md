@@ -29,7 +29,9 @@ flow end-to-end. Listen/STT/summary and advanced settings are Phase 2/3.
 | Presets/prompt templates UI | 3 | Templates ship built-in from Phase 1 (Ask prompt); editor in Phase 3. |
 | Local AI (Ollama service mgmt, whisper.cpp download) | 3 | Ollama *provider* works in Phase 1 (HTTP API); install/model-pull UX in Phase 3. |
 | Settings panel UI (model select, key mgmt, shortcuts editor) | 1 minimal / 3 full | Phase 1: provider keys + model select + unlock. |
-| Firebase auth + sync, embedded `pickleglass_web`, auto-updater, Windows/Linux | **dropped** | Conflicts with privacy-first local-only architecture. |
+| Session history UI (sessions list/detail) | 3 | Glass renders it in dropped `pickleglass_web`; Phase 3 adds a Marvis surface. Commands persist from Phase 1. |
+| Gemini Google-search grounding toggle | 3 | Provider-level option; off by default (privacy). |
+| Firebase auth + sync, embedded `pickleglass_web`, auto-updater, Windows/Linux, content-protection toggle | **dropped** | Conflicts with privacy-first local-only architecture; protection is always-on per arch rule 5. |
 
 ## Architecture
 
@@ -128,23 +130,33 @@ src/
 - `ask` (600 w), `listen` (400 w), `settings` (240 w): child panel windows,
   same flags; shown/hidden with fade+slide animation stacked under `bar`
   (layout.rs computes non-overlapping rects; movement.rs interpolates ~200 ms).
+- Content-driven resize (Glass `adjustWindowHeight` parity): panels report
+  desired content height via `window_adjust_height(name, px)` (throttled in
+  the webview); Rust clamps to `maxHeight` (ask/listen ≤900 px, settings
+  ≤400 px) and animates the bounds, keeping the stack under `bar`.
 - Click-through toggle (`Cmd+M`): `set_ignore_cursor_events` on all windows.
 - `Cmd+Arrow` step-move bar (children follow); `Cmd+Shift+Arrow` snap to
-  display edge; display-remove → re-clamp to primary.
+  display edge; `Cmd+Shift+<n>` move bar to display n (hardcoded, Glass
+  parity); display-remove → re-clamp to primary.
+- Vibrancy: macOS window effects (NSVisualEffectView via Tauri `effects`)
+  for the Glass-like translucent material — visual parity, no
+  electron-liquid-glass equivalent needed.
 - Header-state gate (Glass parity): panels only exist once keystore is
   unlocked AND screen permission granted; otherwise bar renders the
-  unlock/permission card and only `Cmd+\` stays registered.
+  unlock/permission card and only `Cmd+/` stays registered.
 
 ### Hotkeys (defaults, configurable in config.toml)
 
 | Action | macOS |
 | --- | --- |
-| toggleVisibility | `Cmd+\` |
+| toggleVisibility | `Cmd+/` |
 | nextStep (Ask toggle/send screen-only) | `Cmd+Enter` |
 | moveUp/Down/Left/Right | `Cmd+Arrows` |
 | toggleClickThrough | `Cmd+M` |
 | scrollUp/Down (ask panel) | `Cmd+Shift+Up/Down` |
 | snap to edge L/R | `Cmd+Shift+Left/Right` (hardcoded, like Glass) |
+| move to display n | `Cmd+Shift+<n>` (hardcoded, like Glass) |
+| manualScreenshot | `Cmd+Shift+S` → screen-only ask (same as `nextStep` w/ empty input) |
 | previous/next response | `Cmd+[` / `Cmd+]` (Phase 3 response history) |
 
 ### Deep links
@@ -162,6 +174,7 @@ Commands (webview → Rust):
 `model_get_selected`, `model_set_selected`, `model_list_available`,
 `ask_send`, `ask_close`, `listen_stub` (Phase 2 placeholder),
 `window_toggle_all`, `window_show_settings`, `window_hide_settings`,
+`window_adjust_height`,
 `permissions_status`, `permissions_request_screen`, `permissions_open_prefs`,
 `capture_status`, `session_list`, `session_get`, `session_delete`,
 `config_get`, `config_set`.

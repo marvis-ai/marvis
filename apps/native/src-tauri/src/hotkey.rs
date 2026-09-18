@@ -166,6 +166,18 @@ fn bindings(binds: &BTreeMap<String, String>, scope: Scope) -> Vec<(Shortcut, Ac
             Action::ScreenOnly,
         ));
     }
+    // Dedup by shortcut id — the plugin keys handlers by id, so a config
+    // collision (e.g. `scroll_up = "Cmd+Shift+S"`) would silently overwrite
+    // the first action's handler or fail OS registration. First wins.
+    let mut seen = std::collections::HashSet::new();
+    out.retain(|(s, action)| {
+        if seen.insert(s.id()) {
+            true
+        } else {
+            log::warn!("hotkey: dropping duplicate binding {s:?} for {action:?}");
+            false
+        }
+    });
     out
 }
 

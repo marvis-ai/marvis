@@ -90,6 +90,33 @@ pub fn frame_hash(bgra: &[u8], stride: usize) -> u64 {
     hash
 }
 
+/// Strided FNV-1a over each row's *pixel* bytes only, folded into one
+/// hash. `bytes_per_row` padding is skipped: pool-rotated capture buffers
+/// carry different garbage there, so hashing it would make identical
+/// screens hash differently and silently defeat changed-frames-only
+/// dedupe. `stride` matches `frame_hash`'s semantics (samples per row).
+pub fn frame_hash_rows(
+    data: &[u8],
+    width: u32,
+    height: u32,
+    bytes_per_row: usize,
+    stride: usize,
+) -> u64 {
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+    let row_len = width as usize * 4;
+    let mut acc = 0xcbf2_9ce4_8422_2325u64;
+    for y in 0..height as usize {
+        let start = y * bytes_per_row;
+        if start >= data.len() {
+            break;
+        }
+        let end = (start + row_len).min(data.len());
+        acc ^= frame_hash(&data[start..end], stride);
+        acc = acc.wrapping_mul(PRIME);
+    }
+    acc
+}
+
 /// A frame producer with a lifecycle. `Send + Sync` so the app layer can
 /// share one source across threads.
 pub trait FrameSource: Send + Sync {
@@ -141,5 +168,38 @@ mod tests {
         let mut b = a.clone();
         b[500_000] = 0xcd;
         assert_ne!(frame_hash(&a, 4), frame_hash(&b, 4));
+    }
+
+    #[test]
+    fn row_hash_ignores_row_padding() {
+        // Two buffers with identical pixels but different `bytes_per_row`
+        // padding garbage (pool-rotated capture buffers) must hash equal —
+        // otherwise changed-frames-only dedupe silently never fires.
+        let (w, h, bpr) = (4u32, 4u32, 20usize); // 16 px bytes + 4 pad/row
+        let mut a = vec![0u8; bpr * h as usize];
+        for y in 0..h as usize {
+            for x in 0..16 {
+                a[y * bpr + x] = 0x5a;
+            }
+            for x in 16..bpr {
+                a[y * bpr + x] = 0xde; // padding garbage A
+            }
+        }
+        let mut b = a.clone();
+        for y in 0..h as usize {
+            for x in 16..bpr {
+                b[y * bpr + x] = 0x77; // padding garbage B
+            }
+        }
+        assert_eq!(
+            frame_hash_rows(&a, w, h, bpr, 4),
+            frame_hash_rows(&b, w, h, bpr, 4)
+        );
+        // ...while a real pixel change still flips it.
+        b[2 * bpr] ^= 0xff;
+        assert_ne!(
+            frame_hash_rows(&a, w, h, bpr, 4),
+            frame_hash_rows(&b, w, h, bpr, 4)
+        );
     }
 }

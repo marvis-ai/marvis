@@ -29,7 +29,7 @@ use screencapturekit::stream::content_filter::SCContentFilter;
 use screencapturekit::stream::output_type::SCStreamOutputType;
 use screencapturekit::stream::sc_stream::SCStream;
 
-use super::{frame_hash, Frame, FrameSource};
+use super::{frame_hash_rows, Frame, FrameSource};
 
 /// Longest edge of the encoded frame: height is capped at 384 px, width
 /// follows aspect.
@@ -169,15 +169,17 @@ impl FrameSource for MacosCapture {
             return;
         }
 
-        let (tx, rx) = mpsc::channel::<RawFrame>();
+        // Bounded queue: a slow worker drops fresh frames instead of
+        // accumulating multi-MB raw buffers in memory.
+        let (tx, rx) = mpsc::sync_channel::<RawFrame>(2);
         let mut stream = SCStream::new(&state.filter, &state.config);
         if stream
             .add_output_handler(
                 move |sample: CMSampleBuffer, _of_type| {
                     if let Some(raw) = extract_raw(&sample) {
-                        // A dead worker closes rx; drop the frame rather
+                        // Full queue or dead worker: drop the frame rather
                         // than blocking the dispatch queue.
-                        let _ = tx.send(raw);
+                        let _ = tx.try_send(raw);
                     }
                 },
                 SCStreamOutputType::Screen,
@@ -270,7 +272,15 @@ fn run_worker(
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         };
 
-        let hash = frame_hash(&raw.data, HASH_STRIDE);
+        // Hash pixel bytes only — `bytes_per_row` padding is pool garbage
+        // that would defeat dedupe (identical screens → different hashes).
+        let hash = frame_hash_rows(
+            &raw.data,
+            raw.width,
+            raw.height,
+            raw.bytes_per_row,
+            HASH_STRIDE,
+        );
         if Some(hash) == last_hash {
             continue; // changed-frames-only: identical screen, drop entirely
         }
@@ -284,8 +294,9 @@ fn run_worker(
         let mut jpeg = Vec::new();
         let mut encoder = JpegEncoder::new_with_quality(&mut jpeg, JPEG_QUALITY);
         let (out_w, out_h, encoded) = if raw.height > TARGET_HEIGHT {
-            let out_w = (u64::from(raw.width) * u64::from(TARGET_HEIGHT)
-                / u64::from(raw.height)) as u32;
+            let out_w = ((u64::from(raw.width) * u64::from(TARGET_HEIGHT) / u64::from(raw.height))
+                as u32)
+                .max(1);
             let resized = imageops::resize(&view, out_w, TARGET_HEIGHT, FilterType::Triangle);
             (out_w, TARGET_HEIGHT, encoder.encode_image(&resized))
         } else {
@@ -337,7 +348,10 @@ mod tests {
             let n = reporter.fetch_add(1, Ordering::SeqCst) + 1;
             eprintln!(
                 "frame {n}: {}x{} jpeg={}B hash={:#x}",
-                frame.width, frame.height, frame.jpeg.len(), frame.hash
+                frame.width,
+                frame.height,
+                frame.jpeg.len(),
+                frame.hash
             );
         }));
         std::thread::sleep(Duration::from_secs(3));

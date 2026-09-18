@@ -10,7 +10,8 @@ export const EV_APP_STATE = 'app:state';
 /** Broadcast after every keystore mutation; payload = `KeystoreStatus`. */
 export const EV_KEYSTORE_CHANGED = 'keystore:changed';
 /** Ask-window stream protocol (ask.rs), emitted to the `ask` window only. */
-export const EV_ASK_STATE = 'ask:state'; // { state: 'loading'|'streaming'|'idle' }
+// `loading` also carries `question` — the run's submitted text.
+export const EV_ASK_STATE = 'ask:state'; // { state: 'loading'|'streaming'|'idle', question?: string }
 export const EV_ASK_CHUNK = 'ask:chunk'; // { text: string }
 export const EV_ASK_DONE = 'ask:done'; // { full: string }
 export const EV_ASK_ERROR = 'ask:error'; // { message: string, needs_unlock?: bool }

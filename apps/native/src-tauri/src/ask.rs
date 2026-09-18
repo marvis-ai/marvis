@@ -11,7 +11,9 @@
 //!
 //! Event protocol (emitted to the `ask` window via `app.emit_to`):
 //! - `ask:state` `{"state": "loading"|"streaming"|"idle"}` — `streaming`
-//!   fires on the FIRST token only.
+//!   fires on the FIRST token only; every `loading` also carries
+//!   `"question"` so the panel can reset its buffer + header per run
+//!   (pre-flight errors emit `loading` → `error` → `idle` too).
 //! - `ask:chunk` `{"text": token}` per token.
 //! - `ask:done` `{"full": full_reply}` on success.
 //! - `ask:error` `{"message": ..., "needs_unlock": bool?}` on failure.
@@ -171,6 +173,7 @@ impl AskService {
         let Some(kind) = ProviderKind::from_str(&provider_name) else {
             return self.pre_spawn_error(
                 app,
+                text,
                 json!({"message": format!("unknown llm provider {provider_name:?}")}),
             );
         };
@@ -178,6 +181,7 @@ impl AskService {
         if api_key.is_none() && kind != ProviderKind::Ollama {
             return self.pre_spawn_error(
                 app,
+                text,
                 json!({
                     "message": format!("no {} key — unlock the keystore", kind.as_str()),
                     "needs_unlock": true,
@@ -188,6 +192,7 @@ impl AskService {
         if frame_required && frame.is_none() {
             return self.pre_spawn_error(
                 app,
+                text,
                 json!({"message": "No frame captured — check screen permission"}),
             );
         }
@@ -239,9 +244,16 @@ impl AskService {
 
     /// Early-exit error (bad provider config, locked keystore, no frame):
     /// the busy check already flipped state to Loading — emit the same
-    /// `ask:error` → `ask:state{idle}` sequence `send_with` uses and
+    /// `ask:state{loading}` → `ask:error` → `ask:state{idle}` sequence
+    /// `send_with`'s failure path uses (the `loading` carries the
+    /// question so the panel's run-reset/header work here too), then
     /// reset Rust-side state to match.
-    fn pre_spawn_error(&self, app: &AppHandle, payload: serde_json::Value) {
+    fn pre_spawn_error(&self, app: &AppHandle, text: &str, payload: serde_json::Value) {
+        let _ = app.emit_to(
+            "ask",
+            EV_STATE,
+            json!({"state": "loading", "question": text}),
+        );
         let _ = app.emit_to("ask", EV_ERROR, payload);
         *self.state.lock() = AskState::Idle;
         let _ = app.emit_to("ask", EV_STATE, json!({"state": "idle"}));
@@ -297,7 +309,7 @@ pub(crate) async fn send_with(
     cancel: &CancellationToken,
 ) -> Result<String, LlmError> {
     let session_id = persist_user_message(db, text);
-    emit(EV_STATE, json!({"state": "loading"}));
+    emit(EV_STATE, json!({"state": "loading", "question": text}));
 
     let mut streaming = false;
     let mut msgs = build_messages(text, frame);
@@ -564,7 +576,10 @@ mod tests {
         assert_eq!(
             got,
             vec![
-                ev(EV_STATE, json!({"state": "loading"})),
+                ev(
+                    EV_STATE,
+                    json!({"state": "loading", "question": "what is this?"})
+                ),
                 ev(EV_STATE, json!({"state": "streaming"})),
                 ev(EV_CHUNK, json!({"text": "Hello"})),
                 ev(EV_CHUNK, json!({"text": " "})),
@@ -653,7 +668,7 @@ mod tests {
         assert_eq!(
             got,
             vec![
-                ev(EV_STATE, json!({"state": "loading"})),
+                ev(EV_STATE, json!({"state": "loading", "question": "q"})),
                 ev(
                     EV_ERROR,
                     json!({"message": LlmError::MultimodalUnsupported.to_string()})
@@ -693,7 +708,7 @@ mod tests {
         assert_eq!(
             got,
             vec![
-                ev(EV_STATE, json!({"state": "loading"})),
+                ev(EV_STATE, json!({"state": "loading", "question": "q"})),
                 ev(EV_STATE, json!({"state": "idle"})),
             ]
         );
@@ -748,7 +763,7 @@ mod tests {
         assert_eq!(
             got,
             vec![
-                ev(EV_STATE, json!({"state": "loading"})),
+                ev(EV_STATE, json!({"state": "loading", "question": "q"})),
                 ev(EV_ERROR, json!({"message": LlmError::Auth.to_string()})),
                 ev(EV_STATE, json!({"state": "idle"})),
             ]

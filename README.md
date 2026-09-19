@@ -8,10 +8,7 @@ questions about what's on it, and stream responses into an overlay panel —
 all while keeping your API keys, history, and screen data entirely on your
 machine. No accounts, no cloud sync, nothing leaves your device except the
 requests you send to the LLM provider you choose.
-
-It is a ground-up rewrite of [Glass](https://github.com/pickle-com/glass)
-(Electron + Lit) into **Tauri 2 + Rust + React**, where the Rust core owns all
-sensitive logic and the webview is UI only.
+**Tauri 2 + Rust + React**, where the Rust core owns all sensitive logic and the webview is UI only.
 
 ## Features
 
@@ -136,14 +133,11 @@ permissions — no `~/Library/Application Support`, no temp files:
 
 - **Phase 1 (current)** — overlay windows, keystore, screen capture, LLM
   adapters, Ask end-to-end.
+- **Phase 2** - Design with design.md and implement landing page
 - **Phase 2** — Listen: mic + system-audio transcription (Deepgram / local
   whisper.cpp), live meeting summaries.
 - **Phase 3** — keybind editor UI, session history UI, prompt presets,
   Ollama model management, Gemini search grounding toggle.
-
-Deliberately out of scope (vs. Glass): Firebase auth & sync, embedded web
-app, auto-updater — they conflict with the local-only architecture. Windows
-and Linux support may come later; Phase 1 is macOS-only.
 
 ## License
 

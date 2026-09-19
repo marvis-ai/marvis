@@ -1,0 +1,2369 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Marvis — a private AI that floats above your desktop</title>
+  <link rel="icon" href="marvis-mark.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="">
+  <link href="https://fonts.googleapis.com/css2?family=Galada&amp;family=Inter:wght@400;500;600;700&amp;family=Outfit:wght@400;500;600&amp;display=swap"
+        rel="stylesheet">
+  <style>
+    /* ─────────────────────────────────────────────────────────────────────────
+     * design-systems/notion/tokens.css
+     *
+     * Structured token bindings for the "Notion" brand — the all-in-one
+     * workspace's warm minimalism translated into the shared schema.
+     *
+     * Brand identity in three sentences:
+     *   1. Warm neutrals throughout — grays carry yellow-brown undertones
+     *      (#f6f5f4, #31302e, #615d59, #a39e98); pure white canvas with
+     *      near-black text (rgba(0,0,0,0.95)) that softens imperceptibly.
+     *   2. NotionInter (modified Inter) with aggressive negative
+     *      letter-spacing at display sizes (-2.125px at 64px), four
+     *      weights (400/500/600/700), OpenType "lnum"+"locl" at display.
+     *   3. Whisper borders (1px rgba(0,0,0,0.1)) and multi-layer shadows
+     *      with sub-0.05 opacity — depth felt rather than seen.
+     *
+     * Schema decisions:
+     *   - --bg binds to pure white; --surface to warm white (#f6f5f4).
+     *   - --surface-warm aliases --surface (same warm white tier).
+     *   - --fg binds to rgba(0,0,0,0.95) — the signature near-black.
+     *   - --fg-2 binds to #31302e (warm dark) for headings on surfaces.
+     *   - --accent is Marvis slate (#78a1bb) — the only saturated color.
+     *   - --tracking-display: -0.033em (-2.125px / 64px normalized).
+     *   - --elev-raised is the 4-layer multi-layer card shadow with max
+     *     opacity 0.04 — felt-not-seen Notion depth.
+     *   - --radius-sm: 4px (buttons/inputs); --radius-md: 8px (cards).
+     * ─────────────────────────────────────────────────────────────────── */
+
+    :root {
+      /* ─── Surface ──────────────────────────────────────────────────── */
+      --bg: #ffffff;
+      --surface: #f6f5f4;
+      /* warm white — section alternation */
+      --surface-warm: var(--surface);
+      /* aliases to warm white tier */
+
+      /* ─── Foreground ───────────────────────────────────────────────── */
+      --fg: rgba(0, 0, 0, 0.95);
+      /* near-black — primary text */
+      --fg-2: #31302e;
+      /* warm dark — headings on surfaces */
+      --muted: #615d59;
+      /* warm gray 500 — secondary text */
+      --meta: #a39e98;
+      /* warm gray 300 — placeholder/captions */
+
+      /* ─── Border ───────────────────────────────────────────────────── */
+      --border: rgba(0, 0, 0, 0.1);
+      /* whisper border — standard */
+      --border-soft: rgba(0, 0, 0, 0.06);
+      /* subtler row dividers */
+
+      /* ─── Accent ───────────────────────────────────────────────────── */
+      --accent: #78a1bb;
+      /* Marvis slate — links, primary CTAs */
+      --accent-on: rgba(0, 0, 0, 0.85);
+      /* dark text — white fails contrast on #78a1bb */
+      --accent-hover: color-mix(in oklab, var(--accent), black 15%);
+      --accent-active: color-mix(in oklab, var(--accent), black 24%);
+      --accent-text: color-mix(in oklch, var(--accent), black 34%);
+      /* ≥4.5:1 on white */
+
+      /* ─── Semantic ─────────────────────────────────────────────────── */
+      --success: #1aae39;
+      /* Notion green — confirmation */
+      --warn: #dd5b00;
+      /* Notion orange — warning */
+      --danger: #dc2626;
+
+      /* ─── Typography ───────────────────────────────────────────────── */
+      --font-display: "NotionInter", "Inter", -apple-system, system-ui, "Segoe UI", Helvetica, Arial, sans-serif;
+      --font-body: "NotionInter", "Inter", -apple-system, system-ui, "Segoe UI", Helvetica, Arial, sans-serif;
+      --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Monaco, Consolas, monospace;
+
+      /* Type scale — DESIGN.md §Typography Hierarchy.
+       * Notion's display range 64px→12px; the 8 schema slots map to the
+       * spine. 54px secondary-hero sits between --text-4xl and --text-3xl
+       * and appears inline in components.html where needed. */
+      --text-xs: 12px;
+      /* badge / micro label */
+      --text-sm: 14px;
+      /* caption / footer */
+      --text-base: 16px;
+      /* body */
+      --text-lg: 20px;
+      /* body large — introductions */
+      --text-xl: 26px;
+      /* sub-heading */
+      --text-2xl: 40px;
+      /* sub-heading large */
+      --text-3xl: 48px;
+      /* section heading */
+      --text-4xl: 64px;
+      /* display hero */
+
+      /* Leading + tracking.
+       * --leading-tight=1.00: max compression at 64px display.
+       * h2 (48px) → 1.00; h3 (40px) → 1.50 per DESIGN.md §Typography.
+       * --tracking-display: -0.033em = -2.125px / 64px normalized. */
+      --leading-body: 1.5;
+      --leading-tight: 1.00;
+      --tracking-display: -0.033em;
+
+      /* ─── Spacing ──────────────────────────────────────────────────── */
+      --space-1: 4px;
+      --space-2: 8px;
+      --space-3: 12px;
+      --space-4: 16px;
+      --space-5: 20px;
+      --space-6: 24px;
+      --space-8: 32px;
+      --space-12: 48px;
+
+      /* Section rhythm — DESIGN.md §Responsive Behavior. */
+      --section-y-desktop: 80px;
+      --section-y-tablet: 48px;
+      --section-y-phone: 32px;
+
+      /* ─── Radius ───────────────────────────────────────────────────── */
+      /* Micro 4px for buttons/inputs; standard 12px for cards; pill for
+         badges. --radius-md maps to 8px (small cards, containers). */
+      --radius-sm: 4px;
+      --radius-md: 8px;
+      --radius-lg: 12px;
+      --radius-pill: 9999px;
+
+      /* ─── Elevation ────────────────────────────────────────────────── */
+      /* Multi-layer stack: individual opacity never > 0.04.
+         Depth felt rather than seen — the Notion shadow philosophy. */
+      --elev-flat: none;
+      --elev-ring: 0 0 0 1px var(--border);
+      --elev-raised:
+        rgba(0, 0, 0, 0.04) 0px 4px 18px,
+        rgba(0, 0, 0, 0.027) 0px 2px 7.85px,
+        rgba(0, 0, 0, 0.02) 0px 0.8px 2.93px,
+        rgba(0, 0, 0, 0.01) 0px 0.175px 1.04px;
+
+      /* ─── Focus ────────────────────────────────────────────────────── */
+      /* 2px solid outline + shadow reinforcement per DESIGN.md §8. */
+      --focus-ring: 0 0 0 3px rgba(120, 161, 187, 0.45);
+
+      /* ─── Motion ───────────────────────────────────────────────────── */
+      --motion-fast: 150ms;
+      --motion-base: 200ms;
+      --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+
+      /* ─── Layout ───────────────────────────────────────────────────── */
+      --container-max: 1200px;
+      --container-gutter-desktop: 24px;
+      --container-gutter-tablet: 16px;
+      --container-gutter-phone: 12px;
+    }
+
+    /* ─── reset & base ────────────────────────────────────────────── */
+    *,
+    *::before,
+    *::after {
+      box-sizing: border-box;
+    }
+
+    html {
+      -webkit-text-size-adjust: 100%;
+      scroll-behavior: smooth;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--fg);
+      font-family: var(--font-body);
+      font-size: var(--text-base);
+      line-height: var(--leading-body);
+      text-rendering: optimizeLegibility;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    img,
+    svg {
+      display: block;
+      max-width: 100%;
+    }
+
+    a {
+      color: inherit;
+      text-decoration: none;
+    }
+
+    button {
+      font: inherit;
+      cursor: pointer;
+    }
+
+    p {
+      text-wrap: pretty;
+    }
+
+    h1,
+    h2,
+    h3,
+    h4 {
+      text-wrap: balance;
+    }
+
+    a:focus-visible,
+    button:focus-visible {
+      outline: none;
+      box-shadow: var(--focus-ring);
+      border-radius: var(--radius-sm);
+    }
+
+    /* ─── layout primitives ───────────────────────────────────────── */
+    .container {
+      max-width: var(--container-max);
+      margin-inline: auto;
+      padding-inline: var(--container-gutter-desktop);
+    }
+
+    .section {
+      padding-block: var(--section-y-desktop);
+      scroll-margin-top: 72px;
+    }
+
+    .section+.section {
+      border-top: 1px solid var(--border);
+    }
+
+    .stack {
+      display: flex;
+      flex-direction: column;
+    }
+
+    .stack>*+* {
+      margin-top: var(--space-5);
+    }
+
+    .row {
+      display: flex;
+      align-items: center;
+      gap: var(--space-5);
+    }
+
+    .row-between {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: var(--space-5);
+    }
+
+    .grid-2 {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: var(--space-8);
+    }
+
+    .grid-3 {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: var(--space-8);
+    }
+
+    @media (max-width: 920px) {
+
+      .grid-2,
+      .grid-3 {
+        grid-template-columns: 1fr;
+      }
+
+      .container {
+        padding-inline: var(--container-gutter-tablet);
+      }
+
+      .section {
+        padding-block: var(--section-y-tablet);
+      }
+    }
+
+    @media (max-width: 480px) {
+      .container {
+        padding-inline: var(--container-gutter-phone);
+      }
+
+      .section {
+        padding-block: var(--section-y-phone);
+      }
+    }
+
+    /* ─── type ────────────────────────────────────────────────────── */
+    .h1,
+    h1 {
+      font-family: var(--font-display);
+      font-size: clamp(40px, 5.4vw, var(--text-4xl));
+      font-weight: 700;
+      line-height: var(--leading-tight);
+      letter-spacing: var(--tracking-display);
+      margin: 0;
+    }
+
+    .h2,
+    h2 {
+      font-family: var(--font-display);
+      font-size: clamp(30px, 4vw, var(--text-3xl));
+      font-weight: 700;
+      line-height: var(--leading-tight);
+      letter-spacing: -0.031em;
+      margin: 0;
+    }
+
+    .h3,
+    h3 {
+      font-family: var(--font-display);
+      font-size: 22px;
+      font-weight: 700;
+      line-height: 1.27;
+      letter-spacing: -0.01em;
+      margin: 0;
+    }
+
+    .lead {
+      font-size: var(--text-lg);
+      font-weight: 600;
+      line-height: 1.4;
+      letter-spacing: -0.006em;
+      color: var(--muted);
+      max-width: 58ch;
+      margin: 0;
+    }
+
+    .eyebrow {
+      font-family: var(--font-body);
+      font-size: var(--text-xs);
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--accent-text);
+      margin: 0 0 var(--space-4);
+    }
+
+    .meta {
+      font-family: var(--font-mono);
+      font-size: var(--text-xs);
+      color: var(--muted);
+    }
+
+    .num {
+      font-family: var(--font-mono);
+      font-variant-numeric: tabular-nums;
+    }
+
+    /* ─── chrome: nav + footer ────────────────────────────────────── */
+    .topnav {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      background: color-mix(in oklch, var(--bg) 88%, transparent);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .topnav-inner {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding-block: 12px;
+      gap: var(--space-4);
+    }
+
+    .brand {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .brand svg {
+      width: 30px;
+      height: auto;
+    }
+
+    .brand .wordmark {
+      font-family: "Galada", var(--font-display);
+      font-size: 30px;
+      font-weight: 400;
+      letter-spacing: 0;
+      color: var(--fg-2);
+      line-height: 1;
+      transform: translateY(4.5px);
+    }
+
+    .pagefoot .wordmark {
+      font-family: "Galada", var(--font-display);
+      font-size: 17px;
+      color: var(--fg-2);
+      line-height: 1;
+      transform: translateY(2.5px);
+    }
+
+    .topnav nav {
+      display: flex;
+      gap: var(--space-8);
+    }
+
+    .topnav nav a {
+      font-size: 15px;
+      font-weight: 500;
+      color: var(--muted);
+    }
+
+    .topnav nav a:hover {
+      color: var(--fg);
+    }
+
+    @media (max-width: 760px) {
+      .topnav nav {
+        display: none;
+      }
+    }
+
+    .pagefoot {
+      padding-block: var(--space-12);
+      color: var(--muted);
+      font-size: var(--text-sm);
+      border-top: 1px solid var(--border);
+    }
+
+    .pagefoot .row-between {
+      flex-wrap: wrap;
+      gap: var(--space-4);
+      align-items: center;
+    }
+
+    .pagefoot a {
+      text-decoration: underline;
+      text-underline-offset: 3px;
+    }
+
+    .pagefoot a:hover {
+      color: var(--fg);
+    }
+
+    /* ─── buttons ─────────────────────────────────────────────────── */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 9px 18px;
+      border-radius: var(--radius-sm);
+      border: 1px solid transparent;
+      font-size: 15px;
+      font-weight: 600;
+      letter-spacing: -0.005em;
+      transition: transform var(--motion-fast) var(--ease-standard), background var(--motion-fast) var(--ease-standard), border-color var(--motion-fast) var(--ease-standard), color var(--motion-fast) var(--ease-standard);
+    }
+
+    .btn:active {
+      transform: scale(0.98);
+    }
+
+    .btn-primary {
+      background: var(--accent);
+      color: var(--accent-on);
+      border-color: var(--accent);
+    }
+
+    .btn-primary:hover {
+      background: var(--accent-hover);
+      border-color: var(--accent-hover);
+    }
+
+    .btn-secondary {
+      background: color-mix(in oklch, var(--fg) 5%, transparent);
+      color: var(--fg);
+    }
+
+    .btn-secondary:hover {
+      background: color-mix(in oklch, var(--fg) 9%, transparent);
+    }
+
+    .btn-ghost {
+      background: transparent;
+      color: var(--fg);
+      padding-inline: 8px;
+    }
+
+    .btn-ghost:hover {
+      color: var(--accent-text);
+      text-decoration: underline;
+      text-underline-offset: 4px;
+    }
+
+    .btn-arrow::after {
+      content: '→';
+      transition: transform var(--motion-fast) var(--ease-standard);
+    }
+
+    .btn-arrow:hover::after {
+      transform: translateX(2px);
+    }
+
+    /* ─── card / surface ──────────────────────────────────────────── */
+    .card {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 28px;
+      box-shadow: var(--elev-raised);
+    }
+
+    .card-flat {
+      background: transparent;
+      border: 0;
+      padding: 0;
+      box-shadow: none;
+    }
+
+    /* ─── feature cell ────────────────────────────────────────────── */
+    .feature .feature-mark {
+      width: 36px;
+      height: 36px;
+      display: grid;
+      place-items: center;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      color: var(--fg-2);
+      margin-bottom: var(--space-5);
+    }
+
+    .feature .feature-mark svg {
+      width: 18px;
+      height: 18px;
+    }
+
+    .feature h3 {
+      margin-bottom: 8px;
+    }
+
+    .feature p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 15px;
+    }
+
+    .feature .meta {
+      display: block;
+      margin-top: 12px;
+    }
+
+    /* ─── stat (big number + label) ───────────────────────────────── */
+    .stat {
+      border-top: 1px solid color-mix(in oklch, var(--bg) 16%, transparent);
+      padding-top: var(--space-4);
+    }
+
+    .stat .stat-num {
+      font-family: var(--font-mono);
+      font-size: clamp(34px, 4vw, 48px);
+      line-height: 1;
+      letter-spacing: -0.03em;
+      color: var(--bg);
+      font-weight: 600;
+    }
+
+    .stat .stat-label {
+      color: color-mix(in oklch, var(--bg) 64%, var(--fg-2));
+      font-size: var(--text-sm);
+      margin-top: 10px;
+      max-width: 34ch;
+    }
+
+    .stat .stat-unit {
+      font-size: 0.5em;
+      opacity: 0.6;
+      margin-left: 2px;
+    }
+
+    /* ─── pill / tag ──────────────────────────────────────────────── */
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 10px;
+      background: color-mix(in oklch, var(--accent) 8%, var(--bg));
+      color: var(--accent-text);
+      border-radius: var(--radius-pill);
+      font-size: var(--text-xs);
+      font-weight: 600;
+      letter-spacing: 0.04em;
+    }
+
+    .pill-green {
+      background: color-mix(in oklch, var(--success) 12%, var(--bg));
+      color: color-mix(in oklch, var(--success), black 18%);
+    }
+
+    .tag {
+      display: inline-flex;
+      align-items: center;
+      padding: 4px 12px;
+      background: transparent;
+      color: var(--muted);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-pill);
+      font-size: var(--text-xs);
+      font-weight: 500;
+    }
+
+    /* ─── table ───────────────────────────────────────────────────── */
+    .ds-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 15px;
+    }
+
+    .ds-table th,
+    .ds-table td {
+      padding: 13px 14px;
+      text-align: left;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .ds-table th {
+      color: var(--muted);
+      font-weight: 500;
+      font-size: var(--text-xs);
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+
+    .ds-table tbody tr:hover {
+      background: color-mix(in oklch, var(--fg) 4%, transparent);
+    }
+
+    .ds-table td:last-child,
+    .ds-table th:last-child {
+      text-align: right;
+    }
+
+    .kbd {
+      display: inline-block;
+      font-family: var(--font-mono);
+      font-size: var(--text-xs);
+      color: var(--fg-2);
+      background: color-mix(in oklch, var(--fg) 5%, transparent);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 3px 8px;
+      white-space: nowrap;
+    }
+
+    /* ─── dark section ────────────────────────────────────────────── */
+    .section-dark {
+      background: var(--fg-2);
+      color: var(--bg);
+    }
+
+    .section+.section-dark {
+      border-top-color: color-mix(in oklch, var(--bg) 14%, transparent);
+    }
+
+    .section-dark h2,
+    .section-dark h3 {
+      color: var(--bg);
+    }
+
+    .section-dark .lead {
+      color: color-mix(in oklch, var(--bg) 66%, var(--fg-2));
+    }
+
+    .section-dark .eyebrow {
+      color: color-mix(in oklch, var(--accent) 55%, var(--bg));
+    }
+
+    .section-dark .meta {
+      color: color-mix(in oklch, var(--bg) 55%, var(--fg-2));
+    }
+
+    .section-dark .card {
+      background: color-mix(in oklch, var(--bg) 6%, var(--fg-2));
+      border-color: color-mix(in oklch, var(--bg) 12%, transparent);
+      box-shadow: none;
+    }
+
+    /* ─── hero ────────────────────────────────────────────────────── */
+    .hero {
+      padding-block: clamp(64px, 9vw, 120px) var(--section-y-desktop);
+    }
+
+    .hero-center {
+      text-align: center;
+      max-width: 700px;
+      margin-inline: auto;
+    }
+
+    .hero h1 {
+      margin-bottom: var(--space-5);
+    }
+
+    .hero .lead {
+      margin: 0 auto var(--space-8);
+    }
+
+    .hero-cta {
+      display: inline-flex;
+      gap: var(--space-3);
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+
+    .hero-meta {
+      margin-top: var(--space-6);
+      display: inline-flex;
+      gap: var(--space-3);
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+
+    /* ─── hero scene: editor + floating bar ───────────────────────── */
+    .scene {
+      position: relative;
+      margin-top: 64px;
+    }
+
+    /* ─── real overlay UI — recreated 1:1 from apps/native views ────
+     * Theme + metrics mirror packages/ui (Outfit, light shadcn tokens):
+     * bar 353×47 · ask 600px · settings 240px (≤400) · listen 400px.
+     * Panels drop 8px under the bar; ask centers on the bar's center,
+     * settings anchors to the bar's right edge. */
+    .mv {
+      --mv-fg: oklch(0.148 0.004 228.8);
+      --mv-card: oklch(1 0 0);
+      --mv-muted: oklch(0.963 0.002 197.1);
+      --mv-muted-fg: oklch(0.56 0.021 213.5);
+      --mv-border: oklch(0.925 0.005 214.3);
+      --mv-input: oklch(0.925 0.005 214.3);
+      --mv-primary: oklch(0.218 0.008 223.9);
+      --mv-primary-fg: oklch(0.987 0.002 197.1);
+      font-family: "Outfit", var(--font-body);
+      font-size: 14px;
+      line-height: 1.5;
+      color: var(--mv-fg);
+      text-align: left;
+    }
+
+    .mv *,
+    .mv *::before,
+    .mv *::after {
+      box-sizing: border-box;
+    }
+
+    .mv p,
+    .mv ul {
+      margin: 0;
+    }
+
+    .mv-logo {
+      width: 16px;
+      height: 16px;
+      flex: none;
+      color: var(--mv-fg);
+    }
+
+    /* 353×47 translucent pill — the always-on-top bar window */
+    .mv-bar {
+      width: 353px;
+      max-width: 100%;
+      height: 47px;
+      padding: 4px;
+    }
+
+    .mv-bar-inner {
+      height: 100%;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 0 12px;
+      border: 1px solid var(--mv-border);
+      border-radius: 9999px;
+      background: color-mix(in oklch, var(--mv-card) 80%, transparent);
+      backdrop-filter: blur(14px);
+      -webkit-backdrop-filter: blur(14px);
+      box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -4px rgba(0, 0, 0, 0.1);
+      user-select: none;
+    }
+
+    .mv-input {
+      flex: 1;
+      min-width: 0;
+      border: 0;
+      outline: none;
+      background: transparent;
+      padding: 0 4px;
+      font: inherit;
+      color: var(--mv-fg);
+    }
+
+    .mv-input::placeholder {
+      color: var(--mv-muted-fg);
+    }
+
+    .mv-perm {
+      flex: 1;
+      min-width: 0;
+      font-size: 12px;
+      color: var(--mv-muted-fg);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .mv-shield {
+      width: 16px;
+      height: 16px;
+      flex: none;
+      color: var(--mv-muted-fg);
+    }
+
+    /* buttons — xs pills, matching @marvis/ui variants */
+    .mv-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      flex: none;
+      height: 24px;
+      padding: 0 10px;
+      border: 1px solid transparent;
+      border-radius: 9999px;
+      font-size: 12px;
+      font-weight: 500;
+      white-space: nowrap;
+    }
+
+    .mv-btn.is-off {
+      opacity: 0.5;
+    }
+
+    .mv-btn-primary {
+      background: var(--mv-primary);
+      color: var(--mv-primary-fg);
+    }
+
+    .mv-btn-outline {
+      border-color: var(--mv-border);
+      background: color-mix(in oklch, var(--mv-input) 30%, transparent);
+      color: var(--mv-fg);
+    }
+
+    .mv-btn-link {
+      background: transparent;
+      color: var(--mv-primary);
+      padding: 0 2px;
+    }
+
+    .mv-icon-btn {
+      width: 24px;
+      height: 24px;
+      flex: none;
+      display: grid;
+      place-items: center;
+      border-radius: 9999px;
+      color: var(--mv-fg);
+    }
+
+    .mv-icon-btn.is-off {
+      opacity: 0.5;
+    }
+
+    .mv-icon-btn svg {
+      width: 12px;
+      height: 12px;
+    }
+
+    /* panels — ask 600px / settings 240px, rounded-2xl frosted card */
+    .mv-panel {
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      border: 1px solid var(--mv-border);
+      border-radius: 18px;
+      background: color-mix(in oklch, var(--mv-card) 90%, transparent);
+      backdrop-filter: blur(14px);
+      -webkit-backdrop-filter: blur(14px);
+      box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -4px rgba(0, 0, 0, 0.1);
+    }
+
+    .mv-panel-head {
+      display: flex;
+      align-items: flex-start;
+      gap: 4px;
+      padding: 8px 12px;
+      border-bottom: 1px solid var(--mv-border);
+    }
+
+    .mv-panel-head p {
+      flex: 1;
+      min-width: 0;
+      font-size: 12px;
+      line-height: 20px;
+      font-weight: 500;
+      overflow-wrap: break-word;
+    }
+
+    .mv-panel-head .mv-icon-btn {
+      margin-top: -2px;
+      color: var(--mv-muted-fg);
+    }
+
+    .mv-panel-body {
+      padding: 8px 12px;
+      font-size: 14px;
+      overflow-y: auto;
+    }
+
+    .mv-md p {
+      margin: 0.45em 0;
+    }
+
+    .mv-md ul {
+      margin: 0.45em 0;
+      padding-left: 1.4em;
+      list-style: disc;
+    }
+
+    .mv-md li {
+      margin: 0.15em 0;
+    }
+
+    .mv-md> :first-child {
+      margin-top: 0;
+    }
+
+    .mv-md> :last-child {
+      margin-bottom: 0;
+    }
+
+    .mv-md code {
+      font-family: var(--font-mono);
+      font-size: 0.82em;
+      background: color-mix(in oklch, var(--mv-muted) 75%, transparent);
+      border-radius: 4px;
+      padding: 0.1em 0.3em;
+    }
+
+    .mv-caret {
+      display: inline-block;
+      width: 7px;
+      height: 0.95em;
+      background: var(--mv-fg);
+      margin-left: 2px;
+      vertical-align: -0.12em;
+      animation: mv-blink 1.05s steps(2) infinite;
+    }
+
+    @keyframes mv-blink {
+      50% {
+        opacity: 0;
+      }
+    }
+
+    .mv-spin {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      border: 2px solid color-mix(in oklch, var(--mv-muted-fg) 30%, transparent);
+      border-top-color: var(--mv-fg);
+      animation: mv-spin 0.8s linear infinite;
+    }
+
+    @keyframes mv-spin {
+      to {
+        transform: rotate(360deg);
+      }
+    }
+
+    /* settings provider rows */
+    .mv-row {
+      padding: 8px 12px;
+      border-bottom: 1px solid var(--mv-border);
+    }
+
+    .mv-row.is-dim {
+      opacity: 0.6;
+    }
+
+    .mv-row-top {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 8px;
+    }
+
+    .mv-row-name {
+      font-size: 12px;
+      font-weight: 500;
+    }
+
+    .mv-row-note {
+      font-size: 10px;
+      color: var(--mv-muted-fg);
+      white-space: nowrap;
+    }
+
+    .mv-link {
+      font-size: 10px;
+      color: var(--mv-primary);
+      margin-left: 4px;
+    }
+
+    .mv-keyline {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      margin-top: 6px;
+    }
+
+    .mv-key-input {
+      height: 24px;
+      flex: 1;
+      min-width: 0;
+      border: 1px solid var(--mv-border);
+      border-radius: 8px;
+      background: color-mix(in oklch, var(--mv-input) 30%, transparent);
+      padding: 0 8px;
+      font: inherit;
+      font-size: 12px;
+      color: var(--mv-fg);
+      outline: none;
+    }
+
+    .mv-key-input::placeholder {
+      color: var(--mv-muted-fg);
+    }
+
+    .mv-select {
+      margin-top: 6px;
+      width: 100%;
+      height: 24px;
+      border: 1px solid var(--mv-border);
+      border-radius: 8px;
+      background: color-mix(in oklch, var(--mv-input) 30%, transparent);
+      padding: 0 6px;
+      font: inherit;
+      font-size: 12px;
+      color: var(--mv-fg);
+    }
+
+    .mv-select.is-off {
+      opacity: 0.5;
+    }
+
+    .mv-row-foot {
+      padding: 8px 12px;
+    }
+
+    .mv-row-foot .mv-btn {
+      width: 100%;
+    }
+
+    /* hero float */
+    .marvis-bar {
+      position: relative;
+      z-index: 2;
+      margin: 0 auto -22px;
+      animation: marvis-float 7s var(--ease-standard) infinite;
+    }
+
+    @keyframes marvis-float {
+
+      0%,
+      100% {
+        transform: translateY(0);
+      }
+
+      50% {
+        transform: translateY(-6px);
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+
+      .marvis-bar,
+      .mv-caret,
+      .mv-spin {
+        animation: none;
+      }
+    }
+
+    .editor {
+      position: relative;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      overflow: hidden;
+      box-shadow: var(--elev-raised);
+    }
+
+    .editor-chrome {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 11px 16px;
+      border-bottom: 1px solid var(--border-soft);
+    }
+
+    .editor-chrome .dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: color-mix(in oklch, var(--fg) 16%, transparent);
+    }
+
+    .editor-chrome .meta {
+      margin-left: 10px;
+    }
+
+    .editor-body {
+      position: relative;
+      display: grid;
+      grid-template-columns: 172px 1fr;
+      min-height: 380px;
+    }
+
+    .editor-side {
+      background: var(--surface);
+      border-right: 1px solid var(--border-soft);
+      padding: 16px 14px;
+      font-family: var(--font-mono);
+      font-size: var(--text-xs);
+      color: var(--muted);
+    }
+
+    .editor-side .file {
+      padding: 5px 8px;
+      border-radius: var(--radius-sm);
+      white-space: nowrap;
+    }
+
+    .editor-side .file.active {
+      color: var(--fg-2);
+      background: color-mix(in oklch, var(--fg) 6%, transparent);
+      font-weight: 600;
+    }
+
+    .editor-code {
+      padding: 20px 24px;
+      font-family: var(--font-mono);
+      font-size: 12.5px;
+      line-height: 1.9;
+      white-space: pre-wrap;
+      color: var(--fg);
+    }
+
+    .editor-code .c-meta {
+      color: var(--meta);
+    }
+
+    .editor-code .c-mut {
+      color: var(--muted);
+    }
+
+    .marvis-panel {
+      position: absolute;
+      z-index: 2;
+      right: 20px;
+      bottom: 20px;
+      width: min(600px, calc(100% - 220px));
+    }
+
+    @media (max-width: 920px) {
+      .editor-body {
+        grid-template-columns: 1fr;
+        min-height: 0;
+      }
+
+      .editor-side {
+        display: none;
+      }
+    }
+
+    @media (max-width: 1180px) {
+      .marvis-panel {
+        position: static;
+        grid-column: 1 / -1;
+        width: auto;
+        margin: 0 var(--space-4) var(--space-4);
+      }
+    }
+
+    /* ─── file tree (privacy section) ─────────────────────────────── */
+    .filetree {
+      font-family: var(--font-mono);
+      font-size: 13px;
+      line-height: 2;
+      color: color-mix(in oklch, var(--bg) 82%, var(--fg-2));
+      white-space: pre;
+      overflow-x: auto;
+      margin: var(--space-4) 0 0;
+    }
+
+    .filetree .dim {
+      color: color-mix(in oklch, var(--bg) 48%, var(--fg-2));
+    }
+
+    /* ─── log row (platforms) ─────────────────────────────────────── */
+    .log-row {
+      display: grid;
+      grid-template-columns: 140px 1fr auto;
+      gap: var(--space-6);
+      padding: 18px 0;
+      border-top: 1px solid var(--border);
+      align-items: center;
+    }
+
+    .log-row h3 {
+      font-size: 17px;
+    }
+
+    .log-row .pull {
+      text-align: right;
+    }
+
+    @media (max-width: 640px) {
+      .log-row {
+        grid-template-columns: 1fr auto;
+      }
+
+      .log-row .meta-desc {
+        display: none;
+      }
+    }
+
+    /* ─── screenshots: the overlay at actual size ─────────────────── */
+    .shot {
+      margin: 0;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      box-shadow: var(--elev-raised);
+      overflow: hidden;
+    }
+
+    .shot-desktop {
+      position: relative;
+      height: 580px;
+      background: radial-gradient(130% 100% at 72% -10%, color-mix(in oklch, var(--fg-2) 8%, var(--surface)) 0%, var(--surface) 62%);
+      overflow: hidden;
+    }
+
+    .shot-menubar {
+      position: absolute;
+      inset: 0 0 auto 0;
+      height: 26px;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      padding: 0 16px;
+      background: color-mix(in oklch, var(--bg) 62%, transparent);
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+      font-size: 11px;
+      font-weight: 500;
+      color: var(--fg-2);
+    }
+
+    .shot-menubar .dim {
+      color: var(--muted);
+      font-weight: 400;
+      letter-spacing: 0.02em;
+    }
+
+    .shot-menubar .shot-clock {
+      margin-left: auto;
+      color: var(--muted);
+      font-weight: 400;
+    }
+
+    .ghost-win {
+      position: absolute;
+      left: 56px;
+      top: 118px;
+      width: min(600px, 62%);
+      border-radius: 10px;
+      border: 1px solid var(--border-soft);
+      background: color-mix(in oklch, var(--bg) 78%, transparent);
+      overflow: hidden;
+      opacity: 0.72;
+    }
+
+    .ghost-win .gw-chrome {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 9px 12px;
+      border-bottom: 1px solid var(--border-soft);
+    }
+
+    .ghost-win .gw-chrome>i {
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      background: color-mix(in oklch, var(--fg) 14%, transparent);
+    }
+
+    .ghost-win .gw-url {
+      flex: 1;
+      height: 20px;
+      margin-left: 10px;
+      display: flex;
+      align-items: center;
+      padding: 0 10px;
+      border-radius: 6px;
+      background: color-mix(in oklch, var(--fg) 5%, transparent);
+      font-family: var(--font-mono);
+      font-size: 10px;
+      color: var(--muted);
+      white-space: nowrap;
+      overflow: hidden;
+    }
+
+    .ghost-win .gw-lines {
+      padding: 16px 14px 20px;
+    }
+
+    .ghost-win .gw-lines i {
+      display: block;
+      height: 8px;
+      border-radius: 4px;
+      background: color-mix(in oklch, var(--fg) 7%, transparent);
+    }
+
+    .ghost-win .gw-lines i+i {
+      margin-top: 9px;
+    }
+
+    .shot-dock {
+      position: absolute;
+      left: 50%;
+      bottom: 14px;
+      transform: translateX(-50%);
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      padding: 7px 9px;
+      border-radius: 16px;
+      background: color-mix(in oklch, var(--bg) 58%, transparent);
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+      border: 1px solid var(--border-soft);
+    }
+
+    .shot-dock i,
+    .shot-dock img {
+      width: 34px;
+      height: 34px;
+      border-radius: 9px;
+      display: block;
+      background: color-mix(in oklch, var(--fg-2) 8%, var(--bg));
+      border: 1px solid var(--border-soft);
+    }
+
+    .shot-dock img {
+      background: transparent;
+      border: 0;
+    }
+
+    .shot-bar {
+      position: absolute;
+      top: 47px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 3;
+    }
+
+    .shot-ask {
+      position: absolute;
+      top: 102px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: min(600px, calc(100% - 32px));
+      z-index: 3;
+    }
+
+    .shot-cap {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px 22px;
+      padding: 12px 18px;
+      border-top: 1px solid var(--border);
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--muted);
+    }
+
+    .shot-pad {
+      padding: 24px 24px 4px;
+    }
+
+    .shot-pad h3 {
+      margin-bottom: 8px;
+    }
+
+    .shot-pad p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 15px;
+    }
+
+    .shot-rows {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      padding: 14px;
+    }
+
+    .mv-stage {
+      padding: 16px 14px 12px;
+      border-radius: 10px;
+      background: linear-gradient(115deg, color-mix(in oklch, var(--fg-2) 9%, var(--surface)), color-mix(in oklch, var(--fg-2) 4%, var(--surface)));
+    }
+
+    .mv-stage-center {
+      display: flex;
+      justify-content: center;
+      margin: 14px;
+      padding: 22px 14px;
+    }
+
+    .gate-label {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--muted);
+      margin: 8px 4px 0;
+    }
+
+    .mv-settings {
+      width: 240px;
+      max-width: 100%;
+      max-height: 400px;
+    }
+
+    .mv-settings-body {
+      overflow-y: auto;
+    }
+
+    /* listen — 400px window; today it ships its chrome (Phase-2 placeholder) */
+    .mv-listen {
+      width: 400px;
+      max-width: 100%;
+      height: 280px;
+      padding: 4px;
+    }
+
+    .mv-listen-chrome {
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      border: 1px solid var(--mv-border);
+      border-radius: 16px;
+      background: color-mix(in oklch, var(--mv-card) 90%, transparent);
+      backdrop-filter: blur(14px);
+      -webkit-backdrop-filter: blur(14px);
+      box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -4px rgba(0, 0, 0, 0.1);
+      font-size: 12px;
+      color: var(--mv-muted-fg);
+    }
+
+    .mv-listen-chrome svg {
+      width: 16px;
+      height: 16px;
+    }
+
+    @media (max-width: 640px) {
+      .shot-desktop {
+        height: 640px;
+      }
+
+      .shot-bar {
+        top: 60px;
+      }
+
+      .shot-ask {
+        top: 116px;
+      }
+
+      .ghost-win {
+        left: 16px;
+        width: calc(100% - 32px);
+        top: 150px;
+      }
+
+      .mv-stage,
+      .mv-stage-center {
+        margin-inline: 8px;
+        padding-inline: 8px;
+      }
+    }
+
+    /* ─── interface light/dark toggle ───────────────────────────── */
+    .iface-head {
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      gap: var(--space-6);
+      flex-wrap: wrap;
+    }
+
+    .seg {
+      display: inline-flex;
+      flex: none;
+      gap: 2px;
+      padding: 3px;
+      border: 1px solid var(--border-soft);
+      border-radius: var(--radius-pill);
+      background: rgba(0, 0, 0, 0.05);
+    }
+
+    .seg-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      height: 30px;
+      padding: 0 13px;
+      border: 0;
+      border-radius: var(--radius-pill);
+      background: transparent;
+      cursor: pointer;
+      font-family: var(--font-display);
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--muted);
+      transition: color var(--motion-fast) var(--ease-standard),
+        background var(--motion-fast) var(--ease-standard),
+        box-shadow var(--motion-fast) var(--ease-standard);
+    }
+
+    .seg-btn svg {
+      width: 14px;
+      height: 14px;
+    }
+
+    .seg-btn.is-on {
+      background: var(--bg);
+      color: var(--fg);
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1), 0 0 0 1px var(--border-soft);
+    }
+
+    .seg-btn:focus-visible {
+      outline: none;
+      box-shadow: var(--focus-ring);
+    }
+
+    /* Dark variant — the app's own .dark token set (packages/ui/src/index.css),
+     * swapped in under the same --mv-* names the views consume. Scene chrome
+     * (desktop, menubar, ghost window, dock) follows with matching dark values. */
+    .shots .shot,
+    .shots .shot-desktop,
+    .shots .shot-menubar,
+    .shots .ghost-win,
+    .shots .ghost-win .gw-url,
+    .shots .ghost-win .gw-lines i,
+    .shots .shot-dock,
+    .shots .shot-dock i,
+    .shots .mv-bar-inner,
+    .shots .mv-panel,
+    .shots .mv-stage,
+    .shots .shot-cap,
+    .shots .mv-key-input,
+    .shots .mv-select,
+    .shots .mv-listen-chrome,
+    .shots .mv-btn {
+      transition: background var(--motion-base) var(--ease-standard),
+        background-color var(--motion-base) var(--ease-standard),
+        border-color var(--motion-base) var(--ease-standard),
+        color var(--motion-base) var(--ease-standard);
+    }
+
+    .shots[data-theme="dark"] .mv {
+      --mv-fg: oklch(0.987 0.002 197.1);
+      --mv-card: oklch(0.218 0.008 223.9);
+      --mv-muted: oklch(0.275 0.011 216.9);
+      --mv-muted-fg: oklch(0.723 0.014 214.4);
+      --mv-border: oklch(1 0 0 / 10%);
+      --mv-input: oklch(1 0 0 / 15%);
+      --mv-primary: oklch(0.925 0.005 214.3);
+      --mv-primary-fg: oklch(0.218 0.008 223.9);
+    }
+
+    .shots[data-theme="dark"] .shot {
+      background: oklch(0.148 0.004 228.8);
+      border-color: oklch(1 0 0 / 10%);
+    }
+
+    .shots[data-theme="dark"] .shot-pad h3 {
+      color: oklch(0.987 0.002 197.1);
+    }
+
+    .shots[data-theme="dark"] .shot-pad p,
+    .shots[data-theme="dark"] .gate-label,
+    .shots[data-theme="dark"] .shot-cap {
+      color: oklch(0.723 0.014 214.4);
+    }
+
+    .shots[data-theme="dark"] .shot-cap {
+      border-color: oklch(1 0 0 / 10%);
+    }
+
+    .shots[data-theme="dark"] .shot-desktop {
+      background: radial-gradient(130% 100% at 72% -10%, oklch(0.30 0.032 245) 0%, oklch(0.16 0.018 245) 62%);
+    }
+
+    .shots[data-theme="dark"] .shot-menubar {
+      background: color-mix(in oklch, oklch(0.148 0.004 228.8) 62%, transparent);
+      color: oklch(0.93 0.008 230);
+    }
+
+    .shots[data-theme="dark"] .shot-menubar .dim,
+    .shots[data-theme="dark"] .shot-menubar .shot-clock {
+      color: oklch(0.64 0.02 232);
+    }
+
+    .shots[data-theme="dark"] .ghost-win {
+      border-color: oklch(1 0 0 / 8%);
+      background: color-mix(in oklch, oklch(0.25 0.012 235) 80%, transparent);
+    }
+
+    .shots[data-theme="dark"] .ghost-win .gw-chrome {
+      border-color: oklch(1 0 0 / 7%);
+    }
+
+    .shots[data-theme="dark"] .ghost-win .gw-chrome>i {
+      background: oklch(1 0 0 / 16%);
+    }
+
+    .shots[data-theme="dark"] .ghost-win .gw-url {
+      background: oklch(1 0 0 / 6%);
+      color: oklch(0.64 0.02 232);
+    }
+
+    .shots[data-theme="dark"] .ghost-win .gw-lines i {
+      background: oklch(1 0 0 / 8%);
+    }
+
+    .shots[data-theme="dark"] .shot-dock {
+      background: oklch(1 0 0 / 8%);
+      border-color: oklch(1 0 0 / 10%);
+    }
+
+    .shots[data-theme="dark"] .shot-dock i {
+      background: oklch(1 0 0 / 10%);
+      border-color: oklch(1 0 0 / 8%);
+    }
+
+    .shots[data-theme="dark"] .mv-stage {
+      background: linear-gradient(115deg, oklch(0.27 0.018 240), oklch(0.20 0.014 240));
+    }
+  </style>
+</head>
+
+<body>
+  <header class="topnav" data-od-id="topnav">
+    <div class="container topnav-inner">
+      <a class="brand" href="#top" data-od-id="brand" aria-label="Marvis home">
+        <svg viewBox="0 0 48 48" role="img" aria-label="Marvis mark">
+          <rect x="3" y="3" width="42" height="42" rx="10" fill="var(--fg-2)"></rect>
+          <circle cx="24" cy="17.5" r="7.5" fill="var(--accent)"></circle>
+          <circle cx="24" cy="17.5" r="2.9" fill="var(--bg)"></circle>
+          <rect x="14" y="30" width="20" height="2.6" rx="1.3" fill="var(--surface)"></rect>
+          <rect x="17.5" y="34.8" width="13" height="2.6" rx="1.3" fill="var(--meta)"></rect>
+        </svg>
+        <span class="wordmark">Marvis</span>
+      </a>
+      <nav>
+        <a href="#features">Features</a>
+        <a href="#interface">Interface</a>
+        <a href="#privacy">Privacy</a>
+        <a href="#hotkeys">Hotkeys</a>
+        <a href="#providers">Providers</a>
+      </nav>
+      <a class="btn btn-secondary" href="#download" data-od-id="nav-cta">Download</a>
+    </div>
+  </header>
+
+  <main id="content">
+    <!-- ─── hero ──────────────────────────────────────────────────── -->
+    <section class="section hero" id="top" data-od-id="hero">
+      <div class="container hero-center">
+        <p class="eyebrow">Private / Personal AI for All</p>
+        <h1 style="width: 768px; transform: translate(-77px, 3px);">Ask anything about what's on your screen.</h1>
+        <p class="lead">Marvis is a small translucent bar that floats above your workspace. It sees your screen — only
+          with your permission — and streams answers into an overlay panel, while your keys, history, and screen data
+          never leave your machine.</p>
+        <div class="hero-cta">
+          <a class="btn btn-primary" href="#download" data-od-id="hero-cta-primary">Download for macOS</a>
+          <a class="btn btn-ghost btn-arrow" href="#privacy" data-od-id="hero-cta-secondary">How it stays private</a>
+        </div>
+        <div class="hero-meta">
+          <span class="tag">Free &amp; open source · MIT</span>
+          <span class="tag">No account</span>
+          <span class="tag">No cloud sync</span>
+        </div>
+      </div>
+
+      <div class="container">
+        <div class="scene" data-od-id="hero-scene">
+          <div class="mv mv-bar marvis-bar" data-od-id="marvis-bar">
+            <div class="mv-bar-inner">
+              <svg class="mv-logo" viewBox="0 0 16 16" aria-hidden="true">
+                <rect width="16" height="16" rx="5" fill="currentColor"></rect>
+                <path d="M4.5 11.5v-7l3.5 4.4 3.5-4.4v7" fill="none" stroke="var(--mv-card)" stroke-width="1.5"
+                      stroke-linecap="round" stroke-linejoin="round"></path>
+              </svg>
+              <input class="mv-input" placeholder="Ask Marvis…" aria-label="Ask Marvis">
+              <span class="mv-icon-btn is-off" title="Coming soon"><svg viewBox="0 0 24 24" fill="none"
+                     stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"></path>
+                  <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+                  <line x1="12" x2="12" y1="19" y2="22"></line>
+                </svg></span>
+              <span class="mv-icon-btn" title="Settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                     stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path
+                        d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z">
+                  </path>
+                  <circle cx="12" cy="12" r="3"></circle>
+                </svg></span>
+            </div>
+          </div>
+          <div class="editor">
+            <div class="editor-chrome">
+              <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+              <span class="meta">capture.rs — marvis/apps/native/src-tauri</span>
+            </div>
+            <div class="editor-body">
+              <aside class="editor-side">
+                <div class="file">ask.rs</div>
+                <div class="file active">capture.rs</div>
+                <div class="file">hotkeys.rs</div>
+                <div class="file">keystore.rs</div>
+                <div class="file">listen.rs</div>
+                <div class="file">windows.rs</div>
+                <div class="file">config.toml</div>
+              </aside>
+              <div class="editor-code"><span class="c-meta">// ring buffer — screen frames live in memory only</span>
+                <span class="c-mut">const</span> HORIZON: Duration = Duration::from_secs(<span class="num">60</span>);
+                <span class="c-mut">const</span> MAX_FRAMES: usize = <span class="num">120</span>; <span
+                      class="c-meta">// ≤ 64 MB cap</span>
+
+                <span class="c-mut">fn</span> on_ask(&amp;self, prompt: String) {
+                <span class="c-mut">let</span> frame = self.ring.latest();
+                self.llm.stream(prompt, frame); <span class="c-meta">// never hits disk</span>
+                }
+
+                <span class="c-mut">fn</span> lock(&amp;mut self) {
+                self.capture.stop(); <span class="c-meta">// tear down capture</span>
+                self.panels.hide_all(); <span class="c-meta">// hide every panel</span>
+                self.requests.abort_all(); <span class="c-meta">// cancel in-flight asks</span>
+                }
+              </div>
+              <div class="mv mv-panel marvis-panel" data-od-id="ask-panel">
+                <div class="mv-panel-head">
+                  <p>Why does ring.latest() return None on launch?</p>
+                  <span class="mv-icon-btn" title="Close"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                         stroke-width="2" stroke-linecap="round">
+                      <path d="M18 6 6 18"></path>
+                      <path d="m6 6 12 12"></path>
+                    </svg></span>
+                </div>
+                <div class="mv-panel-body">
+                  <div class="mv-md">
+                    <p>The buffer only fills after the first captured frame lands — once Screen Recording is granted.
+                      Until then, <code>latest()</code> is empty by design: Marvis never keeps frames from before you
+                      asked.<span class="mv-caret"></span></p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ─── features ──────────────────────────────────────────────── -->
+    <section class="section" id="features" data-od-id="features">
+      <div class="container stack" style="gap: 56px;">
+        <div style="max-width: 40ch;">
+          <p class="eyebrow">What's different</p>
+          <h2>Built like part of your desktop, not a tab you visit.</h2>
+        </div>
+        <div class="grid-3">
+          <div class="feature card-flat" data-od-id="feature-screen-aware">
+            <div class="feature-mark">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
+                <rect x="3" y="4" width="18" height="13" rx="2"></rect>
+                <path d="M8 21h8M12 17v4"></path>
+              </svg>
+            </div>
+            <h3>Screen-aware answers</h3>
+            <p>Press ⌘⏎ and Marvis attaches the latest screen frame to your prompt, then streams a markdown answer into
+              the panel. Frames sit in an in-memory ring buffer — about 60 seconds, capped at 120 frames — and are never
+              written to disk.</p>
+          </div>
+          <div class="feature card-flat" data-od-id="feature-byo-model">
+            <div class="feature-mark">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
+                <circle cx="8" cy="12" r="4"></circle>
+                <path d="M12 12h9M18 12v4M15 12v3"></path>
+              </svg>
+            </div>
+            <h3>Bring your own model</h3>
+            <p>Point Marvis at OpenAI, Anthropic, or Gemini with your own API key — or skip keys entirely and run fully
+              local inference through Ollama. There's no Marvis account and no proxy in the middle.</p>
+          </div>
+          <div class="feature card-flat" data-od-id="feature-keystore">
+            <div class="feature-mark">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
+                <rect x="5" y="10" width="14" height="10" rx="2"></rect>
+                <path d="M8 10V7a4 4 0 0 1 8 0v3"></path>
+              </svg>
+            </div>
+            <h3>Your keys stay sealed</h3>
+            <p>Provider keys live in <span class="num">keys.enc</span>, encrypted with AES-256-GCM under a
+              passphrase-derived Argon2id key and validated before they're stored. The UI only ever sees masked values.
+            </p>
+            <span class="meta">openai: set ••••1234</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ─── interface: the overlay at actual size ─────────────────── -->
+    <section class="section" id="interface" data-od-id="interface">
+      <div class="container stack shots" data-theme="light" style="gap: 56px;">
+        <div class="iface-head">
+          <div style="max-width: 42ch;">
+            <p class="eyebrow">The interface</p>
+            <h2>One bar, three panels — nothing else.</h2>
+            <p class="lead" style="margin-top: 20px;">Recreated 1:1 from the app's own views: a 353×47 bar, a 600px Ask
+              panel, a 400px Listen panel, and a 240px Settings panel — frameless, frosted overlays, not browser
+              windows. The toggle swaps in the app's real dark theme.</p>
+          </div>
+          <div class="seg" role="group" aria-label="Interface theme" data-od-id="interface-theme-toggle">
+            <button type="button" class="seg-btn is-on" data-theme-btn="light" aria-pressed="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                   stroke-linejoin="round" aria-hidden="true">
+                <circle cx="12" cy="12" r="4"></circle>
+                <path d="M12 2v2"></path>
+                <path d="M12 20v2"></path>
+                <path d="m4.93 4.93 1.41 1.41"></path>
+                <path d="m17.66 17.66 1.41 1.41"></path>
+                <path d="M2 12h2"></path>
+                <path d="M20 12h2"></path>
+                <path d="m6.34 17.66-1.41 1.41"></path>
+                <path d="m19.07 4.93-1.41 1.41"></path>
+              </svg>
+              Light
+            </button>
+            <button type="button" class="seg-btn" data-theme-btn="dark" aria-pressed="false">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                   stroke-linejoin="round" aria-hidden="true">
+                <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"></path>
+              </svg>
+              Dark
+            </button>
+          </div>
+        </div>
+
+        <figure class="shot" data-od-id="shot-desktop">
+          <div class="shot-desktop">
+            <div class="shot-menubar">
+              <span>Finder</span>
+              <span class="dim">File</span>
+              <span class="dim">Edit</span>
+              <span class="dim">View</span>
+              <span class="dim">Go</span>
+              <span class="dim">Window</span>
+              <span class="dim">Help</span>
+              <span class="shot-clock">Fri 9:41 AM</span>
+            </div>
+            <div class="ghost-win" aria-hidden="true">
+              <div class="gw-chrome">
+                <i></i><i></i><i></i>
+                <span class="gw-url">github.com/MarvisLLC/marvis</span>
+              </div>
+              <div class="gw-lines">
+                <i style="width: 82%;"></i>
+                <i style="width: 64%;"></i>
+                <i style="width: 71%;"></i>
+                <i style="width: 48%;"></i>
+                <i style="width: 77%;"></i>
+                <i style="width: 58%;"></i>
+              </div>
+            </div>
+            <div class="mv mv-bar shot-bar">
+              <div class="mv-bar-inner">
+                <svg class="mv-logo" viewBox="0 0 16 16" aria-hidden="true">
+                  <rect width="16" height="16" rx="5" fill="currentColor"></rect>
+                  <path d="M4.5 11.5v-7l3.5 4.4 3.5-4.4v7" fill="none" stroke="var(--mv-card)" stroke-width="1.5"
+                        stroke-linecap="round" stroke-linejoin="round"></path>
+                </svg>
+                <input class="mv-input" placeholder="Ask Marvis…" aria-label="Ask Marvis">
+                <span class="mv-icon-btn is-off" title="Coming soon"><svg viewBox="0 0 24 24" fill="none"
+                       stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"></path>
+                    <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+                    <line x1="12" x2="12" y1="19" y2="22"></line>
+                  </svg></span>
+                <span class="mv-icon-btn" title="Settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                       stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path
+                          d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z">
+                    </path>
+                    <circle cx="12" cy="12" r="3"></circle>
+                  </svg></span>
+              </div>
+            </div>
+            <div class="mv mv-panel shot-ask">
+              <div class="mv-panel-head">
+                <p>Where do my API keys actually live?</p>
+                <span class="mv-icon-btn" title="Close"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                       stroke-width="2" stroke-linecap="round">
+                    <path d="M18 6 6 18"></path>
+                    <path d="m6 6 12 12"></path>
+                  </svg></span>
+              </div>
+              <div class="mv-panel-body">
+                <div class="mv-md">
+                  <p>In <code>keys.enc</code> inside <code>~/.marvis</code> — sealed with AES-256-GCM and unlocked by
+                    Touch ID or your password. The UI only ever shows the masked form, like <code>…7B2q</code>, so a
+                    typed key is never echoed back on screen.<span class="mv-caret"></span></p>
+                </div>
+              </div>
+            </div>
+            <div class="shot-dock" aria-hidden="true">
+              <i></i><i></i><i></i><i></i><i></i>
+              <img src="marvis-icon.svg" alt="Marvis">
+            </div>
+          </div>
+          <figcaption class="shot-cap">
+            <span>bar · 353×47 · always on top</span>
+            <span>ask panel · 600px · drops 8px below the bar</span>
+            <span>frameless translucent webviews</span>
+          </figcaption>
+        </figure>
+
+        <div class="grid-3">
+          <figure class="shot" data-od-id="shot-gate-main">
+            <div class="shot-pad">
+              <h3>Ready to ask</h3>
+              <p>The default gate. Type, press ⌘⏎, and the latest screen frame rides along with your prompt.</p>
+            </div>
+            <div class="mv-stage">
+              <div class="mv mv-bar" style="margin-inline: auto;">
+                <div class="mv-bar-inner">
+                  <svg class="mv-logo" viewBox="0 0 16 16" aria-hidden="true">
+                    <rect width="16" height="16" rx="5" fill="currentColor"></rect>
+                    <path d="M4.5 11.5v-7l3.5 4.4 3.5-4.4v7" fill="none" stroke="var(--mv-card)" stroke-width="1.5"
+                          stroke-linecap="round" stroke-linejoin="round"></path>
+                  </svg>
+                  <input class="mv-input" placeholder="Ask Marvis…" aria-label="Ask Marvis">
+                  <span class="mv-icon-btn is-off" title="Coming soon"><svg viewBox="0 0 24 24" fill="none"
+                         stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                      <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"></path>
+                      <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+                      <line x1="12" x2="12" y1="19" y2="22"></line>
+                    </svg></span>
+                  <span class="mv-icon-btn" title="Settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                         stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                      <path
+                            d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z">
+                      </path>
+                      <circle cx="12" cy="12" r="3"></circle>
+                    </svg></span>
+                </div>
+              </div>
+            </div>
+            <figcaption class="gate-label">gate: main</figcaption>
+          </figure>
+          <figure class="shot" data-od-id="shot-gate-unlock">
+            <div class="shot-pad">
+              <h3>Locked keystore</h3>
+              <p>Keys stay sealed until you unlock with Touch ID, Face ID, or your Mac password.</p>
+            </div>
+            <div class="mv-stage">
+              <div class="mv mv-bar" style="margin-inline: auto;">
+                <div class="mv-bar-inner">
+                  <svg class="mv-logo" viewBox="0 0 16 16" aria-hidden="true">
+                    <rect width="16" height="16" rx="5" fill="currentColor"></rect>
+                    <path d="M4.5 11.5v-7l3.5 4.4 3.5-4.4v7" fill="none" stroke="var(--mv-card)" stroke-width="1.5"
+                          stroke-linecap="round" stroke-linejoin="round"></path>
+                  </svg>
+                  <span class="mv-perm">Unlock with Touch ID / password</span>
+                  <button class="mv-btn mv-btn-primary">Unlock</button>
+                </div>
+              </div>
+            </div>
+            <figcaption class="gate-label">gate: needs_unlock</figcaption>
+          </figure>
+          <figure class="shot" data-od-id="shot-gate-permission">
+            <div class="shot-pad">
+              <h3>Permission needed</h3>
+              <p>Without Screen Recording, Marvis can't see your screen — so the bar asks before anything else.</p>
+            </div>
+            <div class="mv-stage">
+              <div class="mv mv-bar" style="margin-inline: auto;">
+                <div class="mv-bar-inner">
+                  <svg class="mv-shield" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                       stroke-linecap="round" stroke-linejoin="round">
+                    <path
+                          d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z">
+                    </path>
+                    <path d="M12 8v4"></path>
+                    <path d="M12 16h.01"></path>
+                  </svg>
+                  <span class="mv-perm">Screen recording needed</span>
+                  <button class="mv-btn mv-btn-primary">Grant</button>
+                  <button class="mv-btn mv-btn-link">Open settings</button>
+                </div>
+              </div>
+            </div>
+            <figcaption class="gate-label">gate: needs_permission</figcaption>
+          </figure>
+        </div>
+
+        <div class="grid-2" style="align-items: center;">
+          <div class="stack" style="max-width: 34ch;">
+            <div>
+              <p class="eyebrow">Settings, 240px wide</p>
+              <h3>Provider keys, masked.</h3>
+            </div>
+            <p style="margin: 0; color: var(--muted); font-size: 15px;">Keys are validated against the provider before
+              they're stored, then only ever shown as <span class="num">…last4</span>. Ollama needs no key — it talks to
+              the local daemon. Deepgram lands with Listen in Phase 2.</p>
+            <p class="meta" style="margin: 0;">Save clears the input · Lock keys tears down capture</p>
+          </div>
+          <figure class="shot" data-od-id="shot-settings">
+            <div class="mv-stage-center">
+              <div class="mv mv-panel mv-settings">
+                <div class="mv-panel-head">
+                  <p>Settings</p>
+                  <span class="mv-icon-btn" title="Close"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                         stroke-width="2" stroke-linecap="round">
+                      <path d="M18 6 6 18"></path>
+                      <path d="m6 6 12 12"></path>
+                    </svg></span>
+                </div>
+                <div class="mv-settings-body">
+                  <div class="mv-row">
+                    <div class="mv-row-top">
+                      <span class="mv-row-name">OpenAI</span>
+                      <span><span class="mv-row-note">…7B2q</span><a class="mv-link">Remove</a></span>
+                    </div>
+                    <div class="mv-keyline">
+                      <input class="mv-key-input" placeholder="Replace key" aria-label="OpenAI API key">
+                      <button class="mv-btn mv-btn-primary">Save</button>
+                    </div>
+                    <select class="mv-select" aria-label="OpenAI model">
+                      <option>gpt-4o</option>
+                      <option>gpt-4o-mini</option>
+                    </select>
+                  </div>
+                  <div class="mv-row">
+                    <div class="mv-row-top">
+                      <span class="mv-row-name">Anthropic</span>
+                      <span class="mv-row-note">no key set</span>
+                    </div>
+                    <div class="mv-keyline">
+                      <input class="mv-key-input" placeholder="API key" aria-label="Anthropic API key">
+                      <button class="mv-btn mv-btn-primary">Save</button>
+                    </div>
+                    <select class="mv-select" aria-label="Anthropic model">
+                      <option>claude-sonnet-4-5</option>
+                    </select>
+                  </div>
+                  <div class="mv-row">
+                    <div class="mv-row-top">
+                      <span class="mv-row-name">Gemini</span>
+                      <span class="mv-row-note">no key set</span>
+                    </div>
+                    <div class="mv-keyline">
+                      <input class="mv-key-input" placeholder="API key" aria-label="Gemini API key">
+                      <button class="mv-btn mv-btn-primary">Save</button>
+                    </div>
+                    <select class="mv-select" aria-label="Gemini model">
+                      <option>gemini-2.0-flash</option>
+                    </select>
+                  </div>
+                  <div class="mv-row">
+                    <div class="mv-row-top">
+                      <span class="mv-row-name">Ollama</span>
+                      <span class="mv-row-note">local · no key needed</span>
+                    </div>
+                    <select class="mv-select" aria-label="Ollama model">
+                      <option>llama3.2</option>
+                      <option>qwen2.5</option>
+                    </select>
+                  </div>
+                  <div class="mv-row is-dim">
+                    <div class="mv-row-top">
+                      <span class="mv-row-name">Deepgram</span>
+                      <span class="mv-row-note">Phase 2</span>
+                    </div>
+                  </div>
+                  <div class="mv-row-foot">
+                    <button class="mv-btn mv-btn-outline">Lock keys</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <figcaption class="shot-cap">
+              <span>settings · 240px wide · ≤400px tall, scrolls</span>
+              <span>anchors to the bar's right edge</span>
+            </figcaption>
+          </figure>
+        </div>
+
+        <div class="grid-2" style="align-items: center;">
+          <figure class="shot" data-od-id="shot-listen">
+            <div class="mv-stage-center">
+              <div class="mv mv-listen">
+                <div class="mv-listen-chrome">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                       stroke-linejoin="round" aria-hidden="true">
+                    <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"></path>
+                    <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+                    <line x1="12" x2="12" y1="19" y2="22"></line>
+                  </svg>
+                  <span>Listen arrives in Phase 2</span>
+                </div>
+              </div>
+            </div>
+            <figcaption class="shot-cap">
+              <span>listen · 400px wide · drops 8px below the bar</span>
+              <span>docks 8px left of ask when both are open</span>
+            </figcaption>
+          </figure>
+          <div class="stack" style="max-width: 34ch;">
+            <div>
+              <p class="eyebrow">Listen, 400px wide</p>
+              <h3>Docks off Ask's left edge.</h3>
+            </div>
+            <p style="margin: 0; color: var(--muted); font-size: 15px;">When both panels are open, Listen snaps 8px to
+              the left of the 600px Ask panel — the layout engine keeps every panel clear of the others. Meeting
+              transcription lands in Phase 2 on Deepgram; the window and its chrome already ship.</p>
+            <p class="meta" style="margin: 0;">Centers under the bar when Ask is closed</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ─── privacy / local-first architecture ────────────────────── -->
+    <section class="section section-dark" id="privacy" data-od-id="privacy">
+      <div class="container stack" style="gap: 56px;">
+        <div style="max-width: 46ch;">
+          <p class="eyebrow">Local-first architecture</p>
+          <h2>What's on your machine stays on your machine.</h2>
+          <p class="lead" style="margin-top: 20px;">No accounts, no sync service, no Marvis servers. The only thing that
+            ever leaves your device is the request you send — your prompt plus one screen frame — straight to the LLM
+            provider you chose.</p>
+        </div>
+        <div class="grid-2" style="align-items: start;">
+          <div class="card" data-od-id="marvis-dir-card">
+            <p class="meta" style="letter-spacing: 0.04em; text-transform: uppercase;">Everything Marvis writes — one
+              folder you own</p>
+            <div class="filetree">~/.marvis/
+              ├── keys.enc <span class="dim">0600 · Argon2id + AES-256-GCM keyring</span>
+              ├── config.toml <span class="dim">0644 · models, hotkeys, window position</span>
+              ├── marvis.db <span class="dim">0600 · SQLite sessions &amp; messages</span>
+              └── models/ <span class="dim">local model files (planned)</span></div>
+            <p class="meta" style="margin-top: 16px;">Locking the keystore tears down screen capture, hides every panel,
+              and cancels in-flight requests.</p>
+          </div>
+          <div class="stack" style="gap: 28px;">
+            <div class="stat" data-od-id="stat-zero">
+              <div class="stat-num num">0</div>
+              <p class="stat-label">accounts, cloud syncs, or Marvis servers — there is nothing to phone home to.</p>
+            </div>
+            <div class="stat" data-od-id="stat-sixty">
+              <div class="stat-num num">60<span class="stat-unit">s</span></div>
+              <p class="stat-label">of rolling screen context kept in memory — ≤120 frames, ≤64 MB, never on disk.</p>
+            </div>
+            <div class="stat" data-od-id="stat-three">
+              <div class="stat-num num">3</div>
+              <p class="stat-label">files hold everything Marvis writes — keys, config, and history — all under <span
+                      class="num">~/.marvis</span>.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ─── hotkeys ───────────────────────────────────────────────── -->
+    <section class="section" id="hotkeys" data-od-id="hotkeys" style="background: var(--surface);">
+      <div class="container grid-2" style="align-items: start; gap: 64px;">
+        <div class="stack">
+          <div style="max-width: 34ch;">
+            <p class="eyebrow">Always in reach</p>
+            <h2>Drive it from the keyboard.</h2>
+            <p class="lead" style="margin-top: 20px; font-size: 17px;">Summon, move, snap, scroll, and click through the
+              overlay from anywhere. Every shortcut is configurable under <span class="num">[hotkeys]</span> in <span
+                    class="num">~/.marvis/config.toml</span>.</p>
+          </div>
+          <div class="card" data-od-id="deeplink-card" style="box-shadow: none;">
+            <p class="eyebrow" style="color: var(--muted); margin-bottom: 10px;">Deep links</p>
+            <p class="num" style="font-size: 14px; margin: 0; color: var(--fg-2);">marvis://ask?text=explain+this+error
+            </p>
+            <p style="margin: 10px 0 0; color: var(--muted); font-size: 14px;">Focuses the bar and fires an Ask from any
+              app — a browser, a script, a launcher. Any other <span class="num">marvis://</span> link just surfaces the
+              overlay.</p>
+          </div>
+        </div>
+        <table class="ds-table" data-od-id="hotkey-table">
+          <thead>
+            <tr>
+              <th>Action</th>
+              <th>Shortcut</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Toggle overlay visibility</td>
+              <td><span class="kbd">⌘ /</span></td>
+            </tr>
+            <tr>
+              <td>Ask — send with screen frame</td>
+              <td><span class="kbd">⌘ ⏎</span></td>
+            </tr>
+            <tr>
+              <td>Move bar</td>
+              <td><span class="kbd">⌘ ↑ ↓ ← →</span></td>
+            </tr>
+            <tr>
+              <td>Snap bar to display edge</td>
+              <td><span class="kbd">⌘ ⇧ ← →</span></td>
+            </tr>
+            <tr>
+              <td>Move bar to display <em>n</em></td>
+              <td><span class="kbd">⌘ ⇧ n</span></td>
+            </tr>
+            <tr>
+              <td>Toggle click-through</td>
+              <td><span class="kbd">⌘ M</span></td>
+            </tr>
+            <tr>
+              <td>Scroll Ask panel</td>
+              <td><span class="kbd">⌘ ⇧ ↑ ↓</span></td>
+            </tr>
+            <tr>
+              <td>Manual screenshot ask</td>
+              <td><span class="kbd">⌘ ⇧ S</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ─── providers & platforms ─────────────────────────────────── -->
+    <section class="section" id="providers" data-od-id="providers">
+      <div class="container grid-2" style="align-items: start; gap: 64px;">
+        <div class="stack">
+          <div style="max-width: 34ch;">
+            <p class="eyebrow">Your model, your call</p>
+            <h2>Bring your own model.</h2>
+            <p class="lead" style="margin-top: 20px; font-size: 17px;">Your key talks straight to the provider you pick
+              — or nowhere at all. With Ollama, inference runs fully on-device and no API key is needed.</p>
+          </div>
+          <div class="row" style="flex-wrap: wrap; gap: 10px;">
+            <span class="tag">OpenAI</span>
+            <span class="tag">Anthropic</span>
+            <span class="tag">Gemini</span>
+            <span class="tag">Ollama · local</span>
+          </div>
+          <p class="meta" style="margin: 0;">Keys are validated against the provider before they're stored in <span
+                  class="num">keys.enc</span>.</p>
+        </div>
+        <div data-od-id="platform-list">
+          <article class="log-row" data-od-id="platform-macos">
+            <h3>macOS</h3>
+            <span class="meta meta-desc">Apple Silicon &amp; Intel · ScreenCaptureKit</span>
+            <span class="pull"><span class="pill pill-green">Available now</span></span>
+          </article>
+          <article class="log-row" data-od-id="platform-windows">
+            <h3>Windows</h3>
+            <span class="meta meta-desc">Same Rust core, native capture</span>
+            <span class="pull"><span class="tag">In development</span></span>
+          </article>
+          <article class="log-row" data-od-id="platform-linux">
+            <h3>Linux</h3>
+            <span class="meta meta-desc">Same Rust core, native capture</span>
+            <span class="pull"><span class="tag">In development</span></span>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <!-- ─── cta strip ─────────────────────────────────────────────── -->
+    <section class="section" id="download" data-od-id="cta-strip"
+             style="text-align: center; background: var(--surface);">
+      <div class="container" style="max-width: 620px;">
+        <h2>Your screen. Your keys. Your machine.</h2>
+        <p class="lead" style="margin: 18px auto 32px;">Free and open source under MIT. The macOS build is available now
+          — Windows and Linux are in development.</p>
+        <a class="btn btn-primary" href="#" data-od-id="cta-primary">Download for macOS</a>
+      </div>
+    </section>
+  </main>
+
+  <footer class="pagefoot" data-od-id="footer">
+    <div class="container row-between">
+      <span class="row" style="gap: 10px;">
+        <svg viewBox="0 0 48 48" width="20" height="20" role="img" aria-label="Marvis mark">
+          <rect x="3" y="3" width="42" height="42" rx="10" fill="var(--fg-2)"></rect>
+          <circle cx="24" cy="17.5" r="7.5" fill="var(--accent)"></circle>
+          <circle cx="24" cy="17.5" r="2.9" fill="var(--bg)"></circle>
+          <rect x="14" y="30" width="20" height="2.6" rx="1.3" fill="var(--surface)"></rect>
+          <rect x="17.5" y="34.8" width="13" height="2.6" rx="1.3" fill="var(--meta)"></rect>
+        </svg>
+        <span class="wordmark">Marvis</span>
+        <span>© 2026 Marvis LLC · MIT license</span>
+      </span>
+      <span class="meta">Built with Tauri 2 + Rust + React · a ground-up rewrite of <a
+           href="https://github.com/pickle-com/glass">Glass</a></span>
+    </div>
+  </footer>
+
+
+  <script>
+    (function () {
+      var KEY = "marvis-iface-theme";
+      var shots = document.querySelector(".shots");
+      if (!shots) return;
+      var btns = Array.prototype.slice.call(document.querySelectorAll("[data-theme-btn]"));
+      function apply(theme, persist) {
+        shots.setAttribute("data-theme", theme);
+        btns.forEach(function (b) {
+          var on = b.getAttribute("data-theme-btn") === theme;
+          b.classList.toggle("is-on", on);
+          b.setAttribute("aria-pressed", on ? "true" : "false");
+        });
+        if (persist) {
+          try { localStorage.setItem(KEY, theme); } catch (e) { }
+        }
+      }
+      var saved = "light";
+      try { saved = localStorage.getItem(KEY) === "dark" ? "dark" : "light"; } catch (e) { }
+      apply(saved, false);
+      btns.forEach(function (btn) {
+        btn.addEventListener("click", function () {
+          apply(btn.getAttribute("data-theme-btn"), true);
+        });
+      });
+    })();
+  </script>
+</body>
+
+</html>

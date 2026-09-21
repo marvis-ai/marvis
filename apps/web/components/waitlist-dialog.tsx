@@ -45,7 +45,9 @@ export const WaitlistDialog = ({
         }),
       });
       setStatus(res.ok ? 'success' : 'error');
-      if (!res.ok) setError('Something went wrong — please try again.');
+      if (res.status === 400)
+        setError('Please check your email address and name, then try again.');
+      else if (!res.ok) setError('Something went wrong — please try again.');
     } catch {
       setStatus('error');
       setError('Network error — please try again.');

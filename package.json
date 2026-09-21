@@ -15,7 +15,8 @@
     "build:dev": "turbo run build:dev",
     "lint": "turbo lint",
     "check-types": "turbo check-types",
-    "test": "turbo test"
+    "test": "turbo test",
+    "test:functions": "bun test functions && bunx tsc -p functions/tsconfig.json"
   },
   "type": "module",
   "homepage": "https://github.com/MarvisLLC/marvis#readme",

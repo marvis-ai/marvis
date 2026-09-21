@@ -16,7 +16,8 @@
     "lint": "turbo lint",
     "check-types": "turbo check-types",
     "test": "turbo test",
-    "test:functions": "bun test functions && bunx tsc -p functions/tsconfig.json"
+    "test:functions": "bun test functions && bunx tsc -p functions/tsconfig.json",
+    "deploy": "neon deploy --env .env.local"
   },
   "type": "module",
   "homepage": "https://github.com/MarvisLLC/marvis#readme",

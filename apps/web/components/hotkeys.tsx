@@ -2,19 +2,10 @@ import type { ReactNode } from 'react';
 import { leadTop, splitGrid, surfaceBg } from './styles';
 
 const HOTKEYS: [ReactNode, string][] = [
-  ['Toggle overlay visibility', '⌘ /'],
-  ['Ask — send with screen frame', '⌘ ⏎'],
-  ['Move bar', '⌘ ↑ ↓ ← →'],
-  ['Snap bar to display edge', '⌘ ⇧ ← →'],
-  [
-    <>
-      Move bar to display <em>n</em>
-    </>,
-    '⌘ ⇧ n',
-  ],
-  ['Toggle click-through', '⌘ M'],
-  ['Scroll Ask panel', '⌘ ⇧ ↑ ↓'],
-  ['Manual screenshot ask', '⌘ ⇧ S'],
+  ['Show / hide everything', '⌘ /'],
+  ['Send ask', '⌘ ⏎'],
+  ['Screenshot → ask', '⌘ ⇧ S'],
+  ['Settings', '⌘ ,'],
 ];
 
 export const Hotkeys = () => (
@@ -33,10 +24,12 @@ export const Hotkeys = () => (
           <p
             className='lead'
             style={{ ...leadTop, fontSize: '17px' }}>
-            Summon, move, snap, scroll, and click through the overlay from
-            anywhere. Every shortcut is configurable under{' '}
+            Four global chords, registered at the OS level — click a binding in
+            Settings → Hotkeys and press a new one, or edit{' '}
             <span className='num'>[hotkeys]</span> in{' '}
-            <span className='num'>~/.marvis/config.toml</span>.
+            <span className='num'>~/.marvis/config.toml</span>. The bar itself
+            drags anywhere and remembers; Settings → Bar snaps it to a work-area
+            edge.
           </p>
         </div>
         <div

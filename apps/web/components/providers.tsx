@@ -31,8 +31,8 @@ export const Providers = () => (
         <p
           className='meta'
           style={{ margin: 0 }}>
-          Keys are validated against the provider before they&rsquo;re stored in{' '}
-          <span className='num'>keys.enc</span>.
+          Keys are stored in <span className='num'>keys.json</span> and only
+          ever shown masked — <span className='num'>…last4</span>.
         </p>
       </div>
       <div data-od-id='platform-list'>

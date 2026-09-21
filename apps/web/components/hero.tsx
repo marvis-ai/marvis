@@ -1,3 +1,4 @@
+import { Badge } from '@marvis/ui';
 import { Fragment, type ReactNode } from 'react';
 import { MvAskPanel, MvBar } from './mv';
 import { PreLines } from './pre-lines';
@@ -33,21 +34,19 @@ const EDITOR_LINES: ReactNode[] = [
   <Fragment key='l8'>{'}'}</Fragment>,
   null,
   <Fragment key='l10'>
-    <span className='c-mut'>fn</span> lock(&mut self) {'{'}
+    <span className='c-meta'>
+      {'/// newest frame — cloned, never serialized'}
+    </span>
   </Fragment>,
   <Fragment key='l11'>
-    self.capture.stop();{' '}
-    <span className='c-meta'>{'// tear down capture'}</span>
+    <span className='c-mut'>pub fn</span> latest(&self) -&gt;
+    Option&lt;Frame&gt; {'{'}
   </Fragment>,
   <Fragment key='l12'>
-    self.panels.hide_all();{' '}
-    <span className='c-meta'>{'// hide every panel'}</span>
+    self.frames.back().cloned(){' '}
+    <span className='c-meta'>{'// None until the first capture lands'}</span>
   </Fragment>,
-  <Fragment key='l13'>
-    self.requests.abort_all();{' '}
-    <span className='c-meta'>{'// cancel in-flight asks'}</span>
-  </Fragment>,
-  <Fragment key='l14'>{'}'}</Fragment>,
+  <Fragment key='l13'>{'}'}</Fragment>,
 ];
 
 export const Hero = () => (
@@ -61,10 +60,9 @@ export const Hero = () => (
         Ask anything about what&rsquo;s on your screen.
       </h1>
       <p className='lead'>
-        Marvis is a small translucent bar that floats above your workspace. It
-        sees your screen — only with your permission — and streams answers into
-        an overlay panel, while your keys, history, and screen data never leave
-        your machine.
+        A translucent bar floating over your workspace. It sees your screen —
+        only with permission — and your keys, history, and screen data never
+        leave your machine.
       </p>
       <div className='hero-cta'>
         <a
@@ -81,9 +79,21 @@ export const Hero = () => (
         </a>
       </div>
       <div className='hero-meta'>
-        <span className='tag'>Free & open source · MIT</span>
-        <span className='tag'>No account</span>
-        <span className='tag'>No cloud sync</span>
+        <Badge
+          variant='outline'
+          className='tag'>
+          Free &amp; Open Source · MIT
+        </Badge>
+        <Badge
+          variant='outline'
+          className='tag'>
+          No Account
+        </Badge>
+        <Badge
+          variant='outline'
+          className='tag'>
+          No Cloud Sync
+        </Badge>
       </div>
     </div>
 
@@ -101,17 +111,17 @@ export const Hero = () => (
             <span className='dot' />
             <span className='dot' />
             <span className='meta'>
-              capture.rs — marvis/apps/native/src-tauri
+              capture/mod.rs — marvis/apps/native/src-tauri
             </span>
           </div>
           <div className='editor-body'>
             <aside className='editor-side'>
               <div className='file'>ask.rs</div>
-              <div className='file active'>capture.rs</div>
-              <div className='file'>hotkeys.rs</div>
+              <div className='file active'>mod.rs</div>
+              <div className='file'>macos.rs</div>
               <div className='file'>keystore.rs</div>
-              <div className='file'>listen.rs</div>
-              <div className='file'>windows.rs</div>
+              <div className='file'>hotkey.rs</div>
+              <div className='file'>deeplink.rs</div>
               <div className='file'>config.toml</div>
             </aside>
             <div className='editor-code'>
@@ -129,7 +139,7 @@ export const Hero = () => (
                 The buffer only fills after the first captured frame lands —
                 once Screen Recording is granted. Until then,{' '}
                 <code>latest()</code> is empty by design: Marvis never keeps
-                frames from before you asked.
+                frames from before permission.
                 <span className='mv-caret' />
               </p>
             </MvAskPanel>

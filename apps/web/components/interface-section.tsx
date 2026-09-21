@@ -2,7 +2,7 @@
 
 import { useSyncExternalStore } from 'react';
 import { MarvisAppIcon, MoonIcon, SunIcon } from './icons';
-import { MvAskPanel, MvBar, MvListen, MvSettings } from './mv';
+import { MvAskPanel, MvBar, MvListen } from './mv';
 import { leadTop, mutedBody, sectionStack } from './styles';
 
 const THEME_KEY = 'marvis-iface-theme';
@@ -40,27 +40,28 @@ const themeStore = {
   },
 };
 
-/* The three bar gates, faithful to Bar.tsx (design.md §6). */
+/* The bar's real states, faithful to Bar.tsx (design.md §6): the resting
+ * capsule plus the two gates — main and needs_permission. */
 const GATES: {
   id: string;
   title: string;
   desc: string;
-  gate: 'main' | 'unlock' | 'permission';
+  gate: 'main' | 'mini' | 'permission';
   label: string;
 }[] = [
+  {
+    id: 'shot-state-mini',
+    title: 'At rest — a capsule',
+    desc: 'The bar idles as a 104px capsule: iris, camera, mic. Click it or just start typing — it morphs open.',
+    gate: 'mini',
+    label: 'state: mini',
+  },
   {
     id: 'shot-gate-main',
     title: 'Ready to ask',
     desc: 'The default gate. Type, press ⌘⏎, and the latest screen frame rides along with your prompt.',
     gate: 'main',
     label: 'gate: main',
-  },
-  {
-    id: 'shot-gate-unlock',
-    title: 'Locked keystore',
-    desc: 'Keys stay sealed until you unlock with Touch ID, Face ID, or your Mac password.',
-    gate: 'unlock',
-    label: 'gate: needs_unlock',
   },
   {
     id: 'shot-gate-permission',
@@ -91,14 +92,14 @@ export const InterfaceSection = () => {
         <div className='iface-head'>
           <div style={{ maxWidth: '42ch' }}>
             <p className='eyebrow'>The interface</p>
-            <h2>One bar, three panels — nothing else.</h2>
+            <h2>One bar, two panels — nothing else.</h2>
             <p
               className='lead'
               style={leadTop}>
-              Recreated 1:1 from the app&rsquo;s own views: a 353×47 bar, a
-              600px Ask panel, a 400px Listen panel, and a 240px Settings panel
-              — frameless, frosted overlays, not browser windows. The toggle
-              swaps in the app&rsquo;s real dark theme.
+              Everything floats above your work — a capsule at rest, an input
+              bar for asks, a panel for answers. These are the app&rsquo;s real
+              views, recreated 1:1 at actual size. The toggle swaps in its dark
+              theme.
             </p>
           </div>
           <div
@@ -164,10 +165,11 @@ export const InterfaceSection = () => {
               className='shot-ask'
               question='Where do my API keys actually live?'>
               <p>
-                In <code>keys.enc</code> inside <code>~/.marvis</code> — sealed
-                with AES-256-GCM and unlocked by Touch ID or your password. The
-                UI only ever shows the masked form, like <code>…7B2q</code>, so
-                a typed key is never echoed back on screen.
+                In <code>keys.json</code> inside <code>~/.marvis</code> — a
+                plaintext file at <code>0600</code> in a <code>0700</code>{' '}
+                folder, with no copy anywhere else. The UI only ever shows the
+                masked form, like <code>…7B2q</code>, so a typed key is never
+                echoed back on screen.
                 <span className='mv-caret' />
               </p>
             </MvAskPanel>
@@ -208,41 +210,6 @@ export const InterfaceSection = () => {
               <figcaption className='gate-label'>{gate.label}</figcaption>
             </figure>
           ))}
-        </div>
-
-        <div
-          className='grid-2'
-          style={{ alignItems: 'center' }}>
-          <div
-            className='stack'
-            style={{ maxWidth: '34ch' }}>
-            <div>
-              <p className='eyebrow'>Settings, 240px wide</p>
-              <h3>Provider keys, masked.</h3>
-            </div>
-            <p style={mutedBody}>
-              Keys are validated against the provider before they&rsquo;re
-              stored, then only ever shown as{' '}
-              <span className='num'>…last4</span>. Ollama needs no key — it
-              talks to the local daemon. Deepgram lands with Listen in Phase 2.
-            </p>
-            <p
-              className='meta'
-              style={{ margin: 0 }}>
-              Save clears the input · Lock keys tears down capture
-            </p>
-          </div>
-          <figure
-            className='shot'
-            data-od-id='shot-settings'>
-            <div className='mv-stage-center'>
-              <MvSettings />
-            </div>
-            <figcaption className='shot-cap'>
-              <span>settings · 240px wide · ≤400px tall, scrolls</span>
-              <span>anchors to the bar&rsquo;s right edge</span>
-            </figcaption>
-          </figure>
         </div>
 
         <div

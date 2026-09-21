@@ -871,12 +871,6 @@ h3 {
   color: var(--mv-primary-fg);
 }
 
-.mv-btn-outline {
-  border-color: var(--mv-border);
-  background: color-mix(in oklch, var(--mv-input) 30%, transparent);
-  color: var(--mv-fg);
-}
-
 .mv-btn-link {
   background: transparent;
   color: var(--mv-primary);
@@ -1006,88 +1000,65 @@ h3 {
   }
 }
 
-/* settings provider rows */
-.mv-row {
-  padding: 8px 12px;
-  border-bottom: 1px solid var(--mv-border);
+/* resting capsule — the bar's `is-mini` state (Bar.tsx): 104px pill,
+ * iris + camera + mic, before type-to-wake morphs it open */
+.mv-bar.is-mini {
+  width: 104px;
 }
 
-.mv-row.is-dim {
-  opacity: 0.6;
+.mv-bar.is-mini .mv-bar-inner {
+  justify-content: center;
 }
 
-.mv-row-top {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 8px;
-}
-
-.mv-row-name {
-  font-size: 12px;
-  font-weight: 500;
-}
-
-.mv-row-note {
-  font-size: 10px;
-  color: var(--mv-muted-fg);
-  white-space: nowrap;
-}
-
-.mv-link {
-  font-size: 10px;
-  color: var(--mv-primary);
-  margin-left: 4px;
-}
-
-.mv-keyline {
+/* listen phase-2 chrome — muted waveform, label, chip (ListenPanel.tsx) */
+.mv-wave {
   display: flex;
   align-items: center;
-  gap: 4px;
-  margin-top: 6px;
+  gap: 3px;
+  height: 18px;
 }
 
-.mv-key-input {
-  height: 24px;
-  flex: 1;
-  min-width: 0;
-  border: 1px solid var(--mv-border);
-  border-radius: 8px;
-  background: color-mix(in oklch, var(--mv-input) 30%, transparent);
-  padding: 0 8px;
-  font: inherit;
-  font-size: 12px;
-  color: var(--mv-fg);
-  outline: none;
+.mv-wave i {
+  width: 3px;
+  border-radius: 2px;
+  background: var(--mv-muted-fg);
 }
 
-.mv-key-input::placeholder {
+.mv-wave i:nth-child(1) {
+  height: 8px;
+}
+
+.mv-wave i:nth-child(2) {
+  height: 14px;
+}
+
+.mv-wave i:nth-child(3) {
+  height: 18px;
+}
+
+.mv-wave i:nth-child(4) {
+  height: 12px;
+}
+
+.mv-wave i:nth-child(5) {
+  height: 7px;
+}
+
+.mv-empty {
   color: var(--mv-muted-fg);
+  font-size: 12.5px;
 }
 
-.mv-select {
-  margin-top: 6px;
-  width: 100%;
-  height: 24px;
+.mv-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--mv-muted-fg);
   border: 1px solid var(--mv-border);
-  border-radius: 8px;
-  background: color-mix(in oklch, var(--mv-input) 30%, transparent);
-  padding: 0 6px;
-  font: inherit;
-  font-size: 12px;
-  color: var(--mv-fg);
-}
-
-.mv-select.is-off {
-  opacity: 0.5;
-}
-
-.mv-row-foot {
-  padding: 8px 12px;
-}
-
-.mv-row-foot .mv-btn {
-  width: 100%;
+  border-radius: 999px;
+  padding: 3px 8px;
 }
 
 /* hero float */
@@ -1474,16 +1445,6 @@ h3 {
   margin: 8px 4px 0;
 }
 
-.mv-settings {
-  width: 240px;
-  max-width: 100%;
-  max-height: 400px;
-}
-
-.mv-settings-body {
-  overflow-y: auto;
-}
-
 /* listen — 400px window; today it ships its chrome (Phase-2 placeholder) */
 .mv-listen {
   width: 400px;
@@ -1614,8 +1575,6 @@ h3 {
 .shots .mv-panel,
 .shots .mv-stage,
 .shots .shot-cap,
-.shots .mv-key-input,
-.shots .mv-select,
 .shots .mv-listen-chrome,
 .shots .mv-btn {
   transition:

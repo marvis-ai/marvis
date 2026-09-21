@@ -7,8 +7,10 @@ import { leadTop, sectionStack } from './styles';
 const FILE_TREE: ReactNode[] = [
   '~/.marvis/',
   <Fragment key='keys'>
-    ├── keys.enc{' '}
-    <span className='dim'>0600 · Argon2id + AES-256-GCM keyring</span>
+    ├── keys.json{' '}
+    <span className='dim'>
+      0600 · provider keys, masked as …last4 in the UI
+    </span>
   </Fragment>,
   <Fragment key='config'>
     ├── config.toml{' '}
@@ -64,8 +66,9 @@ export const Privacy = () => (
           <p
             className='meta'
             style={{ marginTop: '16px' }}>
-            Locking the keystore tears down screen capture, hides every panel,
-            and cancels in-flight requests.
+            The folder itself is <span className='num'>0700</span> — delete{' '}
+            <span className='num'>~/.marvis</span> and every trace of Marvis is
+            gone.
           </p>
         </div>
         <div
@@ -100,6 +103,12 @@ export const Privacy = () => (
               all under <span className='num'>~/.marvis</span>.
             </p>
           </div>
+          <p
+            className='meta'
+            style={{ margin: 0 }}>
+            Open source under MIT — every claim on this page maps to a file in
+            the repo.
+          </p>
         </div>
       </div>
     </div>

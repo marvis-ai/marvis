@@ -15,8 +15,8 @@ export const TopNav = () => (
       </a>
       <nav>
         <a href='#features'>Features</a>
-        <a href='#interface'>Interface</a>
         <a href='#privacy'>Privacy</a>
+        <a href='#interface'>Interface</a>
         <a href='#hotkeys'>Hotkeys</a>
         <a href='#providers'>Providers</a>
       </nav>

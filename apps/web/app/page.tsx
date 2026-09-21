@@ -15,8 +15,8 @@ const Home = () => {
       <main id='content'>
         <Hero />
         <Features />
-        <InterfaceSection />
         <Privacy />
+        <InterfaceSection />
         <Hotkeys />
         <Providers />
         <DownloadCta />

@@ -1,4 +1,4 @@
-import { KeyIcon, LockIcon, MonitorIcon } from './icons';
+import { CommandIcon, KeyIcon, MonitorIcon } from './icons';
 import { sectionStack } from './styles';
 
 export const Features = () => (
@@ -27,6 +27,9 @@ export const Features = () => (
             in-memory ring buffer — about 60 seconds, capped at 120 frames — and
             are never written to disk.
           </p>
+          <span className='meta'>
+            “explain this error” · “summarize this page” · “what changed here”
+          </span>
         </div>
         <div
           className='feature card-flat'
@@ -34,27 +37,29 @@ export const Features = () => (
           <div className='feature-mark'>
             <KeyIcon />
           </div>
-          <h3>Bring your own model</h3>
+          <h3>No account, no proxy</h3>
           <p>
-            Point Marvis at OpenAI, Anthropic, or Gemini with your own API key —
-            or skip keys entirely and run fully local inference through Ollama.
+            Your API key talks straight to the provider you choose — or run
+            fully local inference through Ollama with no key at all.
             There&rsquo;s no Marvis account and no proxy in the middle.
           </p>
         </div>
         <div
           className='feature card-flat'
-          data-od-id='feature-keystore'>
+          data-od-id='feature-always-in-reach'>
           <div className='feature-mark'>
-            <LockIcon />
+            <CommandIcon />
           </div>
-          <h3>Your keys stay sealed</h3>
+          <h3>Always in reach</h3>
           <p>
-            Provider keys live in <span className='num'>keys.enc</span>,
-            encrypted with AES-256-GCM under a passphrase-derived Argon2id key
-            and validated before they&rsquo;re stored. The UI only ever sees
-            masked values.
+            Four global chords — toggle, ask, screenshot, settings — each
+            rebindable in Settings → Hotkeys. The bar drags anywhere and
+            remembers its spot; <span className='num'>marvis://</span> links
+            fire an ask from any app, script, or launcher.
           </p>
-          <span className='meta'>openai: set ••••1234</span>
+          <span className='meta'>
+            ⌘/ · ⌘⏎ · ⌘⇧S · ⌘, — every key remappable
+          </span>
         </div>
       </div>
     </div>

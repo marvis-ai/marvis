@@ -11,6 +11,8 @@ node_modules
 dist
 dist-ssr
 *.local
+.env
+.env.*
 .next
 .superpowers
 
@@ -27,3 +29,4 @@ dist-ssr
 
 # turbo
 .turbo
+.neon

@@ -33,6 +33,8 @@
     "packages/*"
   ],
   "dependencies": {
+    "@neon/config": "^1.7.2",
+    "@neon/env": "^1.4.3",
     "turbo": "^2.11.2",
     "typescript": "^6.0.3"
   },

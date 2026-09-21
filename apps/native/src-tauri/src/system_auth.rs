@@ -43,7 +43,10 @@ use security_framework_sys::access_control::{
     kSecAccessControlUserPresence, kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
     SecAccessControlCreateWithFlags,
 };
-use security_framework_sys::base::{errSecAuthFailed, errSecDuplicateItem, errSecItemNotFound};
+use security_framework_sys::base::{errSecDuplicateItem, errSecItemNotFound};
+// Only asserted against in tests — gated so release builds don't import it.
+#[cfg(test)]
+use security_framework_sys::base::errSecAuthFailed;
 use security_framework_sys::item::{
     kSecAttrAccessControl, kSecAttrAccount, kSecAttrService, kSecClass, kSecClassGenericPassword,
     kSecMatchLimit, kSecReturnData, kSecValueData,

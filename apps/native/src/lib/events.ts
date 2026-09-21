@@ -22,6 +22,12 @@ export const EV_ALERT_SHOW = 'alert:show';
 /** Broadcast when a frame exists but screen permission was revoked
  * mid-session (ask.rs) — the bar flips back to its permission card. */
 export const EV_CAPTURE_PERMISSION_NEEDED = 'capture:permission-needed'; // { permission: 'screen' }
+/** Broadcast after every successful `config_set` — payload is the full
+ * `Config`, so windows re-render without a second `config_get`. */
+export const EV_CONFIG_CHANGED = 'config:changed';
+/** Emitted to the `prefs` window only — `{"mode": "settings"|"onboarding"}`.
+ * `prefs_mode` is the mount-time read for shows that raced the load. */
+export const EV_PREFS_MODE = 'prefs:mode';
 
 /**
  * `listen<T>(name)` with cleanup. Subscribes once per `name`; the callback

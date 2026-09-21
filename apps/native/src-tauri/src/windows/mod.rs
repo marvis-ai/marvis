@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 use tauri::{
-    AppHandle, LogicalPosition, LogicalSize, Monitor, WebviewUrl, WebviewWindow,
+    AppHandle, Emitter, LogicalPosition, LogicalSize, Monitor, WebviewUrl, WebviewWindow,
     WebviewWindowBuilder,
 };
 
@@ -57,18 +57,16 @@ impl Rect {
 pub enum Panel {
     Ask,
     Listen,
-    Settings,
 }
 
 impl Panel {
-    pub const ALL: [Panel; 3] = [Panel::Ask, Panel::Listen, Panel::Settings];
+    pub const ALL: [Panel; 2] = [Panel::Ask, Panel::Listen];
 
     /// Window label — also the `?view=` query value.
     pub fn label(self) -> &'static str {
         match self {
             Panel::Ask => "ask",
             Panel::Listen => "listen",
-            Panel::Settings => "settings",
         }
     }
 
@@ -78,7 +76,6 @@ impl Panel {
         Some(match label {
             "ask" => Panel::Ask,
             "listen" => Panel::Listen,
-            "settings" => Panel::Settings,
             _ => return None,
         })
     }
@@ -87,15 +84,13 @@ impl Panel {
         match self {
             Panel::Ask => 600.0,
             Panel::Listen => 400.0,
-            Panel::Settings => 240.0,
         }
     }
 
-    /// `adjust_height` upper bound (spec: ask/listen ≤900, settings ≤400).
+    /// `adjust_height` upper bound (spec: ask/listen ≤900).
     pub fn max_height(self) -> f64 {
         match self {
             Panel::Ask | Panel::Listen => 900.0,
-            Panel::Settings => 400.0,
         }
     }
 
@@ -103,7 +98,6 @@ impl Panel {
     pub fn default_height(self) -> f64 {
         match self {
             Panel::Ask | Panel::Listen => 480.0,
-            Panel::Settings => 320.0,
         }
     }
 }
@@ -120,6 +114,13 @@ pub enum Dir {
 
 const BAR_W: f64 = 353.0;
 const BAR_H: f64 = 47.0;
+/// The preferences window — a normal decorated macOS window (native
+/// traffic lights, opaque, NOT always-on-top), not an overlay panel.
+/// Label `prefs`, `?view=prefs`; it hosts both the settings sidebar and
+/// the onboarding wizard, switched by `prefs:mode` emits.
+pub const PREFS_LABEL: &str = "prefs";
+const PREFS_W: f64 = 720.0;
+const PREFS_H: f64 = 520.0;
 /// Transient alert toast — its own window because the bar is a fixed
 /// 353×47 pill with no room for an error row (the old inline row
 /// squeezed the pill's content). Label `alert`, `?view=alert`.
@@ -159,6 +160,15 @@ pub struct WindowPool {
     /// it must exist before the keystore is unlocked to report unlock
     /// failures).
     alert: Option<WebviewWindow>,
+    /// The decorated preferences window (settings + onboarding). Built
+    /// lazily on first `show_prefs` — unlike the alert it is NOT needed
+    /// before the gate, and unlike panels it is NOT part of `Main`
+    /// (settings/onboarding must work while the keystore is locked).
+    prefs: Option<WebviewWindow>,
+    /// The mode `prefs` was last opened in (`"settings"|"onboarding"`) —
+    /// the `prefs_mode` command returns it so a `prefs:mode` emit that
+    /// raced a still-loading webview isn't lost.
+    prefs_mode: String,
     panels: BTreeMap<Panel, WebviewWindow>,
     visible: BTreeSet<Panel>,
     /// Panels visible before the last `toggle_all` hide — restored on show.
@@ -179,6 +189,8 @@ impl WindowPool {
         let mut pool = Self {
             bar: None,
             alert: None,
+            prefs: None,
+            prefs_mode: String::new(),
             panels: BTreeMap::new(),
             visible: BTreeSet::new(),
             remembered: BTreeSet::new(),
@@ -206,6 +218,8 @@ impl WindowPool {
         Self {
             bar: None,
             alert: None,
+            prefs: None,
+            prefs_mode: String::new(),
             panels: BTreeMap::new(),
             visible: BTreeSet::new(),
             remembered: BTreeSet::new(),
@@ -235,6 +249,7 @@ impl WindowPool {
         self.bar.as_ref()
     }
 
+    #[allow(dead_code)] // accessor kept for future panel consumers
     pub fn panel_window(&self, panel: Panel) -> Option<&WebviewWindow> {
         self.panels.get(&panel)
     }
@@ -313,6 +328,54 @@ impl WindowPool {
         if let Some(win) = &self.alert {
             let _ = win.hide();
         }
+    }
+
+    /// Show the prefs window in `mode` (`"settings"` or `"onboarding"`).
+    /// Built lazily — once it exists the same webview is re-shown and the
+    /// mode is pushed via `prefs:mode` (the frontend also re-reads it with
+    /// `prefs_mode` on mount, so a show that raced the load still lands).
+    /// The window title follows the mode: `Marvis — Settings` /
+    /// `Marvis — Set up`.
+    pub fn show_prefs(&mut self, app: &AppHandle, mode: &str) {
+        let win = match &self.prefs {
+            Some(w) => w.clone(),
+            None => match build_prefs_window(app) {
+                Ok(w) => {
+                    // Center only on first show — after that the user's
+                    // placement (normal macOS window behavior) is kept.
+                    let _ = w.center();
+                    self.prefs = Some(w.clone());
+                    w
+                }
+                Err(e) => {
+                    log::warn!("windows: prefs window failed to build: {e}");
+                    return;
+                }
+            },
+        };
+        self.prefs_mode = mode.to_string();
+        let _ = app.emit_to(
+            PREFS_LABEL,
+            "prefs:mode",
+            serde_json::json!({ "mode": mode }),
+        );
+        let _ = win.set_title(match mode {
+            "onboarding" => "Marvis — Set up",
+            _ => "Marvis — Settings",
+        });
+        let _ = win.center();
+        let _ = win.show();
+        let _ = win.set_focus();
+    }
+
+    pub fn hide_prefs(&self) {
+        if let Some(win) = &self.prefs {
+            let _ = win.hide();
+        }
+    }
+
+    pub fn prefs_mode(&self) -> &str {
+        &self.prefs_mode
     }
 
     /// Hide `panel` and restack the remaining visible panels.
@@ -429,7 +492,7 @@ impl WindowPool {
     }
 
     /// `window_adjust_height(name, px)`: `name` is the window label
-    /// (`"ask"|"listen"|"settings"`). Clamps to the panel's max height and
+    /// (`"ask"|"listen"`). Clamps to the panel's max height and
     /// animates the bounds keeping the top edge anchored; result is re-clamped
     /// so the bottom stays inside the work area.
     pub fn adjust_height(&mut self, name: &str, px: f64) {
@@ -623,6 +686,42 @@ fn build_window(app: &AppHandle, label: &str, w: f64, h: f64) -> anyhow::Result<
     // Unconditional per arch rule — no toggle.
     if let Err(e) = win.set_content_protected(true) {
         log::warn!("windows: set_content_protected failed for {label}: {e}");
+    }
+    Ok(win)
+}
+
+/// The prefs window is deliberately NOT built by [`build_window`]: it's a
+/// real macOS window, not overlay chrome — native decorations (traffic
+/// lights + title), opaque, normal focus, no always-on-top. It stays
+/// content-protected (the privacy spec holds for every window) and
+/// joinable on all workspaces so it can be summoned over any space.
+/// `CloseRequested` is intercepted into a hide: the window is owned by
+/// the pool for the app's lifetime, so the red light must not destroy
+/// the webview (a fresh build would lose scroll/tab state).
+fn build_prefs_window(app: &AppHandle) -> anyhow::Result<WebviewWindow> {
+    let url = WebviewUrl::App(format!("index.html?view={PREFS_LABEL}").into());
+    let win = WebviewWindowBuilder::new(app, PREFS_LABEL, url)
+        .inner_size(PREFS_W, PREFS_H)
+        .title("Marvis — Settings")
+        .decorations(true)
+        .transparent(false)
+        .resizable(false)
+        .visible(false)
+        .build()?;
+    {
+        let handle = win.clone();
+        win.on_window_event(move |event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                let _ = handle.hide();
+            }
+        });
+    }
+    if let Err(e) = win.set_visible_on_all_workspaces(true) {
+        log::warn!("windows: set_visible_on_all_workspaces failed for prefs: {e}");
+    }
+    if let Err(e) = win.set_content_protected(true) {
+        log::warn!("windows: set_content_protected failed for prefs: {e}");
     }
     Ok(win)
 }

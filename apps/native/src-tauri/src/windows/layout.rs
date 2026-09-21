@@ -17,11 +17,9 @@ pub const EDGE_MARGIN: f64 = 12.0;
 /// - `ask` 600w centered under the bar (`y = bar.bottom + 8`).
 /// - `listen` 400w to the LEFT of `ask` when both are visible (8 px gap),
 ///   else centered under the bar.
-/// - `settings` 240w right-aligned under the bar (`right edge = bar.right`).
-///   The bar is 353w but `ask` is 600w centered, so `bar.right` falls INSIDE
-///   ask's span whenever ask is visible — a literal right edge would overlap.
-///   Spec requires non-overlapping rects, so settings is pushed right of the
-///   rightmost visible feature panel in that case (8 px gap).
+///
+/// Settings is no longer a panel — it lives in the decorated `prefs`
+/// window, which the pool positions independently.
 ///
 /// Heights are each panel's [`Panel::default_height`]; `WindowPool` overrides
 /// them with stored content heights when applying the layout.
@@ -53,25 +51,6 @@ pub fn panel_rects(bar: Rect, visible: &BTreeSet<Panel>) -> BTreeMap<Panel, Rect
                 y,
                 w: Panel::Listen.width(),
                 h: Panel::Listen.default_height(),
-            },
-        );
-    }
-
-    if visible.contains(&Panel::Settings) {
-        let mut x = bar.right() - Panel::Settings.width();
-        // Push right to stay clear of the wider feature panels.
-        for p in [Panel::Ask, Panel::Listen] {
-            if let Some(r) = out.get(&p) {
-                x = x.max(r.right() + PANEL_PAD);
-            }
-        }
-        out.insert(
-            Panel::Settings,
-            Rect {
-                x,
-                y,
-                w: Panel::Settings.width(),
-                h: Panel::Settings.default_height(),
             },
         );
     }
@@ -155,30 +134,15 @@ mod tests {
     }
 
     #[test]
-    fn settings_is_right_aligned_under_bar() {
-        let rects = panel_rects(BAR, &vis(&[Panel::Settings]));
-        let settings = rects[&Panel::Settings];
-        assert_eq!(settings.w, 240.0);
-        assert_eq!(settings.right(), BAR.right());
-        assert_eq!(settings.y, BAR.bottom() + 8.0);
-    }
-
-    #[test]
-    fn all_three_visible_do_not_overlap() {
-        let rects = panel_rects(BAR, &vis(&[Panel::Ask, Panel::Listen, Panel::Settings]));
-        assert_eq!(rects.len(), 3);
+    fn both_visible_do_not_overlap() {
+        let rects = panel_rects(BAR, &vis(&[Panel::Ask, Panel::Listen]));
+        assert_eq!(rects.len(), 2);
         let v: Vec<Rect> = rects.values().copied().collect();
         for i in 0..v.len() {
             for j in (i + 1)..v.len() {
                 assert!(!v[i].intersects(&v[j]), "rects {i} and {j} overlap: {v:?}");
             }
         }
-    }
-
-    #[test]
-    fn settings_and_listen_do_not_overlap_without_ask() {
-        let rects = panel_rects(BAR, &vis(&[Panel::Listen, Panel::Settings]));
-        assert!(!rects[&Panel::Listen].intersects(&rects[&Panel::Settings]));
     }
 
     #[test]

@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Marvis app icon">
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3a3937"/>
+      <stop offset="1" stop-color="#242321"/>
+    </linearGradient>
+  </defs>
+  <!-- Marvis icon: a single warm-dark rounded square holding the elements —
+       a seeing iris and streaming text lines -->
+  <rect x="28" y="28" width="456" height="456" rx="104" fill="url(#tile)"/>
+  <rect x="29" y="29" width="454" height="454" rx="103" fill="none" stroke="#ffffff" stroke-opacity="0.14" stroke-width="2"/>
+  <circle cx="256" cy="192" r="84" fill="#78a1bb"/>
+  <circle cx="256" cy="192" r="31" fill="#ffffff"/>
+  <rect x="156" y="314" width="200" height="30" rx="15" fill="#f6f5f4"/>
+  <rect x="196" y="366" width="120" height="30" rx="15" fill="#a39e98"/>
+</svg>

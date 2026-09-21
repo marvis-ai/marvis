@@ -394,21 +394,15 @@ fn show_alert(app: &AppHandle, message: &str, action: Option<&str>) {
     state.pool.lock().show_alert(action.is_some());
 }
 
-/// Surface the settings panel, or explain why it can't be: panels only
-/// exist once the gate has opened (`enter_main`), so `Cmd+,` and the tray
-/// item would otherwise do nothing while locked.
+/// Surface the prefs window in settings mode. Unlike the retired mini
+/// panel this works at ANY gate — the Providers tab carries its own
+/// locked-vault affordance, and `Cmd+,`/the tray item must respond even
+/// while the keystore is locked (that's exactly when the user wants it).
 fn show_settings(app: &AppHandle) {
-    let state = app.state::<AppState>();
-    let mut pool = state.pool.lock();
-    if pool.panel_window(Panel::Settings).is_none() {
-        drop(pool);
-        show_alert(app, "Unlock Marvis to open settings.", None);
-        return;
-    }
-    pool.show(Panel::Settings);
-    if let Some(win) = pool.panel_window(Panel::Settings) {
-        let _ = win.set_focus();
-    }
+    app.state::<AppState>()
+        .pool
+        .lock()
+        .show_prefs(app, "settings");
 }
 
 /// Broadcast the (masked) keystore status after any mutation.
@@ -416,22 +410,35 @@ fn emit_keystore_changed(app: &AppHandle, keystore: &Keystore) {
     let _ = app.emit("keystore:changed", keystore_status_payload(keystore));
 }
 
-/// Static per-provider model lists (spec); Ollama's comes from the daemon.
+/// Static per-provider model lists (spec); Ollama's comes from the daemon
+/// and a compatible endpoint's from its `/models` route — both resolve
+/// live, so their static list is empty. OpenRouter's list is a curated
+/// fallback: the live `/models` catalog replaces it when reachable, but
+/// the first entry still seeds `provider_args`'s default model.
 fn static_models(kind: ProviderKind) -> &'static [&'static str] {
     match kind {
         ProviderKind::OpenAi => &["gpt-4o", "gpt-4o-mini", "o4-mini"],
         ProviderKind::Anthropic => &["claude-sonnet-4-5", "claude-opus-4-1"],
         ProviderKind::Gemini => &["gemini-2.5-pro", "gemini-2.5-flash"],
-        ProviderKind::Ollama => &[],
+        ProviderKind::OpenRouter => &[
+            "openai/gpt-4o-mini",
+            "anthropic/claude-3.5-sonnet",
+            "meta-llama/llama-3.3-70b-instruct",
+            "google/gemini-2.0-flash-001",
+        ],
+        ProviderKind::Ollama | ProviderKind::Compatible => &[],
     }
 }
 
-/// Model for `validate()` probes: the configured selection when it belongs
-/// to this provider, else the provider's first static model (`""` for
-/// Ollama — its `validate` hits `/api/tags` and never names a model).
-fn validate_model(state: &AppState, kind: ProviderKind) -> String {
+/// `(model, base_url)` args for building a provider. `model` is the
+/// configured selection when it belongs to this provider, else the
+/// provider's first static model (`""` for Ollama — its `validate` hits
+/// `/api/tags` and never names a model — and for a compatible endpoint,
+/// whose validation hits `/models`). `base_url` is the configured
+/// `compat.base_url` (only `Compatible` reads it; `None` when unset).
+fn provider_args(state: &AppState, kind: ProviderKind) -> (String, Option<String>) {
     let cfg = state.config.lock();
-    if cfg.models.llm_provider == kind.as_str() && !cfg.models.llm_model.is_empty() {
+    let model = if cfg.models.llm_provider == kind.as_str() && !cfg.models.llm_model.is_empty() {
         cfg.models.llm_model.clone()
     } else {
         static_models(kind)
@@ -439,7 +446,9 @@ fn validate_model(state: &AppState, kind: ProviderKind) -> String {
             .copied()
             .unwrap_or_default()
             .to_string()
-    }
+    };
+    let base_url = Some(cfg.compat.base_url.clone()).filter(|u| !u.is_empty());
+    (model, base_url)
 }
 
 /// `GET /api/tags` → model names; any error (daemon down, bad body) maps
@@ -574,11 +583,11 @@ async fn keystore_set_key(
     let Some(kind) = ProviderKind::from_str(&provider) else {
         return Err(format!("unknown provider {provider:?}"));
     };
-    let model = {
+    let (model, base_url) = {
         let state = app.state::<AppState>();
-        validate_model(&state, kind)
+        provider_args(&state, kind)
     };
-    make_provider(kind, Some(key.clone()), model)
+    make_provider(kind, Some(key.clone()), model, base_url)
         .validate()
         .await
         .map_err(|e| e.to_string())?;
@@ -617,11 +626,17 @@ async fn model_validate_key(app: AppHandle, provider: String, key: String) -> se
     let Some(kind) = ProviderKind::from_str(&provider) else {
         return json!({ "ok": false, "error": format!("unknown provider {provider:?}") });
     };
-    let model = {
+    let (model, base_url) = {
         let state = app.state::<AppState>();
-        validate_model(&state, kind)
+        provider_args(&state, kind)
     };
-    match make_provider(kind, Some(key), model).validate().await {
+    // `Some(key)` is also right for a keyless compatible endpoint: the
+    // adapter treats an empty key as "no auth header", and the frontend
+    // passes "" when the endpoint is open.
+    match make_provider(kind, Some(key), model, base_url)
+        .validate()
+        .await
+    {
         Ok(()) => json!({ "ok": true }),
         Err(e) => json!({ "ok": false, "error": e.to_string() }),
     }
@@ -651,12 +666,46 @@ fn model_set_selected(
     Ok(json!({ "provider": cfg.models.llm_provider, "model": cfg.models.llm_model }))
 }
 
-/// Static per-provider lists (spec); Ollama resolves `GET /api/tags`.
-/// Unknown providers and Ollama fetch errors → empty list.
+/// Static per-provider lists (spec); Ollama resolves `GET /api/tags`,
+/// a compatible endpoint resolves `GET {base}/models` with its stored key
+/// (if any), and OpenRouter resolves `GET {OPENROUTER_BASE_URL}/models`
+/// the same way — falling back to the curated static list when the fetch
+/// comes back empty (offline, or a locked vault on a keyed listing).
+/// Unknown providers and fetch errors → empty list.
 #[tauri::command]
-async fn model_list_available(provider: String) -> Vec<String> {
+async fn model_list_available(app: AppHandle, provider: String) -> Vec<String> {
     match ProviderKind::from_str(&provider) {
         Some(ProviderKind::Ollama) => ollama_models().await,
+        Some(ProviderKind::Compatible) => {
+            let state = app.state::<AppState>();
+            let (base_url, key) = {
+                let base = state.config.lock().compat.base_url.clone();
+                // A locked keystore yields None — the listing still works
+                // for open endpoints and simply comes back empty for
+                // keyed ones, matching the every-failure-is-[] contract.
+                let key = state.keystore.lock().key(ProviderKind::Compatible.as_str());
+                (base, key)
+            };
+            llm::compat::list_models(&base_url, key).await
+        }
+        Some(ProviderKind::OpenRouter) => {
+            // `key()` returns an owned Option — the lock drops before await.
+            let key = app
+                .state::<AppState>()
+                .keystore
+                .lock()
+                .key(ProviderKind::OpenRouter.as_str());
+            let live =
+                llm::compat::list_models(llm::compat::OPENROUTER_BASE_URL, key).await;
+            if live.is_empty() {
+                static_models(ProviderKind::OpenRouter)
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect()
+            } else {
+                live
+            }
+        }
         Some(kind) => static_models(kind).iter().map(|s| s.to_string()).collect(),
         None => Vec::new(),
     }
@@ -722,9 +771,27 @@ fn window_show_settings(app: AppHandle) {
     show_settings(&app);
 }
 
+/// Onboarding mode of the same prefs window — the startup first-run
+/// opener and the sidebar's "Re-run setup" both come through here.
 #[tauri::command]
-fn window_hide_settings(state: State<'_, AppState>) {
-    state.pool.lock().hide(Panel::Settings);
+fn window_show_onboarding(app: AppHandle) {
+    app.state::<AppState>()
+        .pool
+        .lock()
+        .show_prefs(&app, "onboarding");
+}
+
+#[tauri::command]
+fn window_hide_prefs(state: State<'_, AppState>) {
+    state.pool.lock().hide_prefs();
+}
+
+/// The mode the prefs window was last shown in (`"settings"` |
+/// `"onboarding"`, `""` before first use) — read on mount so a
+/// `prefs:mode` emit that raced the loading webview still lands.
+#[tauri::command]
+fn prefs_mode(state: State<'_, AppState>) -> String {
+    state.pool.lock().prefs_mode().to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -756,7 +823,7 @@ fn alert_dismiss(state: State<'_, AppState>) {
     state.pool.lock().hide_alert();
 }
 
-/// `name` is the window label (`"ask"|"listen"|"settings"`); `height` is
+/// `name` is the window label (`"ask"|"listen"`); `height` is
 /// the requested content height in px — the pool clamps and animates.
 #[tauri::command]
 fn window_adjust_height(state: State<'_, AppState>, name: String, height: f64) {
@@ -845,9 +912,13 @@ fn config_get(state: State<'_, AppState>) -> Config {
 
 /// Limited writable surface: `models.llm_provider`, `models.llm_model`,
 /// `hotkeys.<action>`, `window.bar_x`, `window.bar_y` (number sets, null
-/// clears). Persists `config.toml` and returns the updated config. A
-/// `hotkeys.*` write re-registers the active set (full or limited,
-/// matching the current gate).
+/// clears), `app.onboarding_done` (bool), `app.appearance`
+/// (`auto|light|dark`), `compat.name`, `compat.base_url` (validated
+/// http(s) URL; `""` clears). Persists `config.toml` and returns the
+/// updated config. A `hotkeys.*` write re-registers the active set (full
+/// or limited, matching the current gate). Every successful write
+/// broadcasts `config:changed` so open windows re-render (appearance
+/// flips, provider lists, the bar's drag hint).
 #[tauri::command]
 fn config_set(app: AppHandle, key: String, value: serde_json::Value) -> Result<Config, String> {
     let state = app.state::<AppState>();
@@ -872,6 +943,35 @@ fn config_set(app: AppHandle, key: String, value: serde_json::Value) -> Result<C
             }
             "window.bar_x" => cfg.window.bar_x = window_pref_value(&value)?,
             "window.bar_y" => cfg.window.bar_y = window_pref_value(&value)?,
+            "app.onboarding_done" => {
+                cfg.app.onboarding_done = value
+                    .as_bool()
+                    .ok_or("app.onboarding_done must be a bool")?;
+            }
+            "app.appearance" => {
+                let v = value.as_str().ok_or("app.appearance must be a string")?;
+                if !matches!(v, "auto" | "light" | "dark") {
+                    return Err(format!("unknown appearance {v:?}"));
+                }
+                cfg.app.appearance = v.to_string();
+            }
+            "compat.name" => {
+                cfg.compat.name = value
+                    .as_str()
+                    .ok_or("compat.name must be a string")?
+                    .trim()
+                    .to_string();
+            }
+            "compat.base_url" => {
+                let v = value
+                    .as_str()
+                    .ok_or("compat.base_url must be a string")?
+                    .trim();
+                if !v.is_empty() && !llm::compat::is_valid_base_url(v) {
+                    return Err("compat.base_url must be an http(s):// URL".to_string());
+                }
+                cfg.compat.base_url = v.to_string();
+            }
             _ if key.starts_with("hotkeys.") => {
                 let name = &key["hotkeys.".len()..];
                 let accel = value.as_str().ok_or("hotkey binding must be a string")?;
@@ -890,6 +990,7 @@ fn config_set(app: AppHandle, key: String, value: serde_json::Value) -> Result<C
         swap_hotkeys(&app, all);
     }
     let updated = state.config.lock().clone();
+    let _ = app.emit("config:changed", &updated);
     Ok(updated)
 }
 
@@ -954,6 +1055,24 @@ pub fn run() {
             // Computes the gate, enters `Main` if it's already open, and
             // emits `app:state` either way.
             transition_gate(handle);
+            // First run (or any install that predates onboarding_done):
+            // the wizard takes the decorated prefs window. It drives the
+            // same keystore_init/unlock + permissions_request_screen
+            // commands the bar's gate cards use, so both surfaces stay
+            // consistent while it's open.
+            if !handle
+                .state::<AppState>()
+                .config
+                .lock()
+                .app
+                .onboarding_done
+            {
+                handle
+                    .state::<AppState>()
+                    .pool
+                    .lock()
+                    .show_prefs(handle, "onboarding");
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -977,7 +1096,9 @@ pub fn run() {
             alert_dismiss,
             window_toggle_all,
             window_show_settings,
-            window_hide_settings,
+            window_show_onboarding,
+            window_hide_prefs,
+            prefs_mode,
             window_adjust_height,
             permissions_status,
             permissions_request_screen,

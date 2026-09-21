@@ -14,6 +14,40 @@ use super::{
 const CHAT_URL: &str = "https://api.openai.com/v1/chat/completions";
 const MODELS_URL: &str = "https://api.openai.com/v1/models";
 
+/// Wire body: `{model, stream, temperature, max_tokens, messages}` with
+/// system kept as a message and images as `data:` URLs.
+///
+/// Shared with `llm::compat` — an OpenAI-compatible endpoint speaks this
+/// exact body, so the two adapters differ only in URL and auth rules.
+pub(crate) fn request_body(model: &str, msgs: &[ChatMessage]) -> Value {
+    let messages: Vec<Value> = msgs
+        .iter()
+        .map(|m| {
+            let content: Vec<Value> = m
+                .content
+                .iter()
+                .map(|p| match p {
+                    ContentPart::Text(t) => json!({"type": "text", "text": t}),
+                    ContentPart::ImageJpeg(bytes) => json!({
+                        "type": "image_url",
+                        "image_url": {
+                            "url": format!("data:image/jpeg;base64,{}", B64.encode(bytes))
+                        },
+                    }),
+                })
+                .collect();
+            json!({"role": m.role.as_str(), "content": content})
+        })
+        .collect();
+    json!({
+        "model": model,
+        "stream": true,
+        "temperature": 0.7,
+        "max_tokens": 2048,
+        "messages": messages,
+    })
+}
+
 /// `api_key` is `None` when the keystore has no entry for this provider;
 /// `client` carries only a connect timeout — streamed bodies run unbounded.
 pub struct OpenAiProvider {
@@ -64,35 +98,8 @@ impl OpenAiProvider {
         Self::parse_event(line).ok().flatten()
     }
 
-    /// Wire body: `{model, stream, temperature, max_tokens, messages}` with
-    /// system kept as a message and images as `data:` URLs.
     fn request_body(&self, msgs: &[ChatMessage]) -> Value {
-        let messages: Vec<Value> = msgs
-            .iter()
-            .map(|m| {
-                let content: Vec<Value> = m
-                    .content
-                    .iter()
-                    .map(|p| match p {
-                        ContentPart::Text(t) => json!({"type": "text", "text": t}),
-                        ContentPart::ImageJpeg(bytes) => json!({
-                            "type": "image_url",
-                            "image_url": {
-                                "url": format!("data:image/jpeg;base64,{}", B64.encode(bytes))
-                            },
-                        }),
-                    })
-                    .collect();
-                json!({"role": m.role.as_str(), "content": content})
-            })
-            .collect();
-        json!({
-            "model": self.model,
-            "stream": true,
-            "temperature": 0.7,
-            "max_tokens": 2048,
-            "messages": messages,
-        })
+        request_body(&self.model, msgs)
     }
 
     async fn stream_chat_inner(

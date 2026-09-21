@@ -15,12 +15,13 @@
 //! }
 //! ```
 //!
-//! The four adapters share the private [`stream_sse`] / [`stream_ndjson`]
+//! The adapters share the private [`stream_sse`] / [`stream_ndjson`]
 //! helpers below: they send one request, verify the status, then drain the
 //! byte stream into complete events — UTF-8 decoding only ever runs on a
 //! complete event, so multibyte chars split across TCP chunks survive.
 
 mod anthropic;
+pub mod compat;
 mod gemini;
 mod ollama;
 mod openai;
@@ -42,26 +43,36 @@ pub(crate) const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// return promptly for UI key-checks.
 pub(crate) const VALIDATE_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// The four supported LLM backends; string form matches `config.toml`'s
+/// The supported LLM backends; string form matches `config.toml`'s
 /// `models.llm_provider`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProviderKind {
     OpenAi,
     Anthropic,
     Gemini,
+    /// OpenRouter — the hosted OpenAI-compatible gateway. First-class
+    /// (not `Compatible`): fixed `openrouter.ai` endpoint, `sk-or-…`
+    /// key required.
+    OpenRouter,
     Ollama,
+    /// Any endpoint speaking the OpenAI chat API — URL and display name
+    /// come from `config.compat` (DESIGN.md §6 BYOK).
+    Compatible,
 }
 
 impl ProviderKind {
-    /// Parse a provider id — exactly `"openai"`, `"anthropic"`, `"gemini"`
-    /// or `"ollama"` (case-insensitive). Dropped providers
-    /// (`"openai-glass"`, `"portkey"`) and anything else are rejected.
+    /// Parse a provider id — exactly `"openai"`, `"anthropic"`, `"gemini"`,
+    /// `"openrouter"`, `"ollama"` or `"compatible"` (case-insensitive).
+    /// Dropped providers (`"openai-glass"`, `"portkey"`) and anything else
+    /// are rejected.
     pub fn from_str(s: &str) -> Option<Self> {
         match s.to_ascii_lowercase().as_str() {
             "openai" => Some(Self::OpenAi),
             "anthropic" => Some(Self::Anthropic),
             "gemini" => Some(Self::Gemini),
+            "openrouter" => Some(Self::OpenRouter),
             "ollama" => Some(Self::Ollama),
+            "compatible" => Some(Self::Compatible),
             _ => None,
         }
     }
@@ -72,8 +83,18 @@ impl ProviderKind {
             Self::OpenAi => "openai",
             Self::Anthropic => "anthropic",
             Self::Gemini => "gemini",
+            Self::OpenRouter => "openrouter",
             Self::Ollama => "ollama",
+            Self::Compatible => "compatible",
         }
+    }
+
+    /// Providers that work without a stored key: Ollama (local daemon) and
+    /// a compatible endpoint with no auth. Callers use this instead of
+    /// comparing against `Ollama` so an open endpoint isn't blocked on a
+    /// key it never needs.
+    pub fn key_optional(&self) -> bool {
+        matches!(self, Self::Ollama | Self::Compatible)
     }
 }
 
@@ -145,6 +166,10 @@ pub enum LlmError {
     #[error("no model configured")]
     #[allow(dead_code)] // reserved variant — no adapter produces this yet
     NoModel,
+    /// An OpenAI-compatible provider is selected but `compat.base_url` is
+    /// empty — a configuration problem, not a network one.
+    #[error("no base URL configured — add one in Settings → Providers")]
+    NoEndpoint,
     /// The provider explicitly refused image input.
     #[error("model does not support image input")]
     MultimodalUnsupported,
@@ -207,16 +232,29 @@ pub trait Provider: Send + Sync {
 /// Build the adapter for `kind`. Pure dispatch — no validation beyond
 /// construction; a missing or bad `api_key` surfaces as `LlmError::Auth`
 /// when the provider is actually called.
+///
+/// `base_url` is read only by [`ProviderKind::Compatible`] (the hosted
+/// providers have fixed endpoints); `None`/empty there yields
+/// [`LlmError::NoEndpoint`] on the first call.
 pub fn make_provider(
     kind: ProviderKind,
     api_key: Option<String>,
     model: String,
+    base_url: Option<String>,
 ) -> Box<dyn Provider> {
     match kind {
         ProviderKind::OpenAi => Box::new(openai::OpenAiProvider::new(api_key, model)),
         ProviderKind::Anthropic => Box::new(anthropic::AnthropicProvider::new(api_key, model)),
         ProviderKind::Gemini => Box::new(gemini::GeminiProvider::new(api_key, model)),
+        // OpenRouter is a CompatProvider with its endpoint pinned —
+        // `base_url` is ignored; the key is required by the adapter.
+        ProviderKind::OpenRouter => {
+            Box::new(compat::CompatProvider::openrouter(api_key, model))
+        }
         ProviderKind::Ollama => Box::new(ollama::OllamaProvider::new(api_key, model)),
+        ProviderKind::Compatible => {
+            Box::new(compat::CompatProvider::new(api_key, model, base_url))
+        }
     }
 }
 
@@ -429,14 +467,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn provider_kind_from_str_accepts_exactly_the_four_ids() {
+    fn provider_kind_from_str_accepts_exactly_the_six_ids() {
         assert_eq!(ProviderKind::from_str("openai"), Some(ProviderKind::OpenAi));
         assert_eq!(
             ProviderKind::from_str("anthropic"),
             Some(ProviderKind::Anthropic)
         );
         assert_eq!(ProviderKind::from_str("gemini"), Some(ProviderKind::Gemini));
+        assert_eq!(
+            ProviderKind::from_str("openrouter"),
+            Some(ProviderKind::OpenRouter)
+        );
         assert_eq!(ProviderKind::from_str("ollama"), Some(ProviderKind::Ollama));
+        assert_eq!(
+            ProviderKind::from_str("compatible"),
+            Some(ProviderKind::Compatible)
+        );
         // Case-insensitive is fine.
         assert_eq!(ProviderKind::from_str("OpenAI"), Some(ProviderKind::OpenAi));
         assert_eq!(ProviderKind::from_str("GEMINI"), Some(ProviderKind::Gemini));
@@ -446,7 +492,17 @@ mod tests {
     fn provider_kind_from_str_rejects_dropped_and_unknown_ids() {
         // "openai-glass"/"portkey" were dropped providers — they must not
         // silently map to OpenAI, and neither may empty/unknown strings.
-        for bad in ["openai-glass", "portkey", "", "gpt4", "open_ai", " ollama"] {
+        // `"compat"` is the UI's shorthand, never a config id — only the
+        // full `"compatible"` parses.
+        for bad in [
+            "openai-glass",
+            "portkey",
+            "",
+            "gpt4",
+            "open_ai",
+            " ollama",
+            "compat",
+        ] {
             assert_eq!(ProviderKind::from_str(bad), None, "{bad:?}");
         }
     }
@@ -457,9 +513,25 @@ mod tests {
             ProviderKind::OpenAi,
             ProviderKind::Anthropic,
             ProviderKind::Gemini,
+            ProviderKind::OpenRouter,
             ProviderKind::Ollama,
+            ProviderKind::Compatible,
         ] {
             assert_eq!(ProviderKind::from_str(kind.as_str()), Some(kind));
+        }
+    }
+
+    #[test]
+    fn only_ollama_and_compatible_may_run_without_a_key() {
+        assert!(ProviderKind::Ollama.key_optional());
+        assert!(ProviderKind::Compatible.key_optional());
+        for kind in [
+            ProviderKind::OpenAi,
+            ProviderKind::Anthropic,
+            ProviderKind::Gemini,
+            ProviderKind::OpenRouter,
+        ] {
+            assert!(!kind.key_optional(), "{kind:?}");
         }
     }
 
@@ -538,8 +610,14 @@ mod tests {
         // map to `Auth` before any network I/O; Ollama has no key gate but
         // a nonsense model must still error (connection refused or a 404
         // from a real local server — both are `Err`).
-        for kind in [ProviderKind::OpenAi, ProviderKind::Anthropic, ProviderKind::Gemini] {
-            let provider: Box<dyn Provider> = make_provider(kind, None, "some-model".into());
+        for kind in [
+            ProviderKind::OpenAi,
+            ProviderKind::Anthropic,
+            ProviderKind::Gemini,
+            ProviderKind::OpenRouter,
+        ] {
+            let provider: Box<dyn Provider> =
+                make_provider(kind, None, "some-model".into(), None);
             let mut on_token = |tok: &str| panic!("emitted token {tok:?} without a key");
             let err = provider
                 .stream_chat(&[ChatMessage::text(Role::User, "hi")], &mut on_token)
@@ -554,6 +632,7 @@ mod tests {
             ProviderKind::Ollama,
             None,
             "definitely-not-a-real-model-xyz".into(),
+            None,
         );
         let mut on_token = |_: &str| {};
         assert!(provider
@@ -563,6 +642,70 @@ mod tests {
         // Ollama's /api/tags is unauthenticated — whether it answers depends
         // on a local server actually running, so no assertion on the result.
         let _ = provider.validate().await;
+
+        // Compatible without a base URL is a config error, not an auth or
+        // network one — and unlike the hosted providers, a MISSING key is
+        // legal (open endpoints), so `Auth` must not be what surfaces.
+        let provider: Box<dyn Provider> =
+            make_provider(ProviderKind::Compatible, None, "m".into(), None);
+        let err = provider.validate().await.unwrap_err();
+        assert!(matches!(err, LlmError::NoEndpoint), "{err:?}");
+    }
+
+    #[tokio::test]
+    async fn compat_validate_accepts_an_endpoint_without_a_models_route() {
+        // Many OpenAI-compatible servers (vLLM, LM Studio) don't implement
+        // `/models`. A 404 there proves the endpoint is reachable, so
+        // validation must PASS — rejecting it would make a working local
+        // endpoint unconfigurable.
+        let url = serve_once(vec![
+            b"HTTP/1.1 404 Not Found\r\ncontent-length: 0\r\n\r\n".to_vec()
+        ])
+        .await;
+        let base = url.trim_end_matches('/').to_string();
+        let provider = make_provider(ProviderKind::Compatible, None, "m".into(), Some(base));
+        assert!(provider.validate().await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn compat_validate_surfaces_a_real_auth_failure() {
+        // A 401 from a keyed endpoint is a genuine failure and must NOT be
+        // swallowed by the optional-/models allowance.
+        let url = serve_once(vec![
+            b"HTTP/1.1 401 Unauthorized\r\ncontent-length: 0\r\n\r\n".to_vec()
+        ])
+        .await;
+        let base = url.trim_end_matches('/').to_string();
+        let provider = make_provider(
+            ProviderKind::Compatible,
+            Some("sk-bad".into()),
+            "m".into(),
+            Some(base),
+        );
+        let err = provider.validate().await.unwrap_err();
+        assert!(matches!(err, LlmError::Auth), "{err:?}");
+    }
+
+    #[tokio::test]
+    async fn compat_streams_openai_shaped_sse() {
+        // End-to-end through `Box<dyn Provider>`: the compat adapter reuses
+        // OpenAI's body + parser, so a standard delta stream must decode.
+        let body = concat!(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"He\"}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"y\"}}]}\n\n",
+            "data: [DONE]\n\n"
+        );
+        let url = serve_once(vec![sse_response(body)]).await;
+        let base = url.trim_end_matches('/').to_string();
+        let provider = make_provider(ProviderKind::Compatible, None, "local-model".into(), Some(base));
+        let mut tokens: Vec<String> = Vec::new();
+        let mut on_token = |t: &str| tokens.push(t.to_string());
+        let full = provider
+            .stream_chat(&[ChatMessage::text(Role::User, "hi")], &mut on_token)
+            .await
+            .unwrap();
+        assert_eq!(full, "Hey");
+        assert_eq!(tokens, vec!["He", "y"]);
     }
 
     #[test]

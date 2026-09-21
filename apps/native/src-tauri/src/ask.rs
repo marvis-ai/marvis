@@ -17,6 +17,7 @@
 //! - `ask:chunk` `{"text": token}` per token.
 //! - `ask:done` `{"full": full_reply}` on success.
 //! - `ask:error` `{"message": ..., "needs_unlock": bool?}` on failure.
+//!
 //! Broadcast (all windows): `capture:permission-needed` when a frame
 //! exists but screen permission was revoked mid-session — the ring's
 //! stale frame is dropped and the ask continues text-only.
@@ -166,11 +167,14 @@ impl AskService {
         // Show first so any pre-flight error still renders in the panel.
         deps.pool.lock().show(Panel::Ask);
 
-        let (provider_name, model) = {
+        let (provider_name, model, base_url) = {
             let cfg = deps.config.lock();
             (
                 cfg.models.llm_provider.clone(),
                 cfg.models.llm_model.clone(),
+                // Only `ProviderKind::Compatible` reads this; the hosted
+                // adapters ignore it. Empty config → None.
+                Some(cfg.compat.base_url.clone()).filter(|u| !u.is_empty()),
             )
         };
         let Some(kind) = ProviderKind::from_str(&provider_name) else {
@@ -181,7 +185,9 @@ impl AskService {
             );
         };
         let api_key = deps.keystore.lock().key(kind.as_str());
-        if api_key.is_none() && kind != ProviderKind::Ollama {
+        // `key_optional` covers Ollama AND open compatible endpoints —
+        // blocking them on a missing key would be wrong.
+        if api_key.is_none() && !kind.key_optional() {
             return self.pre_spawn_error(
                 app,
                 text,
@@ -211,7 +217,7 @@ impl AskService {
             );
         }
 
-        let provider = make_provider(kind, api_key, model);
+        let provider = make_provider(kind, api_key, model, base_url);
         let cancel = self.cancel.lock().clone();
         let svc = Arc::clone(self);
         let app = app.clone();

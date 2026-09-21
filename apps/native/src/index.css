@@ -47,24 +47,28 @@
   --ring: var(--accent);
 }
 
-/* Dark: follows macOS (spec's Appearance default is Auto). `main.tsx`
-   mirrors this onto `.dark` for the ui package's dark: utilities. */
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: oklch(0.185 0.012 237);
-    --surface: oklch(0.245 0.016 237);
-    --fg: oklch(0.93 0.006 230);
-    --muted: oklch(0.7 0.02 230);
-    --border: oklch(0.375 0.016 235);
-    --fg-2: oklch(0.84 0.01 230);
-    --accent-soft: color-mix(in oklch, var(--accent) 26%, transparent);
-    --accent-text: color-mix(in oklch, var(--accent) 55%, white);
-    --fg-soft: color-mix(in oklch, var(--fg) 8%, transparent);
-    --input-well: color-mix(in oklch, var(--fg) 7%, transparent);
-    /* error text mixes toward white on dark */
-    --destructive: color-mix(in oklch, oklch(0.577 0.245 27.3) 75%, white);
-    --secondary: color-mix(in oklch, var(--fg) 10%, var(--surface));
-  }
+/* Dark: driven by `.is-dark` on the root — `app.appearance` resolves
+   auto/light/dark in lib/theme.ts (auto follows macOS). `.dark` rides
+   along for the ui package's dark: utilities. `color-scheme` flips
+   native affordances (select popups, scrollbars) with the tokens. */
+:root {
+  color-scheme: light;
+}
+:root.is-dark {
+  color-scheme: dark;
+  --bg: oklch(0.185 0.012 237);
+  --surface: oklch(0.245 0.016 237);
+  --fg: oklch(0.93 0.006 230);
+  --muted: oklch(0.7 0.02 230);
+  --border: oklch(0.375 0.016 235);
+  --fg-2: oklch(0.84 0.01 230);
+  --accent-soft: color-mix(in oklch, var(--accent) 26%, transparent);
+  --accent-text: color-mix(in oklch, var(--accent) 55%, white);
+  --fg-soft: color-mix(in oklch, var(--fg) 8%, transparent);
+  --input-well: color-mix(in oklch, var(--fg) 7%, transparent);
+  /* error text mixes toward white on dark */
+  --destructive: color-mix(in oklch, oklch(0.577 0.245 27.3) 75%, white);
+  --secondary: color-mix(in oklch, var(--fg) 10%, var(--surface));
 }
 
 html,
@@ -697,94 +701,30 @@ body {
   }
 }
 
-/* ─── mini settings rows (spec §6) ────────────────────────────────── */
-.mv-mini-head {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 8px 10px;
-  border-bottom: 1px solid var(--border);
-  font-size: 11.5px;
-  font-weight: 600;
+/* destructive variant — outline button that flips destructive on hover
+   (prototype's `.btn-danger` is hover-only; paired with mv-btn-outline) */
+.mv-btn-danger:hover:not(:disabled) {
+  border-color: color-mix(in oklch, var(--destructive) 55%, var(--border));
+  color: var(--destructive);
 }
-.mv-mini-head .grow {
-  flex: 1;
-  min-width: 0;
-}
-.mv-prov {
-  padding: 8px 10px;
-  border-bottom: 1px solid var(--border);
-}
-.mv-prov-head {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 8px;
-}
-.mv-prov .p-name {
-  font-size: 11.5px;
-  font-weight: 550;
-}
-.mv-prov .p-state {
-  font-family: var(--font-mono);
-  font-size: 9.5px;
-  color: var(--muted);
+
+/* the prototype's `.pill` — accent-soft mono uppercase (its green
+   `pill-green` variant would violate the one-hue rule) */
+.mv-pill {
   display: inline-flex;
-  align-items: baseline;
-  gap: 6px;
-}
-.mv-prov .p-state.set {
-  color: var(--fg);
-}
-.mv-prov .p-state .mv-btn-link {
-  font-size: 9.5px;
-  padding-inline: 2px;
-}
-.mv-prov.dimmed {
-  opacity: 0.55;
-}
-.mv-mini-notice {
-  display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 10px;
-  font-size: 11.5px;
-  color: var(--muted);
-}
-.mv-mini-notice svg {
-  width: 15px;
-  height: 15px;
-  flex: none;
-}
-.mv-mini-notice .grow {
-  flex: 1;
-  min-width: 0;
-}
-.mv-mini-foot {
-  padding: 8px 10px;
-  display: flex;
   gap: 6px;
-}
-.mv-mini-btn {
-  flex: 1;
-  height: 24px;
-  border-radius: 7px;
+  padding: 4px 10px;
+  background: var(--accent-soft);
+  color: var(--accent-text);
+  border-radius: 999px;
+  font-family: var(--font-mono);
   font-size: 11px;
-  font-weight: 550;
-  border: 1px solid var(--border);
-  background: transparent;
-  color: var(--fg);
-  transition:
-    border-color var(--motion-fast) var(--ease),
-    background var(--motion-fast) var(--ease);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
-.mv-mini-btn:hover:not(:disabled) {
-  border-color: color-mix(in oklch, var(--fg) 30%, var(--border));
-}
-.mv-mini-btn:disabled {
-  opacity: 0.5;
-  cursor: default;
-}
+
+/* key/model fields shared by the prefs window */
 .key-row {
   display: flex;
   align-items: center;
@@ -861,9 +801,15 @@ body {
   .mv-input,
   .mv-icon-btn,
   .mv-btn,
-  .mv-mini-btn,
   .key-input,
-  .model-sel {
+  .model-sel,
+  .prf-auth,
+  .prf-auth-card,
+  .prf-ob-track span,
+  .prf-side-item,
+  .prf-seg button,
+  .prf-ob-pill,
+  .prf-prov-expand svg {
     transition: none;
   }
 }
@@ -952,4 +898,692 @@ body.ask .ask-md > :first-child {
 }
 body.ask .ask-md > :last-child {
   margin-bottom: 0;
+}
+
+/* ─── prefs window (settings + onboarding, DESIGN.md §6) ──────────── */
+/* The decorated 720×520 `?view=prefs` window — opaque --bg, native
+   traffic lights, not overlay chrome. Shares .mv-btn/.key-input/
+   .model-sel/.kbd/.num with the overlay; control sizes step up a notch
+   (30px fields, 12.5px labels). Same rules as the overlay: one accent,
+   hairline borders, no surface gradients. */
+
+body.prefs {
+  background: var(--bg);
+}
+/* pref-size controls — the overlay's 26px chrome reads tiny in a real
+   window; scoped to body.prefs so the bar/panels keep their compact set */
+body.prefs .mv-btn {
+  height: 30px;
+  padding: 0 14px;
+  font-size: 12.5px;
+}
+body.prefs .mv-btn-link {
+  height: auto;
+  padding-inline: 6px;
+  font-size: 12.5px;
+}
+body.prefs .key-input {
+  height: 30px;
+  padding: 0 10px;
+  border-radius: 8px;
+  font-size: 12px;
+}
+body.prefs .key-input:focus {
+  box-shadow: var(--focus-ring);
+}
+body.prefs .model-sel {
+  height: 30px;
+  padding: 0 8px;
+  border-radius: 8px;
+  font-size: 11.5px;
+}
+body.prefs .model-sel:focus {
+  box-shadow: var(--focus-ring);
+}
+body.prefs .prov-err,
+body.prefs .prov-note {
+  font-size: 11px;
+}
+
+.prf {
+  position: relative; /* AuthSheet anchors here */
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  color: var(--fg);
+  background: var(--bg);
+  overflow: hidden;
+}
+.prf-boot-err {
+  flex: 1;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+}
+
+/* settings mode — 168px sidebar + scrolling main */
+.prf-body {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 168px 1fr;
+}
+.prf-side {
+  border-right: 1px solid var(--border);
+  background: color-mix(in oklch, var(--bg) 55%, var(--surface));
+  padding: 10px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.prf-side-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 9px;
+  border: 0;
+  border-radius: 7px;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--fg);
+  background: transparent;
+  text-align: left;
+  width: 100%;
+  transition:
+    background var(--motion-fast) var(--ease),
+    color var(--motion-fast) var(--ease);
+}
+.prf-side-item svg {
+  width: 15px;
+  height: 15px;
+  color: var(--muted);
+  flex: none;
+}
+.prf-side-item:hover {
+  background: var(--fg-soft);
+}
+.prf-side-item.is-on {
+  background: color-mix(in oklch, var(--fg) 8%, transparent);
+}
+.prf-side-item.is-on svg {
+  color: var(--accent-text);
+}
+.prf-side-item.prf-side-muted {
+  color: var(--muted);
+}
+.prf-side-spacer {
+  flex: 1;
+}
+.prf-side-foot {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--muted);
+  padding: 8px 9px 2px;
+}
+.prf-main {
+  padding: 20px 24px 22px;
+  overflow-y: auto;
+  min-width: 0;
+}
+.prf-main h2 {
+  font-size: 17px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  margin: 0 0 4px;
+}
+.prf-main .sub {
+  font-size: 12.5px;
+  color: var(--muted);
+  margin: 0 0 16px;
+  line-height: 1.5;
+}
+.prf-loading {
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+/* rows + controls */
+.prf-rows {
+  border-top: 1px solid var(--border);
+}
+.prf-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
+}
+.prf-row:first-of-type {
+  padding-top: 2px;
+}
+.pr-label {
+  font-size: 13px;
+  font-weight: 550;
+}
+.pr-sub {
+  font-size: 11.5px;
+  color: var(--muted);
+  margin-top: 2px;
+  max-width: 40ch;
+}
+.pr-ctl {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.prf-seg {
+  display: inline-flex;
+  padding: 2px;
+  gap: 1px;
+  border-radius: 8px;
+  background: var(--fg-soft);
+  border: 1px solid var(--border);
+}
+.prf-seg button {
+  border: 0;
+  background: transparent;
+  padding: 3px 10px;
+  border-radius: 6px;
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 550;
+  color: var(--muted);
+  transition:
+    background var(--motion-fast) var(--ease),
+    color var(--motion-fast) var(--ease);
+}
+.prf-seg button:hover {
+  color: var(--fg);
+}
+.prf-seg button.is-on {
+  background: var(--surface);
+  color: var(--fg);
+  box-shadow: 0 1px 2px color-mix(in oklch, var(--fg) 20%, transparent);
+}
+:is(.dark, .is-dark) .prf-seg button.is-on {
+  background: color-mix(in oklch, var(--fg) 14%, var(--surface));
+}
+.prf-tag {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 3px 9px;
+}
+.prf-swatch {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 11px 3px 4px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.prf-swatch .sw-chip {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--fg) 12%, transparent);
+}
+.prf-hk-ctl {
+  gap: 10px;
+}
+.prf-hk-keys {
+  display: inline-flex;
+  gap: 3px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+/* the vault card — a plain surface card; the spec's "dark --fg-2
+   styling" is the 32px icon TILE (fg-2 bg / surface glyph), which
+   token-flips to a light tile on dark. Card dims to 75% when locked. */
+.prf-vault {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: color-mix(in oklch, var(--bg) 60%, var(--surface));
+  margin-bottom: 14px;
+}
+.prf-vault-ico {
+  width: 32px;
+  height: 32px;
+  border-radius: 9px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  background: var(--fg-2);
+  color: var(--surface);
+}
+.prf-vault-ico svg {
+  width: 16px;
+  height: 16px;
+}
+.prf-vault .v-name {
+  font-size: 12.5px;
+  font-weight: 650;
+}
+.prf-vault .v-sub {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 2px;
+}
+.prf-vault .v-err {
+  font-size: 11px;
+  color: var(--destructive);
+  margin-top: 3px;
+}
+.prf-vault .v-ctl {
+  margin-left: auto;
+  flex: none;
+}
+
+/* provider rows — card padding on the row, accent border when open */
+.prf-prov {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px 14px;
+  margin-bottom: 10px;
+  background: var(--surface);
+  transition: border-color var(--motion-fast) var(--ease);
+}
+.prf-prov.is-open {
+  border-color: color-mix(in oklch, var(--accent) 50%, var(--border));
+}
+.prf-prov.is-future {
+  opacity: 0.55;
+}
+.prf-prov-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+}
+.prf-prov-head-static {
+  cursor: default;
+}
+.prf-prov-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: color-mix(in oklch, var(--fg) 20%, transparent);
+  flex: none;
+}
+.prf-prov-dot.set {
+  background: var(
+    --accent
+  ); /* the prototype's green dot violates §238's
+                                  one-hue rule — slate marks live state */
+}
+.prf-prov-name {
+  font-size: 13.5px;
+  font-weight: 600;
+}
+.prf-prov-state {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 260px;
+}
+.prf-prov-state.set {
+  color: var(--fg);
+}
+.prf-prov-expand {
+  color: var(--muted);
+  display: grid;
+  place-items: center;
+  flex: none;
+}
+.prf-prov-expand svg {
+  width: 12px;
+  height: 12px;
+  transition: transform var(--motion-fast) var(--ease);
+}
+.prf-prov.is-open .prf-prov-expand svg {
+  transform: rotate(90deg);
+}
+.prf-prov-body {
+  display: none;
+  padding-top: 12px;
+}
+.prf-prov.is-open .prf-prov-body {
+  display: block;
+  animation: prf-fade-in var(--motion-base) var(--ease);
+}
+@keyframes prf-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.prf-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.prf-prov-model {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+}
+.prf-prov-model .lbl,
+.prf-ob-model .lbl {
+  font-size: 11.5px;
+  color: var(--muted);
+  flex: none;
+}
+.prf-prov-model .model-sel,
+.prf-prov-model .key-input {
+  flex: 1;
+  margin-top: 0;
+}
+
+/* privacy — file tree + top-bordered stat cells */
+.prf-filetree {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.9;
+  color: var(--fg);
+  background: color-mix(in oklch, var(--bg) 60%, var(--surface));
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px 14px;
+  margin-bottom: 14px;
+  white-space: pre;
+  overflow-x: auto;
+}
+.prf-filetree em {
+  color: var(--muted);
+  font-style: normal;
+}
+.prf-statrow {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+  margin: 14px 0;
+}
+.prf-stat {
+  border-top: 1px solid var(--fg);
+  padding-top: 8px;
+}
+.prf-stat .s-num {
+  font-family: var(--font-mono);
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+.prf-stat .s-lbl {
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 2px;
+}
+
+/* about */
+.prf-about-mark {
+  height: 34px;
+  display: block;
+  margin: 8px 0 10px;
+}
+.prf-about-sub {
+  font-size: 12.5px;
+  color: var(--muted);
+  margin: 0 0 16px;
+  max-width: 46ch;
+  line-height: 1.5;
+}
+
+/* ─── onboarding mode — no sidebar, 480px step column ─────────────── */
+.prf-ob {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.prf-ob-progress {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 18px 24px 0;
+  flex: none;
+}
+.prf-ob-track {
+  flex: 1;
+  display: flex;
+  gap: 5px;
+}
+.prf-ob-track span {
+  flex: 1;
+  height: 3px;
+  border-radius: 999px;
+  background: color-mix(in oklch, var(--fg) 10%, transparent);
+  transition: background var(--motion-base) var(--ease);
+}
+.prf-ob-track span.done,
+.prf-ob-track span.on {
+  background: var(--primary);
+}
+.prf-ob-count {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--muted);
+  white-space: nowrap;
+  flex: none;
+}
+.prf-ob-main {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 24px;
+}
+.prf-ob-page {
+  max-width: 480px;
+  margin-inline: auto;
+  animation: prf-fade-in var(--motion-base) var(--ease);
+}
+.prf-ob-mark {
+  width: 44px;
+  height: 44px;
+  margin-bottom: 14px;
+}
+/* the step icon = the vault tile — fg-2 slab, surface glyph */
+.prf-ob-ico {
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  background: var(--fg-2);
+  color: var(--surface);
+  display: grid;
+  place-items: center;
+  margin-bottom: 14px;
+}
+.prf-ob-ico svg {
+  width: 20px;
+  height: 20px;
+}
+.prf-ob-main h1 {
+  font-size: 21px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  margin: 0 0 8px;
+}
+.prf-ob-main .lede {
+  font-size: 13px;
+  color: var(--muted);
+  line-height: 1.6;
+  max-width: 44ch;
+  margin: 0;
+}
+.prf-ob-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 16px;
+}
+.prf-ob-list .li {
+  font-size: 12.5px;
+  color: var(--muted);
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+}
+.prf-ob-list .li svg {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  margin-top: 2px;
+  color: var(--fg-2);
+}
+.prf-ob-list .li b {
+  color: var(--fg);
+  font-weight: 600;
+}
+.prf-ob-actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin-top: 22px;
+}
+.prf-ob-actions .grow {
+  flex: 1;
+}
+.prf-ob-actions-mid {
+  margin-top: 10px;
+}
+.prf-ob-pills {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin: 14px 0 12px;
+}
+.prf-ob-pill {
+  padding: 6px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: transparent;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 550;
+  color: var(--fg);
+  transition:
+    border-color var(--motion-fast) var(--ease),
+    color var(--motion-fast) var(--ease),
+    background var(--motion-fast) var(--ease);
+}
+.prf-ob-pill:hover {
+  border-color: color-mix(in oklch, var(--fg) 30%, var(--border));
+}
+.prf-ob-pill.is-on {
+  background: var(--primary);
+  color: var(--primary-fg);
+  border-color: var(--primary);
+}
+.prf-ob-key {
+  margin-bottom: 0;
+}
+.prf-ob-model {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+}
+.prf-ob-model .key-input,
+.prf-ob-model .model-sel {
+  flex: 1;
+  margin-top: 0;
+}
+.prov-ok {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--accent-text);
+  margin: 8px 0 0;
+}
+.prov-ok svg {
+  width: 13px;
+  height: 13px;
+}
+
+/* the "waiting for Touch ID" sheet — macOS draws the real prompt, this
+   is the in-window affordance over a dim scrim (spec §6) */
+.prf-auth {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: color-mix(in oklch, black 26%, transparent);
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  z-index: 10;
+  transition:
+    opacity var(--motion-base) var(--ease),
+    visibility 0s var(--motion-base);
+}
+.prf-auth.is-open {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  transition: opacity var(--motion-base) var(--ease);
+}
+.prf-auth-card {
+  width: 240px;
+  padding: 22px 18px 16px;
+  text-align: center;
+  background: color-mix(in oklch, var(--surface) 92%, transparent);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid color-mix(in oklch, var(--fg) 12%, transparent);
+  border-radius: 12px;
+  box-shadow: 0 24px 60px -20px color-mix(in oklch, var(--fg) 50%, transparent);
+  transform: scale(0.94);
+  transition: transform var(--motion-base) var(--ease);
+}
+.prf-auth.is-open .prf-auth-card {
+  transform: scale(1);
+}
+.prf-auth-card > svg {
+  width: 34px;
+  height: 34px;
+  color: var(--fg-2);
+  display: block;
+  margin: 0 auto 10px;
+}
+.prf-auth-card .t-title {
+  font-size: 12.5px;
+  font-weight: 650;
+}
+.prf-auth-card .t-sub {
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 3px;
 }

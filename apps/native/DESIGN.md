@@ -169,8 +169,10 @@ from the bar.
   track across the window top (`ob-seg` fills `--primary`) + mono counter
   `2 / 5 · key vault`; steps centered in a ~480px column with Back / primary
   actions. Mode switch resets to step 1.
-- **BYOK** — provider picker pills (OpenAI / Anthropic / Gemini / Ollama /
-  **OpenAI-compatible**). Compatible adds *Provider name* + *Base URL*
+- **BYOK** — provider picker pills (OpenAI / Anthropic / Gemini /
+  **OpenRouter** / Ollama / **OpenAI-compatible**). OpenRouter is a
+  first-class pinned endpoint (`openrouter.ai/api/v1`, `sk-or-…` key,
+  `X-Title: Marvis`); Compatible adds *Provider name* + *Base URL*
   fields above the key field; validation requires `http(s)://`, key optional
   for local endpoints; model becomes free-text. Saved endpoints register in
   Settings → Providers with masked key (`…last4`).

@@ -32,7 +32,7 @@ pub enum Action {
     ScrollDown,
     /// Hardcoded `Cmd+Shift+S` — manual screenshot → screen-only ask.
     ScreenOnly,
-    /// Hardcoded `Cmd+,` — show the settings panel (also the tray item).
+    /// Hardcoded `Cmd+,` — show the prefs window (also the tray item).
     ShowSettings,
     /// Hardcoded `Cmd+Shift+<n>` — move the bar to display `n` (1-based).
     MoveToDisplay(usize),
@@ -340,19 +340,20 @@ pub fn swap_hotkey_set(
     }
 }
 
+/// `(keep, drop, add)` pair sets from [`plan_swap`] — see its docs for
+/// the semantics of each position.
+type SwapPlan = (
+    Vec<(Shortcut, Action)>,
+    Vec<(Shortcut, Action)>,
+    Vec<(Shortcut, Action)>,
+);
+
 /// Pure delta computation for [`swap_hotkey_set`], split out for tests:
 /// `keep` = prev pairs still wanted (stay registered untouched);
 /// `drop` = prev pairs absent from `new` (unregister); `add` = `new`
 /// pairs not already live (register). Comparison is pair-level — the
 /// same shortcut bound to a different action is drop + add, not keep.
-fn plan_swap(
-    prev: &[(Shortcut, Action)],
-    new: &[(Shortcut, Action)],
-) -> (
-    Vec<(Shortcut, Action)>,
-    Vec<(Shortcut, Action)>,
-    Vec<(Shortcut, Action)>,
-) {
+fn plan_swap(prev: &[(Shortcut, Action)], new: &[(Shortcut, Action)]) -> SwapPlan {
     let keep: Vec<_> = prev.iter().copied().filter(|p| new.contains(p)).collect();
     let drop: Vec<_> = prev.iter().copied().filter(|p| !new.contains(p)).collect();
     let add: Vec<_> = new.iter().copied().filter(|p| !prev.contains(p)).collect();

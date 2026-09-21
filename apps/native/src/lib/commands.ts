@@ -67,11 +67,27 @@ export interface WindowPrefs {
   bar_y?: number;
 }
 
-/** `config_get` / `config_set` return. */
+/** `[app]` section — first-run state + the appearance override. */
+export interface AppPrefs {
+  /** `false` until the wizard finishes (or is finished early). */
+  onboarding_done: boolean;
+  /** `'auto' | 'light' | 'dark'` — validated server-side. */
+  appearance: string;
+}
+
+/** `[compat]` section — the OpenAI-compatible endpoint (DESIGN.md §6). */
+export interface CompatPrefs {
+  name: string;
+  base_url: string;
+}
+
+/** `config_get` / `config_set` return / `config:changed` payload. */
 export interface Config {
+  app: AppPrefs;
   models: ModelPrefs;
   hotkeys: Record<string, string>;
   window: WindowPrefs;
+  compat: CompatPrefs;
 }
 
 /** `session_list` row (storage.rs `Session`; `kind` is the `type` column). */
@@ -181,12 +197,21 @@ export const alertCurrent = () => invoke<AlertPayload | null>('alert_current');
 
 export const alertDismiss = () => invoke<void>('alert_dismiss');
 
-/** Same entry point as `Cmd+,` and the tray's Settings item. */
+/** Same entry point as `Cmd+,` and the tray's Settings item — opens the
+ * decorated `prefs` window in settings mode (any gate state). */
 export const windowShowSettings = () => invoke<void>('window_show_settings');
 
-export const windowHideSettings = () => invoke<void>('window_hide_settings');
+/** The prefs window in onboarding mode — the sidebar's "Re-run setup". */
+export const windowShowOnboarding = () =>
+  invoke<void>('window_show_onboarding');
 
-/** Panels only — `name` is `'ask' | 'listen' | 'settings'`, never `'bar'`. */
+export const windowHidePrefs = () => invoke<void>('window_hide_prefs');
+
+/** The mode `prefs` was last shown in — read on mount so a `prefs:mode`
+ * emit that raced the loading webview still lands. */
+export const prefsMode = () => invoke<string>('prefs_mode');
+
+/** Panels only — `name` is `'ask' | 'listen'`, never `'bar'`/`'prefs'`. */
 export const windowAdjustHeight = (name: string, height: number) =>
   invoke<void>('window_adjust_height', { name, height });
 
@@ -231,7 +256,10 @@ export const configGet = () => invoke<Config>('config_get');
 /**
  * Writable keys only: `models.llm_provider`, `models.llm_model`,
  * `hotkeys.<action>`, `window.bar_x`, `window.bar_y` (number sets, null
- * clears).
+ * clears), `app.onboarding_done` (bool), `app.appearance`
+ * (`'auto'|'light'|'dark'`), `compat.name`, `compat.base_url`
+ * (http(s) URL, `''` clears). Every successful write broadcasts
+ * `config:changed` and resolves to the full updated config.
  */
 export const configSet = (key: string, value: unknown) =>
   invoke<Config>('config_set', { key, value });

@@ -11,6 +11,7 @@ use crate::paths;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
+    pub app: AppPrefs,
     pub models: ModelPrefs,
     #[serde(
         default = "default_hotkeys",
@@ -18,16 +19,55 @@ pub struct Config {
     )]
     pub hotkeys: BTreeMap<String, String>,
     pub window: WindowPrefs,
+    pub compat: CompatPrefs,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
+            app: AppPrefs::default(),
             models: ModelPrefs::default(),
             hotkeys: default_hotkeys(),
             window: WindowPrefs::default(),
+            compat: CompatPrefs::default(),
         }
     }
+}
+
+/// App-level state that isn't a provider or a window rect: first-run
+/// progress and the appearance override.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AppPrefs {
+    /// `true` once the onboarding wizard has run through step 5 (or was
+    /// finished early). `false` is also the correct read for a config file
+    /// written before this field existed — those installs never saw the
+    /// wizard, so onboarding re-runs once.
+    pub onboarding_done: bool,
+    /// `auto` | `light` | `dark`; validated by `config_set`.
+    pub appearance: String,
+}
+
+impl Default for AppPrefs {
+    fn default() -> Self {
+        Self {
+            onboarding_done: false,
+            appearance: "auto".into(),
+        }
+    }
+}
+
+/// The OpenAI-compatible endpoint (DESIGN.md §6 BYOK): a display name
+/// plus the `https://…/v1` base the `compatible` adapter posts to. The
+/// key, if the endpoint needs one, lives in `keys.enc` under
+/// `"compatible"` — never in this file.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CompatPrefs {
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub name: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub base_url: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

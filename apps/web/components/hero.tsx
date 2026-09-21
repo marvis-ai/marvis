@@ -58,17 +58,18 @@ export const Hero = () => (
     <div className='container hero-center'>
       <p className='eyebrow'>Private / Personal AI for All</p>
       <h1 className='hero-h1'>
-        Ask anything about what&rsquo;s on your screen.
+        Ask anything about what&rsquo;s on your screen — and keep every frame
+        on your machine.
       </h1>
       <p className='lead'>
-        A translucent bar floating over your workspace. It sees your screen —
-        only with permission — and your keys, history, and screen data never
-        leave your machine.
+        A floating bar for developers and power users who live at the keyboard.
+        It sees your screen — only with permission — and your keys, history,
+        and screen data never leave your machine.
       </p>
       <div className='hero-cta'>
         <WaitlistDialog
           triggerClassName='btn btn-primary'
-          triggerLabel='Download for macOS'
+          triggerLabel='Join the waitlist'
           triggerDataOdId='hero-cta-primary'
         />
         <a
@@ -78,6 +79,10 @@ export const Hero = () => (
           How it stays private
         </a>
       </div>
+      <p className='meta hero-note'>
+        macOS build in private testing — you&rsquo;ll get a download link by
+        email.
+      </p>
       <div className='hero-meta'>
         <Badge
           variant='outline'

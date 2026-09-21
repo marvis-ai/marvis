@@ -149,7 +149,7 @@ export const InterfaceSection = () => {
                 <i />
                 <i />
                 <i />
-                <span className='gw-url'>github.com/MarvisLLC/marvis</span>
+                <span className='gw-url'>github.com/marvis-ai/marvis</span>
               </div>
               <div className='gw-lines'>
                 <i style={{ width: '82%' }} />

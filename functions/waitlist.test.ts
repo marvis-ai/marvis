@@ -11,13 +11,26 @@ describe('validateSignup', () => {
     });
   });
 
+  // Name is optional — the form collects email only. A missing, blank, or
+  // non-string name normalizes to '' (the DB column is NOT NULL, so '' keeps
+  // the insert honest; the welcome email falls back to "Hi there").
+  test.each([
+    ['missing name', { email: 'a@b.co' }],
+    ['blank name', { name: '   ', email: 'a@b.co' }],
+    ['non-string name', { name: 1, email: 'a@b.co' }],
+  ])('accepts an email-only signup (%s)', (_label, input) => {
+    expect(validateSignup(input)).toEqual({
+      name: '',
+      email: 'a@b.co',
+    });
+  });
+
   test.each([
     ['null', null],
     ['non-object', 'x'],
     ['missing email', { name: 'Ada' }],
     ['non-string email', { name: 'Ada', email: 1 }],
     ['bad email', { name: 'Ada', email: 'nope' }],
-    ['empty name', { name: '   ', email: 'a@b.co' }],
     ['too-long name', { name: 'x'.repeat(121), email: 'a@b.co' }],
     ['too-long email', { name: 'Ada', email: `${'a'.repeat(250)}@b.co` }],
   ])('rejects %s', (_label: string, input: unknown) => {

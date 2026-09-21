@@ -41,14 +41,12 @@ export const WaitlistDialog = ({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          name: data.get('name'),
           email: data.get('email'),
-          company: data.get('company'),
         }),
       });
       setStatus(res.ok ? 'success' : 'error');
       if (res.status === 400)
-        setError('Please check your email address and name, then try again.');
+        setError('Please check your email address, then try again.');
       else if (!res.ok) setError('Something went wrong — please try again.');
     } catch {
       setStatus('error');
@@ -73,7 +71,8 @@ export const WaitlistDialog = ({
           <p className='eyebrow'>Waitlist</p>
           <DialogTitle>Get Marvis for macOS</DialogTitle>
           <DialogDescription>
-            Join the waitlist — we&rsquo;ll email you when the build is ready.
+            Join the early-access list — we&rsquo;ll email you a download link
+            when the macOS build is ready.
           </DialogDescription>
         </DialogHeader>
 
@@ -87,25 +86,14 @@ export const WaitlistDialog = ({
           <div className='waitlist-done'>
             <p className='pill pill-green'>You&rsquo;re on the list</p>
             <p className='waitlist-note'>
-              No account, no cloud sync — your keys and screen data stay on
-              your machine.
+              No account, no cloud sync — your keys and screen data stay on your
+              machine.
             </p>
           </div>
         ) : (
           <form
             onSubmit={onSubmit}
             className='grid gap-4'>
-            <div className='grid gap-2'>
-              <Label htmlFor={`${uid}-name`}>Name</Label>
-              <Input
-                id={`${uid}-name`}
-                name='name'
-                required
-                maxLength={120}
-                autoComplete='name'
-                placeholder='Ada Lovelace'
-              />
-            </div>
             <div className='grid gap-2'>
               <Label htmlFor={`${uid}-email`}>Email</Label>
               <Input
@@ -133,9 +121,7 @@ export const WaitlistDialog = ({
                 opacity: 0,
               }}
             />
-            {status === 'error' && (
-              <p className='waitlist-error'>{error}</p>
-            )}
+            {status === 'error' && <p className='waitlist-error'>{error}</p>}
             <Button
               type='submit'
               className='btn btn-primary'

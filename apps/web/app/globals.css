@@ -751,6 +751,10 @@ h3 {
   justify-content: center;
 }
 
+.hero-note {
+  margin-top: var(--space-4);
+}
+
 /* ─── hero scene: editor + floating bar ───────────────────────── */
 .scene {
   position: relative;

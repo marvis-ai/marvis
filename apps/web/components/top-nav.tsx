@@ -23,7 +23,7 @@ export const TopNav = () => (
       </nav>
       <WaitlistDialog
         triggerClassName='btn btn-secondary'
-        triggerLabel='Download'
+        triggerLabel='Join the waitlist'
         triggerDataOdId='nav-cta'
       />
     </div>

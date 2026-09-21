@@ -17,10 +17,10 @@ export const validateSignup = (
 ): { name: string; email: string } | null => {
   if (typeof input !== 'object' || input === null) return null;
   const { name, email } = input as Record<string, unknown>;
-  if (typeof name !== 'string' || typeof email !== 'string') return null;
-  const trimmedName = name.trim();
+  if (typeof email !== 'string') return null;
+  const trimmedName = typeof name === 'string' ? name.trim() : '';
   const trimmedEmail = email.trim().toLowerCase();
-  if (trimmedName.length < 1 || trimmedName.length > 120) return null;
+  if (trimmedName.length > 120) return null;
   if (trimmedEmail.length > 254 || !EMAIL_RE.test(trimmedEmail)) return null;
   return { name: trimmedName, email: trimmedEmail };
 };
@@ -50,12 +50,13 @@ const sendWelcome = async (
     return null;
   }
   const resend = new Resend(key);
+  const greeting = name || 'there';
   const { data, error } = await resend.emails.send({
     from: process.env.FROM_EMAIL ?? DEFAULT_FROM,
     to: email,
     subject: "You're on the Marvis waitlist",
-    text: `Hi ${name},\n\nThanks for joining the Marvis waitlist — we'll email you as soon as the macOS build is ready to download.\n\n— The Marvis team`,
-    html: `<p>Hi ${escapeHtml(name)},</p><p>Thanks for joining the Marvis waitlist — we'll email you as soon as the macOS build is ready to download.</p><p>— The Marvis team</p>`,
+    text: `Hi ${greeting},\n\nThanks for joining the Marvis waitlist — we'll email you as soon as the macOS build is ready to download.\n\n— The Marvis team`,
+    html: `<p>Hi ${escapeHtml(greeting)},</p><p>Thanks for joining the Marvis waitlist — we'll email you as soon as the macOS build is ready to download.</p><p>— The Marvis team</p>`,
   });
   if (error) {
     console.error('Resend send failed', error);

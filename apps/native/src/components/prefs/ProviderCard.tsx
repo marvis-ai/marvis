@@ -35,6 +35,22 @@ import {
   modelValidateKey,
 } from '../../lib/commands';
 import { providerLabel, type ProviderDef } from '../../lib/providers';
+import {
+  BTN_LG,
+  BTN_LINK,
+  BTN_LINK_LG,
+  BTN_OUTLINE,
+  BTN_PRIMARY,
+  FIELD,
+  LBL,
+  MODEL_SEL,
+  NUM,
+  PROV_CARD,
+  PROV_ERR,
+  PROV_NOTE,
+  SPIN,
+  cn,
+} from '../../lib/classes';
 import { Switch, Tag } from './bits';
 import type { PrefsData } from './types';
 
@@ -292,41 +308,62 @@ export const ProviderCard = ({
 
   return (
     <div
-      className={`prf-prov${open ? ' is-open' : ''}${enabled ? '' : ' is-off'}${drag.active ? ' is-dragging' : ''}${drag.over ? ' is-over' : ''}`}
+      data-prov-row
+      className={cn(
+        PROV_CARD,
+        drag.over
+          ? 'border-accent'
+          : open
+            ? 'border-[color-mix(in_oklch,var(--accent)_50%,var(--border))]'
+            : 'border-border',
+        drag.active ? 'opacity-40' : !enabled && 'opacity-55',
+      )}
       {...drag.row}>
-      <div className='prf-prov-head'>
+      <div className='flex items-center gap-2.5'>
         <span
-          className='prf-prov-grip'
+          className='grid flex-none cursor-grab place-items-center rounded text-muted-foreground select-none [-webkit-user-drag:element] active:cursor-grabbing focus-visible:outline-2 focus-visible:outline-accent focus-visible:outline-offset-1'
           draggable
           role='button'
           tabIndex={0}
           title='Drag to set failover priority — ↑/↓ also moves'
           aria-label={`Reorder ${label}`}
           {...drag.grip}>
-          <GripVerticalIcon />
+          <GripVerticalIcon className='size-3.25' />
         </span>
         <button
           type='button'
-          className='prf-prov-main'
+          className='flex min-w-0 flex-1 cursor-pointer items-center gap-2.5 border-0 bg-transparent p-0 text-left text-inherit'
           aria-expanded={open}
           onClick={() => setOpen((o) => !o)}>
           <span
-            className={`prf-prov-dot${isSet || def.id === 'ollama' ? ' set' : ''}`}
+            className={cn(
+              'size-1.75 flex-none rounded-full',
+              isSet || def.id === 'ollama'
+                ? 'bg-accent'
+                : 'bg-[color-mix(in_oklch,var(--fg)_20%,transparent)]',
+            )}
           />
-          <span className='prf-prov-name'>{label}</span>
-          <span className={`prf-prov-state${isSet ? ' set' : ''}`}>
+          <span className='text-[13.5px] font-semibold'>{label}</span>
+          <span
+            className={cn(
+              'ml-auto max-w-65 truncate font-mono text-[10.5px]',
+              isSet ? 'text-foreground' : 'text-muted-foreground',
+            )}>
             {stateText}
           </span>
-          <span className='prf-prov-expand'>
-            <ChevronRightIcon />
+          <span className='grid flex-none place-items-center text-muted-foreground'>
+            <ChevronRightIcon
+              className={cn(
+                'size-3 transition-transform duration-(--motion-fast) ease-(--ease) motion-reduce:transition-none',
+                open && 'rotate-90',
+              )}
+            />
           </span>
         </button>
         {isPrimary && <Tag>primary</Tag>}
         {/* The hint rides a wrapper — tooltips on a `disabled` button
             don't fire reliably. */}
-        <span
-          className='prf-switch-wrap'
-          title={enableHint}>
+        <span title={enableHint}>
           <Switch
             checked={enabled}
             onChange={onToggleEnabled}
@@ -336,20 +373,18 @@ export const ProviderCard = ({
         </span>
       </div>
 
-      <div className='prf-prov-body'>
+      <div className={cn('pt-3', open ? 'animate-fade-in' : 'hidden')}>
         {def.compat && (
           <>
             {compatConfigured && (
-              <p
-                className='prov-note'
-                style={{ marginTop: 0, marginBottom: 10 }}>
+              <p className={cn(PROV_NOTE, 'mt-0 mb-2.5')}>
                 endpoint ·{' '}
-                <span className='num'>{config!.compat.base_url}</span>
+                <span className={NUM}>{config!.compat.base_url}</span>
               </p>
             )}
-            <div className='prf-fields'>
+            <div className='mb-2 flex flex-col gap-2'>
               <input
-                className='key-input'
+                className={FIELD}
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 placeholder='Provider name — e.g. Groq, OpenRouter, vLLM'
@@ -357,7 +392,7 @@ export const ProviderCard = ({
                 aria-label='Compatible provider name'
               />
               <input
-                className='key-input'
+                className={FIELD}
                 value={baseUrl}
                 onChange={(e) => setBaseUrl(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && void save()}
@@ -371,9 +406,9 @@ export const ProviderCard = ({
         )}
 
         {def.id !== 'ollama' && (
-          <div className='key-row'>
+          <div className='mt-1.5 flex items-center gap-1.5'>
             <input
-              className='key-input'
+              className={FIELD}
               type='password'
               autoComplete='off'
               value={keyInput}
@@ -390,12 +425,12 @@ export const ProviderCard = ({
             />
             <button
               type='button'
-              className='mv-btn mv-btn-primary'
+              className={cn(BTN_LG, BTN_PRIMARY)}
               disabled={saving || (!def.compat && !keyInput.trim())}
               onClick={() => void save()}>
               {saving ? (
                 <>
-                  <span className='mv-spin' />
+                  <span className={SPIN} />
                   Validating…
                 </>
               ) : (
@@ -405,21 +440,19 @@ export const ProviderCard = ({
           </div>
         )}
         {def.id === 'ollama' && (
-          <div className='key-row'>
-            <span
-              className='prov-note'
-              style={{ marginTop: 0, flex: 1 }}>
-              Reads the daemon's <span className='num'>/api/tags</span> —
+          <div className='mt-1.5 flex items-center gap-1.5'>
+            <span className={cn(PROV_NOTE, 'mt-0 flex-1')}>
+              Reads the daemon's <span className={NUM}>/api/tags</span> —
               nothing leaves this Mac.
             </span>
             <button
               type='button'
-              className='mv-btn mv-btn-outline'
+              className={cn(BTN_LG, BTN_OUTLINE)}
               disabled={saving}
               onClick={() => void save()}>
               {saving ? (
                 <>
-                  <span className='mv-spin' />
+                  <span className={SPIN} />
                   Checking…
                 </>
               ) : (
@@ -430,11 +463,11 @@ export const ProviderCard = ({
         )}
 
         {masked && !def.compat && (
-          <p className='prov-note'>
+          <p className={PROV_NOTE}>
             Shown masked — the plaintext key never re-enters the DOM.{' '}
             <button
               type='button'
-              className='mv-btn mv-btn-link'
+              className={cn(BTN_LINK_LG, BTN_LINK)}
               disabled={saving}
               onClick={() => void remove()}>
               Remove key
@@ -442,36 +475,36 @@ export const ProviderCard = ({
           </p>
         )}
         {def.compat && compatConfigured && (
-          <p className='prov-note'>
+          <p className={PROV_NOTE}>
             Posts to{' '}
-            <span className='num'>
+            <span className={NUM}>
               {config!.compat.base_url}/chat/completions
             </span>
             {masked ? ` · key ${masked}` : ' · no key — open endpoint'}.{' '}
             <button
               type='button'
-              className='mv-btn mv-btn-link'
+              className={cn(BTN_LINK_LG, BTN_LINK)}
               disabled={saving}
               onClick={() => void remove()}>
               Remove endpoint
             </button>
           </p>
         )}
-        {error && <p className='prov-err show'>{error}</p>}
+        {error && <p className={PROV_ERR}>{error}</p>}
         {def.id === 'ollama' &&
           ollamaChecked &&
           (models?.length ?? 0) === 0 && (
-            <p className='prov-note'>
+            <p className={PROV_NOTE}>
               No models — is the Ollama daemon running?
             </p>
           )}
 
-        <div className='prf-prov-model'>
-          <span className='lbl'>Model</span>
+        <div className='mt-2.5 flex items-center gap-2'>
+          <span className={LBL}>Model</span>
           {def.compat ? (
             <>
               <input
-                className='key-input'
+                className={FIELD}
                 list={`models-${def.id}`}
                 value={modelText}
                 onChange={(e) => setModelText(e.target.value)}
@@ -496,7 +529,7 @@ export const ProviderCard = ({
             </>
           ) : (
             <select
-              className='model-sel'
+              className={MODEL_SEL}
               value={resolvedModel}
               disabled={
                 saving ||

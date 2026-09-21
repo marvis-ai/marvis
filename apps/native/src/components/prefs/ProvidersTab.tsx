@@ -21,6 +21,7 @@ import {
   providerSetEnabled,
 } from '../../lib/commands';
 import { orderedProviders } from '../../lib/providers';
+import { H2, PROV_CARD, SUB, cn } from '../../lib/classes';
 import { ProviderCard } from './ProviderCard';
 import type { PrefsData } from './types';
 
@@ -41,8 +42,8 @@ export const ProvidersTab = ({ data }: { data: PrefsData }) => {
   if (data.status === null || config === null) {
     return (
       <>
-        <h2>Providers</h2>
-        <p className='prf-loading'>Loading…</p>
+        <h2 className={H2}>Providers</h2>
+        <p className='text-[12.5px] text-muted-foreground'>Loading…</p>
       </>
     );
   }
@@ -96,8 +97,8 @@ export const ProvidersTab = ({ data }: { data: PrefsData }) => {
 
   return (
     <>
-      <h2>Providers</h2>
-      <p className='sub'>
+      <h2 className={H2}>Providers</h2>
+      <p className={SUB}>
         Your keys, your models. Drag to set failover priority — the top provider
         answers, the rest back it up. Switched-off providers are skipped; their
         keys stay put.
@@ -124,7 +125,9 @@ export const ProvidersTab = ({ data }: { data: PrefsData }) => {
                 e.dataTransfer.effectAllowed = 'move';
                 e.dataTransfer.setData('text/plain', def.id);
                 // Ghost image is the whole row, not the 13px grip.
-                const row = (e.target as HTMLElement).closest('.prf-prov');
+                const row = (e.target as HTMLElement).closest(
+                  '[data-prov-row]',
+                );
                 if (row instanceof HTMLElement) {
                   e.dataTransfer.setDragImage(row, 24, 16);
                 }
@@ -174,11 +177,13 @@ export const ProvidersTab = ({ data }: { data: PrefsData }) => {
         />
       ))}
 
-      <div className='prf-prov is-future'>
-        <div className='prf-prov-head prf-prov-head-static'>
-          <span className='prf-prov-dot' />
-          <span className='prf-prov-name'>Deepgram</span>
-          <span className='prf-prov-state'>stt · nova-2 · Phase 2</span>
+      <div className={cn(PROV_CARD, 'border-border opacity-55')}>
+        <div className='flex cursor-default items-center gap-2.5'>
+          <span className='size-1.75 flex-none rounded-full bg-[color-mix(in_oklch,var(--fg)_20%,transparent)]' />
+          <span className='text-[13.5px] font-semibold'>Deepgram</span>
+          <span className='ml-auto max-w-65 truncate font-mono text-[10.5px] text-muted-foreground'>
+            stt · nova-2 · Phase 2
+          </span>
         </div>
       </div>
     </>

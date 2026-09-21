@@ -8,6 +8,16 @@
  */
 import { useEffect, useState } from 'react';
 import { configSet } from '../../lib/commands';
+import {
+  H2,
+  META,
+  PR_LABEL,
+  PR_SUB,
+  PRF_ROW,
+  PRF_ROWS,
+  SUB,
+  cn,
+} from '../../lib/classes';
 import { Kbd } from './bits';
 import type { PrefsData } from './types';
 
@@ -116,34 +126,34 @@ export const HotkeysTab = ({ data }: { data: PrefsData }) => {
 
   return (
     <>
-      <h2>Hotkeys</h2>
-      <p className='sub'>
+      <h2 className={H2}>Hotkeys</h2>
+      <p className={SUB}>
         Global, registered at the OS level. Click a binding, then press the new
         chord — Esc cancels.
       </p>
 
-      <div className='prf-rows'>
+      <div className={PRF_ROWS}>
         {ACTIONS.map((a, i) => {
           const accel = hk[a.id];
           const armed = listening === a.id;
           return (
             <div
               key={a.id}
-              className='prf-row'
-              style={
-                i === ACTIONS.length - 1 ? { borderBottom: 0 } : undefined
-              }>
+              className={cn(PRF_ROW, i === ACTIONS.length - 1 && 'border-b-0')}>
               <div>
-                <div className='pr-label'>{a.label}</div>
+                <div className={PR_LABEL}>{a.label}</div>
                 {armed && (
-                  <div className='pr-sub'>
+                  <div className={PR_SUB}>
                     {hint ?? 'press a shortcut with ⌘, ⌃ or ⌥'}
                   </div>
                 )}
               </div>
               <button
                 type='button'
-                className={`prf-hk-bind${armed ? ' is-listening' : ''}`}
+                className={cn(
+                  'cursor-pointer rounded-md border-0 bg-transparent p-0',
+                  armed && 'shadow-(--focus-ring)',
+                )}
                 title='Click to rebind'
                 onClick={() => {
                   setListening(armed ? null : a.id);
@@ -155,9 +165,7 @@ export const HotkeysTab = ({ data }: { data: PrefsData }) => {
           );
         })}
       </div>
-      <p
-        className='meta'
-        style={{ marginTop: 14 }}>
+      <p className={cn(META, 'mt-3.5')}>
         before setup finishes, only Show/hide and Settings respond.
       </p>
     </>

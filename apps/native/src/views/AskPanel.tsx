@@ -68,7 +68,7 @@ const AskPanel = () => {
   const [model, setModel] = useState<ModelSelection | null>(null);
   const [error, setError] = useState<{
     message: string;
-    needsUnlock: boolean;
+    needsSetup: boolean;
   } | null>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -138,14 +138,22 @@ const AskPanel = () => {
   useTauriEvent<{ text: string }>(EV_ASK_CHUNK, (p) => {
     setResponse((r) => r + p.text);
   });
-  useTauriEvent<{ full: string }>(EV_ASK_DONE, (p) => {
-    // `full` is authoritative — covers a dropped or duplicated chunk.
-    setResponse(p.full);
-  });
-  useTauriEvent<{ message: string; needs_unlock?: boolean }>(
+  useTauriEvent<{ full: string; provider?: string; model?: string }>(
+    EV_ASK_DONE,
+    (p) => {
+      // `full` is authoritative — covers a dropped or duplicated chunk.
+      // `provider`/`model` report who ACTUALLY answered — under failover
+      // that may not be the chain head the mount-time read resolved.
+      setResponse(p.full);
+      if (p.provider && p.model) {
+        setModel({ provider: p.provider, model: p.model });
+      }
+    },
+  );
+  useTauriEvent<{ message: string; needs_setup?: boolean }>(
     EV_ASK_ERROR,
     (p) => {
-      setError({ message: p.message, needsUnlock: p.needs_unlock === true });
+      setError({ message: p.message, needsSetup: p.needs_setup === true });
     },
   );
   // Hotkey-driven scroll (lib.rs ScrollUp/ScrollDown).
@@ -204,12 +212,12 @@ const AskPanel = () => {
         {error && (
           <div className='mv-panel-err'>
             <span className='err-msg'>{error.message}</span>
-            {error.needsUnlock && (
+            {error.needsSetup && (
               <button
                 type='button'
                 className='mv-btn mv-btn-outline'
                 onClick={() => void windowShowSettings().catch(() => {})}>
-                Unlock in settings
+                Open settings
               </button>
             )}
           </div>

@@ -154,8 +154,9 @@ from the bar.
 - **Listening** — bar gets the slate ring, mic turns `--accent-text`, panel
   shows the live transcript (`who` labels mono; latest speaker accent-tinted)
   then streams the answer.
-- **Mini settings** — 240px frosted card (r=14) beside the chatbox head:
-  provider select, model row, key status. Closes when the chatbox opens.
+- **Settings entry** — the gear on the input bar, `Cmd+,`, and the tray
+  item all open the decorated preferences window (below); there is no
+  mini panel beside the chatbox.
 - **Docks** — `data-pos` on the stage: `top | bottom | left | right`.
   Top/bottom horizontal, left/right vertical rail; panels extend inward and
   breath direction follows the edge.
@@ -165,21 +166,29 @@ from the bar.
 
 - macOS frame: traffic lights, centered dim title, **sidebar** (settings
   mode) with mono section footer, main column of `pref-row`s.
-- **Onboarding = step-by-step wizard, no sidebar.** A 5-segment progress
+- **Onboarding = step-by-step wizard, no sidebar.** A 4-segment progress
   track across the window top (`ob-seg` fills `--primary`) + mono counter
-  `2 / 5 · key vault`; steps centered in a ~480px column with Back / primary
-  actions. Mode switch resets to step 1.
+  `2 / 4 · screen access`; steps centered in a ~480px column with Back /
+  primary actions. Mode switch resets to step 1. **The bar stays hidden
+  for the whole wizard** — it appears only after `onboarding_done` writes,
+  and a re-run hides it again until the window closes.
 - **BYOK** — provider picker pills (OpenAI / Anthropic / Gemini /
   **OpenRouter** / Ollama / **OpenAI-compatible**). OpenRouter is a
   first-class pinned endpoint (`openrouter.ai/api/v1`, `sk-or-…` key,
   `X-Title: Marvis`); Compatible adds *Provider name* + *Base URL*
   fields above the key field; validation requires `http(s)://`, key optional
-  for local endpoints; model becomes free-text. Saved endpoints register in
-  Settings → Providers with masked key (`…last4`).
-- **Vault card** — dark `--fg-2` fill, mono sub: `keys.enc`, Touch ID gate.
+  for local endpoints; model becomes free-text. A saved provider is
+  promoted to the top of the failover order. Keys persist in
+  `~/.marvis/keys.json` (plaintext, mode 0600 — the UI only ever sees the
+  `…last4` mask).
+- **Provider rows are the failover chain** — Settings → Providers lists
+  them in priority order. The grip at the row's left edge drags to
+  re-rank (`providers.order`); the switch on the right toggles a provider
+  out of the chain (`providers.disabled`) without deleting its key.
+  Disabled rows dim but stay editable. A "primary" tag marks the provider
+  that would answer right now — the topmost enabled, configured one.
 - **Accent swatch** — General tab row: `sw-chip` dot in `--accent` + mono
   `#3a7294`.
-- **Touch ID sheet** — r=12 surface card on a dim scrim, slides in 200ms.
 - Appearance control (Auto / Light / Dark segmented) lives in General;
   `is-dark` on the stage flips the whole scene.
 
@@ -228,7 +237,7 @@ from the bar.
 | File | Use |
 | --- | --- |
 | `assets/marvis-logo.svg` | Galada wordmark + iris lockup — onboarding welcome, launcher |
-| `assets/marvis-icon.svg` | App icon — dock tile, Touch ID sheet |
+| `assets/marvis-icon.svg` | App icon — dock tile |
 | `assets/marvis-mark.svg` | Iris mark alone — favicon-scale uses |
 
 Never redraw or substitute the iris/wordmark; reference the SVGs.

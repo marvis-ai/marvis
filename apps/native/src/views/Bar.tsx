@@ -5,16 +5,20 @@
  * is panel-only (windows/mod.rs).
  *
  * The pill itself morphs (DESIGN.md §6): at rest it's the 104px capsule —
- * iris + camera + mic — and clicking the iris, typing, or entering a gate
- * card opens the 345px input bar, which also carries the settings gear
- * (the capsule has no room for a fourth control; the tray's Settings item
- * and `Cmd+,` reach it from any state). All states share one DOM tree so
- * the morph is a class-driven transition, never a remount.
+ * iris + camera + mic — and clicking the iris, typing, or entering the
+ * permission gate card opens the 345px input bar, which also carries the
+ * settings gear (the capsule has no room for a fourth control; the
+ * tray's Settings item and `Cmd+,` reach it from any state). All states
+ * share one DOM tree so the morph is a class-driven transition, never a
+ * remount.
+ *
+ * The bar is only visible once onboarding has completed — while the
+ * wizard is up, the backend keeps this window hidden (windows/mod.rs
+ * `sync_bar_visibility`), so no gate card can appear behind it.
  *
  * Errors do NOT render here: the window can't grow, so an error row
  * squeezed the pill's content. They go to the `alert` window instead
- * (`alertShow` → views/AlertToast.tsx), which also owns the keystore
- * `Reset` affordance for stores no unlock can open.
+ * (`alertShow` → views/AlertToast.tsx).
  *
  * `data-tauri-drag-region` goes on the container chrome and
  * non-interactive children only: Tauri's drag walk treats bare
@@ -29,46 +33,27 @@ import {
   alertShow,
   askSend,
   askSendScreenOnly,
-  keystoreInit,
-  keystoreStatus,
-  keystoreUnlock,
   permissionsOpenPrefs,
   permissionsRequestScreen,
   permissionsStatus,
   windowShowSettings,
   type AppStatePayload,
   type Gate,
-  type KeystoreStatus,
-  type PermissionsStatus,
 } from '../lib/commands';
 import {
   EV_APP_STATE,
   EV_CAPTURE_PERMISSION_NEEDED,
-  EV_KEYSTORE_CHANGED,
   useTauriEvent,
 } from '../lib/events';
 import { Iris } from '../components/Iris';
 import { RetryCard } from '../components/RetryCard';
 
 /** Mirrors `app_gate` in lib.rs so the first render doesn't wait on `app:state`. */
-const gateFor = (ks: KeystoreStatus, perms: PermissionsStatus): Gate => {
-  if (ks.state !== 'Unlocked') {
-    return 'needs_unlock';
-  }
-  return perms.screen ? 'main' : 'needs_permission';
-};
-
-/**
- * Keystore failures a `keystore_reset` can actually fix: an obsolete or
- * corrupt `keys.enc` and a lost Keychain DEK (`KeystoreError`/`DekError`
- * display strings). Anything else — a canceled prompt, a failed auth —
- * gets an informational toast with no destructive affordance.
- */
-const RESET_HINTS = /reset required|cannot decrypt|corrupt/i;
+const gateFor = (screen: boolean): Gate =>
+  screen ? 'main' : 'needs_permission';
 
 /** Every bar error goes to the alert window — the pill has no room. */
-const raise = (message: string, action?: 'reset') =>
-  void alertShow(message, action).catch(() => {});
+const raise = (message: string) => void alertShow(message).catch(() => {});
 
 /** Which screen edge the bar hugs — the breath bobs away from it. */
 type Edge = 'top' | 'bottom' | 'left' | 'right';
@@ -104,7 +89,6 @@ const edgeFor = async (): Promise<Edge> => {
 
 const Bar = () => {
   const [gate, setGate] = useState<Gate | null>(null);
-  const [keystore, setKeystore] = useState<KeystoreStatus | null>(null);
   const [bootError, setBootError] = useState(false);
   const [busy, setBusy] = useState(false);
   const [text, setText] = useState('');
@@ -112,7 +96,7 @@ const Bar = () => {
   const [edge, setEdge] = useState<Edge>('top');
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // Capsule ⇄ input morph: gate cards and boot errors take the full
+  // Capsule ⇄ input morph: the gate card and boot errors take the full
   // 345px pill; `main` rests as the capsule until the iris opens it or
   // the user starts typing on the focused window.
   const expanded = bootError
@@ -123,12 +107,8 @@ const Bar = () => {
 
   const bootstrap = useCallback(async () => {
     try {
-      const [ks, perms] = await Promise.all([
-        keystoreStatus(),
-        permissionsStatus(),
-      ]);
-      setKeystore(ks);
-      setGate(gateFor(ks, perms));
+      const perms = await permissionsStatus();
+      setGate(gateFor(perms.screen));
       setBootError(false);
     } catch {
       setBootError(true);
@@ -148,7 +128,6 @@ const Bar = () => {
   }, []);
 
   useTauriEvent<AppStatePayload>(EV_APP_STATE, (p) => setGate(p.gate));
-  useTauriEvent<KeystoreStatus>(EV_KEYSTORE_CHANGED, setKeystore);
   // Mid-session screen-permission revocation (ask.rs detects it when a
   // stale frame would have shipped): flip back to the permission card.
   useTauriEvent<{ permission: string }>(EV_CAPTURE_PERMISSION_NEEDED, () =>
@@ -191,30 +170,6 @@ const Bar = () => {
     inputRef.current?.blur();
   };
 
-  const unlockKeystore = async () => {
-    if (busy) {
-      return;
-    }
-    setBusy(true);
-    try {
-      // First run creates the Keychain DEK silently, then the uniform
-      // unlock path shows the one system-auth prompt.
-      const ks =
-        keystore?.state === 'Unset'
-          ? await keystoreInit().then(() => keystoreUnlock())
-          : await keystoreUnlock();
-      setKeystore(ks);
-      // `transition_gate` emits `app:state`, but resync anyway in case
-      // the emit raced us.
-      await bootstrap();
-    } catch (err) {
-      const message = typeof err === 'string' ? err : 'Unlock failed';
-      raise(message, RESET_HINTS.test(message) ? 'reset' : undefined);
-    } finally {
-      setBusy(false);
-    }
-  };
-
   const grantScreen = async () => {
     if (busy) {
       return;
@@ -249,28 +204,6 @@ const Bar = () => {
           className='mv-bar-inner justify-center'
           data-tauri-drag-region>
           <RetryCard onRetry={() => void bootstrap()} />
-        </div>
-      );
-    }
-    if (gate === 'needs_unlock') {
-      return (
-        <div
-          className='mv-bar-inner'
-          data-tauri-drag-region>
-          <Iris />
-          <span
-            className='mv-bar-label'
-            title='Marvis unlocks with Touch ID, Face ID, or your Mac password'
-            data-tauri-drag-region>
-            Unlock with Touch ID / password
-          </span>
-          <button
-            type='button'
-            className='mv-btn mv-btn-primary'
-            onClick={() => void unlockKeystore()}
-            disabled={busy}>
-            Unlock
-          </button>
         </div>
       );
     }

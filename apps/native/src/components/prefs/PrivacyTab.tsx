@@ -47,8 +47,8 @@ export const PrivacyTab = () => {
       <div className='prf-filetree'>
         {'~/.marvis/\n├── config.toml   '}
         <em>0644 — models, hotkeys, bar position</em>
-        {'\n├── keys.enc      '}
-        <em>AES-256-GCM vault; DEK lives in Keychain</em>
+        {'\n├── keys.json     '}
+        <em>0600 — provider keys, plaintext, this Mac only</em>
         {'\n└── marvis.db     '}
         <em>sessions + messages, sqlite</em>
       </div>

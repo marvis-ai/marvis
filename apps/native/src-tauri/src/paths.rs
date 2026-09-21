@@ -14,8 +14,12 @@ pub fn root() -> PathBuf {
     dir
 }
 
+/// `keys.json` — plaintext provider→key map (0600 inside the 0700 root).
+/// The retired `keys.enc` was an AES-GCM vault keyed by a Keychain DEK;
+/// old installs may still carry one — it is left in place (unreadable
+/// without the DEK, harmless) rather than deleted under the user.
 pub fn keys_file() -> PathBuf {
-    root().join("keys.enc")
+    root().join("keys.json")
 }
 
 pub fn config_file() -> PathBuf {
@@ -40,7 +44,7 @@ mod tests {
     fn files_live_under_marvis_root() {
         let root = root();
         assert!(root.ends_with(".marvis"));
-        assert_eq!(keys_file(), root.join("keys.enc"));
+        assert_eq!(keys_file(), root.join("keys.json"));
         assert_eq!(config_file(), root.join("config.toml"));
         assert_eq!(db_file(), root.join("marvis.db"));
         // models_dir() must not create the directory eagerly.

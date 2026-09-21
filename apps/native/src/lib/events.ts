@@ -13,11 +13,11 @@ export const EV_KEYSTORE_CHANGED = 'keystore:changed';
 // `loading` also carries `question` — the run's submitted text.
 export const EV_ASK_STATE = 'ask:state'; // { state: 'loading'|'streaming'|'idle', question?: string }
 export const EV_ASK_CHUNK = 'ask:chunk'; // { text: string }
-export const EV_ASK_DONE = 'ask:done'; // { full: string }
-export const EV_ASK_ERROR = 'ask:error'; // { message: string, needs_unlock?: bool }
+export const EV_ASK_DONE = 'ask:done'; // { full, provider, model } — who answered
+export const EV_ASK_ERROR = 'ask:error'; // { message: string, needs_setup?: bool }
 export const EV_ASK_SCROLL = 'ask:scroll'; // { dir: 'up'|'down' }
 /** Emitted to the `alert` window only — the toast payload (lib.rs
- * `show_alert`); `{ message, action: 'reset' | null }`. */
+ * `show_alert`); `{ message }`. */
 export const EV_ALERT_SHOW = 'alert:show';
 /** Broadcast when a frame exists but screen permission was revoked
  * mid-session (ask.rs) — the bar flips back to its permission card. */

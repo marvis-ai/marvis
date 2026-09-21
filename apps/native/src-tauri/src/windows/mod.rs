@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 use tauri::{
-    AppHandle, Emitter, LogicalPosition, LogicalSize, Monitor, WebviewUrl, WebviewWindow,
+    AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Monitor, WebviewUrl, WebviewWindow,
     WebviewWindowBuilder,
 };
 
@@ -126,11 +126,8 @@ const PREFS_H: f64 = 520.0;
 /// squeezed the pill's content). Label `alert`, `?view=alert`.
 pub const ALERT_LABEL: &str = "alert";
 const ALERT_W: f64 = 340.0;
-/// The toast has exactly two layouts, so its height is picked here rather
-/// than reported back like a panel's: message only, or message + the
-/// action row.
+/// Fixed toast height — informational only, so one layout suffices.
 const ALERT_H: f64 = 100.0;
-const ALERT_H_ACTION: f64 = 132.0;
 /// Distance below the work-area top for the default bar position.
 const BAR_TOP_OFFSET: f64 = 21.0;
 /// `Cmd+Arrow` step size.
@@ -157,13 +154,11 @@ pub struct WindowPool {
     bar: Option<WebviewWindow>,
     /// Alert toast — built with the bar (not a [`Panel`]: it never joins
     /// the stacking row, `toggle_all`, or the gate's panel lifecycle, and
-    /// it must exist before the keystore is unlocked to report unlock
-    /// failures).
+    /// it must exist before `Main` to report startup failures).
     alert: Option<WebviewWindow>,
     /// The decorated preferences window (settings + onboarding). Built
-    /// lazily on first `show_prefs` — unlike the alert it is NOT needed
-    /// before the gate, and unlike panels it is NOT part of `Main`
-    /// (settings/onboarding must work while the keystore is locked).
+    /// lazily on first `show_prefs` — unlike panels it is NOT part of
+    /// `Main` (settings and the wizard must work before the gate opens).
     prefs: Option<WebviewWindow>,
     /// The mode `prefs` was last opened in (`"settings"|"onboarding"`) —
     /// the `prefs_mode` command returns it so a `prefs:mode` emit that
@@ -182,10 +177,12 @@ pub struct WindowPool {
 }
 
 impl WindowPool {
-    /// Build ONLY the bar window and show it. Panels are created later by
+    /// Build ONLY the bar window; panels are created later by
     /// [`create_feature_windows`](Self::create_feature_windows) once the
-    /// header-state gate opens (keystore unlocked + screen permission).
-    pub fn create_bar_only(app: &AppHandle) -> anyhow::Result<Self> {
+    /// gate opens (onboarding done + screen permission). `show_bar` is
+    /// the same `onboarding_done` flag — first-run installs keep the bar
+    /// hidden until the wizard finishes; `set_bar_shown` owns it after.
+    pub fn create_bar_only(app: &AppHandle, show_bar: bool) -> anyhow::Result<Self> {
         let mut pool = Self {
             bar: None,
             alert: None,
@@ -205,10 +202,32 @@ impl WindowPool {
         // would be dropped.
         pool.alert = Some(build_window(app, ALERT_LABEL, ALERT_W, ALERT_H)?);
         pool.position_bar_at_startup();
-        if let Some(bar) = &pool.bar {
-            let _ = bar.show();
+        if show_bar {
+            if let Some(bar) = &pool.bar {
+                let _ = bar.show();
+            }
         }
         Ok(pool)
+    }
+
+    /// The bar's visibility rule: it floats only when onboarding is done
+    /// AND the prefs window isn't showing the wizard — a re-run hides the
+    /// bar again until the window closes. `AppState::sync_bar_visibility`
+    /// calls this after every prefs show/hide and every
+    /// `app.onboarding_done` write.
+    pub fn set_bar_shown(&self, onboarding_done: bool) {
+        let onboarding_up = self.prefs_mode == "onboarding"
+            && self
+                .prefs
+                .as_ref()
+                .is_some_and(|w| w.is_visible().unwrap_or(false));
+        if let Some(bar) = &self.bar {
+            if onboarding_done && !onboarding_up {
+                let _ = bar.show();
+            } else {
+                let _ = bar.hide();
+            }
+        }
     }
 
     /// Windowless pool — the `AppState::for_test` seam: state needs a pool
@@ -295,9 +314,8 @@ impl WindowPool {
     /// Slide the alert toast in, centered under the bar. Deliberately
     /// overlaps whatever panels are open and is shown last so it lands
     /// on top of them; it is never focused, so a bar/panel field keeps
-    /// its focus (clicking the toast's buttons focuses it as usual).
-    /// `with_action` picks the taller layout (message + action row).
-    pub fn show_alert(&mut self, with_action: bool) {
+    /// its focus.
+    pub fn show_alert(&mut self) {
         let Some(win) = self.alert.clone() else {
             log::warn!("windows::show_alert: alert window not created");
             return;
@@ -308,7 +326,7 @@ impl WindowPool {
                 x: self.bar_rect.center_x() - ALERT_W / 2.0,
                 y: self.bar_rect.bottom() + layout::PANEL_PAD,
                 w: ALERT_W,
-                h: if with_action { ALERT_H_ACTION } else { ALERT_H },
+                h: ALERT_H,
             },
             self.bar_work_area(),
         );
@@ -335,7 +353,8 @@ impl WindowPool {
     /// mode is pushed via `prefs:mode` (the frontend also re-reads it with
     /// `prefs_mode` on mount, so a show that raced the load still lands).
     /// The window title follows the mode: `Marvis — Settings` /
-    /// `Marvis — Set up`.
+    /// `Marvis — Set up`. Onboarding mode hides the bar — the wizard
+    /// must not share the screen with the floating UI.
     pub fn show_prefs(&mut self, app: &AppHandle, mode: &str) {
         let win = match &self.prefs {
             Some(w) => w.clone(),
@@ -363,9 +382,12 @@ impl WindowPool {
             "onboarding" => "Marvis — Set up",
             _ => "Marvis — Settings",
         });
-        let _ = win.center();
         let _ = win.show();
         let _ = win.set_focus();
+        // The bar's visibility rule — applied AFTER the prefs window is
+        // visible so `set_bar_shown` sees the wizard up.
+        let done = app.state::<crate::AppState>().onboarding_done();
+        self.set_bar_shown(done);
     }
 
     pub fn hide_prefs(&self) {
@@ -707,13 +729,22 @@ fn build_prefs_window(app: &AppHandle) -> anyhow::Result<WebviewWindow> {
         .transparent(false)
         .resizable(false)
         .visible(false)
+        // Tauri's file-drop handler swallows element drags inside the
+        // webview — the Providers list's HTML5 reorder needs the native
+        // path. Marvis consumes no OS file drops, so nothing is lost.
+        .disable_drag_drop_handler()
         .build()?;
     {
         let handle = win.clone();
+        let app = app.clone();
         win.on_window_event(move |event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
                 let _ = handle.hide();
+                // Closing a wizard re-exposes the bar if onboarding is
+                // already done (a re-run); on a true first run the flag
+                // is still false and the bar correctly stays hidden.
+                app.state::<crate::AppState>().sync_bar_visibility();
             }
         });
     }

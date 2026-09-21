@@ -1,41 +1,38 @@
 /**
- * Onboarding — the five-step wizard, no sidebar (DESIGN.md §6). One
+ * Onboarding — the four-step wizard, no sidebar (DESIGN.md §6). One
  * mount = one run: the shell remounts this subtree on every mode switch,
  * which is how "re-run setup" lands on step 1.
  *
- * Steps 2–3 drive the same commands the bar's gate cards use —
- * `keystore_init`/`keystore_unlock` and `permissions_request_screen` —
- * so state can never split between surfaces. Step 4's BYOK picker reuses
- * the catalog the Providers tab renders; saving a compatible provider
- * persists `compat.name` + `compat.base_url` first (validation resolves
- * the endpoint server-side), then validates, then stores the key.
+ * Step 2 drives the same `permissions_request_screen` command the bar's
+ * gate card uses, so state can never split between surfaces. Step 3's
+ * BYOK picker reuses the catalog the Providers tab renders; saving a
+ * compatible provider persists `compat.name` + `compat.base_url` first
+ * (validation resolves the endpoint server-side), then validates, then
+ * stores the key in `keys.json`. A successful save also promotes the
+ * provider to the head of `providers.order` — the wizard's pick should
+ * be the one that answers — and clears its disabled flag.
  * Completion is `app.onboarding_done` — written by "Open settings" only,
- * so quitting mid-wizard replays onboarding on next launch.
+ * so quitting mid-wizard replays onboarding on next launch. The backend
+ * reveals the bar on that write.
  */
 import { useState } from 'react';
-import { Check, Fingerprint, ShieldCheck } from '@marvis/ui';
+import { Check, ShieldCheck } from '@marvis/ui';
 import {
   configSet,
-  keystoreInit,
   keystoreSetKey,
-  keystoreUnlock,
+  modelGetSelected,
   modelListAvailable,
   modelSetSelected,
   modelValidateKey,
   permissionsRequestScreen,
+  providersReorder,
+  providerSetEnabled,
   windowShowSettings,
 } from '../../lib/commands';
 import { providerFor, PROVIDERS } from '../../lib/providers';
-import { AuthSheet } from './AuthSheet';
 import type { PrefsData } from './types';
 
-const STEP_LABELS = [
-  'welcome',
-  'key vault',
-  'screen access',
-  'bring your own key',
-  'done',
-];
+const STEP_LABELS = ['welcome', 'screen access', 'bring your own key', 'done'];
 const URL_RE = /^https?:\/\//i;
 
 export const Onboarding = ({ data }: { data: PrefsData }) => {
@@ -66,33 +63,26 @@ export const Onboarding = ({ data }: { data: PrefsData }) => {
           ))}
         </div>
         <span className='prf-ob-count'>
-          {step + 1} / 5 · {STEP_LABELS[step]}
+          {step + 1} / {STEP_LABELS.length} · {STEP_LABELS[step]}
         </span>
       </div>
 
       <div className='prf-ob-main'>
         {step === 0 && <WelcomeStep onNext={() => setStep(1)} />}
         {step === 1 && (
-          <VaultStep
-            data={data}
+          <ScreenStep
             onNext={() => setStep(2)}
             onBack={() => setStep(0)}
           />
         )}
         {step === 2 && (
-          <ScreenStep
+          <ByokStep
+            data={data}
             onNext={() => setStep(3)}
             onBack={() => setStep(1)}
           />
         )}
-        {step === 3 && (
-          <ByokStep
-            data={data}
-            onNext={() => setStep(4)}
-            onBack={() => setStep(2)}
-          />
-        )}
-        {step === 4 && <DoneStep onDone={() => void finish()} />}
+        {step === 3 && <DoneStep onDone={() => void finish()} />}
       </div>
     </div>
   );
@@ -115,7 +105,7 @@ const WelcomeStep = ({ onNext }: { onNext: () => void }) => (
     <div className='prf-ob-list'>
       <div className='li'>A single bar that drifts with you</div>
       <div className='li'>Ask about what's on screen — or about your call</div>
-      <div className='li'>Your keys, your vault, your providers</div>
+      <div className='li'>Your keys stay on this Mac, under your providers</div>
     </div>
     <div className='prf-ob-actions'>
       <button
@@ -128,95 +118,7 @@ const WelcomeStep = ({ onNext }: { onNext: () => void }) => (
   </>
 );
 
-/* ── step 2 · key vault ───────────────────────────────────────── */
-
-const VaultStep = ({
-  data,
-  onNext,
-  onBack,
-}: {
-  data: PrefsData;
-  onNext: () => void;
-  onBack: () => void;
-}) => {
-  const [pending, setPending] = useState(false);
-  const [err, setErr] = useState('');
-
-  const create = async () => {
-    setErr('');
-    setPending(true);
-    try {
-      // Unset → init creates keys.enc + the Keychain DEK (first run is
-      // silent; unlock's read-back is the one system prompt). Locked →
-      // the vault already exists, so init refuses — unlock instead.
-      // Unlocked → nothing to do.
-      let s = data.status?.state;
-      if (s === 'Unset') {
-        const res = await keystoreInit();
-        data.setStatus(res);
-        s = res.state;
-      }
-      if (s === 'Locked') {
-        data.setStatus(await keystoreUnlock());
-      }
-      onNext();
-    } catch (e) {
-      setErr(typeof e === 'string' ? e : 'Could not create the vault');
-    } finally {
-      setPending(false);
-    }
-  };
-
-  return (
-    <>
-      <div className='prf-ob-ico'>
-        <Fingerprint />
-      </div>
-      <h1>Your keys stay yours</h1>
-      <p className='lede'>
-        Provider keys encrypt into{' '}
-        <span className='num'>~/.marvis/keys.enc</span> (AES-256-GCM). The key
-        lives in the macOS Keychain, guarded by Touch ID — Marvis never sees it.
-      </p>
-      <div className='prf-ob-actions'>
-        <button
-          type='button'
-          className='mv-btn mv-btn-outline'
-          onClick={onBack}
-          disabled={pending}>
-          Back
-        </button>
-        <button
-          type='button'
-          className='mv-btn mv-btn-primary'
-          onClick={() => void create()}
-          disabled={pending}>
-          {pending ? (
-            <>
-              <span className='mv-spin' />
-              Waiting for Touch ID…
-            </>
-          ) : data.status?.state === 'Locked' ? (
-            'Unlock vault'
-          ) : (
-            'Create vault'
-          )}
-        </button>
-      </div>
-      {err && <p className='prov-err show'>{err}</p>}
-      <AuthSheet
-        open={pending}
-        title={
-          data.status?.state === 'Locked'
-            ? 'Touch ID to unlock Marvis'
-            : 'Touch ID to create your vault'
-        }
-      />
-    </>
-  );
-};
-
-/* ── step 3 · screen access ───────────────────────────────────── */
+/* ── step 2 · screen access ───────────────────────────────────── */
 
 const ScreenStep = ({
   onNext,
@@ -286,7 +188,7 @@ const ScreenStep = ({
   );
 };
 
-/* ── step 4 · bring your own key ──────────────────────────────── */
+/* ── step 3 · bring your own key ──────────────────────────────── */
 
 const ByokStep = ({
   data,
@@ -349,6 +251,19 @@ const ByokStep = ({
         data.setStatus(await keystoreSetKey(prov, k));
         setKey('');
       }
+      // The wizard's pick should be the one that answers: switch it on
+      // and move it to the head of the failover order (the backend
+      // normalizes + appends any missing ids, so existing order holds).
+      let cfg = data.config;
+      if (cfg?.providers.disabled.includes(prov)) {
+        cfg = await providerSetEnabled(prov, true);
+      }
+      const rest = (cfg?.providers.order ?? []).filter((id) => id !== prov);
+      cfg = await providersReorder([prov, ...rest]);
+      data.setConfig(cfg);
+      // The promoted provider is almost certainly the chain head now —
+      // resolve it so `data.selected` agrees before the Done step.
+      data.setSelected(await modelGetSelected());
       const list = await modelListAvailable(prov).catch(() => [] as string[]);
       setModelList(list);
       setModel((m) => m || list[0] || '');
@@ -363,7 +278,10 @@ const ByokStep = ({
     // Persisting the pick is what makes the ask surface actually use it.
     if (model.trim()) {
       try {
-        data.setSelected(await modelSetSelected(prov, model.trim()));
+        const s = await modelSetSelected(prov, model.trim());
+        if (s) {
+          data.setSelected(s);
+        }
       } catch {
         // non-fatal — providers stay saved; the ask errors inline later
       }
@@ -389,8 +307,9 @@ const ByokStep = ({
     <>
       <h1>Bring your own key</h1>
       <p className='lede'>
-        Chat and listen run on whichever provider you configure. Keys go
-        straight to the vault — they're never in the config file, never in logs.
+        Chat and listen run on whichever provider you configure. Keys live in{' '}
+        <span className='num'>~/.marvis/keys.json</span> — readable only by you,
+        never in the config file, never in logs.
       </p>
 
       <div className='prf-ob-pills'>
@@ -411,7 +330,7 @@ const ByokStep = ({
             className='key-input'
             value={name}
             onChange={(e) => setName(e.target.value)}
-            placeholder='Provider name — e.g. Groq, OpenRouter, vLLM'
+            placeholder='Provider name — e.g. Groq, Together, vLLM'
             autoComplete='off'
             aria-label='Compatible provider name'
           />
@@ -463,7 +382,7 @@ const ByokStep = ({
       {err && <p className='prov-err show'>{err}</p>}
       {phase === 'saved' && !isLocal && (
         <p className='prov-ok'>
-          <Check /> Endpoint verified — key in vault.
+          <Check /> Endpoint verified — key stored.
         </p>
       )}
       {phase === 'saved' && isLocal && modelList.length === 0 && (
@@ -539,7 +458,7 @@ const ByokStep = ({
   );
 };
 
-/* ── step 5 · done ────────────────────────────────────────────── */
+/* ── step 4 · done ────────────────────────────────────────────── */
 
 const DoneStep = ({ onDone }: { onDone: () => void }) => (
   <>

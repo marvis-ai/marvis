@@ -43,8 +43,9 @@ pub(crate) const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// return promptly for UI key-checks.
 pub(crate) const VALIDATE_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// The supported LLM backends; string form matches `config.toml`'s
-/// `models.llm_provider`.
+/// The supported LLM backends; string form is the id `config.toml`'s
+/// `providers.order` / `providers.disabled` / `providers.models` use and
+/// what the keystore indexes keys by.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProviderKind {
     OpenAi,
@@ -61,6 +62,17 @@ pub enum ProviderKind {
 }
 
 impl ProviderKind {
+    /// Every provider in catalog order — the default `providers.order`
+    /// and the normalization source for missing/unknown entries.
+    pub const ALL: [ProviderKind; 6] = [
+        ProviderKind::OpenAi,
+        ProviderKind::Anthropic,
+        ProviderKind::Gemini,
+        ProviderKind::OpenRouter,
+        ProviderKind::Ollama,
+        ProviderKind::Compatible,
+    ];
+
     /// Parse a provider id — exactly `"openai"`, `"anthropic"`, `"gemini"`,
     /// `"openrouter"`, `"ollama"` or `"compatible"` (case-insensitive).
     /// Dropped providers (`"openai-glass"`, `"portkey"`) and anything else
@@ -98,7 +110,7 @@ impl ProviderKind {
     }
 }
 
-/// Message author; serializes to the lowercase wire name all four APIs use.
+/// Message author; serializes to the lowercase wire name every API uses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Role {
@@ -208,7 +220,7 @@ impl LlmError {
 
     /// True for the `Auth` variant — 401/403s are mapped to it, so `Http`
     /// never needs checking here.
-    #[allow(dead_code)] // auth-flow consumers (re-unlock UX) land later
+    #[allow(dead_code)] // reserved for auth-flow consumers (key-repair UX)
     pub fn is_auth(&self) -> bool {
         matches!(self, Self::Auth)
     }
@@ -255,6 +267,26 @@ pub fn make_provider(
         ProviderKind::Compatible => {
             Box::new(compat::CompatProvider::new(api_key, model, base_url))
         }
+    }
+}
+
+/// Static per-provider model lists (spec); Ollama's comes from the daemon
+/// and a compatible endpoint's from its `/models` route — both resolve
+/// live, so their static list is empty. OpenRouter's list is a curated
+/// fallback: the live `/models` catalog replaces it when reachable, but
+/// the first entry still seeds `providers.model_for`'s default.
+pub(crate) fn static_models(kind: ProviderKind) -> &'static [&'static str] {
+    match kind {
+        ProviderKind::OpenAi => &["gpt-4o", "gpt-4o-mini", "o4-mini"],
+        ProviderKind::Anthropic => &["claude-sonnet-4-5", "claude-opus-4-1"],
+        ProviderKind::Gemini => &["gemini-2.5-pro", "gemini-2.5-flash"],
+        ProviderKind::OpenRouter => &[
+            "openai/gpt-4o-mini",
+            "anthropic/claude-3.5-sonnet",
+            "meta-llama/llama-3.3-70b-instruct",
+            "google/gemini-2.0-flash-001",
+        ],
+        ProviderKind::Ollama | ProviderKind::Compatible => &[],
     }
 }
 

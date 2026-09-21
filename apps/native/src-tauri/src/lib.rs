@@ -6,27 +6,34 @@
 //! closure (both re-resolve state per event so they survive gate
 //! transitions).
 //!
-//! ## App gate (Glass `handleHeaderStateChanged` parity)
+//! ## App gate
 //!
-//! [`Gate`] = `NeedsUnlock` (no/locked `keys.enc`) → `NeedsPermission`
-//! (unlocked, no screen-recording permission) → `Main`. Feature panels,
-//! the full hotkey set, and screen capture exist only in `Main`.
-//! [`transition_gate`] recomputes the gate after every mutation that can
-//! change it (`keystore_init`/`unlock`/`lock`, `permissions_request_screen`,
-//! and once at startup) and ALWAYS emits `app:state`.
+//! [`Gate`] = `NeedsPermission` → `Main`. `Main` needs BOTH halves of
+//! first-run readiness: `app.onboarding_done` AND screen-recording
+//! permission — while the wizard runs the gate never reaches `Main`, so
+//! feature panels, capture, and the full hotkey set simply don't exist
+//! yet. [`transition_gate`] recomputes the gate after every mutation that
+//! can change it (`config_set` on `app.onboarding_done`,
+//! `permissions_request_screen`, and once at startup) and ALWAYS emits
+//! `app:state`.
+//!
+//! The bar's visibility is separate from the gate: it floats only when
+//! `onboarding_done` AND the wizard isn't on screen — see
+//! [`AppState::sync_bar_visibility`].
 //!
 //! ## Event payloads (webview contract)
 //!
-//! - `app:state` `{"gate": "needs_unlock"|"needs_permission"|"main"}` —
-//!   broadcast to every window on each `transition_gate` call.
+//! - `app:state` `{"gate": "needs_permission"|"main"}` — broadcast to
+//!   every window on each `transition_gate` call.
 //! - `keystore:changed` — the `keystore_status` payload
-//!   `{"state": ..., "keys": ...}`, broadcast after every keystore
-//!   mutation (init/unlock/lock/set_key/remove_key).
+//!   `{"keys": [[provider, "…last4"], …]}`, broadcast after every key
+//!   mutation (`set_key`/`remove_key`). Keys live in plaintext
+//!   `keys.json` — there is no lock state.
 //! - `ask:scroll` `{"dir": "up"|"down"}` — to the `ask` window only,
 //!   fired by the scroll hotkeys.
-//! - `alert:show` `{"message": String, "action": "reset"|null}` — to the
-//!   `alert` window only; the toast that replaced the bar's inline error
-//!   row (`alert_current` re-reads it, `alert_dismiss` clears it).
+//! - `alert:show` `{"message": String}` — to the `alert` window only;
+//!   the toast that replaced the bar's inline error row
+//!   (`alert_current` re-reads it, `alert_dismiss` clears it).
 
 mod ask;
 mod capture;
@@ -39,7 +46,6 @@ mod paths;
 mod permissions;
 mod prompts;
 mod storage;
-mod system_auth;
 mod tray;
 mod windows;
 
@@ -54,7 +60,7 @@ use ask::AskService;
 use capture::{FrameSource, MacosCapture, RingBuffer};
 use config::Config;
 use hotkey::RegisteredHotkeys;
-use keystore::{Keystore, KeystoreState};
+use keystore::Keystore;
 use llm::{make_provider, ProviderKind};
 use storage::{AiMessage, Db, Session};
 use windows::{Panel, WindowPool};
@@ -67,12 +73,15 @@ const RING_MAX_BYTES: usize = 64 * 1024 * 1024;
 const OLLAMA_TAGS_URL: &str = "http://localhost:11434/api/tags";
 
 /// Which UI state the bar may show. Feature panels, the full hotkey set,
-/// and capture exist only in `Main`.
+/// and capture exist only in `Main`. (Onboarding isn't a gate state —
+/// it's a visibility overlay on top: `onboarding_done` is one of `Main`'s
+/// two preconditions, so the wizard can never share the screen with the
+/// bar's live machinery.)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Gate {
-    /// `keys.enc` missing or locked — the bar shows the unlock card.
-    NeedsUnlock,
-    /// Unlocked but no screen-recording permission — permission card.
+    /// Onboarding incomplete OR no screen-recording permission — the
+    /// permission card covers both (during onboarding the bar is hidden
+    /// anyway, so the label never misleads).
     NeedsPermission,
     /// Fully live: panels, full hotkeys, capture.
     Main,
@@ -82,7 +91,6 @@ impl Gate {
     /// The `app:state` payload value.
     fn name(self) -> &'static str {
         match self {
-            Gate::NeedsUnlock => "needs_unlock",
             Gate::NeedsPermission => "needs_permission",
             Gate::Main => "main",
         }
@@ -132,17 +140,31 @@ impl AppState {
         }
     }
 
+    /// `app.onboarding_done` — the wizard-completion flag that both the
+    /// gate (`app_gate`) and the bar's visibility rule read.
+    pub(crate) fn onboarding_done(&self) -> bool {
+        self.config.lock().app.onboarding_done
+    }
+
+    /// The single source of truth for bar visibility. Re-reads
+    /// `onboarding_done` and asks the pool to reconcile — the bar floats
+    /// only when onboarding is done AND the wizard isn't on screen
+    /// (a re-run hides it again until the prefs window closes). Called by
+    /// every prefs show/hide path and by `config_set` writes to
+    /// `app.onboarding_done`.
+    pub(crate) fn sync_bar_visibility(&self) {
+        let done = self.onboarding_done();
+        self.pool.lock().set_bar_shown(done);
+    }
+
     /// Headless constructor for tests: filesystem-bound fields bind under
     /// `root` so tests never touch `~/.marvis`; windows/capture/hotkeys
     /// need a runtime, so the pool is empty and those slots stay `None`.
-    /// The keystore gets a `StaticDekProvider` — no Keychain/LA in tests.
+    /// The keystore is a plain plaintext file — no crypto in tests.
     #[cfg(test)]
     fn for_test(root: &std::path::Path) -> Self {
         Self {
-            keystore: Mutex::new(Keystore::at(
-                root.join("keys.enc"),
-                Arc::new(system_auth::StaticDekProvider([7; 32])),
-            )),
+            keystore: Mutex::new(Keystore::at(root.join("keys.json"))),
             config: Mutex::new(Config::load_from(root.join("config.toml")).unwrap_or_default()),
             db: Arc::new(Db::at(root.join("marvis.db")).expect("test db")),
             ring: Arc::new(Mutex::new(RingBuffer::new(RING_MAX_FRAMES, RING_MAX_BYTES))),
@@ -150,7 +172,7 @@ impl AppState {
             ask: Arc::new(AskService::new()),
             pool: Mutex::new(WindowPool::new_empty()),
             hotkeys: Mutex::new(None),
-            gate: Mutex::new(Gate::NeedsUnlock),
+            gate: Mutex::new(Gate::NeedsPermission),
             gate_transition: Mutex::new(()),
             alert: Mutex::new(None),
             click_through: AtomicBool::new(false),
@@ -162,18 +184,17 @@ impl AppState {
 // App gate
 // ---------------------------------------------------------------------------
 
-/// `Unset|Locked → NeedsUnlock`; `Unlocked && !screen_status() →
-/// NeedsPermission`; else `Main`.
+/// `Main` needs both first-run halves: `app.onboarding_done` AND
+/// `permissions::screen_status()`. While the wizard runs the gate stays
+/// `NeedsPermission`, so `enter_main` (feature panels, capture, full
+/// hotkeys) can't fire underneath it — finishing onboarding re-evaluates
+/// through `config_set` → `transition_gate`.
 fn app_gate(state: &AppState) -> Gate {
-    match state.keystore.lock().state() {
-        KeystoreState::Unset | KeystoreState::Locked => Gate::NeedsUnlock,
-        KeystoreState::Unlocked(_) => {
-            if permissions::screen_status() {
-                Gate::Main
-            } else {
-                Gate::NeedsPermission
-            }
-        }
+    let ready = state.config.lock().app.onboarding_done && permissions::screen_status();
+    if ready {
+        Gate::Main
+    } else {
+        Gate::NeedsPermission
     }
 }
 
@@ -227,13 +248,13 @@ fn enter_main(app: &AppHandle) {
     }
 }
 
-/// `Main` exit (keystore lock): stop + drop capture, hide every panel,
-/// downgrade hotkeys to the gated limited set.
+/// `Main` exit (onboarding reset / permission revoked): stop + drop
+/// capture, hide every panel, downgrade hotkeys to the gated limited set.
 fn leave_main(app: &AppHandle) {
     let state = app.state::<AppState>();
     // Cancel any in-flight ask — an unbounded stream left running would
-    // hold `AskState::Streaming` past re-unlock and wedge every future
-    // send on the busy-check until it resolves on its own.
+    // hold `AskState::Streaming` past a leave/re-enter and wedge every
+    // future send on the busy-check until it resolves on its own.
     state.ask.close(&state.pool);
     // Take the capture out and release the lock BEFORE `stop()` — it
     // joins the capture worker, which must not hold `state.capture`
@@ -293,8 +314,12 @@ fn hotkey_dispatch(app: &AppHandle) -> impl Fn(hotkey::Action) + Send + Sync + '
         match action {
             hotkey::Action::ToggleVisibility => state.pool.lock().toggle_all(),
             // `next_step` fires the screen-only ask (Task-11 brief's table).
+            // The gate guard mirrors `ask_send_screen_only`'s — during
+            // onboarding (gate != Main) the ask panel doesn't even exist.
             hotkey::Action::NextStep | hotkey::Action::ScreenOnly => {
-                state.ask.send_screen_only(&app, &state.deps());
+                if *state.gate.lock() == Gate::Main {
+                    state.ask.send_screen_only(&app, &state.deps());
+                }
             }
             hotkey::Action::Move(dir) => state.pool.lock().move_bar_step(dir),
             hotkey::Action::ToggleClickThrough => {
@@ -314,32 +339,40 @@ fn hotkey_dispatch(app: &AppHandle) -> impl Fn(hotkey::Action) + Send + Sync + '
     }
 }
 
-/// Map [`deeplink::Action`]s: `Ask` runs only while the gate is `Main`
-/// (gated — the bar shows the unlock card anyway); `Focus` surfaces the
-/// bar; `Ignore` never reaches the dispatch (filtered inside `init`).
+/// Map [`deeplink::Action`]s: `Ask` runs only while the gate is `Main`;
+/// `Focus` surfaces the bar; `Ignore` never reaches the dispatch
+/// (filtered inside `init`). While onboarding runs the bar is hidden, so
+/// neither action may surface it.
 fn deeplink_dispatch(app: &AppHandle) -> impl Fn(deeplink::Action) + Send + Sync + 'static {
     let app = app.clone();
     move |action| match action {
         deeplink::Action::Ask(text) => {
             let state = app.state::<AppState>();
-            let bar = state.pool.lock().bar().cloned();
-            if let Some(bar) = bar {
-                let _ = bar.set_focus();
-            }
             if *state.gate.lock() == Gate::Main {
+                let bar = state.pool.lock().bar().cloned();
+                if let Some(bar) = bar {
+                    let _ = bar.set_focus();
+                }
                 state.ask.send(&app, &state.deps(), &text);
             } else {
-                // Not ready yet — the spec's catch-all applies: surface
-                // the bar so the user lands on the unlock/permission card
-                // instead of the link silently going nowhere.
-                log::warn!(
-                    "deeplink: ask gated off (gate = {:?}); focused bar",
-                    *state.gate.lock()
-                );
+                // Not ready yet — if the bar is visible (onboarding done,
+                // permission pending) surface its gate card instead of
+                // the link silently going nowhere.
+                log::warn!("deeplink: ask gated off (gate = {:?})", *state.gate.lock());
+                if state.onboarding_done() {
+                    let bar = state.pool.lock().bar().cloned();
+                    if let Some(bar) = bar {
+                        let _ = bar.set_focus();
+                    }
+                }
             }
         }
         deeplink::Action::Focus => {
             let state = app.state::<AppState>();
+            // During onboarding the bar is hidden — nothing to focus.
+            if !state.onboarding_done() {
+                return;
+            }
             // Clone the handle out so the pool guard drops before `state`.
             let bar = state.pool.lock().bar().cloned();
             if let Some(bar) = bar {
@@ -368,36 +401,28 @@ fn tray_menu_dispatch() -> impl Fn(&AppHandle, tauri::menu::MenuEvent) + Send + 
 // ---------------------------------------------------------------------------
 
 /// `keystore_status` return value and `keystore:changed` payload:
-/// `{"state": "Unset"|"Locked"|"Unlocked", "keys": [[provider, "…last4"|null], …]}`.
-/// Masked only — plaintext keys never leave `Keystore`.
+/// `{"keys": [[provider, "…last4"], …]}`. Masked only — plaintext keys
+/// never leave `Keystore`. (There is no lock state: `keys.json` is
+/// plaintext-on-disk inside the 0700 `~/.marvis` root.)
 fn keystore_status_payload(keystore: &Keystore) -> serde_json::Value {
-    let state = match keystore.state() {
-        KeystoreState::Unset => "Unset",
-        KeystoreState::Locked => "Locked",
-        KeystoreState::Unlocked(_) => "Unlocked",
-    };
-    json!({ "state": state, "keys": keystore.masked_status() })
+    json!({ "keys": keystore.masked_status() })
 }
 
 /// Raise the alert toast with `message`.
 ///
 /// The toast is a window of its own because the bar is a fixed 353×47
-/// pill — the old inline error row squeezed the pill's content. `action`
-/// is an optional recovery affordance the toast renders as a button
-/// (`"reset"` → `keystore_reset`); `None` means informational, and the
-/// toast auto-dismisses.
-fn show_alert(app: &AppHandle, message: &str, action: Option<&str>) {
+/// pill — the old inline error row squeezed the pill's content. It is
+/// purely informational and auto-dismisses.
+fn show_alert(app: &AppHandle, message: &str) {
     let state = app.state::<AppState>();
-    let payload = json!({ "message": message, "action": action });
+    let payload = json!({ "message": message });
     *state.alert.lock() = Some(payload.clone());
     let _ = app.emit_to(windows::ALERT_LABEL, "alert:show", payload);
-    state.pool.lock().show_alert(action.is_some());
+    state.pool.lock().show_alert();
 }
 
-/// Surface the prefs window in settings mode. Unlike the retired mini
-/// panel this works at ANY gate — the Providers tab carries its own
-/// locked-vault affordance, and `Cmd+,`/the tray item must respond even
-/// while the keystore is locked (that's exactly when the user wants it).
+/// Surface the prefs window in settings mode. Works at ANY gate —
+/// `Cmd+,`/the tray item must respond even mid-onboarding.
 fn show_settings(app: &AppHandle) {
     app.state::<AppState>()
         .pool
@@ -410,45 +435,60 @@ fn emit_keystore_changed(app: &AppHandle, keystore: &Keystore) {
     let _ = app.emit("keystore:changed", keystore_status_payload(keystore));
 }
 
-/// Static per-provider model lists (spec); Ollama's comes from the daemon
-/// and a compatible endpoint's from its `/models` route — both resolve
-/// live, so their static list is empty. OpenRouter's list is a curated
-/// fallback: the live `/models` catalog replaces it when reachable, but
-/// the first entry still seeds `provider_args`'s default model.
-fn static_models(kind: ProviderKind) -> &'static [&'static str] {
-    match kind {
-        ProviderKind::OpenAi => &["gpt-4o", "gpt-4o-mini", "o4-mini"],
-        ProviderKind::Anthropic => &["claude-sonnet-4-5", "claude-opus-4-1"],
-        ProviderKind::Gemini => &["gemini-2.5-pro", "gemini-2.5-flash"],
-        ProviderKind::OpenRouter => &[
-            "openai/gpt-4o-mini",
-            "anthropic/claude-3.5-sonnet",
-            "meta-llama/llama-3.3-70b-instruct",
-            "google/gemini-2.0-flash-001",
-        ],
-        ProviderKind::Ollama | ProviderKind::Compatible => &[],
-    }
-}
-
 /// `(model, base_url)` args for building a provider. `model` is the
-/// configured selection when it belongs to this provider, else the
-/// provider's first static model (`""` for Ollama — its `validate` hits
-/// `/api/tags` and never names a model — and for a compatible endpoint,
-/// whose validation hits `/models`). `base_url` is the configured
-/// `compat.base_url` (only `Compatible` reads it; `None` when unset).
+/// provider's remembered pick (`providers.models.<id>`), else its first
+/// static model (`""` for Ollama — its `validate` hits `/api/tags` and
+/// never names a model — and for a compatible endpoint, whose validation
+/// hits `/models`). `base_url` is the configured `compat.base_url`
+/// (only `Compatible` reads it; `None` when unset).
 fn provider_args(state: &AppState, kind: ProviderKind) -> (String, Option<String>) {
     let cfg = state.config.lock();
-    let model = if cfg.models.llm_provider == kind.as_str() && !cfg.models.llm_model.is_empty() {
-        cfg.models.llm_model.clone()
-    } else {
-        static_models(kind)
-            .first()
-            .copied()
-            .unwrap_or_default()
-            .to_string()
-    };
+    let model = cfg.providers.model_for(kind.as_str());
     let base_url = Some(cfg.compat.base_url.clone()).filter(|u| !u.is_empty());
     (model, base_url)
+}
+
+/// One usable entry in the failover chain — the ask pipeline tries
+/// candidates front-to-back until one answers.
+pub(crate) struct ProviderCandidate {
+    /// Provider id (`ProviderKind::as_str`) — reported on `ask:done`.
+    pub id: String,
+    /// The model the adapter was built with — reported on `ask:done`.
+    pub model: String,
+    pub provider: Box<dyn llm::Provider>,
+}
+
+/// The failover chain in priority order: `providers.order`, minus the
+/// disabled, minus the unusable — no key where one is required, no
+/// `compat.base_url` for `compatible`, no resolvable model. The first
+/// entry is what `model_get_selected` reports; the ask pipeline walks the
+/// rest on failure.
+pub(crate) fn provider_candidates(cfg: &Config, ks: &Keystore) -> Vec<ProviderCandidate> {
+    cfg.providers
+        .order
+        .iter()
+        .filter(|id| cfg.providers.is_enabled(id))
+        .filter_map(|id| {
+            let kind = ProviderKind::from_str(id)?;
+            let api_key = ks.key(id);
+            if api_key.is_none() && !kind.key_optional() {
+                return None; // no key — can't answer
+            }
+            let base_url = Some(cfg.compat.base_url.clone()).filter(|u| !u.is_empty());
+            if kind == ProviderKind::Compatible && base_url.is_none() {
+                return None; // endpoint never configured
+            }
+            let model = cfg.providers.model_for(id);
+            if model.is_empty() {
+                return None; // live-list provider with nothing selected
+            }
+            Some(ProviderCandidate {
+                id: id.clone(),
+                provider: make_provider(kind, api_key, model.clone(), base_url),
+                model,
+            })
+        })
+        .collect()
 }
 
 /// `GET /api/tags` → model names; any error (daemon down, bad body) maps
@@ -494,86 +534,17 @@ fn window_pref_value(value: &serde_json::Value) -> Result<Option<f64>, String> {
 // Commands — keystore
 // ---------------------------------------------------------------------------
 
-/// `{"state": "Unset"|"Locked"|"Unlocked", "keys": masked_status()}` — the
-/// shape Bar/SettingsPanel render; never carries plaintext.
+/// `{"keys": masked_status()}` — the shape the Providers tab renders;
+/// never carries plaintext. No init/unlock/lock commands exist: the
+/// store is plaintext `keys.json` and is always ready.
 #[tauri::command]
 fn keystore_status(state: State<'_, AppState>) -> serde_json::Value {
     keystore_status_payload(&state.keystore.lock())
 }
 
-/// First-run: create `keys.enc` (empty keyring) and leave the store
-/// unlocked, then re-evaluate the gate. Returns the new status payload.
-/// Refuses to run once a keystore exists — `Keystore::init` overwrites
-/// `keys.enc`, so a stray invoke while Locked/Unlocked would destroy
-/// every stored key. `init` only prompts when a DEK item already exists
-/// (`SecItemAdd` on first run never prompts; the read-back does).
-#[tauri::command]
-fn keystore_init(app: AppHandle) -> Result<serde_json::Value, String> {
-    let state = app.state::<AppState>();
-    {
-        let mut ks = state.keystore.lock();
-        if !matches!(ks.state(), KeystoreState::Unset) {
-            return Err("keystore already initialized".to_string());
-        }
-        ks.init().map_err(|e| e.to_string())?;
-        emit_keystore_changed(&app, &ks);
-    }
-    transition_gate(&app);
-    let payload = keystore_status_payload(&state.keystore.lock());
-    Ok(payload)
-}
-
-/// Decrypt `keys.enc` into memory — fetching the DEK shows the
-/// system-auth prompt (Touch ID / password); cancels and keychain errors
-/// surface as the command error. Re-evaluates the gate on success.
-#[tauri::command]
-fn keystore_unlock(app: AppHandle) -> Result<serde_json::Value, String> {
-    let state = app.state::<AppState>();
-    {
-        let mut ks = state.keystore.lock();
-        ks.unlock().map_err(|e| e.to_string())?;
-        emit_keystore_changed(&app, &ks);
-    }
-    transition_gate(&app);
-    let payload = keystore_status_payload(&state.keystore.lock());
-    Ok(payload)
-}
-
-/// Delete `keys.enc` + the keychain DEK item(s) → `Unset` — the recovery
-/// path when the file is `Obsolete`/corrupt or the DEK is lost. The next
-/// `keystore_init` mints a fresh DEK (deleting an ACL item may prompt —
-/// acceptable on an explicit reset).
-#[tauri::command]
-fn keystore_reset(app: AppHandle) -> Result<serde_json::Value, String> {
-    let state = app.state::<AppState>();
-    {
-        let mut ks = state.keystore.lock();
-        ks.reset().map_err(|e| e.to_string())?;
-        emit_keystore_changed(&app, &ks);
-    }
-    transition_gate(&app);
-    let payload = keystore_status_payload(&state.keystore.lock());
-    Ok(payload)
-}
-
-/// Drop the keyring back to `Locked`; the gate leaves `Main` (capture
-/// stops, panels hide, hotkeys downgrade) inside `transition_gate`.
-#[tauri::command]
-fn keystore_lock(app: AppHandle) -> Result<serde_json::Value, String> {
-    let state = app.state::<AppState>();
-    {
-        let mut ks = state.keystore.lock();
-        ks.lock();
-        emit_keystore_changed(&app, &ks);
-    }
-    transition_gate(&app);
-    let payload = keystore_status_payload(&state.keystore.lock());
-    Ok(payload)
-}
-
 /// Validate the key against the provider FIRST — a bad key never reaches
-/// `keys.enc` — then store and broadcast `keystore:changed`. Async because
-/// validation is a provider HTTP call.
+/// `keys.json` — then store and broadcast `keystore:changed`. Async
+/// because validation is a provider HTTP call.
 #[tauri::command]
 async fn keystore_set_key(
     app: AppHandle,
@@ -642,35 +613,110 @@ async fn model_validate_key(app: AppHandle, provider: String, key: String) -> se
     }
 }
 
-/// `{"provider": ..., "model": ...}` — the configured LLM selection.
+/// `{"provider": ..., "model": ...}` — the provider that would answer an
+/// ask right now (the first usable entry in `providers.order`), or `null`
+/// when no provider is usable. Replaces the old `[models] llm_*` pair:
+/// selection is now per-provider memory (`providers.models`) plus the
+/// priority order — whichever enabled provider sorts first answers.
 #[tauri::command]
 fn model_get_selected(state: State<'_, AppState>) -> serde_json::Value {
     let cfg = state.config.lock();
-    json!({ "provider": cfg.models.llm_provider, "model": cfg.models.llm_model })
+    let ks = state.keystore.lock();
+    match provider_candidates(&cfg, &ks).into_iter().next() {
+        Some(c) => json!({ "provider": c.id, "model": c.model }),
+        None => serde_json::Value::Null,
+    }
 }
 
-/// Persist the LLM selection to `config.toml`; returns the saved pair.
+/// Persist `provider`'s model pick to `providers.models.<id>`; returns
+/// the EFFECTIVE selection — the first usable provider in
+/// `providers.order` — or `null` when none is usable. A write for a
+/// non-primary provider must not relabel who's answering, so the return
+/// resolves the chain rather than echoing the write. Broadcasts
+/// `config:changed` like every config write.
 #[tauri::command]
 fn model_set_selected(
-    state: State<'_, AppState>,
+    app: AppHandle,
     provider: String,
     model: String,
 ) -> Result<serde_json::Value, String> {
     if ProviderKind::from_str(&provider).is_none() {
         return Err(format!("unknown provider {provider:?}"));
     }
-    let mut cfg = state.config.lock();
-    cfg.models.llm_provider = provider;
-    cfg.models.llm_model = model;
-    config::save(&cfg).map_err(|e| e.to_string())?;
-    Ok(json!({ "provider": cfg.models.llm_provider, "model": cfg.models.llm_model }))
+    let state = app.state::<AppState>();
+    let (updated, resolved) = {
+        let mut cfg = state.config.lock();
+        cfg.providers.models.insert(provider, model);
+        config::save(&cfg).map_err(|e| e.to_string())?;
+        let ks = state.keystore.lock();
+        let resolved = provider_candidates(&cfg, &ks).into_iter().next();
+        (cfg.clone(), resolved)
+    };
+    let _ = app.emit("config:changed", &updated);
+    Ok(match resolved {
+        Some(c) => json!({ "provider": c.id, "model": c.model }),
+        None => serde_json::Value::Null,
+    })
+}
+
+/// Drag-order write from Settings → Providers: `order` must be a
+/// permutation of the known provider ids — anything else is rejected so
+/// a stale frontend can't silently drop or invent a provider.
+#[tauri::command]
+fn providers_reorder(app: AppHandle, order: Vec<String>) -> Result<Config, String> {
+    let state = app.state::<AppState>();
+    let mut sorted = order.clone();
+    sorted.sort();
+    let mut known: Vec<String> = ProviderKind::ALL
+        .iter()
+        .map(|k| k.as_str().to_string())
+        .collect();
+    known.sort();
+    if sorted != known {
+        return Err("order must be a permutation of the provider catalog".to_string());
+    }
+    let updated = {
+        let mut cfg = state.config.lock();
+        cfg.providers.order = order;
+        config::save(&cfg).map_err(|e| e.to_string())?;
+        cfg.clone()
+    };
+    let _ = app.emit("config:changed", &updated);
+    Ok(updated)
+}
+
+/// Flip one provider's enabled switch. Disabled providers keep their
+/// slot in `order` and their stored key — they're skipped at ask time
+/// but stay visible (and draggable) in settings.
+#[tauri::command]
+fn provider_set_enabled(
+    app: AppHandle,
+    provider: String,
+    enabled: bool,
+) -> Result<Config, String> {
+    if ProviderKind::from_str(&provider).is_none() {
+        return Err(format!("unknown provider {provider:?}"));
+    }
+    let state = app.state::<AppState>();
+    let updated = {
+        let mut cfg = state.config.lock();
+        if enabled {
+            cfg.providers.disabled.retain(|d| d != &provider);
+        } else if !cfg.providers.disabled.contains(&provider) {
+            cfg.providers.disabled.push(provider);
+        }
+        config::save(&cfg).map_err(|e| e.to_string())?;
+        cfg.clone()
+    };
+    let _ = app.emit("config:changed", &updated);
+    Ok(updated)
 }
 
 /// Static per-provider lists (spec); Ollama resolves `GET /api/tags`,
 /// a compatible endpoint resolves `GET {base}/models` with its stored key
 /// (if any), and OpenRouter resolves `GET {OPENROUTER_BASE_URL}/models`
 /// the same way — falling back to the curated static list when the fetch
-/// comes back empty (offline, or a locked vault on a keyed listing).
+/// comes back empty (offline, or a keyed listing with no key stored yet).
 /// Unknown providers and fetch errors → empty list.
 #[tauri::command]
 async fn model_list_available(app: AppHandle, provider: String) -> Vec<String> {
@@ -680,9 +726,9 @@ async fn model_list_available(app: AppHandle, provider: String) -> Vec<String> {
             let state = app.state::<AppState>();
             let (base_url, key) = {
                 let base = state.config.lock().compat.base_url.clone();
-                // A locked keystore yields None — the listing still works
-                // for open endpoints and simply comes back empty for
-                // keyed ones, matching the every-failure-is-[] contract.
+                // No stored key → `None` — the listing still works for
+                // open endpoints and simply comes back empty for keyed
+                // ones, matching the every-failure-is-[] contract.
                 let key = state.keystore.lock().key(ProviderKind::Compatible.as_str());
                 (base, key)
             };
@@ -698,7 +744,7 @@ async fn model_list_available(app: AppHandle, provider: String) -> Vec<String> {
             let live =
                 llm::compat::list_models(llm::compat::OPENROUTER_BASE_URL, key).await;
             if live.is_empty() {
-                static_models(ProviderKind::OpenRouter)
+                llm::static_models(ProviderKind::OpenRouter)
                     .iter()
                     .map(|s| s.to_string())
                     .collect()
@@ -706,7 +752,10 @@ async fn model_list_available(app: AppHandle, provider: String) -> Vec<String> {
                 live
             }
         }
-        Some(kind) => static_models(kind).iter().map(|s| s.to_string()).collect(),
+        Some(kind) => llm::static_models(kind)
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
         None => Vec::new(),
     }
 }
@@ -721,8 +770,8 @@ async fn model_list_available(app: AppHandle, provider: String) -> Vec<String> {
 fn ask_send(app: AppHandle, text: String) {
     let state = app.state::<AppState>();
     // Crafted-invoke guard: the shipped UI gates sends behind `Main`,
-    // but an Ollama-configured ask would otherwise proceed while locked —
-    // DB writes, network, and emits to a hidden window. Drop instead.
+    // but a crafted invoke during onboarding would otherwise proceed —
+    // DB writes, network, and emits to a window that doesn't exist yet.
     if *state.gate.lock() != Gate::Main {
         log::warn!("ask_send dropped while gate != Main");
         return;
@@ -781,9 +830,12 @@ fn window_show_onboarding(app: AppHandle) {
         .show_prefs(&app, "onboarding");
 }
 
+/// Hide the prefs window, then reconcile the bar: if the hidden mode
+/// was onboarding and the wizard is done, the bar floats again.
 #[tauri::command]
 fn window_hide_prefs(state: State<'_, AppState>) {
     state.pool.lock().hide_prefs();
+    state.sync_bar_visibility();
 }
 
 /// The mode the prefs window was last shown in (`"settings"` |
@@ -799,11 +851,10 @@ fn prefs_mode(state: State<'_, AppState>) -> String {
 // ---------------------------------------------------------------------------
 
 /// Raise the alert toast — the webview's only error surface (the bar
-/// pill has no room to render one). `action` is `"reset"` for keystore
-/// failures the user can recover from, else omitted.
+/// pill has no room to render one).
 #[tauri::command]
-fn alert_show(app: AppHandle, message: String, action: Option<String>) {
-    show_alert(&app, &message, action.as_deref());
+fn alert_show(app: AppHandle, message: String) {
+    show_alert(&app, &message);
 }
 
 /// The live alert payload, or `null` — read by the toast on mount so a
@@ -910,43 +961,36 @@ fn config_get(state: State<'_, AppState>) -> Config {
     state.config.lock().clone()
 }
 
-/// Limited writable surface: `models.llm_provider`, `models.llm_model`,
-/// `hotkeys.<action>`, `window.bar_x`, `window.bar_y` (number sets, null
-/// clears), `app.onboarding_done` (bool), `app.appearance`
-/// (`auto|light|dark`), `compat.name`, `compat.base_url` (validated
-/// http(s) URL; `""` clears). Persists `config.toml` and returns the
-/// updated config. A `hotkeys.*` write re-registers the active set (full
-/// or limited, matching the current gate). Every successful write
-/// broadcasts `config:changed` so open windows re-render (appearance
-/// flips, provider lists, the bar's drag hint).
+/// Limited writable surface: `hotkeys.<action>`, `window.bar_x`,
+/// `window.bar_y` (number sets, null clears), `app.onboarding_done`
+/// (bool), `app.appearance` (`auto|light|dark`), `compat.name`,
+/// `compat.base_url` (validated http(s) URL; `""` clears). Provider
+/// order/switches/models have their own commands (`providers_reorder`,
+/// `provider_set_enabled`, `model_set_selected`). Persists `config.toml`
+/// and returns the updated config. A `hotkeys.*` write re-registers the
+/// active set (full or limited, matching the current gate). Every
+/// successful write broadcasts `config:changed` so open windows
+/// re-render (appearance flips, provider lists, the bar's drag hint).
+///
+/// `app.onboarding_done` is the wizard's completion write: `true` ends
+/// onboarding → `transition_gate` can now reach `Main` (panels, capture,
+/// full hotkeys) and the bar appears; `false` (a re-run) reverses it.
 #[tauri::command]
 fn config_set(app: AppHandle, key: String, value: serde_json::Value) -> Result<Config, String> {
     let state = app.state::<AppState>();
     let mut hotkeys_changed = false;
+    let mut onboarding_changed = false;
     {
         let mut cfg = state.config.lock();
         match key.as_str() {
-            "models.llm_provider" => {
-                let v = value
-                    .as_str()
-                    .ok_or("models.llm_provider must be a string")?;
-                if ProviderKind::from_str(v).is_none() {
-                    return Err(format!("unknown provider {v:?}"));
-                }
-                cfg.models.llm_provider = v.to_string();
-            }
-            "models.llm_model" => {
-                cfg.models.llm_model = value
-                    .as_str()
-                    .ok_or("models.llm_model must be a string")?
-                    .to_string();
-            }
             "window.bar_x" => cfg.window.bar_x = window_pref_value(&value)?,
             "window.bar_y" => cfg.window.bar_y = window_pref_value(&value)?,
             "app.onboarding_done" => {
-                cfg.app.onboarding_done = value
+                let v = value
                     .as_bool()
                     .ok_or("app.onboarding_done must be a bool")?;
+                onboarding_changed = cfg.app.onboarding_done != v;
+                cfg.app.onboarding_done = v;
             }
             "app.appearance" => {
                 let v = value.as_str().ok_or("app.appearance must be a string")?;
@@ -989,6 +1033,12 @@ fn config_set(app: AppHandle, key: String, value: serde_json::Value) -> Result<C
         let all = *state.gate.lock() == Gate::Main;
         swap_hotkeys(&app, all);
     }
+    if onboarding_changed {
+        // Gate first: `enter_main` builds the panels/capture while the
+        // wizard is still the visible window; then the bar un-hides.
+        transition_gate(&app);
+        state.sync_bar_visibility();
+    }
     let updated = state.config.lock().clone();
     let _ = app.emit("config:changed", &updated);
     Ok(updated)
@@ -1019,10 +1069,13 @@ pub fn run() {
             paths::root();
             let db = Db::open()?;
             let cfg = config::load();
-            // `Keystore::new` detects Unset (no file) vs Locked from disk.
+            let onboarding_done = cfg.app.onboarding_done;
+            // Plaintext `keys.json` — loads eagerly; a missing/corrupt
+            // file is just an empty store, never a gate.
             let keystore = Keystore::new();
             // Bar only — feature panels are created when the gate opens.
-            let pool = WindowPool::create_bar_only(handle)?;
+            // The bar itself stays hidden until onboarding is done.
+            let pool = WindowPool::create_bar_only(handle, onboarding_done)?;
             app.manage(AppState {
                 keystore: Mutex::new(keystore),
                 config: Mutex::new(cfg),
@@ -1032,7 +1085,7 @@ pub fn run() {
                 ask: Arc::new(AskService::new()),
                 pool: Mutex::new(pool),
                 hotkeys: Mutex::new(None),
-                gate: Mutex::new(Gate::NeedsUnlock),
+                gate: Mutex::new(Gate::NeedsPermission),
                 gate_transition: Mutex::new(()),
                 alert: Mutex::new(None),
                 click_through: AtomicBool::new(false),
@@ -1053,20 +1106,14 @@ pub fn run() {
                 Err(e) => log::warn!("startup hotkey registration failed: {e}"),
             }
             // Computes the gate, enters `Main` if it's already open, and
-            // emits `app:state` either way.
+            // emits `app:state` either way. Onboarding blocks `Main`, so
+            // a first run can never light panels/capture/hotkeys here.
             transition_gate(handle);
             // First run (or any install that predates onboarding_done):
-            // the wizard takes the decorated prefs window. It drives the
-            // same keystore_init/unlock + permissions_request_screen
-            // commands the bar's gate cards use, so both surfaces stay
-            // consistent while it's open.
-            if !handle
-                .state::<AppState>()
-                .config
-                .lock()
-                .app
-                .onboarding_done
-            {
+            // the wizard takes the decorated prefs window — alone; the
+            // bar was created hidden and `show_prefs` re-syncs its
+            // visibility for the mode.
+            if !onboarding_done {
                 handle
                     .state::<AppState>()
                     .pool
@@ -1077,16 +1124,14 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             keystore_status,
-            keystore_init,
-            keystore_unlock,
-            keystore_reset,
-            keystore_lock,
             keystore_set_key,
             keystore_remove_key,
             model_validate_key,
             model_get_selected,
             model_set_selected,
             model_list_available,
+            providers_reorder,
+            provider_set_enabled,
             ask_send,
             ask_close,
             ask_send_screen_only,
@@ -1140,9 +1185,113 @@ mod tests {
         let tmp = tmp_dir();
         let state = AppState::for_test(&tmp);
         assert_eq!(state.config.lock().clone(), Config::default());
-        // A fresh dir always gates on unlock (no keys.enc → Unset), and
-        // `app_gate` short-circuits before touching CoreGraphics.
-        assert_eq!(app_gate(&state), Gate::NeedsUnlock);
+        // Fresh dir → onboarding isn't done, so the gate can't be `Main`
+        // even if this CI machine happens to have screen permission.
+        assert_eq!(app_gate(&state), Gate::NeedsPermission);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// The failover chain honours `providers.order`, skips disabled ids,
+    /// and drops providers with no key (where required) or no model.
+    #[test]
+    fn provider_chain_respects_order_enablement_and_usability() {
+        let tmp = tmp_dir();
+        let state = AppState::for_test(&tmp);
+        {
+            let mut ks = state.keystore.lock();
+            ks.set_key("openai", "sk-a").unwrap();
+            ks.set_key("gemini", "AIza-b").unwrap();
+        }
+        {
+            let mut cfg = state.config.lock();
+            cfg.providers.order = vec![
+                "openai".into(),
+                "gemini".into(),
+                "anthropic".into(),
+                "openrouter".into(),
+                "ollama".into(),
+                "compatible".into(),
+            ];
+            cfg.providers.disabled = vec!["gemini".into()];
+        }
+        let (cfg, ks) = (state.config.lock(), state.keystore.lock());
+        let chain = provider_candidates(&cfg, &ks);
+        let ids: Vec<&str> = chain.iter().map(|c| c.id.as_str()).collect();
+        // openai (keyed) first; gemini disabled; anthropic/openrouter
+        // dropped (no key); ollama/compatible dropped (no model set:
+        // their static list is empty).
+        assert_eq!(ids, vec!["openai"]);
+        assert_eq!(chain[0].model, "gpt-4o");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// A selected-but-disabled or keyless provider yields to the next
+    /// usable entry — this is the fallback the user asked for.
+    #[test]
+    fn provider_chain_falls_back_past_unusable_providers() {
+        let tmp = tmp_dir();
+        let state = AppState::for_test(&tmp);
+        {
+            let mut ks = state.keystore.lock();
+            ks.set_key("gemini", "AIza-b").unwrap();
+            ks.set_key("anthropic", "sk-ant-c").unwrap();
+        }
+        {
+            let mut cfg = state.config.lock();
+            // openai first but no key; gemini disabled; anthropic wins.
+            cfg.providers.disabled = vec!["gemini".into()];
+        }
+        let (cfg, ks) = (state.config.lock(), state.keystore.lock());
+        let chain = provider_candidates(&cfg, &ks);
+        let ids: Vec<&str> = chain.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids, vec!["anthropic"]);
+        assert_eq!(chain[0].model, "claude-sonnet-4-5");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Ollama and a configured compatible endpoint need no key — both
+    /// stay in the chain once they can resolve a model.
+    #[test]
+    fn provider_chain_keeps_keyless_providers_with_models() {
+        let tmp = tmp_dir();
+        let state = AppState::for_test(&tmp);
+        {
+            let mut cfg = state.config.lock();
+            cfg.providers
+                .models
+                .insert("ollama".into(), "qwen3:8b".into());
+            cfg.providers
+                .models
+                .insert("compatible".into(), "llama-3.3-70b".into());
+            cfg.compat.base_url = "http://localhost:8000/v1".into();
+        }
+        let (cfg, ks) = (state.config.lock(), state.keystore.lock());
+        let ids: Vec<String> = provider_candidates(&cfg, &ks)
+            .into_iter()
+            .map(|c| c.id)
+            .collect();
+        assert_eq!(ids, vec!["ollama", "compatible"]);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// A compatible provider with no `base_url` configured is unusable —
+    /// it must not enter the chain on key-memory alone.
+    #[test]
+    fn provider_chain_requires_a_base_url_for_compatible() {
+        let tmp = tmp_dir();
+        let state = AppState::for_test(&tmp);
+        {
+            let mut cfg = state.config.lock();
+            cfg.providers
+                .models
+                .insert("compatible".into(), "llama-3.3-70b".into());
+        }
+        let (cfg, ks) = (state.config.lock(), state.keystore.lock());
+        let ids: Vec<String> = provider_candidates(&cfg, &ks)
+            .into_iter()
+            .map(|c| c.id)
+            .collect();
+        assert_eq!(ids, Vec::<String>::new());
         let _ = std::fs::remove_dir_all(&tmp);
     }
 }

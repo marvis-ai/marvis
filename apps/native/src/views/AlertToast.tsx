@@ -11,30 +11,19 @@
  * and `alert_current` covers a show that raced this webview's listener
  * (the window is built hidden at startup, but the first emit can still
  * land mid-load). `alert_dismiss` clears the backend's copy so a later
- * mount doesn't resurrect a dead alert.
- *
- * `action: 'reset'` is the recoverable-keystore affordance (obsolete or
- * corrupt `keys.enc`, lost DEK): it deletes `keys.enc` + the Keychain
- * item(s), and `keystore:changed`/`app:state` put the bar back on its
- * first-run unlock card. Informational alerts self-dismiss; actionable
- * ones wait for the user.
+ * mount doesn't resurrect a dead alert. Alerts are informational only
+ * and self-dismiss after `AUTO_DISMISS_MS`.
  */
 import { useCallback, useEffect, useState } from 'react';
 import { ShieldAlert, X } from '@marvis/ui';
-import {
-  alertCurrent,
-  alertDismiss,
-  keystoreReset,
-  type AlertPayload,
-} from '../lib/commands';
+import { alertCurrent, alertDismiss, type AlertPayload } from '../lib/commands';
 import { EV_ALERT_SHOW, useTauriEvent } from '../lib/events';
 
-/** How long an alert with no action stays up. */
+/** How long an alert stays up. */
 const AUTO_DISMISS_MS = 6000;
 
 const AlertToast = () => {
   const [alert, setAlert] = useState<AlertPayload | null>(null);
-  const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     void alertCurrent()
@@ -42,36 +31,20 @@ const AlertToast = () => {
       .catch(() => {});
   }, []);
 
-  useTauriEvent<AlertPayload | null>(EV_ALERT_SHOW, (p) => {
-    setBusy(false);
-    setAlert(p);
-  });
+  useTauriEvent<AlertPayload | null>(EV_ALERT_SHOW, setAlert);
 
   const dismiss = useCallback(() => {
     setAlert(null);
-    setBusy(false);
     void alertDismiss().catch(() => {});
   }, []);
 
   useEffect(() => {
-    if (!alert || alert.action) {
+    if (!alert) {
       return;
     }
     const timer = window.setTimeout(dismiss, AUTO_DISMISS_MS);
     return () => window.clearTimeout(timer);
   }, [alert, dismiss]);
-
-  const reset = () => {
-    if (busy) {
-      return;
-    }
-    setBusy(true);
-    void keystoreReset()
-      .then(dismiss)
-      .catch(() =>
-        setAlert({ message: 'Reset failed — quit and relaunch Marvis.' }),
-      );
-  };
 
   if (!alert) {
     return null;
@@ -97,20 +70,6 @@ const AlertToast = () => {
           title={alert.message}>
           {alert.message}
         </p>
-        {alert.action === 'reset' && (
-          <div className='mv-alert-foot'>
-            <span className='mv-alert-hint'>
-              Stored API keys are deleted — you'll re-enter them.
-            </span>
-            <button
-              type='button'
-              className='mv-btn mv-btn-primary'
-              onClick={reset}
-              disabled={busy}>
-              Reset keystore
-            </button>
-          </div>
-        )}
       </div>
     </div>
   );

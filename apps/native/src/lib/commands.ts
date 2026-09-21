@@ -11,15 +11,15 @@ import { invoke } from '@tauri-apps/api/core';
 // config.rs / permissions.rs — serde field names are authoritative)
 // ---------------------------------------------------------------------------
 
-/** `keystore_status` return / `keystore:changed` payload. Masked only. */
+/** `keystore_status` return / `keystore:changed` payload. Masked only —
+ * `keys.json` is plaintext on disk but never serialized that way. */
 export interface KeystoreStatus {
-  state: 'Unset' | 'Locked' | 'Unlocked';
   /** `[provider, masked | null]` pairs — never plaintext keys. */
   keys: [string, string | null][];
 }
 
 /** `app:state` event payload value. */
-export type Gate = 'needs_unlock' | 'needs_permission' | 'main';
+export type Gate = 'needs_permission' | 'main';
 
 export interface AppStatePayload {
   gate: Gate;
@@ -44,7 +44,9 @@ export interface CaptureStatus {
   frames: number;
 }
 
-/** `model_get_selected` / `model_set_selected` return. */
+/** `model_get_selected` / `model_set_selected` return. `null` from
+ * `model_get_selected` means no usable provider (all disabled or
+ * unconfigured). */
 export interface ModelSelection {
   provider: string;
   model: string;
@@ -53,10 +55,21 @@ export interface ModelSelection {
 /** `model_validate_key` return — validation failures are data, not errors. */
 export type ModelValidation = { ok: true } | { ok: false; error: string };
 
-/** `[models]` section of `config.toml`. */
+/** `[providers]` section — the failover chain + enable switches + the
+ * per-provider model memory that replaced `[models] llm_*`. */
+export interface ProviderPrefs {
+  /** Failover priority — the user's drag order, catalog ids only. */
+  order: string[];
+  /** Switched-off ids — skipped at ask time, kept in `order`. */
+  disabled: string[];
+  /** `providers.models.<id>` — each provider's remembered model. */
+  models: Record<string, string>;
+}
+
+/** `[models]` section of `config.toml` — STT only on the wire; the
+ * legacy `llm_*` fields are read-but-never-serialized migration
+ * carriers on the Rust side. */
 export interface ModelPrefs {
-  llm_provider: string;
-  llm_model: string;
   stt_provider: string;
   stt_model: string;
 }
@@ -85,6 +98,7 @@ export interface CompatPrefs {
 export interface Config {
   app: AppPrefs;
   models: ModelPrefs;
+  providers: ProviderPrefs;
   hotkeys: Record<string, string>;
   window: WindowPrefs;
   compat: CompatPrefs;
@@ -115,21 +129,6 @@ export interface AiMessage {
 
 export const keystoreStatus = () => invoke<KeystoreStatus>('keystore_status');
 
-/**
- * First-run only — creates `keys.enc` and the Keychain DEK item. Silent
- * (no auth prompt — the next `keystoreUnlock` prompts). Errors once a
- * keystore exists.
- */
-export const keystoreInit = () => invoke<KeystoreStatus>('keystore_init');
-
-/** Triggers the system-auth prompt (Touch ID / password). */
-export const keystoreUnlock = () => invoke<KeystoreStatus>('keystore_unlock');
-
-/** Deletes `keys.enc` → `Unset` (recovery for obsolete/corrupt stores). */
-export const keystoreReset = () => invoke<KeystoreStatus>('keystore_reset');
-
-export const keystoreLock = () => invoke<KeystoreStatus>('keystore_lock');
-
 /** Validates the key against the provider BEFORE storing it. */
 export const keystoreSetKey = (provider: string, key: string) =>
   invoke<KeystoreStatus>('keystore_set_key', { provider, key });
@@ -146,14 +145,25 @@ export const modelValidateKey = (provider: string, key: string) =>
   invoke<ModelValidation>('model_validate_key', { provider, key });
 
 export const modelGetSelected = () =>
-  invoke<ModelSelection>('model_get_selected');
+  invoke<ModelSelection | null>('model_get_selected');
 
+/** Writes `providers.models.<id>` — per-provider model memory, not the
+ * failover order (that's `providersReorder`). Returns the EFFECTIVE
+ * selection (chain head) — `null` when no provider is usable. */
 export const modelSetSelected = (provider: string, model: string) =>
-  invoke<ModelSelection>('model_set_selected', { provider, model });
+  invoke<ModelSelection | null>('model_set_selected', { provider, model });
 
 /** Static per-provider list; Ollama resolves its daemon's `/api/tags`. */
 export const modelListAvailable = (provider: string) =>
   invoke<string[]>('model_list_available', { provider });
+
+/** Persist the drag order — must be a permutation of the catalog ids. */
+export const providersReorder = (order: string[]) =>
+  invoke<Config>('providers_reorder', { order });
+
+/** Flip one provider's enabled switch (`providers.disabled`). */
+export const providerSetEnabled = (provider: string, enabled: boolean) =>
+  invoke<Config>('provider_set_enabled', { provider, enabled });
 
 // ---------------------------------------------------------------------------
 // ask
@@ -177,20 +187,14 @@ export const windowToggleAll = () => invoke<void>('window_toggle_all');
 // alert toast
 // ---------------------------------------------------------------------------
 
-/**
- * `alert_show` arg / `alert:show` payload. `action` is the recovery
- * affordance the toast renders as a button — only `'reset'` exists
- * (`keystore_reset`); omit it for informational alerts, which
- * self-dismiss.
- */
+/** `alert_show` arg / `alert typography` payload — informational only. */
 export interface AlertPayload {
   message: string;
-  action?: 'reset' | null;
 }
 
 /** Raise the toast — the bar's only error surface (the pill has no room). */
-export const alertShow = (message: string, action?: 'reset') =>
-  invoke<void>('alert_show', { message, action: action ?? null });
+export const alertShow = (message: string) =>
+  invoke<void>('alert_show', { message });
 
 /** The live payload, or `null` — read on mount in case the emit raced. */
 export const alertCurrent = () => invoke<AlertPayload | null>('alert_current');
@@ -254,11 +258,12 @@ export const sessionDelete = (id: number) =>
 export const configGet = () => invoke<Config>('config_get');
 
 /**
- * Writable keys only: `models.llm_provider`, `models.llm_model`,
- * `hotkeys.<action>`, `window.bar_x`, `window.bar_y` (number sets, null
- * clears), `app.onboarding_done` (bool), `app.appearance`
- * (`'auto'|'light'|'dark'`), `compat.name`, `compat.base_url`
- * (http(s) URL, `''` clears). Every successful write broadcasts
+ * Writable keys only: `hotkeys.<action>`, `window.bar_x`, `window.bar_y`
+ * (number sets, null clears), `app.onboarding_done` (bool),
+ * `app.appearance` (`'auto'|'light'|'dark'`), `compat.name`,
+ * `compat.base_url` (http(s) URL, `''` clears). Provider order/switches/
+ * models go through `providersReorder`/`providerSetEnabled`/
+ * `modelSetSelected`. Every successful write broadcasts
  * `config:changed` and resolves to the full updated config.
  */
 export const configSet = (key: string, value: unknown) =>

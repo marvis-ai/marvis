@@ -2,8 +2,8 @@
 //!
 //! Dispatch is decoupled (same pattern as `hotkey.rs`): this module
 //! reports [`Action`]s through a caller-supplied closure — `ask` gating
-//! and `AppState` wiring live in Task 14, which passes a `dispatch`
-//! closure that maps `Ask` onto `ask::send` (post-unlock-gate) and
+//! and `AppState` wiring live in `lib.rs`, which passes a `dispatch`
+//! closure that maps `Ask` onto `ask::send` (gate `Main` only) and
 //! `Focus` onto bar focus.
 //!
 //! Routes (deliberately minimal — no auth/Firebase callbacks):

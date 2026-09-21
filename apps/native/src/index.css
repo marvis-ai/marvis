@@ -803,8 +803,9 @@ body {
   .mv-btn,
   .key-input,
   .model-sel,
-  .prf-auth,
-  .prf-auth-card,
+  .prf-switch,
+  .prf-switch-knob,
+  .prf-prov,
   .prf-ob-track span,
   .prf-side-item,
   .prf-seg button,
@@ -946,7 +947,7 @@ body.prefs .prov-note {
 }
 
 .prf {
-  position: relative; /* AuthSheet anchors here */
+  position: relative;
   height: 100%;
   display: flex;
   flex-direction: column;
@@ -1142,61 +1143,19 @@ body.prefs .prov-note {
   justify-content: flex-end;
 }
 
-/* the vault card — a plain surface card; the spec's "dark --fg-2
-   styling" is the 32px icon TILE (fg-2 bg / surface glyph), which
-   token-flips to a light tile on dark. Card dims to 75% when locked. */
-.prf-vault {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 12px 14px;
-  border-radius: 12px;
-  border: 1px solid var(--border);
-  background: color-mix(in oklch, var(--bg) 60%, var(--surface));
-  margin-bottom: 14px;
-}
-.prf-vault-ico {
-  width: 32px;
-  height: 32px;
-  border-radius: 9px;
-  flex: none;
-  display: grid;
-  place-items: center;
-  background: var(--fg-2);
-  color: var(--surface);
-}
-.prf-vault-ico svg {
-  width: 16px;
-  height: 16px;
-}
-.prf-vault .v-name {
-  font-size: 12.5px;
-  font-weight: 650;
-}
-.prf-vault .v-sub {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--muted);
-  margin-top: 2px;
-}
-.prf-vault .v-err {
-  font-size: 11px;
-  color: var(--destructive);
-  margin-top: 3px;
-}
-.prf-vault .v-ctl {
-  margin-left: auto;
-  flex: none;
-}
-
-/* provider rows — card padding on the row, accent border when open */
+/* provider rows — the failover list. Card padding on the row, accent
+   border when open; the grip is the drag source, the switch the
+   enabled toggle, and `is-off`/`is-dragging`/`is-over` are the row's
+   state classes. */
 .prf-prov {
   border: 1px solid var(--border);
   border-radius: 12px;
   padding: 12px 14px;
   margin-bottom: 10px;
   background: var(--surface);
-  transition: border-color var(--motion-fast) var(--ease);
+  transition:
+    border-color var(--motion-fast) var(--ease),
+    opacity var(--motion-fast) var(--ease);
 }
 .prf-prov.is-open {
   border-color: color-mix(in oklch, var(--accent) 50%, var(--border));
@@ -1204,20 +1163,66 @@ body.prefs .prov-note {
 .prf-prov.is-future {
   opacity: 0.55;
 }
+/* switched out of the chain — dims but stays editable */
+.prf-prov.is-off {
+  opacity: 0.55;
+}
+/* the in-flight drag source */
+.prf-prov.is-dragging {
+  opacity: 0.4;
+}
+/* the drop target — same accent edge an open row gets */
+.prf-prov.is-over {
+  border-color: var(--accent);
+}
 .prf-prov-head {
   display: flex;
   align-items: center;
   gap: 10px;
-  width: 100%;
+}
+.prf-prov-head-static {
+  cursor: default;
+}
+/* the drag grip — grab cursor, muted glyph, keyboard-focusable (the
+   parent's ↑/↓ handler re-ranks the row). WebKit requires
+   `-webkit-user-drag: element` for a non-link/image HTML5 drag source
+   to initiate at all. */
+.prf-prov-grip {
+  flex: none;
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+  cursor: grab;
+  border-radius: 4px;
+  -webkit-user-drag: element;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.prf-prov-grip:active {
+  cursor: grabbing;
+}
+.prf-prov-grip:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.prf-prov-grip svg {
+  width: 13px;
+  height: 13px;
+}
+/* the expander — the head's middle stretch between grip and switch */
+.prf-prov-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
   padding: 0;
   border: 0;
   background: transparent;
   font: inherit;
   color: inherit;
   text-align: left;
-}
-.prf-prov-head-static {
-  cursor: default;
+  cursor: pointer;
 }
 .prf-prov-dot {
   width: 7px;
@@ -1531,59 +1536,44 @@ body.prefs .prov-note {
   height: 13px;
 }
 
-/* the "waiting for Touch ID" sheet — macOS draws the real prompt, this
-   is the in-window affordance over a dim scrim (spec §6) */
-.prf-auth {
-  position: absolute;
-  inset: 0;
-  display: grid;
-  place-items: center;
-  background: color-mix(in oklch, black 26%, transparent);
-  backdrop-filter: blur(3px);
-  -webkit-backdrop-filter: blur(3px);
-  opacity: 0;
-  visibility: hidden;
-  pointer-events: none;
-  z-index: 10;
-  transition:
-    opacity var(--motion-base) var(--ease),
-    visibility 0s var(--motion-base);
-}
-.prf-auth.is-open {
-  opacity: 1;
-  visibility: visible;
-  pointer-events: auto;
-  transition: opacity var(--motion-base) var(--ease);
-}
-.prf-auth-card {
-  width: 240px;
-  padding: 22px 18px 16px;
-  text-align: center;
-  background: color-mix(in oklch, var(--surface) 92%, transparent);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  border: 1px solid color-mix(in oklch, var(--fg) 12%, transparent);
-  border-radius: 12px;
-  box-shadow: 0 24px 60px -20px color-mix(in oklch, var(--fg) 50%, transparent);
-  transform: scale(0.94);
-  transition: transform var(--motion-base) var(--ease);
-}
-.prf-auth.is-open .prf-auth-card {
-  transform: scale(1);
-}
-.prf-auth-card > svg {
+/* the provider enable switch — segmented-control grammar: --primary
+   fill for the on state, the knob slides on the track */
+.prf-switch {
   width: 34px;
-  height: 34px;
-  color: var(--fg-2);
-  display: block;
-  margin: 0 auto 10px;
+  height: 20px;
+  flex: none;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: color-mix(in oklch, var(--fg) 12%, var(--surface));
+  position: relative;
+  padding: 0;
+  cursor: pointer;
+  transition: background var(--motion-fast) var(--ease);
 }
-.prf-auth-card .t-title {
-  font-size: 12.5px;
-  font-weight: 650;
+.prf-switch-knob {
+  position: absolute;
+  top: 1px;
+  left: 1px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--surface);
+  box-shadow: 0 1px 2px color-mix(in oklch, var(--fg) 40%, transparent);
+  transition: transform var(--motion-fast) var(--ease);
 }
-.prf-auth-card .t-sub {
-  font-size: 11px;
-  color: var(--muted);
-  margin-top: 3px;
+.prf-switch.is-on {
+  background: var(--primary);
+  border-color: var(--primary);
+}
+.prf-switch.is-on .prf-switch-knob {
+  transform: translateX(14px);
+  background: var(--primary-fg);
+}
+.prf-switch:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.prf-switch:disabled {
+  opacity: 0.5;
+  cursor: default;
 }

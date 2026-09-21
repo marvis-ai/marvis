@@ -1,4 +1,8 @@
-import type { Config, KeystoreStatus, ModelSelection } from '../../lib/commands';
+import type {
+  Config,
+  KeystoreStatus,
+  ModelSelection,
+} from '../../lib/commands';
 
 /**
  * The shared surface the prefs window loads once (`views/Prefs.tsx`) and
@@ -9,8 +13,10 @@ import type { Config, KeystoreStatus, ModelSelection } from '../../lib/commands'
 export interface PrefsData {
   status: KeystoreStatus | null;
   config: Config | null;
+  /** The resolved chain head (`model_get_selected`) — `null` when no
+   * provider is usable. Reorder/switch/key writes all re-resolve it. */
   selected: ModelSelection | null;
   setStatus: (s: KeystoreStatus) => void;
   setConfig: (c: Config) => void;
-  setSelected: (s: ModelSelection) => void;
+  setSelected: (s: ModelSelection | null) => void;
 }

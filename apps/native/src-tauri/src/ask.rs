@@ -1,22 +1,28 @@
 //! `ask` — question + latest screen frame → streaming LLM → persisted.
 //!
 //! Pipeline (spec §Ask): [`AskService::send`] shows the ask panel,
-//! resolves the provider from config + keystore, grabs the newest
-//! [`RingBuffer`] frame (`None` → text-only), then streams tokens to the
-//! `ask` webview as `ask:chunk` events. Both sides of the exchange land
-//! in the `ask` session's `ai_messages` rows. A provider
-//! `MultimodalUnsupported` rejection retries once without the image;
-//! [`AskService::close`] aborts any in-flight stream via a
-//! [`CancellationToken`].
+//! resolves the FAILOVER CHAIN (`providers.order` minus disabled/unusable
+//! — see `provider_candidates` in lib.rs), grabs the newest
+//! [`RingBuffer`] frame (`None` → text-only), then tries each candidate
+//! in turn: a failed provider logs and hands off to the next; only when
+//! every candidate fails does `ask:error` fire. Both sides of the
+//! exchange land in the `ask` session's `ai_messages` rows (the user row
+//! persists once, before the first attempt). A provider
+//! `MultimodalUnsupported` rejection retries once without the image
+//! (per attempt); [`AskService::close`] aborts any in-flight stream via
+//! a [`CancellationToken`].
 //!
 //! Event protocol (emitted to the `ask` window via `app.emit_to`):
 //! - `ask:state` `{"state": "loading"|"streaming"|"idle"}` — `streaming`
-//!   fires on the FIRST token only; every `loading` also carries
-//!   `"question"` so the panel can reset its buffer + header per run
-//!   (pre-flight errors emit `loading` → `error` → `idle` too).
+//!   fires on each attempt's FIRST token; every `loading` carries
+//!   `"question"` so the panel resets its buffer + header per run AND
+//!   per failover retry (pre-flight errors emit `loading` → `error` →
+//!   `idle` too).
 //! - `ask:chunk` `{"text": token}` per token.
-//! - `ask:done` `{"full": full_reply}` on success.
-//! - `ask:error` `{"message": ..., "needs_unlock": bool?}` on failure.
+//! - `ask:done` `{"full": full_reply, "provider": id, "model": id}` on
+//!   success — the pair that actually answered, for the panel's chip.
+//! - `ask:error` `{"message": ..., "needs_setup": bool?}` on failure —
+//!   `needs_setup` when the chain was empty (no usable provider at all).
 //!
 //! Broadcast (all windows): `capture:permission-needed` when a frame
 //! exists but screen permission was revoked mid-session — the ring's
@@ -43,10 +49,11 @@ use tokio_util::sync::CancellationToken;
 use crate::capture::{Frame, RingBuffer};
 use crate::config::Config;
 use crate::keystore::Keystore;
-use crate::llm::{make_provider, ChatMessage, LlmError, Provider, ProviderKind, Role};
+use crate::llm::{ChatMessage, LlmError, Provider, Role};
 use crate::prompts::system_prompt;
 use crate::storage::Db;
 use crate::windows::{Panel, WindowPool};
+use crate::ProviderCandidate;
 
 /// Event names — part of the webview contract; change together with
 /// `src/lib/events.ts`.
@@ -167,33 +174,21 @@ impl AskService {
         // Show first so any pre-flight error still renders in the panel.
         deps.pool.lock().show(Panel::Ask);
 
-        let (provider_name, model, base_url) = {
+        // The failover chain: `providers.order` minus disabled/unusable.
+        // An empty chain is the "no usable provider" error — nothing to
+        // fall back TO, so the panel links straight to settings.
+        let candidates = {
             let cfg = deps.config.lock();
-            (
-                cfg.models.llm_provider.clone(),
-                cfg.models.llm_model.clone(),
-                // Only `ProviderKind::Compatible` reads this; the hosted
-                // adapters ignore it. Empty config → None.
-                Some(cfg.compat.base_url.clone()).filter(|u| !u.is_empty()),
-            )
+            let ks = deps.keystore.lock();
+            crate::provider_candidates(&cfg, &ks)
         };
-        let Some(kind) = ProviderKind::from_str(&provider_name) else {
-            return self.pre_spawn_error(
-                app,
-                text,
-                json!({"message": format!("unknown llm provider {provider_name:?}")}),
-            );
-        };
-        let api_key = deps.keystore.lock().key(kind.as_str());
-        // `key_optional` covers Ollama AND open compatible endpoints —
-        // blocking them on a missing key would be wrong.
-        if api_key.is_none() && !kind.key_optional() {
+        if candidates.is_empty() {
             return self.pre_spawn_error(
                 app,
                 text,
                 json!({
-                    "message": format!("no {} key — unlock the keystore", kind.as_str()),
-                    "needs_unlock": true,
+                    "message": "No AI provider is configured — add a key in Settings → Providers",
+                    "needs_setup": true,
                 }),
             );
         }
@@ -217,7 +212,6 @@ impl AskService {
             );
         }
 
-        let provider = make_provider(kind, api_key, model, base_url);
         let cancel = self.cancel.lock().clone();
         let svc = Arc::clone(self);
         let app = app.clone();
@@ -250,8 +244,8 @@ impl AskService {
                 svc.observe(name, &payload);
                 let _ = app.emit_to("ask", name, payload);
             };
-            let _ = send_with(
-                provider.as_ref(),
+            let _ = send_chain(
+                candidates,
                 db.as_ref(),
                 &emit,
                 &text,
@@ -262,7 +256,7 @@ impl AskService {
         });
     }
 
-    /// Early-exit error (bad provider config, locked keystore, no frame):
+    /// Early-exit error (empty provider chain, no frame):
     /// the busy check already flipped state to Loading — emit the same
     /// `ask:state{loading}` → `ask:error` → `ask:state{idle}` sequence
     /// `send_with`'s failure path uses (the `loading` carries the
@@ -297,22 +291,23 @@ impl Default for AskService {
     }
 }
 
-/// The testable core: persist → stream → persist, emitting the `ask:*`
-/// protocol through `emit`. No `AppHandle`/keystore/pool inside —
-/// [`AskService::send`] gathers those deps and delegates.
+/// The testable core: persist → walk the failover chain → persist,
+/// emitting the `ask:*` protocol through `emit`. No `AppHandle`/keystore/
+/// pool inside — [`AskService::send`] gathers those deps and delegates.
 ///
 /// Order of operations:
 /// 1. Persist the user message FIRST — it was already sent, so it must
-///    be recorded even when the stream later errors or is cancelled.
-/// 2. `ask:state{loading}` → build `[system, user(+image)]`.
-/// 3. `stream_chat` raced against `cancel.cancelled()` — dropping the
-///    stream future aborts the HTTP request mid-flight; the same wrap
-///    covers the text-only retry.
-/// 4. `Ok(full)` → persist assistant + `ask:done{full}` +
-///    `ask:state{idle}`. `MultimodalUnsupported` with an image attached
-///    → rebuild text-only and retry ONCE. Any other error →
-///    `ask:error{message}` + `ask:state{idle}`.
-///    Cancel → `ask:state{idle}` only, no assistant row.
+///    be recorded even when every candidate later errors or is cancelled.
+/// 2. `ask:state{loading}` once (the chain is one run).
+/// 3. Each [`ProviderCandidate`] streams via [`stream_candidate`]:
+///    `Done` → persist assistant + `ask:done{full, provider, model}` +
+///    `ask:state{idle}`; `Failed` → warn-log, re-emit `loading` (the
+///    panel resets its buffer — a dead provider's partial chunks must
+///    not bleed into the next attempt), and try the NEXT candidate;
+///    `Cancelled` → `ask:state{idle}` and stop immediately — the user
+///    asked to stop, so no failover may start a new request.
+/// 4. Every candidate failed → `ask:error{message}` (the LAST failure's
+///    message — the most actionable one) + `ask:state{idle}`.
 ///
 /// Db failures are `log::warn`ed and ignored — a storage hiccup must
 /// never block the stream.
@@ -320,8 +315,8 @@ impl Default for AskService {
 /// Resolves to the full assistant text. Cancel resolves to a
 /// `status:0`/`"cancelled"` [`LlmError::Http`] sentinel — the events, not
 /// the return value, drive the UI.
-pub(crate) async fn send_with(
-    provider: &dyn Provider,
+pub(crate) async fn send_chain(
+    candidates: Vec<ProviderCandidate>,
     db: &Db,
     emit: &(dyn Fn(&str, serde_json::Value) + Send + Sync),
     text: &str,
@@ -331,25 +326,63 @@ pub(crate) async fn send_with(
     let session_id = persist_user_message(db, text);
     emit(EV_STATE, json!({"state": "loading", "question": text}));
 
-    let mut streaming = false;
-    let mut msgs = build_messages(text, frame);
-    let mut retried = false;
-    loop {
-        match stream_once(provider, &msgs, emit, cancel, &mut streaming).await {
-            StreamOutcome::Done(full) => {
+    let mut last_err: Option<LlmError> = None;
+    for (i, cand) in candidates.iter().enumerate() {
+        // A failover hand-off re-announces `loading` so the panel drops
+        // the failed attempt's partial chunks before the next stream.
+        if i > 0 {
+            emit(EV_STATE, json!({"state": "loading", "question": text}));
+        }
+        match stream_candidate(&*cand.provider, emit, text, frame, cancel).await {
+            CandidateOutcome::Done(full) => {
                 persist_assistant_message(db, session_id, &full);
-                emit(EV_DONE, json!({"full": full}));
+                emit(
+                    EV_DONE,
+                    json!({"full": full, "provider": cand.id, "model": cand.model}),
+                );
                 emit(EV_STATE, json!({"state": "idle"}));
                 return Ok(full);
             }
-            // User row stays — it was already sent.
-            StreamOutcome::Cancelled => {
+            // User row stays — it was already sent. Never fall over on
+            // cancel: the user asked to stop, so the chain stops here.
+            CandidateOutcome::Cancelled => {
                 emit(EV_STATE, json!({"state": "idle"}));
                 return Err(LlmError::Http {
                     status: 0,
                     message: "cancelled".to_string(),
                 });
             }
+            CandidateOutcome::Failed(e) => {
+                log::warn!("ask: provider {} failed ({e}); trying next", cand.id);
+                last_err = Some(e);
+            }
+        }
+    }
+    // Chain exhausted — surface the last failure (most actionable).
+    let e = last_err.unwrap_or(LlmError::NoModel);
+    emit(EV_ERROR, json!({"message": e.to_string()}));
+    emit(EV_STATE, json!({"state": "idle"}));
+    Err(e)
+}
+
+/// One candidate's full attempt: stream, and on a
+/// `MultimodalUnsupported` rejection retry ONCE text-only. Emits
+/// `ask:chunk`/`ask:state{streaming}` but never `done`/`error`/`idle` —
+/// the chain owns the run's protocol; this owns one provider's messages.
+async fn stream_candidate(
+    provider: &dyn Provider,
+    emit: &(dyn Fn(&str, serde_json::Value) + Send + Sync),
+    text: &str,
+    frame: Option<&Frame>,
+    cancel: &CancellationToken,
+) -> CandidateOutcome {
+    let mut streaming = false;
+    let mut msgs = build_messages(text, frame);
+    let mut retried = false;
+    loop {
+        match stream_once(provider, &msgs, emit, cancel, &mut streaming).await {
+            StreamOutcome::Done(full) => return CandidateOutcome::Done(full),
+            StreamOutcome::Cancelled => return CandidateOutcome::Cancelled,
             StreamOutcome::Failed(e) => {
                 // Vision-incapable model gets ONE retry without the frame.
                 if !retried && frame.is_some() && e.is_multimodal() {
@@ -357,12 +390,18 @@ pub(crate) async fn send_with(
                     msgs = build_messages(text, None);
                     continue;
                 }
-                emit(EV_ERROR, json!({"message": e.to_string()}));
-                emit(EV_STATE, json!({"state": "idle"}));
-                return Err(e);
+                return CandidateOutcome::Failed(e);
             }
         }
     }
+}
+
+/// One provider's result within the chain — `Failed` hands off to the
+/// next candidate; `Cancelled`/`Done` end the run.
+enum CandidateOutcome {
+    Done(String),
+    Cancelled,
+    Failed(LlmError),
 }
 
 /// One `stream_chat` attempt's result.
@@ -454,7 +493,9 @@ mod tests {
     use std::time::Duration;
 
     /// Scripted provider: each `stream_chat` call pops the next behaviour
-    /// and records the messages it was given.
+    /// and records the messages it was given. Fields are `Arc`-shared so
+    /// a test keeps its assertion handle after the provider is boxed
+    /// into a [`ProviderCandidate`].
     enum Behavior {
         /// Emit these tokens, then resolve `Ok(concat)`.
         Tokens(Vec<String>),
@@ -465,20 +506,30 @@ mod tests {
     }
 
     struct MockProvider {
-        script: Mutex<VecDeque<Behavior>>,
-        calls: Mutex<Vec<Vec<ChatMessage>>>,
+        script: Arc<Mutex<VecDeque<Behavior>>>,
+        calls: Arc<Mutex<Vec<Vec<ChatMessage>>>>,
     }
 
     impl MockProvider {
         fn new(script: Vec<Behavior>) -> Self {
             Self {
-                script: Mutex::new(script.into()),
-                calls: Mutex::new(Vec::new()),
+                script: Arc::new(Mutex::new(script.into())),
+                calls: Arc::new(Mutex::new(Vec::new())),
             }
         }
 
-        fn calls(&self) -> Vec<Vec<ChatMessage>> {
-            self.calls.lock().clone()
+        fn calls(&self) -> Arc<Mutex<Vec<Vec<ChatMessage>>>> {
+            Arc::clone(&self.calls)
+        }
+    }
+
+    /// Wrap a mock in the chain's candidate shape — the id/model ride
+    /// into `ask:done` so tests can assert which provider answered.
+    fn candidate(id: &str, provider: MockProvider) -> ProviderCandidate {
+        ProviderCandidate {
+            id: id.to_string(),
+            model: "mock-model".to_string(),
+            provider: Box::new(provider),
         }
     }
 
@@ -519,7 +570,7 @@ mod tests {
 
     type Events = Arc<Mutex<Vec<(String, serde_json::Value)>>>;
 
-    /// Recording emitter — the `send_with` seam stands in for
+    /// Recording emitter — the `send_chain` seam stands in for
     /// `app.emit_to`.
     fn recorder() -> (Events, impl Fn(&str, serde_json::Value) + Send + Sync) {
         let events: Events = Arc::new(Mutex::new(Vec::new()));
@@ -566,7 +617,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn send_with_streams_ordered_chunks_and_persists_both_messages() {
+    async fn send_chain_streams_ordered_chunks_and_persists_both_messages() {
         let dir = tmp_dir();
         let db = Db::at(dir.join("marvis.db")).unwrap();
         let provider = MockProvider::new(vec![Behavior::Tokens(vec![
@@ -574,12 +625,13 @@ mod tests {
             " ".into(),
             "world".into(),
         ])]);
+        let calls = provider.calls();
         let (events, emit) = recorder();
         let frame = fake_frame();
         let cancel = CancellationToken::new();
 
-        let full = send_with(
-            &provider,
+        let full = send_chain(
+            vec![candidate("openai", provider)],
             &db,
             &emit,
             "what is this?",
@@ -591,7 +643,7 @@ mod tests {
         assert_eq!(full, "Hello world");
 
         // Protocol order: loading → streaming-on-first-token → ordered
-        // chunks → done{full} → idle.
+        // chunks → done{full, provider, model} → idle.
         let got = events.lock().clone();
         assert_eq!(
             got,
@@ -604,7 +656,10 @@ mod tests {
                 ev(EV_CHUNK, json!({"text": "Hello"})),
                 ev(EV_CHUNK, json!({"text": " "})),
                 ev(EV_CHUNK, json!({"text": "world"})),
-                ev(EV_DONE, json!({"full": "Hello world"})),
+                ev(
+                    EV_DONE,
+                    json!({"full": "Hello world", "provider": "openai", "model": "mock-model"})
+                ),
                 ev(EV_STATE, json!({"state": "idle"})),
             ]
         );
@@ -618,7 +673,7 @@ mod tests {
         assert_eq!(msgs[1].content, "Hello world");
 
         // One provider call, and its user message carried the image.
-        let calls = provider.calls();
+        let calls = calls.lock();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0][1].role, Role::User);
         assert!(has_image(&calls[0][1]));
@@ -627,24 +682,154 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn send_with_multimodal_error_retries_text_only_once() {
+    async fn send_chain_fails_over_to_the_next_provider() {
+        // The whole point of the chain: a dead provider hands off.
+        let dir = tmp_dir();
+        let db = Db::at(dir.join("marvis.db")).unwrap();
+        let first = MockProvider::new(vec![Behavior::Fail(LlmError::Auth)]);
+        let second = MockProvider::new(vec![Behavior::Tokens(vec!["ok".into()])]);
+        let first_calls = first.calls();
+        let second_calls = second.calls();
+        let (events, emit) = recorder();
+        let cancel = CancellationToken::new();
+
+        let full = send_chain(
+            vec![candidate("openai", first), candidate("gemini", second)],
+            &db,
+            &emit,
+            "q",
+            None,
+            &cancel,
+        )
+        .await
+        .unwrap();
+        assert_eq!(full, "ok");
+        assert_eq!(first_calls.lock().len(), 1);
+        assert_eq!(second_calls.lock().len(), 1);
+
+        // loading → (fail) → loading reset → streaming → done naming the
+        // SECOND provider — no ask:error between the attempts.
+        let got = events.lock().clone();
+        assert_eq!(
+            got,
+            vec![
+                ev(EV_STATE, json!({"state": "loading", "question": "q"})),
+                ev(EV_STATE, json!({"state": "loading", "question": "q"})),
+                ev(EV_STATE, json!({"state": "streaming"})),
+                ev(EV_CHUNK, json!({"text": "ok"})),
+                ev(
+                    EV_DONE,
+                    json!({"full": "ok", "provider": "gemini", "model": "mock-model"})
+                ),
+                ev(EV_STATE, json!({"state": "idle"})),
+            ]
+        );
+        // One assistant row, from the provider that answered.
+        let msgs = ask_messages(&db);
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[1].content, "ok");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn send_chain_all_candidates_failing_emits_the_last_error() {
+        let dir = tmp_dir();
+        let db = Db::at(dir.join("marvis.db")).unwrap();
+        let first = MockProvider::new(vec![Behavior::Fail(LlmError::Auth)]);
+        let second = MockProvider::new(vec![Behavior::Fail(LlmError::Http {
+            status: 500,
+            message: "boom".into(),
+        })]);
+        let (events, emit) = recorder();
+        let cancel = CancellationToken::new();
+
+        let err = send_chain(
+            vec![candidate("openai", first), candidate("gemini", second)],
+            &db,
+            &emit,
+            "q",
+            None,
+            &cancel,
+        )
+        .await
+        .unwrap_err();
+        // The LAST failure's message surfaces — it's the most actionable.
+        assert_eq!(err.to_string(), "http 500: boom");
+        assert_eq!(
+            events.lock().clone(),
+            vec![
+                ev(EV_STATE, json!({"state": "loading", "question": "q"})),
+                ev(EV_STATE, json!({"state": "loading", "question": "q"})),
+                ev(EV_ERROR, json!({"message": "http 500: boom"})),
+                ev(EV_STATE, json!({"state": "idle"})),
+            ]
+        );
+        assert_eq!(ask_messages(&db).len(), 1); // user row only
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn send_chain_cancel_never_falls_over() {
+        // Cancel mid-first-candidate → the chain stops; candidate two is
+        // never even called.
+        let dir = tmp_dir();
+        let db = Db::at(dir.join("marvis.db")).unwrap();
+        let first = MockProvider::new(vec![Behavior::Hang]);
+        let second = MockProvider::new(vec![Behavior::Tokens(vec!["nope".into()])]);
+        let second_calls = second.calls();
+        let (events, emit) = recorder();
+        let cancel = CancellationToken::new();
+
+        let c2 = cancel.clone();
+        let cancels = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            c2.cancel();
+        });
+        let err = send_chain(
+            vec![candidate("openai", first), candidate("gemini", second)],
+            &db,
+            &emit,
+            "q",
+            None,
+            &cancel,
+        )
+        .await
+        .unwrap_err();
+        cancels.await.unwrap();
+        assert_eq!(err.to_string(), "http 0: cancelled");
+        assert_eq!(second_calls.lock().len(), 0);
+        assert!(events.lock().iter().all(|(n, _)| n != EV_ERROR));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn send_chain_multimodal_error_retries_text_only_once() {
         let dir = tmp_dir();
         let db = Db::at(dir.join("marvis.db")).unwrap();
         let provider = MockProvider::new(vec![
             Behavior::Fail(LlmError::MultimodalUnsupported),
             Behavior::Tokens(vec!["answer".into()]),
         ]);
+        let calls = provider.calls();
         let (events, emit) = recorder();
         let frame = fake_frame();
         let cancel = CancellationToken::new();
 
-        let full = send_with(&provider, &db, &emit, "q", Some(&frame), &cancel)
-            .await
-            .unwrap();
+        let full = send_chain(
+            vec![candidate("openai", provider)],
+            &db,
+            &emit,
+            "q",
+            Some(&frame),
+            &cancel,
+        )
+        .await
+        .unwrap();
         assert_eq!(full, "answer");
 
         // Call 1 carried the image; the retry must be text-only.
-        let calls = provider.calls();
+        let calls = calls.lock();
         assert_eq!(calls.len(), 2);
         assert!(has_image(&calls[0][1]));
         assert!(!has_image(&calls[1][1]));
@@ -666,7 +851,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn send_with_second_multimodal_error_surfaces_normally() {
+    async fn send_chain_second_multimodal_error_surfaces_normally() {
         // Retry fails multimodal too → one retry only, then ask:error.
         let dir = tmp_dir();
         let db = Db::at(dir.join("marvis.db")).unwrap();
@@ -674,15 +859,23 @@ mod tests {
             Behavior::Fail(LlmError::MultimodalUnsupported),
             Behavior::Fail(LlmError::MultimodalUnsupported),
         ]);
+        let calls = provider.calls();
         let (events, emit) = recorder();
         let frame = fake_frame();
         let cancel = CancellationToken::new();
 
-        let err = send_with(&provider, &db, &emit, "q", Some(&frame), &cancel)
-            .await
-            .unwrap_err();
+        let err = send_chain(
+            vec![candidate("openai", provider)],
+            &db,
+            &emit,
+            "q",
+            Some(&frame),
+            &cancel,
+        )
+        .await
+        .unwrap_err();
         assert!(matches!(err, LlmError::MultimodalUnsupported));
-        assert_eq!(provider.calls().len(), 2);
+        assert_eq!(calls.lock().len(), 2);
 
         let got = events.lock().clone();
         assert_eq!(
@@ -702,7 +895,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn send_with_cancel_mid_stream_persists_user_only() {
+    async fn send_chain_cancel_mid_stream_persists_user_only() {
         let dir = tmp_dir();
         let db = Db::at(dir.join("marvis.db")).unwrap();
         let provider = MockProvider::new(vec![Behavior::Hang]);
@@ -717,9 +910,16 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(20)).await;
             c2.cancel();
         });
-        let err = send_with(&provider, &db, &emit, "q", Some(&frame), &cancel)
-            .await
-            .unwrap_err();
+        let err = send_chain(
+            vec![candidate("openai", provider)],
+            &db,
+            &emit,
+            "q",
+            Some(&frame),
+            &cancel,
+        )
+        .await
+        .unwrap_err();
         cancels.await.unwrap();
         assert_eq!(err.to_string(), "http 0: cancelled");
 
@@ -743,18 +943,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn send_with_no_frame_sends_single_text_part() {
+    async fn send_chain_no_frame_sends_single_text_part() {
         let dir = tmp_dir();
         let db = Db::at(dir.join("marvis.db")).unwrap();
         let provider = MockProvider::new(vec![Behavior::Tokens(vec!["ok".into()])]);
+        let calls = provider.calls();
         let (_events, emit) = recorder();
         let cancel = CancellationToken::new();
 
-        send_with(&provider, &db, &emit, "q", None, &cancel)
-            .await
-            .unwrap();
+        send_chain(
+            vec![candidate("openai", provider)],
+            &db,
+            &emit,
+            "q",
+            None,
+            &cancel,
+        )
+        .await
+        .unwrap();
 
-        let calls = provider.calls();
+        let calls = calls.lock();
         assert_eq!(calls.len(), 1);
         assert_eq!(
             calls[0][1].content,
@@ -764,21 +972,29 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn send_with_non_multimodal_error_emits_error_and_idle() {
+    async fn send_chain_exhausted_single_candidate_emits_error_and_idle() {
         let dir = tmp_dir();
         let db = Db::at(dir.join("marvis.db")).unwrap();
         let provider = MockProvider::new(vec![Behavior::Fail(LlmError::Auth)]);
+        let calls = provider.calls();
         let (events, emit) = recorder();
         let frame = fake_frame();
         let cancel = CancellationToken::new();
 
-        let err = send_with(&provider, &db, &emit, "q", Some(&frame), &cancel)
-            .await
-            .unwrap_err();
+        let err = send_chain(
+            vec![candidate("openai", provider)],
+            &db,
+            &emit,
+            "q",
+            Some(&frame),
+            &cancel,
+        )
+        .await
+        .unwrap_err();
         assert!(matches!(err, LlmError::Auth));
 
         // Auth is not multimodal — no retry even with a frame attached.
-        assert_eq!(provider.calls().len(), 1);
+        assert_eq!(calls.lock().len(), 1);
         let got = events.lock().clone();
         assert_eq!(
             got,

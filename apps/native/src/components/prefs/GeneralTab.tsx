@@ -101,7 +101,7 @@ export const GeneralTab = ({ data }: { data: PrefsData }) => {
         </PrefRow>
         <PrefRow
           label='Platform'
-          sub='Phase 1 is macOS-only — ScreenCaptureKit, Keychain, Touch ID.'
+          sub='Phase 1 is macOS-only — ScreenCaptureKit and a local key file.'
           last>
           <span className='mv-pill'>macOS · now</span>
         </PrefRow>

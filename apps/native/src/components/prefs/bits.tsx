@@ -70,6 +70,37 @@ export const Swatch = ({ hex }: { hex: string }) => (
   </span>
 );
 
+/**
+ * macOS toggle — the provider enable switch. `role='switch'` +
+ * `aria-checked` carry the state; the visual is the `is-on` track fill
+ * (--primary per the segmented/switch rule) + the knob's slide.
+ */
+export const Switch = ({
+  checked,
+  onChange,
+  disabled = false,
+  ariaLabel,
+}: {
+  checked: boolean;
+  onChange: (on: boolean) => void;
+  disabled?: boolean;
+  ariaLabel: string;
+}) => (
+  <button
+    type='button'
+    role='switch'
+    aria-checked={checked}
+    aria-label={ariaLabel}
+    disabled={disabled}
+    className={`prf-switch${checked ? ' is-on' : ''}`}
+    onClick={(e) => {
+      e.stopPropagation();
+      onChange(!checked);
+    }}>
+    <span className='prf-switch-knob' />
+  </button>
+);
+
 /** One keycap chip per binding — `Cmd+Shift+S` renders `⌘⇧S`. */
 export const Kbd = ({ accel }: { accel: string }) => (
   <span className='kbd'>{kbdTokens(accel).join('')}</span>

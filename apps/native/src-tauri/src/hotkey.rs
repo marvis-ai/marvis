@@ -164,8 +164,8 @@ fn bindings(binds: &BTreeMap<String, String>, scope: Scope) -> Vec<(Shortcut, Ac
         out.push((Shortcut::new(Some(cmd_shift), code), action));
     }
     // `Cmd+,` is allowed while gated too (parity with the always-enabled
-    // tray item): the dispatch explains it needs an unlock rather than
-    // silently doing nothing.
+    // tray item): settings is reachable before `Main` — it's where the
+    // user fixes the gated state rather than silently doing nothing.
     out.push((
         Shortcut::new(Some(Modifiers::SUPER), Code::Comma),
         Action::ShowSettings,
@@ -518,8 +518,8 @@ mod tests {
         }
         assert!(!actions.contains(&Action::ScreenOnly));
         assert!(!actions.contains(&Action::NextStep));
-        // Settings is reachable while gated (it explains the unlock) —
-        // parity with the always-enabled tray item.
+        // Settings is reachable while gated (it's where the user fixes
+        // the gated state) — parity with the always-enabled tray item.
         assert!(actions.contains(&Action::ShowSettings));
         assert_eq!(got.len(), 1 + 2 + 9 + 1);
     }

@@ -5,7 +5,7 @@
 //! creates the parent directory, applies `PRAGMA journal_mode=WAL` and
 //! `PRAGMA foreign_keys=ON` (the latter is per-connection — it must run on
 //! every open or `ON DELETE CASCADE` silently stops working), creates the
-//! tables if missing, and chmods the file `0600` like `keys.enc`.
+//! tables if missing, and chmods the file `0600` like `keys.json`.
 //!
 //! Schema (spec §Persistence):
 //!

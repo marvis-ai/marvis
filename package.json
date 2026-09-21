@@ -10,12 +10,12 @@
     "Desktop"
   ],
   "scripts": {
-    "build": "turbo build",
-    "dev": "turbo dev",
+    "build": "turbo run build",
+    "dev": "turbo run dev",
     "build:dev": "turbo run build:dev",
-    "lint": "turbo lint",
-    "check-types": "turbo check-types",
-    "test": "turbo test",
+    "lint": "turbo run lint",
+    "check-types": "turbo run check-types",
+    "test": "turbo run test",
     "test:functions": "bun test functions && bunx tsc -p functions/tsconfig.json",
     "deploy": "neon deploy --env .env.local"
   },

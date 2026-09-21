@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import app, { validateSignup } from './waitlist';
+import app, { clientIp, validateSignup } from './waitlist';
 
 describe('validateSignup', () => {
   test('accepts a valid signup and normalizes it', () => {
@@ -22,6 +22,29 @@ describe('validateSignup', () => {
     ['too-long email', { name: 'Ada', email: `${'a'.repeat(250)}@b.co` }],
   ])('rejects %s', (_label: string, input: unknown) => {
     expect(validateSignup(input)).toBeNull();
+  });
+});
+
+describe('clientIp', () => {
+  // The inet column rejects garbage — every branch must yield a valid IP
+  // or null, never raw header text.
+  test('takes the first x-forwarded-for hop', () => {
+    const h = new Headers({ 'x-forwarded-for': '203.0.113.7, 10.0.0.1' });
+    expect(clientIp(h)).toBe('203.0.113.7');
+  });
+
+  test('falls back to x-real-ip', () => {
+    expect(clientIp(new Headers({ 'x-real-ip': '2001:db8::1' }))).toBe(
+      '2001:db8::1',
+    );
+  });
+
+  test.each([
+    ['garbage xff', { 'x-forwarded-for': 'not-an-ip' }],
+    ['empty xff', { 'x-forwarded-for': '' }],
+    ['no headers', {}],
+  ])('returns null for %s', (_label: string, init: HeadersInit) => {
+    expect(clientIp(new Headers(init))).toBeNull();
   });
 });
 

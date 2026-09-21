@@ -1,5 +1,6 @@
 import { attachDatabasePool } from '@neon/functions';
 import { Hono } from 'hono';
+import { isIP } from 'node:net';
 import { Pool } from 'pg';
 import { Resend } from 'resend';
 
@@ -24,6 +25,14 @@ export const validateSignup = (
   return { name: trimmedName, email: trimmedEmail };
 };
 
+// First XFF hop is the client; x-real-ip is the fallback. isIP() guards the
+// inet column — a garbage header must not 500 the insert.
+export const clientIp = (headers: Headers): string | null => {
+  const xff = headers.get('x-forwarded-for')?.split(',')[0]?.trim();
+  const candidate = xff || headers.get('x-real-ip')?.trim() || null;
+  return candidate && isIP(candidate) ? candidate : null;
+};
+
 const escapeHtml = (s: string) =>
   s
     .replace(/&/g, '&amp;')
@@ -31,21 +40,28 @@ const escapeHtml = (s: string) =>
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
 
-const sendWelcome = async (name: string, email: string) => {
+const sendWelcome = async (
+  name: string,
+  email: string,
+): Promise<string | null> => {
   const key = process.env.RESEND_API_KEY;
   if (!key) {
     console.warn('RESEND_API_KEY unset — skipping waitlist email');
-    return;
+    return null;
   }
   const resend = new Resend(key);
-  const { error } = await resend.emails.send({
+  const { data, error } = await resend.emails.send({
     from: process.env.FROM_EMAIL ?? DEFAULT_FROM,
     to: email,
     subject: "You're on the Marvis waitlist",
     text: `Hi ${name},\n\nThanks for joining the Marvis waitlist — we'll email you as soon as the macOS build is ready to download.\n\n— The Marvis team`,
     html: `<p>Hi ${escapeHtml(name)},</p><p>Thanks for joining the Marvis waitlist — we'll email you as soon as the macOS build is ready to download.</p><p>— The Marvis team</p>`,
   });
-  if (error) console.error('Resend send failed', error);
+  if (error) {
+    console.error('Resend send failed', error);
+    return null;
+  }
+  return data?.id ?? null;
 };
 
 const app = new Hono();
@@ -65,16 +81,31 @@ app.post('/', async (c) => {
   }
   const parsed = validateSignup(body);
   if (!parsed) return c.json({ ok: false, error: 'invalid' }, 400);
+  const ip = clientIp(c.req.raw.headers);
+  const userAgent = c.req.header('user-agent')?.slice(0, 512) ?? null;
   try {
     const { rows } = await pool.query(
-      'INSERT INTO waitlist (name, email) VALUES ($1, $2) ON CONFLICT (email) DO NOTHING RETURNING id',
-      [parsed.name, parsed.email],
+      'INSERT INTO waitlist (name, email, ip_address, user_agent) VALUES ($1, $2, $3, $4) ON CONFLICT (email) DO NOTHING RETURNING id',
+      [parsed.name, parsed.email, ip, userAgent],
     );
     // rows.length === 0 means a duplicate — success without re-sending mail.
     if (rows.length > 0) {
-      await sendWelcome(parsed.name, parsed.email).catch((err) =>
-        console.error('welcome email failed', err),
+      const emailId = await sendWelcome(parsed.name, parsed.email).catch(
+        (err) => {
+          console.error('welcome email failed', err);
+          return null;
+        },
       );
+      // NULL email_sent_at marks signups whose welcome never went out —
+      // retryable later. Stamping must not fail the signup.
+      if (emailId) {
+        await pool
+          .query(
+            'UPDATE waitlist SET email_sent_at = now(), resend_email_id = $2 WHERE id = $1',
+            [rows[0].id, emailId],
+          )
+          .catch((err) => console.error('email_sent_at stamp failed', err));
+      }
     }
     return c.json({ ok: true });
   } catch (err) {

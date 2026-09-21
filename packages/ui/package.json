@@ -11,7 +11,8 @@
   "scripts": {
     "lint": "eslint .",
     "format": "prettier --write \"**/*.{ts,tsx}\"",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "bun test --pass-with-no-tests"
   },
   "dependencies": {
     "@base-ui/react": "^1.8.0",

@@ -26,7 +26,7 @@
  * (input/button) block it, so inputs and buttons stay usable.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { FormEvent } from 'react';
+import type { SubmitEvent } from 'react';
 import {
   ArrowLeftIcon,
   CameraIcon,
@@ -208,7 +208,7 @@ const Bar = () => {
     }
   };
 
-  const submitAsk = (e: FormEvent) => {
+  const submitAsk = (e: SubmitEvent<HTMLFormElement>) => {
     e.preventDefault();
     const t = text.trim();
     if (!t) {

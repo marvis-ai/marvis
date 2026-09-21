@@ -1,0 +1,991 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Marvis — floating window &amp; chatbox</title>
+  <link rel="icon" href="assets/marvis-mark.svg" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg:      oklch(0.968 0.003 95);
+      --surface: oklch(1 0 0);
+      --fg:      oklch(0.148 0.004 228.8);
+      --muted:   oklch(0.56 0.021 213.5);
+      --border:  oklch(0.925 0.005 214.3);
+      --accent:  oklch(0.53 0.08 237);      /* Marvis deep slate #3a7294 */
+
+      --primary:      oklch(0.53 0.08 237);
+      --primary-fg:   oklch(0.97 0.008 237);
+      --destructive:  oklch(0.577 0.245 27.3);
+      --success:      oklch(0.62 0.17 145);
+      --accent-soft:  color-mix(in oklch, var(--accent) 14%, transparent);
+      --accent-text:  color-mix(in oklch, var(--accent) 62%, black);
+      --fg-soft:      color-mix(in oklch, var(--fg) 5%, transparent);
+      --fg-2:         oklch(0.28 0.008 60);
+      --input-well:   color-mix(in oklch, var(--fg) 4%, transparent);
+      --focus-ring:   0 0 0 3px color-mix(in oklch, var(--accent) 45%, transparent);
+
+      --tl-close: #ff5f57; --tl-min: #febc2e; --tl-max: #28c840;
+
+      --font-ui:   'Outfit', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+      --font-mono: ui-monospace, 'SF Mono', Menlo, monospace;
+
+      --gap-md: 20px; --gap-lg: 32px; --gap-xl: 56px;
+      --container: 1160px; --gutter: 32px;
+      --radius-lg: 18px;
+      --ease: cubic-bezier(0.2, 0, 0, 1);
+      --motion-fast: 150ms; --motion-base: 200ms;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      margin: 0; background: var(--bg); color: var(--fg);
+      font-family: var(--font-ui); font-size: 15px; line-height: 1.55;
+      -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility;
+    }
+    img, svg { display: block; max-width: 100%; }
+    a { color: inherit; text-decoration: none; }
+    button { font: inherit; cursor: pointer; }
+    p { margin: 0; text-wrap: pretty; }
+    h1, h2 { margin: 0; text-wrap: balance; }
+    :focus-visible { outline: none; box-shadow: var(--focus-ring); }
+
+    .container { max-width: var(--container); margin-inline: auto; padding-inline: var(--gutter); }
+    .meta { font-family: var(--font-mono); font-size: 12.5px; color: var(--muted); }
+    .num  { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+    .eyebrow { font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent-text); margin: 0 0 14px; }
+    h1 { font-size: clamp(28px, 3.6vw, 40px); line-height: 1.05; letter-spacing: -0.025em; font-weight: 700; }
+    .lead { color: var(--muted); font-size: 15.5px; max-width: 62ch; }
+
+    .topnav {
+      position: sticky; top: 0; z-index: 20;
+      background: color-mix(in oklch, var(--bg) 88%, transparent);
+      backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--border);
+    }
+    .topnav-inner { display: flex; align-items: center; justify-content: space-between; padding-block: 12px; }
+    .topnav .brand { display: flex; align-items: center; gap: 10px; }
+    .topnav .brand img { height: 22px; width: auto; }
+    .crumb { font-size: 13.5px; color: var(--muted); }
+    .crumb a:hover { color: var(--fg); }
+    .kbd {
+      display: inline-flex; align-items: center; justify-content: center;
+      min-width: 22px; padding: 2px 6px;
+      font-family: var(--font-mono); font-size: 11px; color: var(--fg-2);
+      background: var(--fg-soft); border: 1px solid var(--border);
+      border-bottom-width: 2px; border-radius: 5px;
+    }
+    .pill {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 4px 10px; background: var(--accent-soft); color: var(--accent-text);
+      border-radius: 999px; font-family: var(--font-mono); font-size: 11px;
+      letter-spacing: 0.04em; text-transform: uppercase;
+    }
+
+    /* ─── stage ─────────────────────────────────────────────────────── */
+    .stage {
+      position: relative;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      overflow: hidden;
+      background:
+        radial-gradient(120% 90% at 30% 0%, color-mix(in oklch, var(--fg-2) 9%, var(--surface)) 0%, var(--surface) 60%);
+      min-height: 660px;
+      box-shadow: 0 18px 44px -22px color-mix(in oklch, var(--fg) 24%, transparent);
+      color: var(--fg);
+    }
+    .stage-menubar {
+      position: absolute; inset: 0 0 auto 0; height: 26px;
+      display: flex; align-items: center; gap: 16px; padding-inline: 14px;
+      background: color-mix(in oklch, var(--surface) 62%, transparent);
+      backdrop-filter: blur(10px);
+      border-bottom: 1px solid color-mix(in oklch, var(--border) 70%, transparent);
+      font-size: 11.5px; z-index: 3;
+    }
+    .stage-menubar .m-spacer { flex: 1; }
+    .stage-menubar .m-item { opacity: 0.82; font-weight: 500; }
+    .stage-menubar .m-item.dim { opacity: 0.5; font-weight: 400; }
+    .stage-menubar svg { width: 13px; height: 13px; opacity: 0.75; }
+
+    .ghost-win {
+      position: absolute; left: 5%; top: 110px; width: 52%; height: 360px;
+      background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+      box-shadow: 0 12px 30px -18px color-mix(in oklch, var(--fg) 30%, transparent);
+      opacity: 0.74; filter: saturate(0.7) blur(0.4px);
+      overflow: hidden; display: flex; flex-direction: column;
+    }
+    .ghost-titlebar {
+      height: 30px; display: flex; align-items: center; gap: 8px; padding-inline: 10px;
+      border-bottom: 1px solid var(--border); background: var(--bg);
+      font-family: var(--font-mono); font-size: 10.5px; color: var(--muted);
+    }
+    .traffic { display: inline-flex; gap: 6px; }
+    .traffic i { width: 10px; height: 10px; border-radius: 50%; display: block; }
+    .traffic i:nth-child(1) { background: var(--tl-close); }
+    .traffic i:nth-child(2) { background: var(--tl-min); }
+    .traffic i:nth-child(3) { background: var(--tl-max); }
+    .ghost-body { flex: 1; display: grid; grid-template-columns: 116px 1fr; min-height: 0; }
+    .ghost-side { border-right: 1px solid var(--border); padding: 10px 8px; display: flex; flex-direction: column; gap: 7px; }
+    .ghost-side i, .ghost-code i { display: block; height: 6px; border-radius: 3px; background: var(--fg-soft); }
+    .ghost-side i { width: 80%; } .ghost-side i:nth-child(2n) { width: 56%; }
+    .ghost-code { padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; position: relative; }
+    .ghost-code i { height: 7px; }
+    .ghost-code i.w1 { width: 62%; } .ghost-code i.w2 { width: 44%; margin-left: 14px; }
+    .ghost-code i.w3 { width: 71%; } .ghost-code i.w4 { width: 38%; margin-left: 14px; }
+    .ghost-code i.w5 { width: 55%; margin-left: 28px; } .ghost-code i.w6 { width: 66%; }
+    .ghost-code i.tint { background: var(--accent-soft); }
+    .ghost-err {
+      display: flex; align-items: center; gap: 8px;
+      margin-top: 4px; padding: 7px 10px; border-radius: 7px;
+      background: color-mix(in oklch, var(--destructive) 9%, transparent);
+      border: 1px solid color-mix(in oklch, var(--destructive) 25%, transparent);
+      font-family: var(--font-mono); font-size: 10px;
+      color: color-mix(in oklch, var(--destructive) 72%, black);
+    }
+    .ghost-err svg { width: 11px; height: 11px; flex: none; }
+
+    .stage-dock {
+      position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%);
+      display: flex; align-items: flex-end; gap: 8px; padding: 8px 10px;
+      background: color-mix(in oklch, var(--surface) 55%, transparent);
+      backdrop-filter: blur(14px);
+      border: 1px solid color-mix(in oklch, var(--surface) 70%, transparent);
+      border-radius: 18px;
+      box-shadow: 0 10px 26px -14px color-mix(in oklch, var(--fg) 35%, transparent);
+      z-index: 3;
+    }
+    .dock-tile { width: 38px; height: 38px; border-radius: 9px; border: 1px solid color-mix(in oklch, var(--surface) 60%, transparent); }
+    .dock-tile.t1 { background: linear-gradient(160deg, color-mix(in oklch, var(--fg) 16%, var(--surface)), color-mix(in oklch, var(--fg) 28%, var(--surface))); }
+    .dock-tile.t2 { background: linear-gradient(160deg, color-mix(in oklch, var(--fg) 22%, var(--surface)), color-mix(in oklch, var(--fg) 34%, var(--surface))); }
+    .dock-tile.t3 { background: linear-gradient(160deg, color-mix(in oklch, var(--fg-2) 70%, var(--surface)), var(--fg-2)); }
+    .dock-tile.t4 { background: linear-gradient(160deg, color-mix(in oklch, var(--fg) 8%, var(--surface)), color-mix(in oklch, var(--fg) 18%, var(--surface))); }
+    .dock-sep { width: 1px; height: 34px; background: var(--border); margin-inline: 2px; }
+    .dock-app { position: relative; width: 38px; height: 38px; }
+    .dock-app img { width: 100%; height: 100%; }
+    .dock-app::after { content: ''; position: absolute; left: 50%; bottom: -6px; transform: translateX(-50%); width: 4px; height: 4px; border-radius: 50%; background: var(--fg); }
+
+    /* ─── mv-* app views ────────────────────────────────────────────── */
+    .mv { font-family: var(--font-ui); color: var(--fg); }
+
+    .mv-bar {
+      position: absolute; left: 50%; top: 47px; transform: translateX(-50%);
+      width: 353px; max-width: calc(100% - 48px); height: 47px; z-index: 6;
+      animation: mv-breath-top 7s var(--ease) infinite;
+      transition: width var(--motion-base) var(--ease), height var(--motion-base) var(--ease);
+    }
+    @keyframes mv-breath-top {
+      0%, 100% { transform: translateX(-50%) translateY(0); }
+      50%      { transform: translateX(-50%) translateY(-3px); }
+    }
+    @keyframes mv-breath-bottom {
+      0%, 100% { transform: translateX(-50%) translateY(0); }
+      50%      { transform: translateX(-50%) translateY(3px); }
+    }
+    @keyframes mv-breath-left {
+      0%, 100% { transform: translateY(-50%) translateX(0); }
+      50%      { transform: translateY(-50%) translateX(-3px); }
+    }
+    @keyframes mv-breath-right {
+      0%, 100% { transform: translateY(-50%) translateX(0); }
+      50%      { transform: translateY(-50%) translateX(3px); }
+    }
+    .stage[data-pos="bottom"] .mv-bar { top: auto; bottom: 80px; animation-name: mv-breath-bottom; }
+    .stage[data-pos="left"] .mv-bar,
+    .stage[data-pos="right"] .mv-bar {
+      top: 50%; transform: translateY(-50%);
+      width: 47px; max-width: none; height: 353px;
+    }
+    .stage[data-pos="left"]  .mv-bar { left: 21px; animation-name: mv-breath-left; }
+    .stage[data-pos="right"] .mv-bar { left: auto; right: 21px; animation-name: mv-breath-right; }
+    /* minimal capsule — the ready bar carries only iris, screenshot, mic */
+    .mv-bar.is-mini { width: 112px; }
+    .mv-bar.is-mini .mv-bar-inner { padding-inline: 11px; }
+    .stage[data-pos="left"] .mv-bar.is-mini,
+    .stage[data-pos="right"] .mv-bar.is-mini { width: 47px; height: 112px; }
+    .stage[data-pos="left"] .mv-bar.is-mini .mv-bar-inner,
+    .stage[data-pos="right"] .mv-bar.is-mini .mv-bar-inner { padding: 11px 6px; }
+    .stage[data-pos="left"] .mv-bar-inner,
+    .stage[data-pos="right"] .mv-bar-inner { flex-direction: column; padding: 11px 6px 6px; }
+    .mv-bar-inner {
+      height: 100%; margin: 4px;
+      display: flex; align-items: center; gap: 6px;
+      padding: 0 6px 0 11px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      background: color-mix(in oklch, var(--surface) 80%, transparent);
+      backdrop-filter: blur(14px);
+      box-shadow: 0 8px 24px -10px color-mix(in oklch, var(--fg) 30%, transparent);
+      user-select: none;
+      transition: box-shadow var(--motion-base) var(--ease), border-color var(--motion-base) var(--ease);
+    }
+    .mv-bar.is-listening .mv-bar-inner {
+      border-color: color-mix(in oklch, var(--accent) 55%, var(--border));
+      box-shadow:
+        0 8px 24px -10px color-mix(in oklch, var(--fg) 30%, transparent),
+        0 0 0 4px color-mix(in oklch, var(--accent) 16%, transparent);
+    }
+
+    .mv-iris { width: 18px; height: 18px; flex: none; position: relative; display: grid; place-items: center; }
+    .mv-iris::before {
+      content: ''; width: 11px; height: 11px; border-radius: 50%;
+      background: var(--fg-2);
+      animation: iris-breath 7s var(--ease) infinite;
+    }
+    .mv-iris::after { content: ''; position: absolute; width: 4.5px; height: 4.5px; border-radius: 50%; background: var(--surface); }
+    @keyframes iris-breath {
+      0%, 100% { transform: scale(1); opacity: 0.9; }
+      50%      { transform: scale(1.14); opacity: 1; }
+    }
+    .mv-bar.is-listening .mv-iris::before {
+      background: var(--accent);
+      animation: iris-listen 1.6s var(--ease) infinite;
+    }
+    @keyframes iris-listen {
+      0%, 100% { transform: scale(1); }
+      50%      { transform: scale(1.28); }
+    }
+
+    /* capsule→bar morph — the iris folds into a back arrow as the field grows */
+    #mvAsk { position: relative; }
+    .mv-iris { transition: transform var(--motion-base) var(--ease), opacity var(--motion-fast) var(--ease); }
+    .mv-back {
+      position: absolute; inset: 0; display: grid; place-items: center;
+      opacity: 0; transform: rotate(-90deg) scale(0.4);
+      transition: transform var(--motion-base) var(--ease) 55ms, opacity var(--motion-fast) var(--ease) 55ms;
+      pointer-events: none;
+    }
+    .mv-bar.is-input .mv-iris { transform: scale(0.3); opacity: 0; }
+    .mv-bar.is-input .mv-back { transform: none; opacity: 1; }
+
+    .mv-icon-btn {
+      width: 26px; height: 26px; flex: none; display: grid; place-items: center;
+      border: 0; border-radius: 999px; background: transparent; color: var(--muted);
+      transition: background var(--motion-fast) var(--ease), color var(--motion-fast) var(--ease);
+    }
+    .mv-icon-btn:hover:not(:disabled) { background: var(--fg-soft); color: var(--fg); }
+    .mv-icon-btn:disabled { opacity: 0.45; cursor: default; }
+    .mv-icon-btn svg { width: 14px; height: 14px; }
+    .mv-bar.is-listening #mvMic { color: var(--accent-text); }
+
+    /* input status — the capsule stretches back into the full input bar */
+    .mv-bar.is-input .mv-bar-inner { padding-inline: 11px; }
+    .mv-input {
+      flex: 1; min-width: 0; align-self: stretch; max-width: 320px;
+      border: 0; background: transparent; outline: none;
+      font: inherit; font-size: 12.5px; color: var(--fg);
+      caret-color: var(--accent);
+      transition: max-width var(--motion-base) var(--ease), opacity var(--motion-fast) var(--ease), margin var(--motion-base) var(--ease);
+    }
+    .mv-input::placeholder { color: var(--muted); }
+    .mv-bar.is-mini .mv-input {
+      max-width: 0; margin-inline: -6px; opacity: 0; pointer-events: none;
+    }
+    .stage[data-pos="left"] .mv-bar.is-mini .mv-input,
+    .stage[data-pos="right"] .mv-bar.is-mini .mv-input { max-height: 0; margin-block: -6px; margin-inline: 0; }
+
+    .mv-btn {
+      display: inline-flex; align-items: center; gap: 6px;
+      height: 26px; padding: 0 12px; border-radius: 999px;
+      border: 1px solid transparent; font-size: 11.5px; font-weight: 600;
+      transition: background var(--motion-fast) var(--ease), transform var(--motion-fast) var(--ease), border-color var(--motion-fast) var(--ease);
+    }
+    .mv-btn:active { transform: scale(0.97); }
+    .mv-btn-primary { background: var(--primary); color: var(--primary-fg); }
+    .mv-btn-primary:hover { background: color-mix(in oklch, var(--primary) 88%, black 12%); }
+    .mv-btn-primary:active { background: color-mix(in oklch, var(--primary) 74%, black 26%); }
+    .mv-btn-link { background: transparent; color: var(--muted); padding-inline: 6px; height: auto; font-weight: 500; }
+    .mv-btn-link:hover { color: var(--accent-text); text-decoration: underline; }
+    .mv-bar-label { min-width: 0; flex: 1; font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .mv-gate-ico { width: 16px; height: 16px; flex: none; color: var(--muted); display: grid; place-items: center; }
+    .mv-gate-ico svg { width: 15px; height: 15px; }
+
+    /* ─── extending chatbox ─────────────────────────────────────────── */
+    .mv-panel {
+      position: absolute; left: 50%; top: 102px; transform: translateX(-50%) translateY(-10px);
+      width: 600px; max-width: calc(100% - 40px); z-index: 5;
+      border-radius: 18px; border: 1px solid var(--border);
+      background: color-mix(in oklch, var(--surface) 90%, transparent);
+      backdrop-filter: blur(16px);
+      box-shadow: 0 18px 40px -16px color-mix(in oklch, var(--fg) 34%, transparent);
+      overflow: hidden; display: flex; flex-direction: column;
+      opacity: 0; visibility: hidden;
+      transition: opacity var(--motion-base) var(--ease), transform var(--motion-base) var(--ease), visibility 0s var(--motion-base);
+    }
+    .mv-panel.is-open {
+      opacity: 1; visibility: visible; transform: translateX(-50%) translateY(0);
+      transition: opacity var(--motion-base) var(--ease), transform var(--motion-base) var(--ease);
+    }
+    .mv-panel-head {
+      display: flex; align-items: flex-start; gap: 6px;
+      padding: 9px 12px; border-bottom: 1px solid var(--border);
+    }
+    .mv-panel-q {
+      flex: 1; min-width: 0; font-size: 12px; line-height: 1.5; font-weight: 550;
+      display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+      overflow-wrap: break-word;
+    }
+    .mv-panel-q .q-live { color: var(--muted); font-weight: 500; }
+    .mv-panel-body { padding: 12px 14px 14px; font-size: 13px; line-height: 1.6; max-height: 380px; overflow-y: auto; }
+    .mv-panel-body .ans-head { font-weight: 650; margin-bottom: 6px; }
+    .mv-panel-body ul { margin: 6px 0; padding-left: 18px; }
+    .mv-panel-body li { margin: 3px 0; }
+    .mv-panel-body .li-sub { color: var(--muted); font-size: 12.5px; }
+    .mv-caret { display: inline-block; width: 7px; height: 13px; margin-left: 2px; background: var(--fg); vertical-align: -2px; animation: caret-blink 1.05s steps(1) infinite; }
+    @keyframes caret-blink { 50% { opacity: 0; } }
+    .mv-chiprow { display: flex; gap: 6px; margin-top: 10px; flex-wrap: wrap; }
+    .mv-chip {
+      display: inline-flex; align-items: center; gap: 5px;
+      font-family: var(--font-mono); font-size: 10.5px; color: var(--muted);
+      border: 1px solid var(--border); border-radius: 999px; padding: 3px 8px;
+      background: color-mix(in oklch, var(--surface) 60%, transparent);
+    }
+    .mv-chip svg { width: 10px; height: 10px; }
+    .mv-thinking { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; padding: 2px 0; }
+    .mv-spin { width: 12px; height: 12px; border-radius: 50%; border: 2px solid color-mix(in oklch, var(--muted) 30%, transparent); border-top-color: var(--fg); animation: mv-rotate 0.8s linear infinite; }
+    @keyframes mv-rotate { to { transform: rotate(360deg); } }
+
+    /* listen mode */
+    .mv-wave { display: flex; align-items: center; gap: 3px; height: 18px; }
+    .mv-wave i {
+      width: 3px; border-radius: 2px; background: var(--accent);
+      animation: wave 1.1s var(--ease) infinite;
+    }
+    .mv-wave i:nth-child(1) { height: 8px; animation-delay: 0s; }
+    .mv-wave i:nth-child(2) { height: 14px; animation-delay: 0.12s; }
+    .mv-wave i:nth-child(3) { height: 18px; animation-delay: 0.24s; }
+    .mv-wave i:nth-child(4) { height: 12px; animation-delay: 0.36s; }
+    .mv-wave i:nth-child(5) { height: 7px; animation-delay: 0.48s; }
+    @keyframes wave {
+      0%, 100% { transform: scaleY(0.55); opacity: 0.7; }
+      50%      { transform: scaleY(1); opacity: 1; }
+    }
+    .mv-transcript { display: flex; flex-direction: column; gap: 6px; margin-top: 2px; }
+    .tr-line { display: flex; gap: 8px; font-size: 12.5px; line-height: 1.5; }
+    .tr-line .who { font-family: var(--font-mono); font-size: 10.5px; color: var(--muted); width: 30px; flex: none; padding-top: 2px; }
+    .tr-line.latest .who { color: var(--accent-text); }
+
+    /* compose state */
+    .mv-compose { display: flex; flex-direction: column; gap: 10px; }
+
+    /* ─── mini settings panel (real 240px quick panel) ──────────────── */
+    .mv-mini {
+      position: absolute; top: 102px;
+      left: calc(50% + 176.5px - 240px);
+      width: 240px; z-index: 7;
+      border-radius: 14px; border: 1px solid var(--border);
+      background: color-mix(in oklch, var(--surface) 92%, transparent);
+      backdrop-filter: blur(16px);
+      box-shadow: 0 14px 34px -14px color-mix(in oklch, var(--fg) 34%, transparent);
+      overflow: hidden;
+      opacity: 0; visibility: hidden; transform: translateY(-8px);
+      transition: opacity var(--motion-base) var(--ease), transform var(--motion-base) var(--ease), visibility 0s var(--motion-base);
+    }
+    .mv-mini.is-open { opacity: 1; visibility: visible; transform: translateY(0); transition: opacity var(--motion-base) var(--ease), transform var(--motion-base) var(--ease); }
+    .mv-mini-head { display: flex; align-items: center; gap: 6px; padding: 8px 10px; border-bottom: 1px solid var(--border); font-size: 11.5px; font-weight: 600; }
+    .mv-mini-row { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; padding: 7px 10px; border-bottom: 1px solid var(--border); }
+    .mv-mini-row .p-name { font-size: 11.5px; font-weight: 550; }
+    .mv-mini-row .p-state { font-family: var(--font-mono); font-size: 9.5px; color: var(--muted); }
+    .mv-mini-row .p-state.set { color: var(--fg); }
+    .mv-mini-foot { padding: 8px 10px; display: flex; gap: 6px; }
+    .mv-mini-btn {
+      flex: 1; height: 24px; border-radius: 7px; font-size: 11px; font-weight: 550;
+      border: 1px solid var(--border); background: transparent; color: var(--fg);
+      transition: border-color var(--motion-fast) var(--ease), background var(--motion-fast) var(--ease);
+    }
+    .mv-mini-btn:hover { border-color: color-mix(in oklch, var(--fg) 30%, var(--border)); }
+
+    /* ─── dock positions: panel + mini extend toward open screen ────── */
+    .stage[data-pos="bottom"] .mv-panel { top: auto; bottom: 135px; transform: translateX(-50%) translateY(10px); }
+    .stage[data-pos="bottom"] .mv-panel.is-open { transform: translateX(-50%) translateY(0); }
+    .stage[data-pos="left"] .mv-panel { left: 76px; top: 50%; transform: translateX(-10px) translateY(-50%); }
+    .stage[data-pos="left"] .mv-panel.is-open { transform: translateX(0) translateY(-50%); }
+    .stage[data-pos="right"] .mv-panel { left: auto; right: 76px; top: 50%; transform: translateX(10px) translateY(-50%); }
+    .stage[data-pos="right"] .mv-panel.is-open { transform: translateX(0) translateY(-50%); }
+
+    .stage[data-pos="bottom"] .mv-mini { top: auto; bottom: 135px; transform: translateY(8px); }
+    .stage[data-pos="left"] .mv-mini { top: calc(50% - 176.5px); left: 76px; transform: translateX(-8px); }
+    .stage[data-pos="right"] .mv-mini { top: calc(50% - 176.5px); left: auto; right: 76px; transform: translateX(8px); }
+    .stage[data-pos="bottom"] .mv-mini.is-open { transform: translateY(0); }
+    .stage[data-pos="left"] .mv-mini.is-open,
+    .stage[data-pos="right"] .mv-mini.is-open { transform: translateX(0); }
+
+    /* rail-mode affordances */
+    .mv-btn-round { width: 26px; height: 26px; padding: 0; justify-content: center; }
+    .mv-btn-round svg { width: 13px; height: 13px; }
+    .mv-compose-input {
+      width: 100%; border: 1px solid var(--border); border-radius: 9px;
+      background: var(--input-well); color: var(--fg);
+      font: inherit; font-size: 13px; padding: 8px 10px; outline: none;
+    }
+    .mv-compose-input:focus-visible { box-shadow: var(--focus-ring); }
+
+    /* ─── dark variant (follows system appearance) ──────────────────── */
+    .stage.is-dark {
+      --bg:      oklch(0.185 0.012 237);
+      --surface: oklch(0.245 0.016 237);
+      --fg:      oklch(0.93 0.006 230);
+      --muted:   oklch(0.70 0.02 230);
+      --border:  oklch(0.375 0.016 235);
+      --fg-2:    oklch(0.84 0.01 230);
+      --fg-soft:     color-mix(in oklch, var(--fg) 8%, transparent);
+      --input-well:  color-mix(in oklch, var(--fg) 7%, transparent);
+      --accent-soft: color-mix(in oklch, var(--accent) 26%, transparent);
+      --accent-text: color-mix(in oklch, var(--accent) 55%, white);
+    }
+    .stage.is-dark .ghost-err { color: color-mix(in oklch, var(--destructive) 75%, white); }
+
+    /* ─── caption / gate switcher (annotation) ─────────────────────── */
+    .stage-cap { display: flex; justify-content: space-between; align-items: center; gap: var(--gap-md); padding: 12px 4px 0; flex-wrap: wrap; }
+    .gate-switch { display: inline-flex; align-items: center; gap: 4px; font-family: var(--font-mono); font-size: 11px; color: var(--muted); }
+    .gate-switch button {
+      border: 1px solid var(--border); background: transparent; color: var(--muted);
+      border-radius: 999px; padding: 3px 10px; font: inherit; font-size: 10.5px;
+      transition: all var(--motion-fast) var(--ease);
+    }
+    .gate-switch button:hover { color: var(--fg); border-color: color-mix(in oklch, var(--fg) 30%, var(--border)); }
+    .gate-switch button.is-on { background: var(--primary); color: var(--primary-fg); border-color: var(--primary); }
+
+    .note-row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 18px; }
+
+    @media (prefers-reduced-motion: reduce) {
+      .mv-bar, .mv-iris::before, .mv-caret, .mv-wave i, .mv-spin { animation: none; }
+      .mv-panel, .mv-mini, .mv-iris, .mv-back, .mv-input { transition: none; }
+    }
+    @media (max-width: 720px) {
+      .stage { min-height: 560px; }
+      .ghost-win { left: 4%; width: 74%; }
+      .mv-mini { left: auto; right: 20px; }
+      .stage[data-pos="left"] .mv-panel,
+      .stage[data-pos="right"] .mv-panel { max-width: calc(100% - 104px); }
+      .stage[data-pos="left"] .mv-mini { left: auto; right: 20px; top: 96px; }
+      .stage[data-pos="right"] .mv-mini { right: 20px; top: 96px; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topnav" data-od-id="topnav">
+    <div class="container topnav-inner">
+      <a class="brand" href="index.html"><img src="assets/marvis-logo.svg" alt="Marvis" /></a>
+      <span class="crumb"><a href="index.html">← screens</a> · floating window &amp; chatbox</span>
+      <span class="pill">interactive</span>
+    </div>
+  </header>
+
+  <main id="content">
+    <div class="container" style="padding-block: 44px 28px;">
+      <p class="eyebrow">Screen 01 · main window</p>
+      <h1>The bar breathes. The chatbox grows out of it.</h1>
+      <p class="lead" style="margin-top: 12px;">At rest Marvis is a 112 px capsule — the iris, a screenshot-ask, the mic — idling on a slow seven-second breath. Click the iris, or just start typing, and it stretches into the 353 px input bar: the floating window's input status, the iris folding into a back arrow as it grows. ⏎ sends and the chatbox extends below with a streamed answer while the bar keeps the field for follow-ups; the arrow or Esc settles it back to the capsule. The camera screenshots straight into an ask; the mic turns the same surface into a listener. It docks on any screen edge — the bar top and bottom, a slim rail left and right where the composer moves into the chatbox — and follows the system into dark mode. Try it: just start typing.</p>
+      <div class="note-row">
+        <span class="meta">gates:</span>
+        <span class="meta">locked → permission → ready, chained through the bar itself</span>
+      </div>
+    </div>
+
+    <div class="container" style="padding-bottom: 72px;">
+      <div class="stage" id="stage" data-pos="top" data-od-id="stage">
+
+        <div class="stage-menubar">
+          <img src="assets/marvis-mark.svg" alt="" style="width:13px;height:13px;border-radius:3px;" />
+          <span class="m-item">Marvis</span>
+          <span class="m-item dim">File</span>
+          <span class="m-item dim">Edit</span>
+          <span class="m-item dim">View</span>
+          <span class="m-item dim">Window</span>
+          <span class="m-item dim">Help</span>
+          <span class="m-spacer"></span>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12a10 10 0 0 1 14 0M8.5 15.5a5 5 0 0 1 7 0M12 19h.01"/></svg>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="2" y="8" width="17" height="9" rx="2"/><path d="M22 11v3" stroke-linecap="round"/><rect x="4" y="10" width="10" height="5" rx="1" fill="currentColor" stroke="none"/></svg>
+          <span class="m-item dim num">Fri 9:41 AM</span>
+        </div>
+
+        <div class="ghost-win" aria-hidden="true">
+          <div class="ghost-titlebar">
+            <span class="traffic"><i></i><i></i><i></i></span>
+            <span>lib.rs — marvis · src-tauri/src</span>
+          </div>
+          <div class="ghost-body">
+            <div class="ghost-side"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+            <div class="ghost-code">
+              <i class="w1 tint"></i><i class="w2"></i><i class="w3"></i><i class="w4"></i>
+              <i class="w5"></i><i class="w6 tint"></i><i class="w2"></i><i class="w3"></i>
+              <div class="ghost-err">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16.5h.01"/></svg>
+                <span>error: cannot find type `KeystoreStatus` in this scope</span>
+              </div>
+              <i class="w4"></i><i class="w1"></i><i class="w5"></i>
+            </div>
+          </div>
+        </div>
+
+        <!-- the bar -->
+        <div class="mv mv-bar" id="mvBar" data-od-id="bar">
+          <div class="mv-bar-inner" id="barInner"><!-- filled by JS per gate --></div>
+        </div>
+
+        <!-- extending chatbox -->
+        <div class="mv mv-panel" id="mvPanel" data-od-id="chatbox" aria-live="polite">
+          <div class="mv-panel-head">
+            <p class="mv-panel-q" id="panelQ">Ask Marvis</p>
+            <button class="mv-icon-btn" id="panelGear" title="Quick settings">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.55V21a2 2 0 1 1-4 0v-.09a1.7 1.7 0 0 0-1-1.55 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-1.55-1H3a2 2 0 1 1 0-4h.09a1.7 1.7 0 0 0 1.55-1 1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34h.01a1.7 1.7 0 0 0 1-1.55V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1 1.55 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0 .34 1.87v.01a1.7 1.7 0 0 0 1.55 1H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.55 1z"/></svg>
+            </button>
+            <button class="mv-icon-btn" id="panelClose" title="Close (Esc)">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6L6 18"/></svg>
+            </button>
+          </div>
+          <div class="mv-panel-body" id="panelBody"></div>
+        </div>
+
+        <!-- quick settings mini panel -->
+        <div class="mv mv-mini" id="mvMini" data-od-id="mini-settings">
+          <div class="mv-mini-head">
+            <span style="flex:1;">Settings</span>
+            <button class="mv-icon-btn" id="miniClose" title="Close">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6L6 18"/></svg>
+            </button>
+          </div>
+          <div class="mv-mini-row"><span class="p-name">OpenAI</span><span class="p-state set num">sk-…7B2q · gpt-4o</span></div>
+          <div class="mv-mini-row"><span class="p-name">Anthropic</span><span class="p-state set num">sk-…f41c · sonnet-4-5</span></div>
+          <div class="mv-mini-row"><span class="p-name">Gemini</span><span class="p-state">not set</span></div>
+          <div class="mv-mini-row"><span class="p-name">Ollama</span><span class="p-state">local · no key</span></div>
+          <div class="mv-mini-row" style="opacity:.55;"><span class="p-name">Deepgram</span><span class="p-state">Phase 2</span></div>
+          <div class="mv-mini-foot">
+            <button class="mv-mini-btn" id="miniLock">Lock keys</button>
+            <a class="mv-mini-btn" href="marvis-settings-window.html" style="display:inline-flex;align-items:center;justify-content:center;">All settings</a>
+          </div>
+        </div>
+
+        <div class="stage-dock" aria-hidden="true">
+          <span class="dock-tile t1"></span><span class="dock-tile t2"></span><span class="dock-tile t3"></span><span class="dock-tile t4"></span>
+          <span class="dock-sep"></span>
+          <span class="dock-app"><img src="assets/marvis-icon.svg" alt="Marvis" /></span>
+        </div>
+      </div>
+
+      <div class="stage-cap">
+        <span class="meta">capsule 112×47 · input bar 353×47 · breath 7s · rail 47×112 on side edges · chatbox 600 px extends</span>
+        <span class="gate-switch" data-od-id="appearance-switch">
+          appearance&nbsp;·
+          <button data-ap="light" class="is-on">light</button>
+          <button data-ap="dark">dark</button>
+        </span>
+        <span class="gate-switch" data-od-id="dock-switch">
+          dock&nbsp;·
+          <button data-pos="top" class="is-on">top</button>
+          <button data-pos="bottom">bottom</button>
+          <button data-pos="left">left</button>
+          <button data-pos="right">right</button>
+        </span>
+        <span class="gate-switch" data-od-id="gate-switch">
+          gate&nbsp;·
+          <button data-gate="locked">locked</button>
+          <button data-gate="permission">permission</button>
+          <button data-gate="ready" class="is-on">ready</button>
+        </span>
+      </div>
+
+      <div class="note-row" style="margin-top: 26px;">
+        <span class="meta">answers stream as markdown tokens · <span class="num">ask:state → ask:chunk → ask:done</span></span>
+        <span class="meta">·</span>
+        <span class="meta">listen preview is the Phase-2 surface (Deepgram <span class="num">nova-2</span>)</span>
+        <span class="meta">·</span>
+        <span class="meta"><span class="kbd">⌘⇧←→</span> snaps to an edge in the real app</span>
+        <span class="meta">·</span>
+        <span class="meta">camera = <span class="kbd">⌘⇧S</span> screenshot → ask</span>
+        <span class="meta">·</span>
+        <span class="meta"><span class="kbd">Esc</span> collapses back to the capsule</span>
+      </div>
+    </div>
+  </main>
+
+  <script>
+    // ─── state ──────────────────────────────────────────────────────────
+    var gate = 'ready';            // locked | permission | ready
+    var mode = 'idle';             // idle | compose | thinking | streaming | listening
+    var pos = 'top';               // top | bottom | left | right
+    var barInput = false;          // input status — capsule stretched into the input bar
+    var hasAsked = false;
+    var streamTimer = null, listenTimer = null, elapsedTimer = null;
+
+    var stageEl = document.getElementById('stage');
+    var barEl = document.getElementById('mvBar');
+    var barInner = document.getElementById('barInner');
+    var panel = document.getElementById('mvPanel');
+    var panelQ = document.getElementById('panelQ');
+    var panelBody = document.getElementById('panelBody');
+    var mini = document.getElementById('mvMini');
+
+    var ICONS = {
+      mic: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3a3 3 0 0 1 3 3v5a3 3 0 0 1-6 0V6a3 3 0 0 1 3-3z"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>',
+      shield: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3l7 3v5c0 4.5-3 8.5-7 10-4-1.5-7-5.5-7-10V6l7-3z"/><path d="M12 10v3M12 16h.01"/></svg>',
+      frame: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M3 9h18"/></svg>',
+      lock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>',
+      unlock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V7.5A4 4 0 0 1 15.8 6.4"/></svg>',
+      check: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4.5 12.5l5 5L20 7"/></svg>',
+      camera: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="7" width="18" height="13" rx="2.5"/><circle cx="12" cy="13.5" r="3.2"/><path d="M9.2 7l1.4-2.4h2.8L14.8 7"/></svg>',
+      back: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19.5 12H5"/><path d="M11.5 5.5L5 12l6.5 6.5"/></svg>'
+    };
+
+    // ─── bar rendering per gate ─────────────────────────────────────────
+    function renderBar() {
+      var rail = (pos === 'left' || pos === 'right');
+      var inputState = gate === 'ready' && barInput && !rail;
+      barEl.classList.toggle('is-listening', mode === 'listening');
+      barEl.classList.toggle('is-mini', gate === 'ready' && !inputState);
+      barEl.classList.toggle('is-input', inputState);
+      if (gate === 'locked') {
+        barInner.dataset.gate = 'locked';
+        barInner.innerHTML = rail
+          ? '<span class="mv-gate-ico" title="Locked">' + ICONS.lock + '</span>' +
+            '<span style="flex:1"></span>' +
+            '<button class="mv-btn mv-btn-primary mv-btn-round" id="gateUnlock" title="Unlock with Touch ID / password">' + ICONS.unlock + '</button>'
+          : '<span class="mv-iris"></span>' +
+            '<span class="mv-bar-label" title="Marvis unlocks with Touch ID, Face ID, or your Mac password">Unlock with Touch ID / password</span>' +
+            '<button class="mv-btn mv-btn-primary" id="gateUnlock">Unlock</button>';
+        document.getElementById('gateUnlock').onclick = function () {
+          var b = this; b.disabled = true; if (!rail) b.textContent = 'Authenticating…';
+          setTimeout(function () { setGate('permission'); }, 1100);
+        };
+      } else if (gate === 'permission') {
+        barInner.dataset.gate = 'permission';
+        barInner.innerHTML = rail
+          ? '<span class="mv-gate-ico" title="Screen recording needed">' + ICONS.shield + '</span>' +
+            '<span style="flex:1"></span>' +
+            '<button class="mv-btn mv-btn-primary mv-btn-round" id="gateGrant" title="Grant screen recording">' + ICONS.check + '</button>'
+          : '<span class="mv-gate-ico">' + ICONS.shield + '</span>' +
+            '<span class="mv-bar-label" title="Marvis needs screen recording to see your screen">Screen recording needed</span>' +
+            '<button class="mv-btn mv-btn-primary" id="gateGrant">Grant</button>' +
+            '<button class="mv-btn mv-btn-link" id="gatePrefs">Open settings</button>';
+        document.getElementById('gateGrant').onclick = function () { setGate('ready'); };
+        var prefs = document.getElementById('gatePrefs');
+        if (prefs) prefs.onclick = function () { /* would open macOS Privacy pane */ };
+      } else {
+        // ready — capsule at rest; typing or the iris stretches it into
+        // the input bar (the floating window's input status). Children
+        // render once and persist so the iris→arrow morph and the width
+        // change animate instead of being recreated mid-transition. On
+        // rails there's no room for a field — input stays in the chatbox.
+        if (barInner.dataset.gate !== 'ready') {
+          barInner.dataset.gate = 'ready';
+          barInner.innerHTML =
+            '<button class="mv-icon-btn" id="mvAsk"><span class="mv-iris"></span><span class="mv-back">' + ICONS.back + '</span></button>' +
+            '<input class="mv-input" id="mvInput" autocomplete="off" />' +
+            '<button class="mv-icon-btn" id="mvShot" title="Screenshot → ask (⌘⇧S)">' + ICONS.camera + '</button>' +
+            '<button class="mv-icon-btn" id="mvMic" title="Listen (Phase 2 preview)">' + ICONS.mic + '</button>';
+          document.getElementById('mvAsk').onclick = function () {
+            if (barInput) { collapseInput(); } else { expandInput(''); }
+          };
+          document.getElementById('mvShot').onclick = screenshotAsk;
+          document.getElementById('mvMic').onclick = function () {
+            if (mode === 'listening') { closePanel(); } else { startListening(); }
+          };
+          document.getElementById('mvInput').addEventListener('keydown', function (e) {
+            e.stopPropagation();
+            if (e.key === 'Enter' && this.value.trim()) {
+              ask(this.value.trim());
+              this.value = '';
+              this.placeholder = 'Ask follow-up…';
+            }
+            if (e.key === 'Escape') { closePanel(); collapseInput(); }
+          });
+        }
+        var inp = document.getElementById('mvInput');
+        inp.disabled = !inputState;
+        inp.tabIndex = inputState ? 0 : -1;
+        inp.placeholder = hasAsked ? 'Ask follow-up…' : 'Ask Marvis…';
+        document.getElementById('mvAsk').title =
+          inputState ? 'Back to capsule (Esc)' : 'Ask Marvis — click, or just start typing';
+      }
+    }
+
+    function expandInput(seed) {
+      if (gate !== 'ready') return;
+      if (pos === 'left' || pos === 'right') { openCompose(seed); return; }
+      barInput = true;
+      renderBar();
+      var inp = document.getElementById('mvInput');
+      if (!inp) return;
+      if (seed) inp.value += seed;
+      inp.focus();
+      try { inp.setSelectionRange(inp.value.length, inp.value.length); } catch (e) {}
+    }
+
+    function collapseInput() {
+      if (!barInput) return;
+      barInput = false;
+      renderBar();
+    }
+
+    function setGate(g) {
+      gate = g; mode = 'idle'; barInput = false; hasAsked = false;
+      closePanel(); mini.classList.remove('is-open');
+      renderBar();
+      document.querySelectorAll('.gate-switch [data-gate]').forEach(function (b) {
+        b.classList.toggle('is-on', b.dataset.gate === g);
+      });
+    }
+    document.querySelectorAll('.gate-switch [data-gate]').forEach(function (b) {
+      b.onclick = function () { setGate(b.dataset.gate); };
+    });
+
+    function setPos(p) {
+      if (pos === p) return;
+      pos = p;
+      stageEl.dataset.pos = p;
+      mode = 'idle';
+      closePanel(); mini.classList.remove('is-open');
+      renderBar();
+      document.querySelectorAll('button[data-pos]').forEach(function (b) {
+        b.classList.toggle('is-on', b.dataset.pos === p);
+      });
+    }
+    document.querySelectorAll('button[data-pos]').forEach(function (b) {
+      b.onclick = function () { setPos(b.dataset.pos); };
+    });
+
+    function setAppearance(a) {
+      stageEl.classList.toggle('is-dark', a === 'dark');
+      document.querySelectorAll('button[data-ap]').forEach(function (b) {
+        b.classList.toggle('is-on', b.dataset.ap === a);
+      });
+    }
+    document.querySelectorAll('button[data-ap]').forEach(function (b) {
+      b.onclick = function () { setAppearance(b.dataset.ap); };
+    });
+
+    // ─── chatbox ────────────────────────────────────────────────────────
+    function openPanel() { mini.classList.remove('is-open'); panel.classList.add('is-open'); }
+    function closePanel() {
+      panel.classList.remove('is-open');
+      mode = 'idle';
+      barEl.classList.remove('is-listening');
+      clearTimeout(streamTimer); clearTimeout(listenTimer); clearInterval(elapsedTimer);
+    }
+
+    // The capsule carries no inline input — the chatbox itself hosts the
+    // composer. `seed` pre-fills the character that summoned it when the
+    // user just starts typing.
+    function openCompose(seed) {
+      mode = 'compose';
+      panelQ.innerHTML = '<span class="q-live">Composing…</span>';
+      panelBody.innerHTML =
+        '<div class="mv-compose">' +
+          '<input class="mv-compose-input" id="composeInput" placeholder="Ask Marvis…" autocomplete="off" />' +
+          '<div class="mv-chiprow" style="margin-top:0;">' +
+            '<span class="mv-chip">' + ICONS.frame + 'latest frame attached</span>' +
+            '<span class="mv-chip">gpt-4o · openai</span>' +
+            '<span class="mv-chip">⏎ send · esc cancel</span>' +
+          '</div>' +
+        '</div>';
+      openPanel();
+      var ci = document.getElementById('composeInput');
+      ci.value = seed || '';
+      ci.focus();
+      try { ci.setSelectionRange(ci.value.length, ci.value.length); } catch (e) {}
+      ci.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter' && this.value.trim()) ask(this.value.trim());
+        if (e.key === 'Escape') closePanel();
+      });
+    }
+
+    // ⌘⇧S surface — grab the focused frame and ask about it.
+    function screenshotAsk() {
+      mode = 'thinking';
+      barEl.classList.remove('is-listening');
+      clearTimeout(streamTimer); clearTimeout(listenTimer); clearInterval(elapsedTimer);
+      panelQ.innerHTML = '<span class="q-live">Screenshot → ask</span> · what am I looking at?';
+      panelBody.innerHTML = '<div class="mv-thinking"><span class="mv-spin"></span>Reading the captured frame…</div>';
+      openPanel();
+      streamTimer = setTimeout(function () { streamAnswer(answerChunks('the error on screen')); }, 900);
+    }
+
+    // Grounded canned answers — content matches the real system, never invented claims.
+    function answerChunks(q) {
+      var lower = q.toLowerCase();
+      if (/hotkey|shortcut|keyboard|bind/.test(lower)) {
+        return [
+          '<p class="ans-head">Twelve bindings, nine configurable.</p>',
+          '<ul><li><span class="kbd">⌘/</span> toggles every panel · <span class="kbd">⌘⏎</span> sends the current ask</li>',
+          '<li class="li-sub"><span class="kbd">⌘⇧S</span> screenshots into an ask · <span class="kbd">⌘M</span> click-through</li>',
+          '<li class="li-sub"><span class="kbd">⌘↑↓←→</span> steps the bar 40 px · <span class="kbd">⌘⇧←/→</span> snaps to an edge</li>',
+          '<li class="li-sub"><span class="kbd">⌘⇧1–9</span> jumps to display n · <span class="kbd">⌘⇧↑↓</span> scrolls this answer</li></ul>',
+          '<p class="li-sub">Rebind the nine configurable ones in <span class="num">~/.marvis/config.toml</span> under <span class="num">[hotkeys]</span>.</p>'
+        ];
+      }
+      if (/error|screen|red|fail|build|compile|type/.test(lower)) {
+        return [
+          '<p class="ans-head">A missing import on line 4.</p>',
+          '<ul><li><span class="num">KeystoreStatus</span> is used but never imported into <span class="num">lib.rs</span>.</li>',
+          '<li class="li-sub">It lives in <span class="num">commands.ts</span> on the webview side — in Rust it\'s <span class="num">keystore::KeystoreStatus</span>.</li>',
+          '<li class="li-sub">Fix: add <span class="num">use crate::keystore::KeystoreStatus;</span> at the top of the file.</li></ul>',
+          '<p class="li-sub">Read from the frame captured 0.25 s ago — <span class="num">lib.rs</span> is the focused editor on your screen.</p>'
+        ];
+      }
+      return [
+        '<p class="ans-head">Screen plus audio, answered inline.</p>',
+        '<ul><li>I see your screen at 4 fps, deduped — only changed frames are kept, ring buffer 60 s.</li>',
+        '<li class="li-sub">In a call, I answer questions, define terms, and suggest follow-ups at the end of the transcript.</li>',
+        '<li class="li-sub">Everything stays local: <span class="num">~/.marvis</span> holds config, keys, and history. Your keys call providers directly.</li></ul>'
+      ];
+    }
+
+    var STREAM_CHIPS =
+      '<div class="mv-chiprow">' +
+        '<span class="mv-chip">' + ICONS.frame + 'frame · 4 fps dedupe</span>' +
+        '<span class="mv-chip">gpt-4o · openai</span>' +
+        '<span class="mv-chip num">streamed 0.9s</span>' +
+      '</div>';
+
+    function ask(text) {
+      mode = 'thinking'; hasAsked = true;
+      renderBar();
+      barEl.classList.remove('is-listening');
+      clearTimeout(streamTimer); clearTimeout(listenTimer); clearInterval(elapsedTimer);
+      panelQ.textContent = text;
+      panelBody.innerHTML = '<div class="mv-thinking"><span class="mv-spin"></span>Thinking…</div>';
+      openPanel();
+      streamTimer = setTimeout(function () { streamAnswer(answerChunks(text)); }, 850);
+    }
+
+    function streamAnswer(chunks) {
+      mode = 'streaming';
+      barEl.classList.remove('is-listening');
+      panelBody.innerHTML = '<span id="streamTarget"></span><span class="mv-caret" id="mvCaret"></span>';
+      var target = document.getElementById('streamTarget');
+      var i = 0;
+      function tick() {
+        if (i < chunks.length) {
+          var div = document.createElement('div');
+          div.innerHTML = chunks[i];
+          while (div.firstChild) target.appendChild(div.firstChild);
+          i++;
+          panelBody.scrollTop = panelBody.scrollHeight;
+          streamTimer = setTimeout(tick, 240);
+        } else {
+          var caret = document.getElementById('mvCaret');
+          if (caret) caret.remove();
+          panelBody.insertAdjacentHTML('beforeend', STREAM_CHIPS);
+          if (mode === 'streaming') mode = 'idle';
+        }
+      }
+      tick();
+    }
+
+    // ─── listening (Phase-2 preview) ────────────────────────────────────
+    var TRANSCRIPT = [
+      ['them', 'are we still hitting the OpenAI endpoint directly?'],
+      ['me',   'yeah — the key lives in keys.enc, validated before it\'s stored'],
+      ['them', 'and ollama stays fully local?'],
+      ['me',   'no key at all, it just reads /api/tags']
+    ];
+
+    function startListening() {
+      mode = 'listening';
+      collapseInput();
+      barEl.classList.add('is-listening');
+      clearTimeout(streamTimer);
+      panelQ.innerHTML = '<span class="q-live">Listening</span> — standup, screen shared';
+      panelBody.innerHTML =
+        '<div style="display:flex;align-items:center;gap:10px;">' +
+          '<span class="mv-wave"><i></i><i></i><i></i><i></i><i></i></span>' +
+          '<span class="meta num" id="elapsed">00:00</span>' +
+          '<span style="flex:1"></span>' +
+          '<span class="mv-chip">deepgram nova-2</span>' +
+        '</div>' +
+        '<div class="mv-transcript" id="transcript"></div>';
+      openPanel();
+
+      var t0 = Date.now();
+      elapsedTimer = setInterval(function () {
+        var s = Math.floor((Date.now() - t0) / 1000);
+        var el = document.getElementById('elapsed');
+        if (el) el.textContent = '0' + Math.floor(s / 60) + ':' + ('0' + (s % 60)).slice(-2);
+      }, 500);
+
+      var tr = document.getElementById('transcript');
+      var i = 0;
+      function nextLine() {
+        if (mode !== 'listening') return;
+        if (i < TRANSCRIPT.length) {
+          var who = TRANSCRIPT[i][0], text = TRANSCRIPT[i][1];
+          tr.querySelectorAll('.tr-line').forEach(function (l) { l.classList.remove('latest'); });
+          var line = document.createElement('div');
+          line.className = 'tr-line latest';
+          line.innerHTML = '<span class="who">' + who + '</span><span>' + text + '</span>';
+          tr.appendChild(line);
+          i++;
+          listenTimer = setTimeout(nextLine, 1900);
+        } else {
+          // transcript ends in a question-shaped context → answer it
+          panelQ.innerHTML = '<span class="q-live">Heard a question</span> — "and ollama stays fully local?"';
+          listenTimer = setTimeout(function () {
+            streamAnswer([
+              '<p class="ans-head">Yes — Ollama never leaves localhost.</p>',
+              '<ul><li>No key needed; Marvis reads the daemon\'s <span class="num">/api/tags</span> for its model list.</li>',
+              '<li class="li-sub">OpenAI/Anthropic/Gemini keys sit in <span class="num">keys.enc</span> — AES-256-GCM, DEK gated by Touch ID.</li></ul>',
+              '<p class="li-sub">Follow-ups worth asking next:</p>',
+              '<ul><li class="li-sub">What happens to in-flight asks when the keystore locks mid-stream?</li>',
+              '<li class="li-sub">Does a revoked screen permission pause capture, or the whole ask?</li></ul>'
+            ]);
+          }, 700);
+        }
+      }
+      listenTimer = setTimeout(nextLine, 900);
+    }
+
+    // ─── wiring ─────────────────────────────────────────────────────────
+    document.getElementById('panelClose').onclick = closePanel;
+    document.getElementById('panelGear').onclick = function () {
+      closePanel();
+      mini.classList.toggle('is-open');
+    };
+    document.getElementById('miniClose').onclick = function () { mini.classList.remove('is-open'); };
+    document.getElementById('miniLock').onclick = function () { setGate('locked'); };
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') { closePanel(); collapseInput(); mini.classList.remove('is-open'); return; }
+      if (e.key === '/' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); closePanel(); collapseInput(); mini.classList.remove('is-open'); return; }
+      if (gate !== 'ready' || mode === 'listening') return;
+      var t = e.target;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
+      var rail = (pos === 'left' || pos === 'right');
+      // ⏎ sends the expanded bar's draft even when focus has drifted
+      if (e.key === 'Enter' && barInput && !rail) {
+        var draft = document.getElementById('mvInput');
+        if (draft && draft.value.trim()) {
+          ask(draft.value.trim());
+          draft.value = ''; draft.placeholder = 'Ask follow-up…'; draft.focus();
+        }
+        return;
+      }
+      // typing anywhere wakes input status: the bar grows its field on
+      // horizontal docks; on rails the composer lives in the chatbox
+      if (e.key.length === 1 && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        e.preventDefault();
+        if (rail) {
+          var ci = document.getElementById('composeInput');
+          if (panel.classList.contains('is-open') && ci) {
+            ci.focus(); ci.value += e.key;
+            try { ci.setSelectionRange(ci.value.length, ci.value.length); } catch (err) {}
+          } else {
+            openCompose(e.key);
+          }
+        } else {
+          var live = document.getElementById('mvInput');
+          if (barInput && live) {
+            live.focus(); live.value += e.key;
+            try { live.setSelectionRange(live.value.length, live.value.length); } catch (err) {}
+          } else {
+            expandInput(e.key);
+          }
+        }
+      }
+    });
+
+    renderBar();
+  </script>
+</body>
+</html>

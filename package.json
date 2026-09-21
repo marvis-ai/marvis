@@ -50,6 +50,7 @@
   },
   "devDependencies": {
     "@types/node": "^26.6.2",
-    "@types/pg": "^8.23.1"
+    "@types/pg": "^8.23.1",
+    "bun-types": "^1.4.2"
   }
 }

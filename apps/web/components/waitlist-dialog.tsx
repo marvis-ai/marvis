@@ -53,7 +53,7 @@ export const WaitlistDialog = ({
   };
 
   return (
-    <Dialog onOpenChange={(open) => !open && setStatus('idle')}>
+    <Dialog onOpenChange={() => setStatus('idle')}>
       <DialogTrigger
         render={
           <button

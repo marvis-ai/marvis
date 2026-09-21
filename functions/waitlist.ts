@@ -11,7 +11,9 @@ attachDatabasePool(pool);
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const DEFAULT_FROM = 'Marvis AI <notification@updates.getmarvis.com>';
 
-export const validateSignup = (input: unknown): { name: string; email: string } | null => {
+export const validateSignup = (
+  input: unknown,
+): { name: string; email: string } | null => {
   if (typeof input !== 'object' || input === null) return null;
   const { name, email } = input as Record<string, unknown>;
   if (typeof name !== 'string' || typeof email !== 'string') return null;
@@ -23,7 +25,11 @@ export const validateSignup = (input: unknown): { name: string; email: string } 
 };
 
 const escapeHtml = (s: string) =>
-  s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
 
 const sendWelcome = async (name: string, email: string) => {
   const key = process.env.RESEND_API_KEY;
@@ -47,10 +53,14 @@ const app = new Hono();
 app.get('/', (c) => c.json({ ok: true }));
 
 app.post('/', async (c) => {
-  const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null;
-  // Honeypot: the hidden `company` field is invisible to humans; a filled
-  // value means a bot — fake success and discard.
-  if (typeof body?.company === 'string' && body.company.trim() !== '') {
+  const body = (await c.req.json().catch(() => null)) as Record<
+    string,
+    unknown
+  > | null;
+  // Honeypot: the hidden `company` field is invisible to humans; any filled
+  // value (even a non-string one a bot posted) means a bot — fake success
+  // and discard.
+  if (body?.company != null && String(body.company).trim() !== '') {
     return c.json({ ok: true });
   }
   const parsed = validateSignup(body);

@@ -32,6 +32,8 @@ pub enum Action {
     ScrollDown,
     /// Hardcoded `Cmd+Shift+S` — manual screenshot → screen-only ask.
     ScreenOnly,
+    /// Hardcoded `Cmd+,` — show the settings panel (also the tray item).
+    ShowSettings,
     /// Hardcoded `Cmd+Shift+<n>` — move the bar to display `n` (1-based).
     MoveToDisplay(usize),
     /// Hardcoded `Cmd+Shift+Left/Right` — snap bar to a work-area edge.
@@ -161,6 +163,13 @@ fn bindings(binds: &BTreeMap<String, String>, scope: Scope) -> Vec<(Shortcut, Ac
     ] {
         out.push((Shortcut::new(Some(cmd_shift), code), action));
     }
+    // `Cmd+,` is allowed while gated too (parity with the always-enabled
+    // tray item): the dispatch explains it needs an unlock rather than
+    // silently doing nothing.
+    out.push((
+        Shortcut::new(Some(Modifiers::SUPER), Code::Comma),
+        Action::ShowSettings,
+    ));
     for (i, code) in DIGIT_CODES.iter().enumerate() {
         out.push((
             Shortcut::new(Some(cmd_shift), *code),
@@ -508,7 +517,10 @@ mod tests {
         }
         assert!(!actions.contains(&Action::ScreenOnly));
         assert!(!actions.contains(&Action::NextStep));
-        assert_eq!(got.len(), 1 + 2 + 9);
+        // Settings is reachable while gated (it explains the unlock) —
+        // parity with the always-enabled tray item.
+        assert!(actions.contains(&Action::ShowSettings));
+        assert_eq!(got.len(), 1 + 2 + 9 + 1);
     }
 
     #[test]
@@ -518,7 +530,22 @@ mod tests {
         let actions: Vec<Action> = got.iter().map(|(_, a)| *a).collect();
         assert!(actions.contains(&Action::ScreenOnly));
         assert!(actions.contains(&Action::NextStep));
-        assert_eq!(got.len(), 9 + 2 + 9 + 1);
+        assert!(actions.contains(&Action::ShowSettings));
+        assert_eq!(got.len(), 9 + 2 + 9 + 1 + 1);
+    }
+
+    #[test]
+    fn settings_is_bound_to_cmd_comma_in_both_scopes() {
+        let binds = config::default_hotkeys();
+        for scope in [Scope::Limited, Scope::All] {
+            let (shortcut, _) = bindings(&binds, scope)
+                .into_iter()
+                .find(|(_, a)| *a == Action::ShowSettings)
+                .unwrap_or_else(|| panic!("ShowSettings must be bound in {scope:?}"));
+            assert_eq!(shortcut.mods, Modifiers::SUPER);
+            assert_eq!(shortcut.key, Code::Comma);
+            assert_eq!(shortcut, accelerator_for("Cmd+,").unwrap());
+        }
     }
 
     #[test]

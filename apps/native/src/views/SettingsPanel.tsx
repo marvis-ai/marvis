@@ -28,7 +28,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import { Button, ShieldAlert, X } from '@marvis/ui';
+import { ShieldAlert, X } from '@marvis/ui';
 import {
   keystoreLock,
   keystoreRemoveKey,
@@ -73,7 +73,7 @@ const PROVIDERS: ProviderDef[] = [
   { id: 'ollama', label: 'Ollama', local: true },
 ];
 
-export default function SettingsPanel() {
+const SettingsPanel = () => {
   const [status, setStatus] = useState<KeystoreStatus | null>(null);
   const [selected, setSelected] = useState<ModelSelection | null>(null);
   const [models, setModels] = useState<Record<string, string[]>>({});
@@ -256,7 +256,7 @@ export default function SettingsPanel() {
   if (bootError) {
     return (
       <div className='p-1'>
-        <div className='flex items-center justify-center rounded-2xl border border-border bg-card/90 px-3 py-6 shadow-lg backdrop-blur'>
+        <div className='mv-mini-panel items-center justify-center px-3 py-6'>
           <RetryCard onRetry={() => void bootstrap()} />
         </div>
       </div>
@@ -268,38 +268,35 @@ export default function SettingsPanel() {
       <div
         ref={panelRef}
         style={{ maxHeight: PANEL_MAX }}
-        className='flex flex-col overflow-hidden rounded-2xl border border-border bg-card/90 shadow-lg backdrop-blur'>
-        <header className='flex items-center gap-1 border-b border-border px-3 py-2'>
-          <p className='min-w-0 flex-1 text-xs leading-5 font-medium text-foreground'>
-            Settings
-          </p>
-          <Button
+        className='mv-mini-panel'>
+        <header className='mv-mini-head'>
+          <p className='grow'>Settings</p>
+          <button
             type='button'
-            size='icon-xs'
-            variant='ghost'
+            className='mv-icon-btn'
             title='Close'
-            className='-mt-0.5 shrink-0 text-muted-foreground'
+            aria-label='Close'
             onClick={hide}>
             <X />
-          </Button>
+          </button>
         </header>
 
         {status === null ? (
-          <p className='px-3 py-3 text-xs text-muted-foreground'>Loading…</p>
+          <p className='mv-mini-notice'>Loading…</p>
         ) : status.state !== 'Unlocked' ? (
           // Unlock UX belongs to the bar — this is only a pointer.
-          <div className='flex items-center gap-2 px-3 py-3'>
-            <ShieldAlert className='size-4 shrink-0 text-muted-foreground' />
-            <p className='min-w-0 flex-1 text-xs text-muted-foreground'>
+          <div className='mv-mini-notice'>
+            <ShieldAlert />
+            <p className='grow'>
               Keystore {status.state === 'Unset' ? 'not set up yet' : 'locked'}{' '}
               — unlock in the bar.
             </p>
-            <Button
-              size='xs'
-              variant='outline'
+            <button
+              type='button'
+              className='mv-btn mv-btn-outline'
               onClick={hide}>
               Hide
-            </Button>
+            </button>
           </div>
         ) : (
           <div className='min-h-0 flex-1 overflow-y-auto'>
@@ -310,39 +307,29 @@ export default function SettingsPanel() {
               return (
                 <div
                   key={p.id}
-                  className='border-b border-border px-3 py-2'>
-                  <div className='flex items-baseline justify-between gap-2'>
-                    <span className='text-xs font-medium text-foreground'>
-                      {p.label}
-                    </span>
+                  className='mv-prov'>
+                  <div className='mv-prov-head'>
+                    <span className='p-name'>{p.label}</span>
                     {p.local ? (
-                      <span className='text-[10px] text-muted-foreground'>
-                        local · no key needed
-                      </span>
+                      <span className='p-state'>local · no key needed</span>
                     ) : masked ? (
-                      <span className='flex shrink-0 items-center gap-1'>
-                        <span className='text-[10px] text-muted-foreground'>
-                          {masked}
-                        </span>
-                        <Button
+                      <span className='p-state set'>
+                        {masked}
+                        <button
                           type='button'
-                          size='xs'
-                          variant='link'
-                          className='h-auto px-0.5 text-[10px]'
+                          className='mv-btn mv-btn-link'
                           disabled={busy}
                           onClick={() => void removeKey(p.id)}>
                           Remove
-                        </Button>
+                        </button>
                       </span>
                     ) : (
-                      <span className='text-[10px] text-muted-foreground'>
-                        not set
-                      </span>
+                      <span className='p-state'>not set</span>
                     )}
                   </div>
 
                   {!p.local && (
-                    <div className='mt-1.5 flex items-center gap-1'>
+                    <div className='key-row'>
                       <input
                         type='password'
                         autoComplete='off'
@@ -356,28 +343,26 @@ export default function SettingsPanel() {
                           }
                         }}
                         placeholder={masked ? 'Replace key' : 'API key'}
-                        className='h-6 min-w-0 flex-1 rounded-md border border-border bg-input/30 px-2 text-xs text-foreground outline-none placeholder:text-muted-foreground focus:border-ring'
+                        aria-label={`${p.label} API key`}
+                        className='key-input'
                       />
-                      <Button
+                      <button
                         type='button'
-                        size='xs'
+                        className='mv-btn mv-btn-primary'
                         disabled={busy || !(inputs[p.id] ?? '').trim()}
                         onClick={() => void saveKey(p.id)}>
                         {saving === p.id ? 'Saving…' : 'Save'}
-                      </Button>
+                      </button>
                     </div>
                   )}
-                  {rowError && (
-                    <p className='mt-1 text-[10px] leading-3 break-words text-destructive'>
-                      {rowError}
-                    </p>
-                  )}
+                  {rowError && <p className='prov-err'>{rowError}</p>}
 
                   <select
                     value={selected?.provider === p.id ? selected.model : ''}
                     disabled={busy || opts.length === 0}
                     onChange={(e) => chooseModel(p.id, e.target.value)}
-                    className='mt-1.5 h-6 w-full rounded-md border border-border bg-input/30 px-1.5 text-xs text-foreground outline-none focus:border-ring disabled:opacity-50'>
+                    aria-label={`${p.label} model`}
+                    className='model-sel'>
                     <option value=''>
                       {opts.length === 0 ? 'No models found' : 'Select model'}
                     </option>
@@ -390,7 +375,7 @@ export default function SettingsPanel() {
                     ))}
                   </select>
                   {p.id === 'ollama' && opts.length === 0 && (
-                    <p className='mt-1 text-[10px] leading-3 text-muted-foreground'>
+                    <p className='prov-note'>
                       No models — is the Ollama daemon running?
                     </p>
                   )}
@@ -399,27 +384,27 @@ export default function SettingsPanel() {
             })}
 
             {/* STT, not an LLM provider — static placeholder until Phase 2. */}
-            <div className='flex items-baseline justify-between gap-2 border-b border-border px-3 py-2 opacity-60'>
-              <span className='text-xs font-medium text-foreground'>
-                Deepgram
-              </span>
-              <span className='text-[10px] text-muted-foreground'>Phase 2</span>
+            <div className='mv-prov dimmed'>
+              <div className='mv-prov-head'>
+                <span className='p-name'>Deepgram</span>
+                <span className='p-state'>Phase 2</span>
+              </div>
             </div>
 
-            <div className='px-3 py-2'>
-              <Button
+            <div className='mv-mini-foot'>
+              <button
                 type='button'
-                size='xs'
-                variant='outline'
-                className='w-full'
+                className='mv-mini-btn'
                 disabled={busy}
                 onClick={() => void lock()}>
                 {locking ? 'Locking…' : 'Lock keys'}
-              </Button>
+              </button>
             </div>
           </div>
         )}
       </div>
     </div>
   );
-}
+};
+
+export default SettingsPanel;

@@ -1,22 +1,27 @@
 /**
- * `?view=listen` — meeting listen panel. Phase 2 fills this in; for now
- * it renders the translucent panel chrome so the window isn't blank.
+ * `?view=listen` — the ambient-transcript panel. Listen is Phase 2
+ * (no `listen_*` commands exist yet), so this renders the spec's
+ * waveform idiom muted and still: motion is state, and a dead waveform
+ * animating would lie about being live.
  */
-import { useEffect } from 'react';
-import { Mic } from '@marvis/ui';
-
-export default function ListenPanel() {
-  useEffect(() => {
-    document.body.classList.add('listen');
-    return () => document.body.classList.remove('listen');
-  }, []);
-
+const ListenPanel = () => {
   return (
-    <div className='h-full p-1'>
-      <div className='flex h-full flex-col items-center justify-center gap-1.5 rounded-2xl border border-border bg-card/90 text-xs text-muted-foreground shadow-lg backdrop-blur'>
-        <Mic className='size-4' />
-        <span>Listen arrives in Phase 2</span>
+    <div className='p-1'>
+      <div className='mv-panel items-center justify-center gap-2 px-4 py-6'>
+        <span
+          className='mv-wave'
+          aria-hidden>
+          <i />
+          <i />
+          <i />
+          <i />
+          <i />
+        </span>
+        <p className='mv-empty'>Listen arrives in Phase 2</p>
+        <span className='mv-chip'>deepgram · stt</span>
       </div>
     </div>
   );
-}
+};
+
+export default ListenPanel;

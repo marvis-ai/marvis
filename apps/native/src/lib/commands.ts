@@ -146,6 +146,9 @@ export const modelListAvailable = (provider: string) =>
 /** Fire-and-forget: returns after pre-flight; tokens stream as `ask:*`. */
 export const askSend = (text: string) => invoke<void>('ask_send', { text });
 
+/** The bar's camera affordance — same screen-only ask as `Cmd+Shift+S`. */
+export const askSendScreenOnly = () => invoke<void>('ask_send_screen_only');
+
 export const askClose = () => invoke<void>('ask_close');
 
 // ---------------------------------------------------------------------------
@@ -154,6 +157,31 @@ export const askClose = () => invoke<void>('ask_close');
 
 export const windowToggleAll = () => invoke<void>('window_toggle_all');
 
+// ---------------------------------------------------------------------------
+// alert toast
+// ---------------------------------------------------------------------------
+
+/**
+ * `alert_show` arg / `alert:show` payload. `action` is the recovery
+ * affordance the toast renders as a button — only `'reset'` exists
+ * (`keystore_reset`); omit it for informational alerts, which
+ * self-dismiss.
+ */
+export interface AlertPayload {
+  message: string;
+  action?: 'reset' | null;
+}
+
+/** Raise the toast — the bar's only error surface (the pill has no room). */
+export const alertShow = (message: string, action?: 'reset') =>
+  invoke<void>('alert_show', { message, action: action ?? null });
+
+/** The live payload, or `null` — read on mount in case the emit raced. */
+export const alertCurrent = () => invoke<AlertPayload | null>('alert_current');
+
+export const alertDismiss = () => invoke<void>('alert_dismiss');
+
+/** Same entry point as `Cmd+,` and the tray's Settings item. */
 export const windowShowSettings = () => invoke<void>('window_show_settings');
 
 export const windowHideSettings = () => invoke<void>('window_hide_settings');

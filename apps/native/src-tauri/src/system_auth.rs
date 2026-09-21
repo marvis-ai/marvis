@@ -175,8 +175,8 @@ impl SystemAuthDekProvider {
                 self.choose(Backend::KeychainAcl);
                 Ok(dek)
             }
-            Err(DekError::AclUnavailable(status)) => {
-                log::warn!("keystore: ACL keychain unusable ({status}); falling back to LA gate");
+            Err(e) if should_fall_back(&e, || self.item_exists(KEYCHAIN_ACCOUNT_FALLBACK)) => {
+                log::warn!("keystore: ACL keychain unusable ({e}); falling back to LA gate");
                 self.choose(Backend::LaGate);
                 la()
             }
@@ -350,6 +350,27 @@ impl SystemAuthDekProvider {
         }
     }
 
+    /// Does a keychain item exist for `account`? Presence only — no
+    /// `kSecReturnData`, so neither the ACL nor the LA gate is engaged
+    /// and no prompt can appear (and no key material is read).
+    fn item_exists(&self, account: &str) -> bool {
+        // SAFETY: same contract as `acl_get`, minus the out-pointer —
+        // without `kSecReturnData` the call only reports a match.
+        let status = unsafe {
+            let query = CFDictionary::from_CFType_pairs(&[
+                (sec_str(kSecClass), sec_str(kSecClassGenericPassword)),
+                (
+                    sec_str(kSecAttrService),
+                    CFString::new(KEYCHAIN_SERVICE).as_CFType(),
+                ),
+                (sec_str(kSecAttrAccount), CFString::new(account).as_CFType()),
+                (sec_str(kSecMatchLimit), sec_str(kSecMatchLimitOne)),
+            ]);
+            SecItemCopyMatching(query.as_concrete_TypeRef(), ptr::null_mut())
+        };
+        status == 0
+    }
+
     /// `SecItemAdd` of a plain item pinned to this device.
     fn add_plain_item(&self, dek: &[u8; DEK_LEN]) -> Result<(), DekError> {
         let data = CFData::from_buffer(dek);
@@ -514,6 +535,24 @@ fn acl_env_failure(status: OSStatus) -> bool {
     status == ERR_SEC_MISSING_ENTITLEMENT || status == ERR_SEC_INTERACTION_NOT_ALLOWED
 }
 
+/// Should an ACL-path failure be retried on the `LaGate` backend?
+///
+/// - `AclUnavailable`: the environment can't do ACL ops at all.
+/// - `Missing` **and** a fallback item exists: a previous run of this
+///   (unsigned) build wrote the LA-gated item, so the ACL account is
+///   legitimately empty. Without this the first relaunch after a dev
+///   first-run reports "keystore key missing — reset required" even
+///   though the DEK is sitting in the fallback account.
+///
+/// `fallback_exists` is lazy — the keychain probe only runs for `Missing`.
+fn should_fall_back(err: &DekError, fallback_exists: impl Fn() -> bool) -> bool {
+    match err {
+        DekError::AclUnavailable(_) => true,
+        DekError::Missing => fallback_exists(),
+        _ => false,
+    }
+}
+
 /// Extract a 32-byte DEK from a `SecItemCopyMatching` result (a
 /// `CFDataRef` under the Create rule — we own it).
 ///
@@ -568,6 +607,33 @@ mod tests {
         assert!(!acl_env_failure(errSecItemNotFound));
         assert!(!acl_env_failure(errSecDuplicateItem));
         assert!(!acl_env_failure(0));
+    }
+
+    /// A missing ACL item must route to the LA gate when the fallback
+    /// item exists — the relaunch path of an unsigned build, whose DEK
+    /// lives in `keys-dek-fallback`. Reporting `Missing` there is the
+    /// bogus "reset required" this predicate exists to prevent.
+    #[test]
+    fn missing_acl_item_falls_back_when_fallback_item_exists() {
+        assert!(should_fall_back(&DekError::Missing, || true));
+        assert!(!should_fall_back(&DekError::Missing, || false));
+    }
+
+    /// The probe must stay lazy: only `Missing` may cost a keychain call.
+    #[test]
+    fn fallback_probe_only_runs_for_missing() {
+        let probed = std::cell::Cell::new(0);
+        let probe = || {
+            probed.set(probed.get() + 1);
+            true
+        };
+        assert!(should_fall_back(&DekError::AclUnavailable(-34018), &probe));
+        assert!(!should_fall_back(&DekError::Canceled, &probe));
+        assert!(!should_fall_back(&DekError::Corrupt, &probe));
+        assert!(!should_fall_back(&DekError::AuthFailed(-2), &probe));
+        assert_eq!(probed.get(), 0);
+        assert!(should_fall_back(&DekError::Missing, &probe));
+        assert_eq!(probed.get(), 1);
     }
 
     // NOTE: the Keychain/LA paths can't be exercised headless (they need

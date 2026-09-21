@@ -5,4 +5,4 @@ export { ThemeProvider, useTheme } from "./components/theme-provider"
 // Icon surface for workspace consumers (lucide-react is a dep of this
 // package, so apps import glyphs through the barrel instead of relying
 // on undeclared/hoisted node_modules).
-export { Mic, Settings, ShieldAlert, X } from "lucide-react"
+export { ArrowLeft, Camera, Mic, Settings, ShieldAlert, X } from "lucide-react"

@@ -24,6 +24,9 @@
 //!   mutation (init/unlock/lock/set_key/remove_key).
 //! - `ask:scroll` `{"dir": "up"|"down"}` — to the `ask` window only,
 //!   fired by the scroll hotkeys.
+//! - `alert:show` `{"message": String, "action": "reset"|null}` — to the
+//!   `alert` window only; the toast that replaced the bar's inline error
+//!   row (`alert_current` re-reads it, `alert_dismiss` clears it).
 
 mod ask;
 mod capture;
@@ -37,6 +40,7 @@ mod permissions;
 mod prompts;
 mod storage;
 mod system_auth;
+mod tray;
 mod windows;
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -106,6 +110,11 @@ pub struct AppState {
     /// section or two overlapping transitions can interleave (stale
     /// emit landing last, or hotkeys/capture from a dead gate state).
     gate_transition: Mutex<()>,
+    /// Payload of the alert toast currently on screen (`None` when
+    /// dismissed). Kept server-side so the toast can re-read it on mount
+    /// via `alert_current` — an `alert:show` emit that races the
+    /// webview's listener would otherwise be lost.
+    alert: Mutex<Option<serde_json::Value>>,
     click_through: AtomicBool,
 }
 
@@ -143,6 +152,7 @@ impl AppState {
             hotkeys: Mutex::new(None),
             gate: Mutex::new(Gate::NeedsUnlock),
             gate_transition: Mutex::new(()),
+            alert: Mutex::new(None),
             click_through: AtomicBool::new(false),
         }
     }
@@ -299,6 +309,7 @@ fn hotkey_dispatch(app: &AppHandle) -> impl Fn(hotkey::Action) + Send + Sync + '
             }
             hotkey::Action::MoveToDisplay(n) => state.pool.lock().move_bar_to_display(n),
             hotkey::Action::SnapEdge(dir) => state.pool.lock().snap_edge(dir),
+            hotkey::Action::ShowSettings => show_settings(&app),
         }
     }
 }
@@ -339,6 +350,19 @@ fn deeplink_dispatch(app: &AppHandle) -> impl Fn(deeplink::Action) + Send + Sync
     }
 }
 
+/// Map tray menu ids onto pool/app calls — same re-resolve-per-event
+/// shape as [`hotkey_dispatch`]. `Toggle` mirrors `Cmd+/`
+/// (`window_toggle_all`), `Settings` mirrors `Cmd+,`; `Quit` is
+/// `app.exit(0)`.
+fn tray_menu_dispatch() -> impl Fn(&AppHandle, tauri::menu::MenuEvent) + Send + Sync + 'static {
+    move |app, event| match event.id().as_ref() {
+        tray::MENU_TOGGLE => app.state::<AppState>().pool.lock().toggle_all(),
+        tray::MENU_SETTINGS => show_settings(app),
+        tray::MENU_QUIT => app.exit(0),
+        _ => {}
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Shared payload/validation helpers
 // ---------------------------------------------------------------------------
@@ -353,6 +377,38 @@ fn keystore_status_payload(keystore: &Keystore) -> serde_json::Value {
         KeystoreState::Unlocked(_) => "Unlocked",
     };
     json!({ "state": state, "keys": keystore.masked_status() })
+}
+
+/// Raise the alert toast with `message`.
+///
+/// The toast is a window of its own because the bar is a fixed 353×47
+/// pill — the old inline error row squeezed the pill's content. `action`
+/// is an optional recovery affordance the toast renders as a button
+/// (`"reset"` → `keystore_reset`); `None` means informational, and the
+/// toast auto-dismisses.
+fn show_alert(app: &AppHandle, message: &str, action: Option<&str>) {
+    let state = app.state::<AppState>();
+    let payload = json!({ "message": message, "action": action });
+    *state.alert.lock() = Some(payload.clone());
+    let _ = app.emit_to(windows::ALERT_LABEL, "alert:show", payload);
+    state.pool.lock().show_alert(action.is_some());
+}
+
+/// Surface the settings panel, or explain why it can't be: panels only
+/// exist once the gate has opened (`enter_main`), so `Cmd+,` and the tray
+/// item would otherwise do nothing while locked.
+fn show_settings(app: &AppHandle) {
+    let state = app.state::<AppState>();
+    let mut pool = state.pool.lock();
+    if pool.panel_window(Panel::Settings).is_none() {
+        drop(pool);
+        show_alert(app, "Unlock Marvis to open settings.", None);
+        return;
+    }
+    pool.show(Panel::Settings);
+    if let Some(win) = pool.panel_window(Panel::Settings) {
+        let _ = win.set_focus();
+    }
 }
 
 /// Broadcast the (masked) keystore status after any mutation.
@@ -631,6 +687,18 @@ fn ask_close(state: State<'_, AppState>) {
     state.ask.close(&state.pool);
 }
 
+/// The bar's camera affordance — same screen-only ask as `Cmd+Shift+S`
+/// (fixed prompt, frame required). Same gate guard as `ask_send`.
+#[tauri::command]
+fn ask_send_screen_only(app: AppHandle) {
+    let state = app.state::<AppState>();
+    if *state.gate.lock() != Gate::Main {
+        log::warn!("ask_send_screen_only dropped while gate != Main");
+        return;
+    }
+    state.ask.send_screen_only(&app, &state.deps());
+}
+
 /// Phase-2 placeholder on the command surface — the listen pipeline
 /// (dual STT + live summary) isn't implemented yet.
 #[tauri::command]
@@ -648,19 +716,44 @@ fn window_toggle_all(state: State<'_, AppState>) {
     state.pool.lock().toggle_all();
 }
 
+/// Same entry point as `Cmd+,` and the tray's Settings item.
 #[tauri::command]
-fn window_show_settings(state: State<'_, AppState>) {
-    let pool = state.pool.lock();
-    let mut pool = pool;
-    pool.show(Panel::Settings);
-    if let Some(win) = pool.panel_window(Panel::Settings) {
-        let _ = win.set_focus();
-    }
+fn window_show_settings(app: AppHandle) {
+    show_settings(&app);
 }
 
 #[tauri::command]
 fn window_hide_settings(state: State<'_, AppState>) {
     state.pool.lock().hide(Panel::Settings);
+}
+
+// ---------------------------------------------------------------------------
+// Commands — alert toast
+// ---------------------------------------------------------------------------
+
+/// Raise the alert toast — the webview's only error surface (the bar
+/// pill has no room to render one). `action` is `"reset"` for keystore
+/// failures the user can recover from, else omitted.
+#[tauri::command]
+fn alert_show(app: AppHandle, message: String, action: Option<String>) {
+    show_alert(&app, &message, action.as_deref());
+}
+
+/// The live alert payload, or `null` — read by the toast on mount so a
+/// show that raced its listener still renders.
+#[tauri::command]
+fn alert_current(state: State<'_, AppState>) -> serde_json::Value {
+    state
+        .alert
+        .lock()
+        .clone()
+        .unwrap_or(serde_json::Value::Null)
+}
+
+#[tauri::command]
+fn alert_dismiss(state: State<'_, AppState>) {
+    *state.alert.lock() = None;
+    state.pool.lock().hide_alert();
 }
 
 /// `name` is the window label (`"ask"|"listen"|"settings"`); `height` is
@@ -819,7 +912,6 @@ pub fn run() {
         // Required before `app.global_shortcut()` (hotkey registration).
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_liquid_glass::init())
         .setup(|app| {
             let handle = app.handle();
             // `~/.marvis` must exist before Db/keystore touch it.
@@ -841,9 +933,15 @@ pub fn run() {
                 hotkeys: Mutex::new(None),
                 gate: Mutex::new(Gate::NeedsUnlock),
                 gate_transition: Mutex::new(()),
+                alert: Mutex::new(None),
                 click_through: AtomicBool::new(false),
             });
             deeplink::init(handle, deeplink_dispatch(handle))?;
+            // Warn-and-continue like hotkeys: a missing tray must never
+            // wedge startup.
+            if let Err(e) = tray::init(handle, tray_menu_dispatch()) {
+                log::warn!("tray init failed: {e}");
+            }
             // Gated limited set until the gate reaches `Main`; kept in
             // state so the swap contract can unregister it on upgrade.
             let binds = handle.state::<AppState>().config.lock().hotkeys.clone();
@@ -872,7 +970,11 @@ pub fn run() {
             model_list_available,
             ask_send,
             ask_close,
+            ask_send_screen_only,
             listen_stub,
+            alert_show,
+            alert_current,
+            alert_dismiss,
             window_toggle_all,
             window_show_settings,
             window_hide_settings,

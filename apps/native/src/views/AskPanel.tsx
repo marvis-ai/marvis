@@ -23,11 +23,13 @@ import { useEffect, useRef, useState } from 'react';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { Button, X } from '@marvis/ui';
+import { Settings, X } from '@marvis/ui';
 import {
   askClose,
+  modelGetSelected,
   windowAdjustHeight,
   windowShowSettings,
+  type ModelSelection,
 } from '../lib/commands';
 import {
   EV_ASK_CHUNK,
@@ -59,10 +61,11 @@ const HEIGHT_MS = 150;
 /** Distance from the bottom that still counts as pinned for autoscroll. */
 const PIN_PX = 24;
 
-export default function AskPanel() {
+const AskPanel = () => {
   const [phase, setPhase] = useState<AskPhase>('idle');
   const [question, setQuestion] = useState('');
   const [response, setResponse] = useState('');
+  const [model, setModel] = useState<ModelSelection | null>(null);
   const [error, setError] = useState<{
     message: string;
     needsUnlock: boolean;
@@ -75,6 +78,13 @@ export default function AskPanel() {
   useEffect(() => {
     document.body.classList.add('ask');
     return () => document.body.classList.remove('ask');
+  }, []);
+
+  // The model chip is honest metadata — the active provider+model pair.
+  useEffect(() => {
+    void modelGetSelected()
+      .then(setModel)
+      .catch(() => {});
   }, []);
 
   // Report content height: leading + trailing throttle, only on a real
@@ -167,50 +177,55 @@ export default function AskPanel() {
       <div
         ref={panelRef}
         style={{ maxHeight: PANEL_MAX }}
-        className='flex flex-col overflow-hidden rounded-2xl border border-border bg-card/90 shadow-lg backdrop-blur'>
-        <header className='flex items-start gap-1 border-b border-border px-3 py-2'>
+        className='mv-panel'>
+        <header className='mv-panel-head'>
           <p
-            className='min-w-0 flex-1 select-text text-xs leading-5 font-medium break-words whitespace-pre-wrap text-foreground line-clamp-2'
+            className='mv-panel-q'
             title={question}>
             {question || 'Ask Marvis'}
           </p>
-          <Button
+          <button
             type='button'
-            size='icon-xs'
-            variant='ghost'
+            className='mv-icon-btn -mt-0.5 shrink-0'
+            title='Settings'
+            aria-label='Settings'
+            onClick={() => void windowShowSettings().catch(() => {})}>
+            <Settings />
+          </button>
+          <button
+            type='button'
+            className='mv-icon-btn -mt-0.5 shrink-0'
             title='Close'
-            className='-mt-0.5 shrink-0 text-muted-foreground'
+            aria-label='Close'
             onClick={() => void askClose().catch(() => {})}>
             <X />
-          </Button>
+          </button>
         </header>
         {error && (
-          <div className='flex items-center gap-2 border-b border-border bg-destructive/10 px-3 py-2'>
-            <span className='min-w-0 flex-1 text-xs break-words text-destructive'>
-              {error.message}
-            </span>
+          <div className='mv-panel-err'>
+            <span className='err-msg'>{error.message}</span>
             {error.needsUnlock && (
-              <Button
-                size='xs'
-                variant='outline'
+              <button
+                type='button'
+                className='mv-btn mv-btn-outline'
                 onClick={() => void windowShowSettings().catch(() => {})}>
                 Unlock in settings
-              </Button>
+              </button>
             )}
           </div>
         )}
         <div
           ref={scrollRef}
           onScroll={onScroll}
-          className='min-h-0 flex-1 overflow-y-auto px-3 py-2 select-text'>
+          className='mv-panel-body'>
           {phase === 'loading' && (
-            <div className='flex items-center gap-2 py-0.5 text-xs text-muted-foreground'>
-              <span className='size-3 animate-spin rounded-full border-2 border-muted-foreground/30 border-t-foreground' />
+            <div className='mv-thinking'>
+              <span className='mv-spin' />
               Thinking…
             </div>
           )}
           {response && (
-            <div className='ask-md text-sm text-foreground'>
+            <div className='ask-md'>
               <ReactMarkdown
                 remarkPlugins={[remarkGfm]}
                 disallowedElements={['img']}
@@ -230,13 +245,21 @@ export default function AskPanel() {
               </ReactMarkdown>
             </div>
           )}
+          {phase === 'streaming' && <span className='mv-caret' />}
           {phase === 'idle' && !response && !error && (
-            <p className='text-xs text-muted-foreground'>
-              Ask Marvis from the bar.
-            </p>
+            <p className='mv-empty'>Ask Marvis from the bar.</p>
+          )}
+          {phase === 'idle' && response && model && (
+            <div className='mv-chiprow'>
+              <span className='mv-chip'>
+                {model.model} · {model.provider}
+              </span>
+            </div>
           )}
         </div>
       </div>
     </div>
   );
-}
+};
+
+export default AskPanel;

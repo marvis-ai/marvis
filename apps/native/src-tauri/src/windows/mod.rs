@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 use tauri::{
-    AppHandle, LogicalPosition, LogicalSize, Manager, Monitor, WebviewUrl, WebviewWindow,
+    AppHandle, LogicalPosition, LogicalSize, Monitor, WebviewUrl, WebviewWindow,
     WebviewWindowBuilder,
 };
 
@@ -120,6 +120,16 @@ pub enum Dir {
 
 const BAR_W: f64 = 353.0;
 const BAR_H: f64 = 47.0;
+/// Transient alert toast — its own window because the bar is a fixed
+/// 353×47 pill with no room for an error row (the old inline row
+/// squeezed the pill's content). Label `alert`, `?view=alert`.
+pub const ALERT_LABEL: &str = "alert";
+const ALERT_W: f64 = 340.0;
+/// The toast has exactly two layouts, so its height is picked here rather
+/// than reported back like a panel's: message only, or message + the
+/// action row.
+const ALERT_H: f64 = 100.0;
+const ALERT_H_ACTION: f64 = 132.0;
 /// Distance below the work-area top for the default bar position.
 const BAR_TOP_OFFSET: f64 = 21.0;
 /// `Cmd+Arrow` step size.
@@ -137,8 +147,6 @@ const DEFAULT_WORK: Rect = Rect {
 };
 /// Show/restack animation duration (spec: ~200 ms; ~180 ms reads well).
 const ANIM_DUR: std::time::Duration = std::time::Duration::from_millis(180);
-/// Liquid-glass corner radius — spec elides the exact value.
-const GLASS_CORNER_RADIUS: f64 = 16.0;
 
 /// Owns the bar + feature-panel windows and orchestrates their layout.
 ///
@@ -146,6 +154,11 @@ const GLASS_CORNER_RADIUS: f64 = 16.0;
 /// `&self`/`&mut self`.
 pub struct WindowPool {
     bar: Option<WebviewWindow>,
+    /// Alert toast — built with the bar (not a [`Panel`]: it never joins
+    /// the stacking row, `toggle_all`, or the gate's panel lifecycle, and
+    /// it must exist before the keystore is unlocked to report unlock
+    /// failures).
+    alert: Option<WebviewWindow>,
     panels: BTreeMap<Panel, WebviewWindow>,
     visible: BTreeSet<Panel>,
     /// Panels visible before the last `toggle_all` hide — restored on show.
@@ -165,6 +178,7 @@ impl WindowPool {
     pub fn create_bar_only(app: &AppHandle) -> anyhow::Result<Self> {
         let mut pool = Self {
             bar: None,
+            alert: None,
             panels: BTreeMap::new(),
             visible: BTreeSet::new(),
             remembered: BTreeSet::new(),
@@ -174,6 +188,10 @@ impl WindowPool {
         };
         let bar = build_window(app, "bar", BAR_W, BAR_H)?;
         pool.bar = Some(bar);
+        // Built (hidden) up front so its webview is loaded and listening
+        // before the first alert — an emit to a still-loading window
+        // would be dropped.
+        pool.alert = Some(build_window(app, ALERT_LABEL, ALERT_W, ALERT_H)?);
         pool.position_bar_at_startup();
         if let Some(bar) = &pool.bar {
             let _ = bar.show();
@@ -187,6 +205,7 @@ impl WindowPool {
     pub fn new_empty() -> Self {
         Self {
             bar: None,
+            alert: None,
             panels: BTreeMap::new(),
             visible: BTreeSet::new(),
             remembered: BTreeSet::new(),
@@ -258,6 +277,44 @@ impl WindowPool {
         }
     }
 
+    /// Slide the alert toast in, centered under the bar. Deliberately
+    /// overlaps whatever panels are open and is shown last so it lands
+    /// on top of them; it is never focused, so a bar/panel field keeps
+    /// its focus (clicking the toast's buttons focuses it as usual).
+    /// `with_action` picks the taller layout (message + action row).
+    pub fn show_alert(&mut self, with_action: bool) {
+        let Some(win) = self.alert.clone() else {
+            log::warn!("windows::show_alert: alert window not created");
+            return;
+        };
+        self.reclamp();
+        let target = clamp_to_work_area(
+            Rect {
+                x: self.bar_rect.center_x() - ALERT_W / 2.0,
+                y: self.bar_rect.bottom() + layout::PANEL_PAD,
+                w: ALERT_W,
+                h: if with_action { ALERT_H_ACTION } else { ALERT_H },
+            },
+            self.bar_work_area(),
+        );
+        set_rect(
+            &win,
+            Rect {
+                y: target.y - SHOW_OFFSET_Y,
+                ..target
+            },
+        );
+        let _ = win.show();
+        let _ = win.set_always_on_top(true);
+        movement::animate(&win, target, ANIM_DUR);
+    }
+
+    pub fn hide_alert(&self) {
+        if let Some(win) = &self.alert {
+            let _ = win.hide();
+        }
+    }
+
     /// Hide `panel` and restack the remaining visible panels.
     pub fn hide(&mut self, panel: Panel) {
         self.reclamp();
@@ -297,6 +354,9 @@ impl WindowPool {
         self.click_through = on;
         if let Some(bar) = &self.bar {
             let _ = bar.set_ignore_cursor_events(on);
+        }
+        if let Some(alert) = &self.alert {
+            let _ = alert.set_ignore_cursor_events(on);
         }
         for w in self.panels.values() {
             let _ = w.set_ignore_cursor_events(on);
@@ -543,8 +603,8 @@ impl WindowPool {
 
 /// Shared builder flags for every Marvis window (spec): frameless,
 /// transparent, always-on-top, non-resizable, skip-taskbar, no shadow —
-/// then `set_visible_on_all_workspaces`, `set_content_protected`, and the
-/// liquid-glass effect applied post-build.
+/// then `set_visible_on_all_workspaces` and `set_content_protected`.
+/// The frosted look lives in the webview's `backdrop-filter` CSS.
 fn build_window(app: &AppHandle, label: &str, w: f64, h: f64) -> anyhow::Result<WebviewWindow> {
     let url = WebviewUrl::App(format!("index.html?view={label}").into());
     let win = WebviewWindowBuilder::new(app, label, url)
@@ -564,27 +624,7 @@ fn build_window(app: &AppHandle, label: &str, w: f64, h: f64) -> anyhow::Result<
     if let Err(e) = win.set_content_protected(true) {
         log::warn!("windows: set_content_protected failed for {label}: {e}");
     }
-    apply_glass(app, &win);
     Ok(win)
-}
-
-/// Liquid glass `Bubbles` from Rust at creation (spec). Cosmetic: any error —
-/// including the plugin not being registered yet — is logged and ignored.
-/// On macOS <26 the plugin falls back to `NSVisualEffectView` internally.
-fn apply_glass(app: &AppHandle, win: &WebviewWindow) {
-    use tauri_plugin_liquid_glass::{GlassMaterialVariant, LiquidGlassConfig};
-    let Some(glass) = app.try_state::<tauri_plugin_liquid_glass::LiquidGlass<tauri::Wry>>() else {
-        log::warn!("windows: liquid-glass plugin not registered; skipping effect");
-        return;
-    };
-    let config = LiquidGlassConfig {
-        variant: GlassMaterialVariant::Bubbles,
-        corner_radius: GLASS_CORNER_RADIUS,
-        ..Default::default()
-    };
-    if let Err(e) = glass.set_effect(win, config) {
-        log::warn!("windows: liquid-glass set_effect failed: {e}");
-    }
 }
 
 /// A monitor's work area in LOGICAL pixels (`work_area()` returns physical).

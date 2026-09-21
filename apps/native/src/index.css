@@ -4,12 +4,868 @@
    ui package so its component classes (button variants, etc.) generate. */
 @source "../../../packages/ui/src";
 
+/* ─── Marvis overlay tokens (DESIGN.md §2) ────────────────────────────
+   Spec names verbatim; the ui package's semantic slots are remapped onto
+   them so shared pieces (focus rings, destructive, muted text) resolve
+   to the overlay palette. `--muted`/`--accent` keep the SPEC meaning
+   (muted text / deep slate) — nothing here uses them as surfaces. */
+:root {
+  --bg: oklch(0.968 0.003 95);
+  --surface: oklch(1 0 0);
+  --fg: oklch(0.148 0.004 228.8);
+  --muted: oklch(0.56 0.021 213.5);
+  --border: oklch(0.925 0.005 214.3);
+  --accent: oklch(0.53 0.08 237); /* deep slate #3a7294 */
+  --primary: var(--accent);
+  --primary-fg: oklch(0.97 0.008 237);
+  --destructive: oklch(0.577 0.245 27.3);
+  --fg-2: oklch(0.28 0.008 60);
+  --accent-soft: color-mix(in oklch, var(--accent) 14%, transparent);
+  --accent-text: color-mix(in oklch, var(--accent) 62%, black);
+  --fg-soft: color-mix(in oklch, var(--fg) 5%, transparent);
+  --input-well: color-mix(in oklch, var(--fg) 4%, transparent);
+  --focus-ring: 0 0 0 3px color-mix(in oklch, var(--accent) 45%, transparent);
+
+  --ease: cubic-bezier(0.2, 0, 0, 1);
+  --motion-fast: 150ms;
+  --motion-base: 200ms;
+  --font-mono: ui-monospace, 'SF Mono', Menlo, monospace;
+
+  /* semantic remap for @marvis/ui internals and the ask-md sheet */
+  --background: var(--bg);
+  --foreground: var(--fg);
+  --card: var(--surface);
+  --card-foreground: var(--fg);
+  --popover: var(--surface);
+  --popover-foreground: var(--fg);
+  --primary-foreground: var(--primary-fg);
+  --muted-foreground: var(--muted);
+  --secondary: color-mix(in oklch, var(--fg) 6%, var(--surface));
+  --secondary-foreground: var(--fg);
+  --accent-foreground: var(--accent-text);
+  --input: var(--input-well);
+  --ring: var(--accent);
+}
+
+/* Dark: follows macOS (spec's Appearance default is Auto). `main.tsx`
+   mirrors this onto `.dark` for the ui package's dark: utilities. */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: oklch(0.185 0.012 237);
+    --surface: oklch(0.245 0.016 237);
+    --fg: oklch(0.93 0.006 230);
+    --muted: oklch(0.7 0.02 230);
+    --border: oklch(0.375 0.016 235);
+    --fg-2: oklch(0.84 0.01 230);
+    --accent-soft: color-mix(in oklch, var(--accent) 26%, transparent);
+    --accent-text: color-mix(in oklch, var(--accent) 55%, white);
+    --fg-soft: color-mix(in oklch, var(--fg) 8%, transparent);
+    --input-well: color-mix(in oklch, var(--fg) 7%, transparent);
+    /* error text mixes toward white on dark */
+    --destructive: color-mix(in oklch, oklch(0.577 0.245 27.3) 75%, white);
+    --secondary: color-mix(in oklch, var(--fg) 10%, var(--surface));
+  }
+}
+
 html,
 body,
 #root {
   background: transparent;
   height: 100%;
   overflow: hidden;
+}
+body {
+  color: var(--fg);
+}
+:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+.num {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+.meta {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  color: var(--muted);
+}
+.kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  padding: 2px 6px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--fg-2);
+  background: var(--fg-soft);
+  border: 1px solid var(--border);
+  border-bottom-width: 2px;
+  border-radius: 5px;
+}
+
+/* ─── floating bar (spec §6) ─────────────────────────────────────── */
+/* The window is a fixed 353×47 transparent frame; .mv-stage centers the
+   pill and carries `data-pos` so the breath bob follows the docked edge. */
+.mv-stage {
+  height: 100%;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+.mv-bar {
+  width: 345px;
+  height: 39px;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: color-mix(in oklch, var(--surface) 80%, transparent);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  user-select: none;
+  animation: mv-breath-top 7s var(--ease) infinite;
+  transition:
+    width var(--motion-base) var(--ease),
+    border-color var(--motion-base) var(--ease),
+    box-shadow var(--motion-base) var(--ease);
+}
+.mv-bar.is-mini {
+  width: 104px;
+}
+.mv-stage[data-pos='bottom'] .mv-bar {
+  animation-name: mv-breath-bottom;
+}
+.mv-stage[data-pos='left'] .mv-bar {
+  animation-name: mv-breath-left;
+}
+.mv-stage[data-pos='right'] .mv-bar {
+  animation-name: mv-breath-right;
+}
+@keyframes mv-breath-top {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-3px);
+  }
+}
+@keyframes mv-breath-bottom {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(3px);
+  }
+}
+@keyframes mv-breath-left {
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  50% {
+    transform: translateX(-3px);
+  }
+}
+@keyframes mv-breath-right {
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  50% {
+    transform: translateX(3px);
+  }
+}
+
+.mv-bar-inner {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 6px 0 11px;
+}
+.mv-bar.is-mini .mv-bar-inner {
+  padding-inline: 7px;
+}
+.mv-bar.is-input .mv-bar-inner {
+  padding-inline: 11px;
+}
+
+/* listening ring — slate border + halo (Phase-2 state, kept in the sheet) */
+.mv-bar.is-listening {
+  border-color: color-mix(in oklch, var(--accent) 55%, var(--border));
+  box-shadow: 0 0 0 4px color-mix(in oklch, var(--accent) 16%, transparent);
+}
+.mv-bar.is-listening .mv-mic {
+  color: var(--accent-text);
+}
+
+/* the iris — Marvis' presence mark; a warm-dark pupil that breathes and
+   turns slate while listening */
+.mv-iris {
+  width: 18px;
+  height: 18px;
+  flex: none;
+  position: relative;
+  display: grid;
+  place-items: center;
+  transition:
+    transform var(--motion-base) var(--ease),
+    opacity var(--motion-fast) var(--ease);
+}
+.mv-iris::before {
+  content: '';
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: var(--fg-2);
+  animation: iris-breath 7s var(--ease) infinite;
+}
+.mv-iris::after {
+  content: '';
+  position: absolute;
+  width: 4.5px;
+  height: 4.5px;
+  border-radius: 50%;
+  background: var(--surface);
+}
+@keyframes iris-breath {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 0.9;
+  }
+  50% {
+    transform: scale(1.14);
+    opacity: 1;
+  }
+}
+.mv-bar.is-listening .mv-iris::before {
+  background: var(--accent);
+  animation: iris-listen 1.6s var(--ease) infinite;
+}
+@keyframes iris-listen {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.28);
+  }
+}
+
+/* capsule→input morph: the iris folds into a ← while the field grows —
+   both layers live in one button so the morph animates instead of
+   remounting (spec §9: class-driven, persistent DOM) */
+.mv-ask {
+  position: relative;
+}
+.mv-back {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  opacity: 0;
+  transform: rotate(-90deg) scale(0.4);
+  transition:
+    transform var(--motion-base) var(--ease) 55ms,
+    opacity var(--motion-fast) var(--ease) 55ms;
+  pointer-events: none;
+}
+.mv-back svg {
+  width: 14px;
+  height: 14px;
+}
+.mv-bar.is-input .mv-ask .mv-iris {
+  transform: scale(0.3);
+  opacity: 0;
+}
+.mv-bar.is-input .mv-ask .mv-back {
+  transform: none;
+  opacity: 1;
+}
+
+.mv-icon-btn {
+  width: 26px;
+  height: 26px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  transition:
+    background var(--motion-fast) var(--ease),
+    color var(--motion-fast) var(--ease);
+}
+.mv-icon-btn:hover:not(:disabled) {
+  background: var(--fg-soft);
+  color: var(--fg);
+}
+.mv-icon-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.mv-icon-btn svg {
+  width: 14px;
+  height: 14px;
+}
+
+.mv-input {
+  flex: 1;
+  min-width: 0;
+  align-self: stretch;
+  max-width: 320px;
+  border: 0;
+  background: transparent;
+  outline: none;
+  user-select: text; /* the pill chrome is select-none; the field isn't */
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--fg);
+  caret-color: var(--accent);
+  transition:
+    max-width var(--motion-base) var(--ease),
+    opacity var(--motion-fast) var(--ease),
+    margin var(--motion-base) var(--ease);
+}
+.mv-input::placeholder {
+  color: var(--muted);
+}
+.mv-input:focus-visible {
+  box-shadow: none; /* the pill is the focus context — no inner ring */
+}
+.mv-bar.is-mini .mv-input {
+  max-width: 0;
+  margin-inline: -6px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* the gear rides the input bar only — the 104px capsule has no room for
+   a fourth control (tray menu + Cmd+, reach settings from any state).
+   Collapsed rather than unmounted so the morph animates (spec §9). */
+.mv-gear {
+  overflow: hidden;
+  transition:
+    max-width var(--motion-base) var(--ease),
+    opacity var(--motion-fast) var(--ease),
+    margin var(--motion-base) var(--ease),
+    background var(--motion-fast) var(--ease),
+    color var(--motion-fast) var(--ease);
+}
+.mv-bar.is-mini .mv-gear {
+  max-width: 0;
+  /* absorbs the flex gap the collapsed button would still claim */
+  margin-inline: -3px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.mv-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 12px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  font-size: 11.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  transition:
+    background var(--motion-fast) var(--ease),
+    transform var(--motion-fast) var(--ease),
+    border-color var(--motion-fast) var(--ease),
+    color var(--motion-fast) var(--ease);
+}
+.mv-btn:active:not(:disabled) {
+  transform: scale(0.97);
+}
+.mv-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.mv-btn-primary {
+  background: var(--primary);
+  color: var(--primary-fg);
+}
+.mv-btn-primary:hover:not(:disabled) {
+  background: color-mix(in oklch, var(--primary) 88%, black 12%);
+}
+.mv-btn-primary:active:not(:disabled) {
+  background: color-mix(in oklch, var(--primary) 74%, black 26%);
+}
+.mv-btn-outline {
+  background: transparent;
+  border-color: var(--border);
+  color: var(--fg);
+}
+.mv-btn-outline:hover:not(:disabled) {
+  border-color: color-mix(in oklch, var(--fg) 30%, var(--border));
+}
+.mv-btn-link {
+  background: transparent;
+  color: var(--muted);
+  padding-inline: 6px;
+  height: auto;
+  font-weight: 500;
+}
+.mv-btn-link:hover:not(:disabled) {
+  color: var(--accent-text);
+  text-decoration: underline;
+}
+
+.mv-bar-label {
+  min-width: 0;
+  flex: 1;
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mv-gate-ico {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  color: var(--muted);
+  display: grid;
+  place-items: center;
+}
+.mv-gate-ico svg {
+  width: 15px;
+  height: 15px;
+}
+/* ─── alert toast (its own 340px window) ──────────────────────────── */
+/* Errors can't live in the bar: the pill is a fixed 353×47 frame, so an
+   error row squeezed its content. `?view=alert` carries them instead. */
+.mv-alert {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 9px 11px 10px;
+  border-radius: 14px;
+  border: 1px solid color-mix(in oklch, var(--destructive) 28%, var(--border));
+  background: color-mix(in oklch, var(--surface) 92%, transparent);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  box-shadow: 0 18px 40px -16px color-mix(in oklch, var(--fg) 34%, transparent);
+}
+.mv-alert-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.mv-alert-ico {
+  width: 15px;
+  height: 15px;
+  flex: none;
+  color: var(--destructive);
+}
+.mv-alert-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 12.5px;
+  font-weight: 600;
+}
+.mv-alert-msg {
+  /* 2 lines max — the window is a fixed 104px tall. */
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--muted);
+  user-select: text;
+}
+.mv-alert-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.mv-alert-hint {
+  flex: 1;
+  min-width: 0;
+  font-size: 10.5px;
+  line-height: 1.3;
+  color: var(--muted);
+}
+
+/* ─── extending panels (spec §6) ──────────────────────────────────── */
+/* Frosted card every panel window renders. `.mv-panel` = 18px radius /
+   90% fill (chatbox), `.mv-mini-panel` = 14px / 92% (quick settings). */
+.mv-panel {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: 18px;
+  border: 1px solid var(--border);
+  background: color-mix(in oklch, var(--surface) 90%, transparent);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+}
+.mv-mini-panel {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: color-mix(in oklch, var(--surface) 92%, transparent);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+}
+.mv-panel-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.mv-panel-q {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  font-weight: 550;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: break-word;
+  white-space: pre-wrap;
+  user-select: text;
+}
+.mv-panel-q .q-live {
+  color: var(--muted);
+  font-weight: 500;
+}
+.mv-panel-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 12px 14px 14px;
+  font-size: 13px;
+  line-height: 1.6;
+  user-select: text;
+}
+.mv-panel-err {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in oklch, var(--destructive) 9%, transparent);
+  font-size: 12px;
+  color: var(--destructive);
+}
+.mv-panel-err .err-msg {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: break-word;
+}
+.mv-thinking {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  padding: 2px 0;
+}
+.mv-spin {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 2px solid color-mix(in oklch, var(--muted) 30%, transparent);
+  border-top-color: var(--fg);
+  animation: mv-rotate 0.8s linear infinite;
+}
+@keyframes mv-rotate {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.mv-caret {
+  display: inline-block;
+  width: 7px;
+  height: 13px;
+  margin-left: 2px;
+  background: var(--fg);
+  vertical-align: -2px;
+  animation: caret-blink 1.05s steps(1) infinite;
+}
+@keyframes caret-blink {
+  50% {
+    opacity: 0;
+  }
+}
+.mv-chiprow {
+  display: flex;
+  gap: 6px;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
+.mv-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 3px 8px;
+  background: color-mix(in oklch, var(--surface) 60%, transparent);
+}
+.mv-chip svg {
+  width: 10px;
+  height: 10px;
+}
+.mv-empty {
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+/* listen waveform — accent bars dance only while `.is-live`; the
+   Phase-2 stub renders them muted and still */
+.mv-wave {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  height: 18px;
+}
+.mv-wave i {
+  width: 3px;
+  border-radius: 2px;
+  background: var(--muted);
+}
+.mv-wave i:nth-child(1) {
+  height: 8px;
+}
+.mv-wave i:nth-child(2) {
+  height: 14px;
+}
+.mv-wave i:nth-child(3) {
+  height: 18px;
+}
+.mv-wave i:nth-child(4) {
+  height: 12px;
+}
+.mv-wave i:nth-child(5) {
+  height: 7px;
+}
+.mv-wave.is-live i {
+  background: var(--accent);
+  animation: mv-waveform 1.1s var(--ease) infinite;
+}
+.mv-wave.is-live i:nth-child(1) {
+  animation-delay: 0s;
+}
+.mv-wave.is-live i:nth-child(2) {
+  animation-delay: 0.12s;
+}
+.mv-wave.is-live i:nth-child(3) {
+  animation-delay: 0.24s;
+}
+.mv-wave.is-live i:nth-child(4) {
+  animation-delay: 0.36s;
+}
+.mv-wave.is-live i:nth-child(5) {
+  animation-delay: 0.48s;
+}
+@keyframes mv-waveform {
+  0%,
+  100% {
+    transform: scaleY(0.55);
+    opacity: 0.7;
+  }
+  50% {
+    transform: scaleY(1);
+    opacity: 1;
+  }
+}
+
+/* ─── mini settings rows (spec §6) ────────────────────────────────── */
+.mv-mini-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+.mv-mini-head .grow {
+  flex: 1;
+  min-width: 0;
+}
+.mv-prov {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+}
+.mv-prov-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+.mv-prov .p-name {
+  font-size: 11.5px;
+  font-weight: 550;
+}
+.mv-prov .p-state {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  color: var(--muted);
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+}
+.mv-prov .p-state.set {
+  color: var(--fg);
+}
+.mv-prov .p-state .mv-btn-link {
+  font-size: 9.5px;
+  padding-inline: 2px;
+}
+.mv-prov.dimmed {
+  opacity: 0.55;
+}
+.mv-mini-notice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.mv-mini-notice svg {
+  width: 15px;
+  height: 15px;
+  flex: none;
+}
+.mv-mini-notice .grow {
+  flex: 1;
+  min-width: 0;
+}
+.mv-mini-foot {
+  padding: 8px 10px;
+  display: flex;
+  gap: 6px;
+}
+.mv-mini-btn {
+  flex: 1;
+  height: 24px;
+  border-radius: 7px;
+  font-size: 11px;
+  font-weight: 550;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--fg);
+  transition:
+    border-color var(--motion-fast) var(--ease),
+    background var(--motion-fast) var(--ease);
+}
+.mv-mini-btn:hover:not(:disabled) {
+  border-color: color-mix(in oklch, var(--fg) 30%, var(--border));
+}
+.mv-mini-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.key-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+}
+.key-input {
+  flex: 1;
+  min-width: 0;
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--input-well);
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  outline: none;
+  transition:
+    border-color var(--motion-fast) var(--ease),
+    box-shadow var(--motion-fast) var(--ease);
+}
+.key-input:focus {
+  border-color: var(--accent);
+}
+.key-input::placeholder {
+  color: var(--muted);
+  font-family: var(--font-sans);
+}
+.model-sel {
+  width: 100%;
+  height: 26px;
+  margin-top: 6px;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--input-well);
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  outline: none;
+}
+.model-sel:focus {
+  border-color: var(--accent);
+}
+.model-sel:disabled {
+  opacity: 0.5;
+}
+.prov-err {
+  font-size: 10.5px;
+  line-height: 1.35;
+  color: var(--destructive);
+  margin-top: 5px;
+  overflow-wrap: break-word;
+}
+.prov-note {
+  font-size: 10.5px;
+  line-height: 1.35;
+  color: var(--muted);
+  margin-top: 5px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mv-bar,
+  .mv-iris::before,
+  .mv-caret,
+  .mv-wave.is-live i,
+  .mv-spin {
+    animation: none;
+  }
+  .mv-bar,
+  .mv-iris,
+  .mv-back,
+  .mv-input,
+  .mv-icon-btn,
+  .mv-btn,
+  .mv-mini-btn,
+  .key-input,
+  .model-sel {
+    transition: none;
+  }
 }
 
 /* AskPanel markdown (react-markdown + GFM) — scoped under the `ask`
@@ -54,8 +910,8 @@ body.ask .ask-md li > p {
 body.ask .ask-md code {
   padding: 0.1em 0.3em;
   border-radius: 4px;
-  background: color-mix(in oklch, var(--muted) 75%, transparent);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  background: var(--fg-soft);
+  font-family: var(--font-mono);
   font-size: 0.82em;
 }
 body.ask .ask-md pre {
@@ -63,21 +919,21 @@ body.ask .ask-md pre {
   padding: 0.55em 0.75em;
   border-radius: 8px;
   overflow-x: auto;
-  background: color-mix(in oklch, var(--muted) 75%, transparent);
+  background: var(--fg-soft);
 }
 body.ask .ask-md pre code {
   padding: 0;
   background: transparent;
 }
 body.ask .ask-md a {
-  color: var(--primary);
+  color: var(--accent-text);
   text-decoration: underline;
 }
 body.ask .ask-md blockquote {
   margin: 0.5em 0;
   padding-left: 0.75em;
   border-left: 3px solid var(--border);
-  color: var(--muted-foreground);
+  color: var(--muted);
 }
 body.ask .ask-md table {
   margin: 0.5em 0;

@@ -1,21 +1,35 @@
 /**
  * The 353×47 always-on-top bar (`?view=bar`). The window is transparent,
  * frameless and non-resizable, so every state renders inside the same
- * compact single-row pill — gate states can't grow the window, and
- * `window_adjust_height` is panel-only (windows/mod.rs).
+ * pill — gate states can't grow the window, and `window_adjust_height`
+ * is panel-only (windows/mod.rs).
+ *
+ * The pill itself morphs (DESIGN.md §6): at rest it's the 104px capsule —
+ * iris + camera + mic — and clicking the iris, typing, or entering a gate
+ * card opens the 345px input bar, which also carries the settings gear
+ * (the capsule has no room for a fourth control; the tray's Settings item
+ * and `Cmd+,` reach it from any state). All states share one DOM tree so
+ * the morph is a class-driven transition, never a remount.
+ *
+ * Errors do NOT render here: the window can't grow, so an error row
+ * squeezed the pill's content. They go to the `alert` window instead
+ * (`alertShow` → views/AlertToast.tsx), which also owns the keystore
+ * `Reset` affordance for stores no unlock can open.
  *
  * `data-tauri-drag-region` goes on the container chrome and
  * non-interactive children only: Tauri's drag walk treats bare
  * attributes as "direct clicks drag" and clickable descendants
  * (input/button) block it, so inputs and buttons stay usable.
  */
-import { useCallback, useEffect, useState } from 'react';
-import type { FormEvent, ReactNode } from 'react';
-import { Button, Mic, Settings, ShieldAlert } from '@marvis/ui';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import type { FormEvent } from 'react';
+import { ArrowLeft, Camera, Mic, Settings, ShieldAlert } from '@marvis/ui';
+import { currentMonitor, getCurrentWindow } from '@tauri-apps/api/window';
 import {
+  alertShow,
   askSend,
+  askSendScreenOnly,
   keystoreInit,
-  keystoreReset,
   keystoreStatus,
   keystoreUnlock,
   permissionsOpenPrefs,
@@ -33,39 +47,79 @@ import {
   EV_KEYSTORE_CHANGED,
   useTauriEvent,
 } from '../lib/events';
-import { LogoMark } from '../components/LogoMark';
+import { Iris } from '../components/Iris';
 import { RetryCard } from '../components/RetryCard';
 
 /** Mirrors `app_gate` in lib.rs so the first render doesn't wait on `app:state`. */
-function gateFor(ks: KeystoreStatus, perms: PermissionsStatus): Gate {
+const gateFor = (ks: KeystoreStatus, perms: PermissionsStatus): Gate => {
   if (ks.state !== 'Unlocked') {
     return 'needs_unlock';
   }
   return perms.screen ? 'main' : 'needs_permission';
-}
+};
 
-/** Translucent pill chrome shared by every bar state. */
-function Shell({ children }: { children: ReactNode }) {
-  return (
-    <div
-      className='h-full p-1'
-      data-tauri-drag-region>
-      <div
-        data-tauri-drag-region='deep'
-        className='flex h-full flex-col justify-center gap-0.5 rounded-full border border-border bg-card/80 px-3 shadow-lg backdrop-blur select-none'>
-        {children}
-      </div>
-    </div>
-  );
-}
+/**
+ * Keystore failures a `keystore_reset` can actually fix: an obsolete or
+ * corrupt `keys.enc` and a lost Keychain DEK (`KeystoreError`/`DekError`
+ * display strings). Anything else — a canceled prompt, a failed auth —
+ * gets an informational toast with no destructive affordance.
+ */
+const RESET_HINTS = /reset required|cannot decrypt|corrupt/i;
 
-export default function Bar() {
+/** Every bar error goes to the alert window — the pill has no room. */
+const raise = (message: string, action?: 'reset') =>
+  void alertShow(message, action).catch(() => {});
+
+/** Which screen edge the bar hugs — the breath bobs away from it. */
+type Edge = 'top' | 'bottom' | 'left' | 'right';
+
+const edgeFor = async (): Promise<Edge> => {
+  try {
+    const win = getCurrentWindow();
+    const [pos, mon] = await Promise.all([
+      win.outerPosition(),
+      currentMonitor(),
+    ]);
+    if (!mon) {
+      return 'top';
+    }
+    // All physical pixels: window is a logical 353×47, so scale up.
+    const scale = mon.scaleFactor;
+    const cx = pos.x + (353 * scale) / 2;
+    const cy = pos.y + (47 * scale) / 2;
+    const wa = mon.workArea;
+    const dTop = Math.abs(cy - wa.position.y);
+    const dBottom = Math.abs(wa.position.y + wa.size.height - cy);
+    const dLeft = Math.abs(cx - wa.position.x);
+    const dRight = Math.abs(wa.position.x + wa.size.width - cx);
+    const min = Math.min(dTop, dBottom, dLeft, dRight);
+    if (min === dBottom) return 'bottom';
+    if (min === dLeft) return 'left';
+    if (min === dRight) return 'right';
+    return 'top';
+  } catch {
+    return 'top';
+  }
+};
+
+const Bar = () => {
   const [gate, setGate] = useState<Gate | null>(null);
   const [keystore, setKeystore] = useState<KeystoreStatus | null>(null);
   const [bootError, setBootError] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [text, setText] = useState('');
+  const [open, setOpen] = useState(false);
+  const [edge, setEdge] = useState<Edge>('top');
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  // Capsule ⇄ input morph: gate cards and boot errors take the full
+  // 345px pill; `main` rests as the capsule until the iris opens it or
+  // the user starts typing on the focused window.
+  const expanded = bootError
+    ? true
+    : gate === 'main'
+      ? open || text.length > 0
+      : gate !== null;
 
   const bootstrap = useCallback(async () => {
     try {
@@ -85,10 +139,15 @@ export default function Bar() {
     void bootstrap();
   }, [bootstrap]);
 
-  useTauriEvent<AppStatePayload>(EV_APP_STATE, (p) => {
-    setGate(p.gate);
-    setError(null);
-  });
+  useEffect(() => {
+    void edgeFor().then(setEdge);
+    const unlisten = getCurrentWindow().onMoved(
+      () => void edgeFor().then(setEdge),
+    );
+    return () => void unlisten.then((f) => f());
+  }, []);
+
+  useTauriEvent<AppStatePayload>(EV_APP_STATE, (p) => setGate(p.gate));
   useTauriEvent<KeystoreStatus>(EV_KEYSTORE_CHANGED, setKeystore);
   // Mid-session screen-permission revocation (ask.rs detects it when a
   // stale frame would have shipped): flip back to the permission card.
@@ -96,12 +155,47 @@ export default function Bar() {
     setGate('needs_permission'),
   );
 
+  // Focus the field whenever the pill opens.
+  useEffect(() => {
+    if (expanded && gate === 'main') {
+      inputRef.current?.focus();
+    }
+  }, [expanded, gate]);
+
+  // Type-to-wake: the collapsed capsule still owns the focused window —
+  // a printable keypress opens the field. Esc collapses back.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setText('');
+        setOpen(false);
+        inputRef.current?.blur();
+        return;
+      }
+      if (gate !== 'main' || open || e.metaKey || e.ctrlKey || e.altKey) {
+        return;
+      }
+      if (e.key.length === 1) {
+        // Seed with the waking keypress — it fired before the field
+        // could take focus, so it would otherwise be swallowed.
+        setText(e.key);
+        setOpen(true);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [gate, open]);
+
+  const collapse = () => {
+    setOpen(false);
+    inputRef.current?.blur();
+  };
+
   const unlockKeystore = async () => {
     if (busy) {
       return;
     }
     setBusy(true);
-    setError(null);
     try {
       // First run creates the Keychain DEK silently, then the uniform
       // unlock path shows the one system-auth prompt.
@@ -114,7 +208,8 @@ export default function Bar() {
       // the emit raced us.
       await bootstrap();
     } catch (err) {
-      setError(typeof err === 'string' ? err : 'Unlock failed');
+      const message = typeof err === 'string' ? err : 'Unlock failed';
+      raise(message, RESET_HINTS.test(message) ? 'reset' : undefined);
     } finally {
       setBusy(false);
     }
@@ -125,12 +220,11 @@ export default function Bar() {
       return;
     }
     setBusy(true);
-    setError(null);
     try {
       await permissionsRequestScreen();
       await bootstrap();
     } catch {
-      setError('Permission request failed');
+      raise('Permission request failed');
     } finally {
       setBusy(false);
     }
@@ -143,154 +237,148 @@ export default function Bar() {
       return;
     }
     setText('');
-    void askSend(t).catch(() => setError('Send failed'));
+    collapse();
+    void askSend(t).catch(() => raise('Send failed'));
   };
 
-  if (bootError) {
-    return (
-      <Shell>
-        <RetryCard onRetry={() => void bootstrap()} />
-      </Shell>
-    );
-  }
-
-  if (gate === null) {
-    return (
-      <Shell>
+  const pill = `mv-bar${expanded ? ' is-input' : ' is-mini'}`;
+  const body = () => {
+    if (bootError) {
+      return (
         <div
-          className='flex items-center gap-2'
+          className='mv-bar-inner justify-center'
           data-tauri-drag-region>
-          <LogoMark className='size-4 shrink-0 text-foreground' />
-          <span
-            className='text-xs text-muted-foreground'
-            data-tauri-drag-region>
-            Loading…
-          </span>
+          <RetryCard onRetry={() => void bootstrap()} />
         </div>
-      </Shell>
-    );
-  }
-
-  if (gate === 'needs_unlock') {
-    return (
-      <Shell>
+      );
+    }
+    if (gate === 'needs_unlock') {
+      return (
         <div
-          className='flex items-center gap-2'
+          className='mv-bar-inner'
           data-tauri-drag-region>
-          <LogoMark className='size-4 shrink-0 text-foreground' />
+          <Iris />
           <span
-            className='min-w-0 flex-1 truncate text-xs text-muted-foreground'
+            className='mv-bar-label'
             title='Marvis unlocks with Touch ID, Face ID, or your Mac password'
             data-tauri-drag-region>
             Unlock with Touch ID / password
           </span>
-          <Button
-            size='xs'
+          <button
+            type='button'
+            className='mv-btn mv-btn-primary'
             onClick={() => void unlockKeystore()}
             disabled={busy}>
             Unlock
-          </Button>
+          </button>
         </div>
-        {error && (
-          <div className='flex items-center justify-center gap-1.5'>
-            <p className='truncate text-[10px] leading-3 text-destructive'>
-              {error}
-            </p>
-            {!error.includes('cancel') && (
-              <button
-                type='button'
-                className='shrink-0 text-[10px] leading-3 text-muted-foreground underline hover:text-foreground'
-                onClick={() => {
-                  // Obsolete/corrupt store or a lost DEK — the only way
-                  // forward. Deletes keys.enc + the keychain item(s).
-                  setError(null);
-                  void keystoreReset()
-                    .then(setKeystore)
-                    .catch(() => setError('Reset failed'));
-                }}>
-                Reset
-              </button>
-            )}
-          </div>
-        )}
-      </Shell>
-    );
-  }
-
-  if (gate === 'needs_permission') {
-    return (
-      <Shell>
+      );
+    }
+    if (gate === 'needs_permission') {
+      return (
         <div
-          className='flex items-center gap-2'
+          className='mv-bar-inner'
           data-tauri-drag-region>
           <ShieldAlert
-            className='size-4 shrink-0 text-muted-foreground'
+            className='mv-gate-ico'
             data-tauri-drag-region
           />
           <span
-            className='min-w-0 flex-1 truncate text-xs text-muted-foreground'
+            className='mv-bar-label'
             title='Marvis needs screen recording to see your screen'
             data-tauri-drag-region>
             Screen recording needed
           </span>
-          <Button
-            size='xs'
+          <button
+            type='button'
+            className='mv-btn mv-btn-primary'
             onClick={() => void grantScreen()}
             disabled={busy}>
             Grant
-          </Button>
-          <Button
-            size='xs'
-            variant='link'
+          </button>
+          <button
+            type='button'
+            className='mv-btn mv-btn-link'
             onClick={() => void permissionsOpenPrefs('Privacy_ScreenCapture')}>
             Open settings
-          </Button>
+          </button>
         </div>
-        {error && (
-          <p className='truncate text-center text-[10px] leading-3 text-destructive'>
-            {error}
-          </p>
-        )}
-      </Shell>
-    );
-  }
-
-  // gate === "main"
-  return (
-    <Shell>
+      );
+    }
+    // `main` (and the null boot frame — the same capsule, inert until
+    // the gate resolves).
+    return (
       <form
         onSubmit={submitAsk}
-        className='flex items-center gap-1.5'
+        className='mv-bar-inner'
         data-tauri-drag-region>
-        <LogoMark className='size-4 shrink-0 text-foreground' />
+        <button
+          type='button'
+          className='mv-icon-btn mv-ask'
+          aria-label={open ? 'Back to capsule' : 'Ask Marvis'}
+          onClick={() => (open ? collapse() : setOpen(true))}
+          disabled={gate !== 'main'}>
+          <Iris />
+          <span className='mv-back'>
+            <ArrowLeft />
+          </span>
+        </button>
         <input
+          ref={inputRef}
           value={text}
           onChange={(e) => setText(e.target.value)}
+          onFocus={() => gate === 'main' && setOpen(true)}
           placeholder='Ask Marvis…'
-          className='min-w-0 flex-1 select-text bg-transparent px-1 text-sm text-foreground outline-none placeholder:text-muted-foreground'
+          aria-label='Ask Marvis'
+          className='mv-input'
         />
-        <Button
+        <button
           type='button'
-          size='icon-xs'
-          variant='ghost'
-          disabled
-          title='Coming soon'>
+          className='mv-icon-btn'
+          aria-label='Ask about the screen'
+          title='Ask about the screen'
+          disabled={gate !== 'main'}
+          onClick={() =>
+            void askSendScreenOnly().catch(() => raise('Send failed'))
+          }>
+          <Camera />
+        </button>
+        <button
+          type='button'
+          className='mv-icon-btn mv-mic'
+          aria-label='Listen — arrives in Phase 2'
+          title='Listen — arrives in Phase 2'
+          disabled>
           <Mic />
-        </Button>
-        <Button
+        </button>
+        {/* Collapses to nothing in the capsule (no room in 104px) — the
+            tray's Settings item and Cmd+, reach it from any state. */}
+        <button
           type='button'
-          size='icon-xs'
-          variant='ghost'
-          title='Settings'
-          onClick={() => void windowShowSettings()}>
+          className='mv-icon-btn mv-gear'
+          aria-label='Settings'
+          title='Settings (⌘,)'
+          tabIndex={expanded ? 0 : -1}
+          disabled={gate !== 'main'}
+          onClick={() => void windowShowSettings().catch(() => {})}>
           <Settings />
-        </Button>
+        </button>
       </form>
-      {error && (
-        <p className='truncate text-center text-[10px] leading-3 text-destructive'>
-          {error}
-        </p>
-      )}
-    </Shell>
+    );
+  };
+
+  return (
+    <div
+      className='mv-stage'
+      data-pos={edge}
+      data-tauri-drag-region>
+      <div
+        className={pill}
+        data-tauri-drag-region='deep'>
+        {body()}
+      </div>
+    </div>
   );
-}
+};
+
+export default Bar;

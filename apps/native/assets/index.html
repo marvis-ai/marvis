@@ -1,0 +1,658 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Marvis for macOS — desktop redesign</title>
+  <link rel="icon" href="assets/marvis-mark.svg" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <style>
+    /* ─── tokens — Marvis app tokens (brand-spec.md) ────────────────── */
+    :root {
+      --bg:      oklch(0.968 0.003 95);     /* warm white canvas */
+      --surface: oklch(1 0 0);              /* card / panel fill */
+      --fg:      oklch(0.148 0.004 228.8);  /* primary text */
+      --muted:   oklch(0.56 0.021 213.5);   /* secondary text */
+      --border:  oklch(0.925 0.005 214.3);  /* hairline */
+      --accent:  oklch(0.53 0.08 237);      /* Marvis deep slate #3a7294 */
+
+      --primary:      oklch(0.53 0.08 237);    /* deep slate pill button (#3a7294) */
+      --primary-fg:   oklch(0.97 0.008 237);
+      --destructive:  oklch(0.577 0.245 27.3);
+      --success:      oklch(0.62 0.17 145);
+      --accent-soft:  color-mix(in oklch, var(--accent) 14%, transparent);
+      --accent-text:  color-mix(in oklch, var(--accent) 62%, black);
+      --accent-on:    oklch(0.97 0.008 237);      /* light text on accent fills */
+      --fg-soft:      color-mix(in oklch, var(--fg) 5%, transparent);
+      --fg-2:         oklch(0.28 0.008 60);       /* warm dark (#31302e) */
+      --input-well:   color-mix(in oklch, var(--fg) 4%, transparent);
+      --focus-ring:   0 0 0 3px color-mix(in oklch, var(--accent) 45%, transparent);
+
+      /* macOS window chrome */
+      --tl-close: #ff5f57;
+      --tl-min:   #febc2e;
+      --tl-max:   #28c840;
+
+      --font-ui:   'Outfit', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+      --font-display: 'Outfit', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+      --font-mono: ui-monospace, 'SF Mono', Menlo, monospace;
+
+      --fs-h1: clamp(38px, 5vw, 58px);
+      --fs-h2: clamp(26px, 3.2vw, 36px);
+      --fs-h3: 19px;
+      --fs-lead: 18px;
+      --fs-body: 15px;
+      --fs-meta: 12.5px;
+
+      --gap-xs: 8px;  --gap-sm: 12px; --gap-md: 20px;
+      --gap-lg: 32px; --gap-xl: 56px; --gap-2xl: 88px;
+      --container: 1120px;
+      --gutter: 32px;
+      --radius: 10px;
+      --radius-lg: 18px;
+
+      --ease: cubic-bezier(0.2, 0, 0, 1);
+      --motion-fast: 150ms;
+      --motion-base: 200ms;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--fg);
+      font-family: var(--font-ui);
+      font-size: var(--fs-body);
+      line-height: 1.55;
+      text-rendering: optimizeLegibility;
+      -webkit-font-smoothing: antialiased;
+    }
+    img, svg { display: block; max-width: 100%; }
+    a { color: inherit; text-decoration: none; }
+    button { font: inherit; cursor: pointer; }
+    p { text-wrap: pretty; margin: 0; }
+    h1, h2, h3 { text-wrap: balance; margin: 0; }
+    :focus-visible { outline: none; box-shadow: var(--focus-ring); }
+
+    .container { max-width: var(--container); margin-inline: auto; padding-inline: var(--gutter); }
+    .section { padding-block: clamp(44px, 7vw, var(--gap-2xl)); }
+    .section + .section { border-top: 1px solid var(--border); }
+    .stack { display: flex; flex-direction: column; }
+    .stack > * + * { margin-top: var(--gap-md); }
+    .row { display: flex; align-items: center; gap: var(--gap-md); }
+    .row-between { display: flex; align-items: center; justify-content: space-between; gap: var(--gap-md); }
+    .grid-2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: var(--gap-lg); }
+    .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--gap-lg); }
+    @media (max-width: 920px) { .grid-2, .grid-3 { grid-template-columns: 1fr; } }
+
+    h1, .h1 { font-family: var(--font-display); font-size: var(--fs-h1); line-height: 1.02; letter-spacing: -0.03em; font-weight: 700; }
+    h2, .h2 { font-family: var(--font-display); font-size: var(--fs-h2); line-height: 1.08; letter-spacing: -0.025em; font-weight: 650; }
+    h3, .h3 { font-size: var(--fs-h3); font-weight: 600; line-height: 1.3; letter-spacing: -0.01em; }
+    .lead { font-size: var(--fs-lead); line-height: 1.55; color: var(--muted); max-width: 58ch; }
+    .eyebrow {
+      font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.08em;
+      text-transform: uppercase; color: var(--accent-text); margin: 0 0 var(--gap-md);
+    }
+    .meta { font-family: var(--font-mono); font-size: var(--fs-meta); color: var(--muted); }
+    .num  { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+
+    .topnav {
+      position: sticky; top: 0; z-index: 20;
+      background: color-mix(in oklch, var(--bg) 88%, transparent);
+      backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--border);
+    }
+    .topnav-inner { display: flex; align-items: center; justify-content: space-between; padding-block: 12px; }
+    .topnav .brand { display: flex; align-items: center; gap: 10px; }
+    .topnav .brand img { height: 22px; width: auto; }
+    .topnav nav { display: flex; gap: var(--gap-lg); }
+    .topnav nav a { font-size: 14px; color: var(--muted); }
+    .topnav nav a:hover { color: var(--fg); }
+    .pagefoot { padding-block: var(--gap-xl); color: var(--muted); font-size: 13px; border-top: 1px solid var(--border); }
+    .pagefoot .row-between { flex-wrap: wrap; gap: var(--gap-md); }
+
+    .btn {
+      display: inline-flex; align-items: center; gap: 8px;
+      padding: 10px 18px; border-radius: 999px;
+      border: 1px solid transparent;
+      font-size: 14.5px; font-weight: 550; letter-spacing: -0.005em;
+      transition: transform var(--motion-fast) var(--ease), background var(--motion-fast) var(--ease), border-color var(--motion-fast) var(--ease);
+    }
+    .btn:active { transform: scale(0.98); }
+    .btn-primary { background: var(--primary); color: var(--primary-fg); }
+    .btn-primary:hover { background: color-mix(in oklch, var(--primary) 88%, black 12%); }
+    .btn-primary:active { background: color-mix(in oklch, var(--primary) 74%, black 26%); }
+    .btn-secondary { background: transparent; color: var(--fg); border-color: var(--border); }
+    .btn-secondary:hover { border-color: color-mix(in oklch, var(--fg) 30%, var(--border)); }
+    .btn-ghost { background: transparent; color: var(--fg); padding-inline: 8px; }
+    .btn-ghost:hover { color: var(--accent-text); }
+    .btn-arrow::after { content: '→'; transition: transform var(--motion-fast) var(--ease); }
+    .btn-arrow:hover::after { transform: translateX(2px); }
+
+    .card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--radius-lg); padding: 28px;
+    }
+    .card-flat { background: transparent; border: 0; padding: 0; }
+
+    .pill {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 4px 10px; background: var(--accent-soft); color: var(--accent-text);
+      border-radius: 999px; font-family: var(--font-mono); font-size: 11px;
+      letter-spacing: 0.04em; text-transform: uppercase;
+    }
+    .pill-green {
+      background: color-mix(in oklch, var(--success) 12%, transparent);
+      color: color-mix(in oklch, var(--success) 62%, black);
+    }
+    .tag {
+      display: inline-flex; align-items: center;
+      padding: 4px 10px; color: var(--muted);
+      border: 1px solid var(--border); border-radius: 999px; font-size: 12px;
+    }
+
+    .kbd {
+      display: inline-flex; align-items: center; justify-content: center;
+      min-width: 22px; padding: 2px 6px;
+      font-family: var(--font-mono); font-size: 11px; color: var(--fg-2);
+      background: var(--fg-soft); border: 1px solid var(--border);
+      border-bottom-width: 2px; border-radius: 5px;
+    }
+
+    .ds-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    .ds-table th, .ds-table td { padding: 11px 14px; text-align: left; border-bottom: 1px solid var(--border); vertical-align: top; }
+    .ds-table th { color: var(--muted); font-weight: 500; font-family: var(--font-mono); font-size: 11.5px; letter-spacing: 0.05em; text-transform: uppercase; }
+    .ds-table tbody tr:hover { background: var(--fg-soft); }
+    .ds-table .num-col { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+
+    .rule { border: 0; border-top: 1px solid var(--border); margin: 0; }
+
+    /* ─── macOS desktop stage ───────────────────────────────────────── */
+    .stage {
+      position: relative;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      overflow: hidden;
+      background:
+        radial-gradient(120% 90% at 30% 0%, color-mix(in oklch, var(--fg-2) 9%, var(--surface)) 0%, var(--surface) 60%);
+      min-height: 560px;
+      box-shadow: 0 18px 44px -22px color-mix(in oklch, var(--fg) 24%, transparent);
+    }
+    .stage-menubar {
+      position: absolute; inset: 0 0 auto 0; height: 26px;
+      display: flex; align-items: center; gap: 16px;
+      padding-inline: 14px;
+      background: color-mix(in oklch, var(--surface) 62%, transparent);
+      backdrop-filter: blur(10px);
+      border-bottom: 1px solid color-mix(in oklch, var(--border) 70%, transparent);
+      font-size: 11.5px; color: var(--fg);
+      z-index: 3;
+    }
+    .stage-menubar .m-spacer { flex: 1; }
+    .stage-menubar .m-item { opacity: 0.82; font-weight: 500; }
+    .stage-menubar .m-item.dim { opacity: 0.5; font-weight: 400; }
+    .stage-menubar svg { width: 13px; height: 13px; opacity: 0.75; }
+
+    .ghost-win {
+      position: absolute; left: 6%; top: 96px; width: 54%; height: 340px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      box-shadow: 0 12px 30px -18px color-mix(in oklch, var(--fg) 30%, transparent);
+      opacity: 0.72; filter: saturate(0.7) blur(0.4px);
+      overflow: hidden;
+      display: flex; flex-direction: column;
+      transform: scale(0.985);
+    }
+    .ghost-titlebar {
+      height: 30px; display: flex; align-items: center; gap: 8px;
+      padding-inline: 10px; border-bottom: 1px solid var(--border);
+      background: var(--bg);
+      font-family: var(--font-mono); font-size: 10.5px; color: var(--muted);
+    }
+    .traffic { display: inline-flex; gap: 6px; }
+    .traffic i { width: 10px; height: 10px; border-radius: 50%; display: block; }
+    .traffic i:nth-child(1) { background: var(--tl-close); }
+    .traffic i:nth-child(2) { background: var(--tl-min); }
+    .traffic i:nth-child(3) { background: var(--tl-max); }
+    .ghost-body { flex: 1; display: grid; grid-template-columns: 108px 1fr; min-height: 0; }
+    .ghost-side {
+      border-right: 1px solid var(--border); padding: 10px 8px;
+      display: flex; flex-direction: column; gap: 7px;
+    }
+    .ghost-side i, .ghost-code i {
+      display: block; height: 6px; border-radius: 3px;
+      background: var(--fg-soft);
+    }
+    .ghost-side i { width: 78%; }
+    .ghost-side i:nth-child(2n) { width: 58%; }
+    .ghost-code { padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; }
+    .ghost-code i { height: 7px; }
+    .ghost-code i.w1 { width: 62%; } .ghost-code i.w2 { width: 44%; margin-left: 14px; }
+    .ghost-code i.w3 { width: 71%; } .ghost-code i.w4 { width: 38%; margin-left: 14px; }
+    .ghost-code i.w5 { width: 55%; margin-left: 28px; } .ghost-code i.w6 { width: 66%; }
+    .ghost-code i.tint { background: var(--accent-soft); }
+    .ghost-code i.err { background: color-mix(in oklch, var(--destructive) 22%, transparent); }
+
+    .stage-dock {
+      position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%);
+      display: flex; align-items: flex-end; gap: 8px;
+      padding: 8px 10px;
+      background: color-mix(in oklch, var(--surface) 55%, transparent);
+      backdrop-filter: blur(14px);
+      border: 1px solid color-mix(in oklch, var(--surface) 70%, transparent);
+      border-radius: 18px;
+      box-shadow: 0 10px 26px -14px color-mix(in oklch, var(--fg) 35%, transparent);
+      z-index: 3;
+    }
+    .dock-tile {
+      width: 38px; height: 38px; border-radius: 9px;
+      background: linear-gradient(160deg, color-mix(in oklch, var(--fg) 16%, var(--surface)), color-mix(in oklch, var(--fg) 28%, var(--surface)));
+      border: 1px solid color-mix(in oklch, var(--surface) 60%, transparent);
+    }
+    .dock-tile:nth-child(2) { background: linear-gradient(160deg, color-mix(in oklch, var(--fg) 22%, var(--surface)), color-mix(in oklch, var(--fg) 34%, var(--surface))); }
+    .dock-tile:nth-child(3) { background: linear-gradient(160deg, color-mix(in oklch, var(--fg-2) 70%, var(--surface)), var(--fg-2)); }
+    .dock-tile:nth-child(4) { background: linear-gradient(160deg, color-mix(in oklch, var(--fg) 8%, var(--surface)), color-mix(in oklch, var(--fg) 18%, var(--surface))); }
+    .dock-sep { width: 1px; height: 34px; background: var(--border); margin-inline: 2px; }
+    .dock-app { position: relative; width: 38px; height: 38px; }
+    .dock-app img { width: 100%; height: 100%; }
+    .dock-app::after {
+      content: ''; position: absolute; left: 50%; bottom: -6px; transform: translateX(-50%);
+      width: 4px; height: 4px; border-radius: 50%; background: var(--fg);
+    }
+    .stage-cap {
+      display: flex; justify-content: space-between; gap: var(--gap-md);
+      padding: 10px 4px 0; flex-wrap: wrap;
+    }
+
+    /* ─── mv-* : recreated app chrome (Outfit, real geometry) ───────── */
+    .mv { font-family: var(--font-ui); color: var(--fg); }
+
+    .mv-bar {
+      position: absolute; left: 50%; top: 47px; transform: translateX(-50%);
+      width: 112px; height: 47px; z-index: 5;
+      animation: mv-breath 7s var(--ease) infinite;
+    }
+    @keyframes mv-breath {
+      0%, 100% { transform: translateX(-50%) translateY(0); }
+      50%      { transform: translateX(-50%) translateY(-3px); }
+    }
+    .mv-bar-inner {
+      height: 100%; margin: 4px;
+      display: flex; align-items: center; gap: 6px;
+      padding: 0 11px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      background: color-mix(in oklch, var(--surface) 80%, transparent);
+      backdrop-filter: blur(14px);
+      box-shadow: 0 8px 24px -10px color-mix(in oklch, var(--fg) 30%, transparent);
+      user-select: none;
+    }
+    .mv-iris {
+      width: 18px; height: 18px; flex: none; position: relative;
+      display: grid; place-items: center;
+    }
+    .mv-iris::before {
+      content: ''; width: 11px; height: 11px; border-radius: 50%;
+      background: var(--fg-2);
+      animation: iris-breath 7s var(--ease) infinite;
+    }
+    .mv-iris::after {
+      content: ''; position: absolute; width: 4.5px; height: 4.5px; border-radius: 50%;
+      background: var(--surface);
+    }
+    @keyframes iris-breath {
+      0%, 100% { transform: scale(1); opacity: 0.9; }
+      50%      { transform: scale(1.14); opacity: 1; }
+    }
+    .mv-icon-btn {
+      width: 26px; height: 26px; flex: none;
+      display: grid; place-items: center;
+      border: 0; border-radius: 999px; background: transparent; color: var(--muted);
+      transition: background var(--motion-fast) var(--ease), color var(--motion-fast) var(--ease);
+    }
+    .mv-icon-btn:hover { background: var(--fg-soft); color: var(--fg); }
+    .mv-icon-btn svg { width: 14px; height: 14px; }
+
+    .mv-panel {
+      position: absolute; left: 50%; top: 102px; transform: translateX(-50%);
+      width: 600px; max-width: calc(100% - 40px); z-index: 4;
+      border-radius: 18px;
+      border: 1px solid var(--border);
+      background: color-mix(in oklch, var(--surface) 90%, transparent);
+      backdrop-filter: blur(16px);
+      box-shadow: 0 18px 40px -16px color-mix(in oklch, var(--fg) 34%, transparent);
+      overflow: hidden;
+      display: flex; flex-direction: column;
+    }
+    .mv-panel-head {
+      display: flex; align-items: flex-start; gap: 6px;
+      padding: 9px 12px; border-bottom: 1px solid var(--border);
+    }
+    .mv-panel-q {
+      flex: 1; min-width: 0; font-size: 12px; line-height: 1.5; font-weight: 550;
+      display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+    }
+    .mv-panel-body { padding: 12px 14px 14px; font-size: 13px; line-height: 1.6; }
+    .mv-panel-body .ans-head { font-weight: 650; margin-bottom: 6px; }
+    .mv-panel-body ul { margin: 6px 0; padding-left: 18px; }
+    .mv-panel-body li { margin: 3px 0; }
+    .mv-panel-body .li-sub { color: var(--muted); font-size: 12.5px; }
+    .mv-caret {
+      display: inline-block; width: 7px; height: 13px; margin-left: 2px;
+      background: var(--fg); vertical-align: -2px;
+      animation: caret-blink 1.05s steps(1) infinite;
+    }
+    @keyframes caret-blink { 50% { opacity: 0; } }
+    .mv-chiprow { display: flex; gap: 6px; margin-top: 10px; flex-wrap: wrap; }
+    .mv-chip {
+      display: inline-flex; align-items: center; gap: 5px;
+      font-family: var(--font-mono); font-size: 10.5px; color: var(--muted);
+      border: 1px solid var(--border); border-radius: 999px; padding: 3px 8px;
+      background: color-mix(in oklch, var(--surface) 60%, transparent);
+    }
+    .mv-chip svg { width: 10px; height: 10px; }
+
+    /* ─── screen link cards ─────────────────────────────────────────── */
+    .screen-card { display: flex; flex-direction: column; gap: 0; padding: 0; overflow: hidden; }
+    .screen-card .sc-body { padding: 22px 24px 24px; display: flex; flex-direction: column; gap: 8px; }
+    .screen-card h3 { font-size: 17px; }
+    .screen-card p { color: var(--muted); font-size: 13.5px; }
+    .screen-card .sc-go {
+      margin-top: 10px; font-size: 13.5px; font-weight: 550; color: var(--accent-text);
+      display: inline-flex; align-items: center; gap: 6px;
+    }
+    .screen-card:hover .sc-go { text-decoration: underline; }
+    .sc-preview {
+      height: 190px; border-bottom: 1px solid var(--border);
+      background:
+        radial-gradient(120% 100% at 50% 0%, color-mix(in oklch, var(--fg-2) 8%, var(--surface)) 0%, var(--surface) 70%);
+      position: relative; overflow: hidden;
+    }
+    .sc-mini-bar {
+      position: absolute; left: 50%; top: 42px; transform: translateX(-50%);
+      width: 92px; height: 34px; border-radius: 999px;
+      border: 1px solid var(--border);
+      background: color-mix(in oklch, var(--surface) 80%, transparent);
+      backdrop-filter: blur(10px);
+      box-shadow: 0 8px 20px -10px color-mix(in oklch, var(--fg) 28%, transparent);
+      display: flex; align-items: center; gap: 7px; padding-inline: 12px;
+    }
+    .sc-mini-bar i { width: 9px; height: 9px; border-radius: 50%; background: var(--fg-2); flex: none; }
+    .sc-mini-bar s { width: 14px; height: 14px; border-radius: 50%; background: var(--fg-soft); text-decoration: none; flex: none; }
+    .sc-mini-panel {
+      position: absolute; left: 50%; top: 84px; transform: translateX(-50%);
+      width: 300px; height: 74px; border-radius: 13px;
+      border: 1px solid var(--border);
+      background: color-mix(in oklch, var(--surface) 88%, transparent);
+      backdrop-filter: blur(10px);
+      box-shadow: 0 12px 26px -14px color-mix(in oklch, var(--fg) 30%, transparent);
+      padding: 10px 12px; display: flex; flex-direction: column; gap: 6px;
+    }
+    .sc-mini-panel i { height: 6px; border-radius: 3px; background: var(--fg-soft); }
+    .sc-mini-panel i:first-child { width: 55%; background: color-mix(in oklch, var(--accent) 30%, transparent); }
+    .sc-mini-panel i:nth-child(2) { width: 88%; }
+    .sc-mini-panel i:nth-child(3) { width: 72%; }
+    .sc-mini-win {
+      position: absolute; left: 50%; top: 34px; transform: translateX(-50%);
+      width: 300px; height: 128px; border-radius: 10px;
+      border: 1px solid var(--border); background: var(--surface);
+      box-shadow: 0 14px 30px -14px color-mix(in oklch, var(--fg) 30%, transparent);
+      overflow: hidden; display: flex; flex-direction: column;
+    }
+    .sc-mini-win .sc-mini-title {
+      height: 24px; display: flex; align-items: center; gap: 6px; padding-inline: 9px;
+      border-bottom: 1px solid var(--border); background: var(--bg);
+    }
+    .sc-mini-win .sc-mini-title i { width: 7px; height: 7px; border-radius: 50%; }
+    .sc-mini-win .sc-mini-title i:nth-child(1) { background: var(--tl-close); }
+    .sc-mini-win .sc-mini-title i:nth-child(2) { background: var(--tl-min); }
+    .sc-mini-win .sc-mini-title i:nth-child(3) { background: var(--tl-max); }
+    .sc-mini-win .sc-mini-body { flex: 1; display: grid; grid-template-columns: 74px 1fr; }
+    .sc-mini-win .sc-mini-nav { border-right: 1px solid var(--border); padding: 9px 8px; display: flex; flex-direction: column; gap: 6px; }
+    .sc-mini-win .sc-mini-nav i { height: 5px; border-radius: 3px; background: var(--fg-soft); width: 85%; }
+    .sc-mini-win .sc-mini-nav i:first-child { background: var(--accent-soft); }
+    .sc-mini-win .sc-mini-main { padding: 10px; display: flex; flex-direction: column; gap: 6px; }
+    .sc-mini-win .sc-mini-main i { height: 6px; border-radius: 3px; background: var(--fg-soft); }
+    .sc-mini-win .sc-mini-main i:nth-child(1) { width: 40%; }
+    .sc-mini-win .sc-mini-main i:nth-child(2) { width: 92%; }
+    .sc-mini-win .sc-mini-main i:nth-child(3) { width: 78%; }
+    .sc-mini-win .sc-mini-main i:nth-child(4) { width: 60%; }
+
+    .hero { padding-block: clamp(56px, 9vw, 110px) clamp(36px, 5vw, 56px); }
+    .hero h1 { margin-bottom: var(--gap-md); max-width: 17ch; }
+    .hero .lead { margin-bottom: var(--gap-lg); }
+    .hero-cta { display: inline-flex; gap: var(--gap-sm); flex-wrap: wrap; }
+
+    @media (prefers-reduced-motion: reduce) {
+      .mv-bar, .mv-iris::before, .mv-caret { animation: none; }
+    }
+    @media (max-width: 720px) {
+      .stage { min-height: 480px; }
+      .ghost-win { left: 4%; width: 72%; }
+      .mv-panel { width: min(600px, calc(100% - 24px)); }
+      .mv-bar { width: min(112px, calc(100% - 40px)); }
+      .topnav nav { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topnav" data-od-id="topnav">
+    <div class="container topnav-inner">
+      <span class="brand"><img src="assets/marvis-logo.svg" alt="Marvis" /></span>
+      <nav>
+        <a href="#screens">Screens</a>
+        <a href="#inventory">Window inventory</a>
+        <a href="#hotkeys">Hotkeys</a>
+      </nav>
+      <span class="tag">macOS only · Phase 1</span>
+    </div>
+  </header>
+
+  <main id="content">
+    <section class="hero" data-od-id="hero">
+      <div class="container">
+        <p class="eyebrow">Marvis · desktop redesign</p>
+        <h1>A quieter way to ask your Mac anything.</h1>
+        <p class="lead">A frosted bar floats above your work, sees your screen with permission, and streams answers into an overlay. Keys, history, and frames stay in <span class="num">~/.marvis</span> — nothing leaves the machine.</p>
+        <div class="hero-cta">
+          <a class="btn btn-primary" href="marvis-floating-window.html">Open the floating window</a>
+          <a class="btn btn-secondary" href="marvis-settings-window.html">Onboarding &amp; settings</a>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" data-od-id="desktop-scene" style="padding-top: 0;">
+      <div class="container">
+        <div class="stage" data-od-id="stage-composite">
+          <div class="stage-menubar">
+            <img src="assets/marvis-mark.svg" alt="" style="width:13px;height:13px;border-radius:3px;" />
+            <span class="m-item">Marvis</span>
+            <span class="m-item dim">File</span>
+            <span class="m-item dim">Edit</span>
+            <span class="m-item dim">View</span>
+            <span class="m-item dim">Window</span>
+            <span class="m-item dim">Help</span>
+            <span class="m-spacer"></span>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12a10 10 0 0 1 14 0M8.5 15.5a5 5 0 0 1 7 0M12 19h.01"/></svg>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="2" y="8" width="17" height="9" rx="2"/><path d="M22 11v3" stroke-linecap="round"/><rect x="4" y="10" width="10" height="5" rx="1" fill="currentColor" stroke="none"/></svg>
+            <span class="m-item dim num">Fri 9:41 AM</span>
+          </div>
+
+          <div class="ghost-win" aria-hidden="true">
+            <div class="ghost-titlebar">
+              <span class="traffic"><i></i><i></i><i></i></span>
+              <span>ask.rs — marvis · src-tauri/src</span>
+            </div>
+            <div class="ghost-body">
+              <div class="ghost-side"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+              <div class="ghost-code">
+                <i class="w1 tint"></i><i class="w2"></i><i class="w3"></i>
+                <i class="w4 err"></i><i class="w5"></i><i class="w2"></i>
+                <i class="w6 tint"></i><i class="w3"></i><i class="w4"></i>
+                <i class="w1"></i><i class="w5"></i>
+              </div>
+            </div>
+          </div>
+
+          <div class="mv mv-bar" data-od-id="bar-preview" aria-label="Marvis capsule">
+            <div class="mv-bar-inner">
+              <span class="mv-icon-btn" aria-hidden="true"><span class="mv-iris"></span></span>
+              <span class="mv-icon-btn" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="7" width="18" height="13" rx="2.5"/><circle cx="12" cy="13.5" r="3.2"/><path d="M9.2 7l1.4-2.4h2.8L14.8 7"/></svg></span>
+              <span class="mv-icon-btn" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3a3 3 0 0 1 3 3v5a3 3 0 0 1-6 0V6a3 3 0 0 1 3-3z"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg></span>
+            </div>
+          </div>
+
+          <div class="mv mv-panel" data-od-id="ask-preview">
+            <div class="mv-panel-head">
+              <p class="mv-panel-q">What hotkeys does Marvis ship with?</p>
+              <span class="mv-icon-btn" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6L6 18"/></svg></span>
+            </div>
+            <div class="mv-panel-body">
+              <p class="ans-head">Twelve bindings, nine configurable.</p>
+              <ul>
+                <li><span class="kbd">⌘/</span> toggles everything · <span class="kbd">⌘⏎</span> sends the current ask</li>
+                <li class="li-sub"><span class="kbd">⌘⇧S</span> screenshots into an ask · <span class="kbd">⌘M</span> click-through · <span class="kbd">⌘↑↓←→</span> moves the bar 40&nbsp;px</li>
+                <li class="li-sub"><span class="kbd">⌘⇧1–9</span> jumps displays · <span class="kbd">⌘⇧←/→</span> snaps to an edge</li>
+              </ul>
+              <div class="mv-chiprow">
+                <span class="mv-chip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M3 9h18"/></svg>frame · 4 fps dedupe</span>
+                <span class="mv-chip">gpt-4o · openai</span>
+                <span class="mv-chip num">streamed 0.9s</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="stage-dock" aria-hidden="true">
+            <span class="dock-tile"></span><span class="dock-tile"></span><span class="dock-tile"></span><span class="dock-tile"></span>
+            <span class="dock-sep"></span>
+            <span class="dock-app"><img src="assets/marvis-icon.svg" alt="Marvis" /></span>
+          </div>
+        </div>
+        <div class="stage-cap">
+          <span class="meta">floating capsule 112×47 · input bar 353×47 · 21 px under the menubar — chatbox 600 px extends from the bar</span>
+          <span class="meta">frameless · always-on-top · content-protected · deep slate <span class="num">#3a7294</span></span>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" data-od-id="screens" id="screens">
+      <div class="container stack" style="gap: 44px;">
+        <div style="max-width: 44ch;">
+          <p class="eyebrow">Screens</p>
+          <h2>Three windows, one surface.</h2>
+          <p class="lead" style="margin-top: 12px;">The redesign keeps the real geometry and upgrades the shell: a step-by-step onboarding with BYOK, a breathing bar, and a chatbox that grows out of it — keyed to a deep slate accent (<span class="num">#3a7294</span>) on primary actions and live states.</p>
+        </div>
+        <div class="grid-2">
+          <a class="card screen-card" href="marvis-floating-window.html" data-od-id="card-floating">
+            <div class="sc-preview" aria-hidden="true">
+              <span class="sc-mini-bar"><i></i><s></s><s></s></span>
+              <span class="sc-mini-panel"><i></i><i></i><i></i></span>
+            </div>
+            <div class="sc-body">
+              <h3>Floating window + chatbox</h3>
+              <p>A 112×47 capsule at rest — iris, screenshot, mic — breathing over the desktop. Type anywhere and it stretches into the 353×47 input bar; ⏎ sends and a chatbox extends with the streamed answer. Docks on all four edges, light and dark, plus the lock and permission gates.</p>
+              <span class="sc-go">Open interactive screen →</span>
+            </div>
+          </a>
+          <a class="card screen-card" href="marvis-settings-window.html" data-od-id="card-settings">
+            <div class="sc-preview" aria-hidden="true">
+              <span class="sc-mini-win">
+                <span class="sc-mini-title"><i></i><i></i><i></i></span>
+                <span class="sc-mini-body">
+                  <span class="sc-mini-nav"><i></i><i></i><i></i><i></i></span>
+                  <span class="sc-mini-main"><i></i><i></i><i></i><i></i></span>
+                </span>
+              </span>
+            </div>
+            <div class="sc-body">
+              <h3>Onboarding &amp; settings window</h3>
+              <p>A five-step first run — vault, screen permission, your key (including OpenAI-compatible endpoints) — then the full settings window: providers with BYOK, hotkeys, privacy &amp; data.</p>
+              <span class="sc-go">Open interactive screen →</span>
+            </div>
+          </a>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" data-od-id="inventory" id="inventory">
+      <div class="container">
+        <div class="row-between" style="margin-bottom: 28px;">
+          <h2>Window inventory</h2>
+          <span class="meta">sizes from apps/native windows/mod.rs</span>
+        </div>
+        <table class="ds-table">
+          <thead>
+            <tr><th>Window</th><th>Geometry</th><th>Anchors</th><th>Notes</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong>Capsule</strong> <span class="tag">redesigned</span></td>
+              <td class="num-col">112 × 47</td>
+              <td>centered, 21 px under work-area top; position persists in <span class="num">config.toml</span></td>
+              <td>Minimal idle surface — iris, screenshot → ask, mic. Typing stretches it into the 353×47 input bar; the chatbox extends below for answers. Hosts both gate cards.</td>
+            </tr>
+            <tr>
+              <td><strong>Ask</strong></td>
+              <td class="num-col">600 × ≤900</td>
+              <td>centered under the bar, 8 px gap</td>
+              <td>Streams markdown answers; reports its own content height and animates to it.</td>
+            </tr>
+            <tr>
+              <td><strong>Listen</strong></td>
+              <td class="num-col">400 × ≤900</td>
+              <td>docks 8 px left of Ask, or centers when Ask is closed</td>
+              <td>Meeting listen — ships in Phase 2 with Deepgram <span class="num">nova-2</span>.</td>
+            </tr>
+            <tr>
+              <td><strong>Settings panel</strong></td>
+              <td class="num-col">240 × ≤400</td>
+              <td>right edge of the bar</td>
+              <td>Quick provider keys. Hides 250 ms after blur.</td>
+            </tr>
+            <tr>
+              <td><strong>Settings window</strong> <span class="tag">redesigned</span></td>
+              <td class="num-col">720 × 520</td>
+              <td>centered — a real window, not a bar panel</td>
+              <td>Step-by-step onboarding, then sidebar settings. BYOK incl. OpenAI-compatible, hotkeys, privacy.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="section" data-od-id="hotkeys" id="hotkeys" style="padding-top: 0;">
+      <div class="container">
+        <div class="row-between" style="margin-bottom: 28px;">
+          <h2>Every binding that ships.</h2>
+          <span class="meta">config.toml [hotkeys] + hardcoded set</span>
+        </div>
+        <table class="ds-table">
+          <thead>
+            <tr><th>Action</th><th>Binding</th><th>Source</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Show / hide all panels</td><td><span class="kbd">⌘/</span></td><td class="meta">configurable</td></tr>
+            <tr><td>Send ask (or screen-only ask)</td><td><span class="kbd">⌘⏎</span></td><td class="meta">configurable</td></tr>
+            <tr><td>Move bar 40 px</td><td><span class="kbd">⌘↑</span> <span class="kbd">⌘↓</span> <span class="kbd">⌘←</span> <span class="kbd">⌘→</span></td><td class="meta">configurable</td></tr>
+            <tr><td>Click-through mode</td><td><span class="kbd">⌘M</span></td><td class="meta">configurable</td></tr>
+            <tr><td>Scroll the answer</td><td><span class="kbd">⌘⇧↑</span> <span class="kbd">⌘⇧↓</span></td><td class="meta">configurable</td></tr>
+            <tr><td>Screenshot → ask</td><td><span class="kbd">⌘⇧S</span></td><td class="meta">hardcoded</td></tr>
+            <tr><td>Snap to screen edge</td><td><span class="kbd">⌘⇧←</span> <span class="kbd">⌘⇧→</span></td><td class="meta">hardcoded</td></tr>
+            <tr><td>Jump to display <span class="num">n</span></td><td><span class="kbd">⌘⇧1</span>–<span class="kbd">⌘⇧9</span></td><td class="meta">hardcoded</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <footer class="pagefoot" data-od-id="footer">
+    <div class="container row-between">
+      <span>Marvis · desktop redesign prototype</span>
+      <span class="meta">keystore: keys.enc · AES-256-GCM · Touch ID — config: ~/.marvis/config.toml</span>
+    </div>
+  </footer>
+</body>
+</html>

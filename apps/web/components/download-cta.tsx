@@ -1,4 +1,5 @@
 import { surfaceBg } from './styles';
+import { WaitlistDialog } from './waitlist-dialog';
 
 export const DownloadCta = () => (
   <section
@@ -17,12 +18,11 @@ export const DownloadCta = () => (
         Windows and Linux are in development.
       </p>
       <div className='hero-cta'>
-        <a
-          className='btn btn-primary'
-          href='#'
-          data-od-id='cta-primary'>
-          Download for macOS
-        </a>
+        <WaitlistDialog
+          triggerClassName='btn btn-primary'
+          triggerLabel='Download for macOS'
+          triggerDataOdId='cta-primary'
+        />
         <a
           className='btn btn-ghost btn-arrow'
           href='https://github.com/MarvisLLC/marvis'

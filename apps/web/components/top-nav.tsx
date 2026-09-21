@@ -1,4 +1,5 @@
 import { Mark } from './icons';
+import { WaitlistDialog } from './waitlist-dialog';
 
 export const TopNav = () => (
   <header
@@ -20,12 +21,11 @@ export const TopNav = () => (
         <a href='#hotkeys'>Hotkeys</a>
         <a href='#providers'>Providers</a>
       </nav>
-      <a
-        className='btn btn-secondary'
-        href='#download'
-        data-od-id='nav-cta'>
-        Download
-      </a>
+      <WaitlistDialog
+        triggerClassName='btn btn-secondary'
+        triggerLabel='Download'
+        triggerDataOdId='nav-cta'
+      />
     </div>
   </header>
 );

@@ -18,13 +18,13 @@ Postgres table and sends a notification email via Resend from
 | Form fields | Email + name |
 | Resend API key | Not yet — code wires `RESEND_API_KEY` env; key/domain verification is a follow-up user action |
 | Browser → function call | Same-origin `POST /api/waitlist` proxied via Next.js `rewrites()` (no CORS, function URL stays server-side) |
-| Modal tech | shadcn `Dialog`/`Input`/`Button` from `@marvis/ui`, theme scoped to the dialog |
+| Modal tech | shadcn `Dialog`/`Input`/`Button` from `@marvis/ui`, restyled with the landing page's design tokens |
 
 ## Flow
 
 ```text
 CTA click (nav / hero / #download section)
-  → WaitlistDialog opens (Base UI Dialog, shadcn-styled)
+  → WaitlistDialog opens (Base UI Dialog, styled with the landing page's design tokens)
   → submit name + email
   → POST /api/waitlist  (same origin)
   → next.config rewrites → Neon Function `waitlist` (WAITLIST_API_URL env)
@@ -91,28 +91,33 @@ CREATE TABLE IF NOT EXISTS waitlist (
 | `components/top-nav.tsx` | `<a href='#download'>` → `<WaitlistDialog triggerClassName='btn btn-secondary' triggerLabel='Download' triggerDataOdId='nav-cta' />`. Stays a server component. |
 | `components/hero.tsx` | Primary CTA anchor → `WaitlistDialog` (`btn btn-primary`, `Download for macOS`, `hero-cta-primary`). |
 | `components/download-cta.tsx` | Dead `href='#'` anchor → `WaitlistDialog` (`btn btn-primary`, `Download for macOS`, `cta-primary`). GitHub ghost link unchanged. |
-| `app/globals.css` | Add `@source '../../../packages/ui/src';`, `@import 'tw-animate-css';`, `@theme inline` mappings (`--color-*` + `--font-heading: var(--font-outfit)` + `--radius-4xl`), and shadcn token values scoped to `[data-slot='dialog-content']` using the `mv-*` palette. |
+| `app/globals.css` | Add `@source '../../../packages/ui/src';`, `@import 'tw-animate-css';`, `@theme inline` mappings (`--color-*` + `--font-heading` + `--radius-*`), and a shadcn→site token bridge scoped to `[data-slot='dialog-content']` so the dialog renders in the landing page's design system (NotionInter, slate accent, 4px controls, 12px card). |
 | `next.config.ts` | `async rewrites()` → `[{ source: '/api/waitlist', destination: process.env.WAITLIST_API_URL ?? 'http://localhost:8787/' }]` (both values end at the function root `/`, matching the Hono `POST /` route; `invocation_url` already carries a trailing slash). |
 | `apps/web/.env.local` | `WAITLIST_API_URL=<invocation_url from neon functions get waitlist>` (gitignored via `*.local`). |
 | `apps/web/package.json` | `bun add -d tw-animate-css` (imported by globals.css). |
 
-### Why scoped shadcn tokens
+### Why a scoped shadcn token bridge
 
 `apps/web` globals.css uses a custom Notion-style token set where `--accent`,
-`--muted`, `--border` mean different things than the shadcn theme; importing
-`@marvis/ui/index.css` wholesale would collide (`:root` unlayered, last wins).
-Instead:
+`--muted`, and `--border` mean different things than the shadcn theme;
+importing `@marvis/ui/index.css` wholesale would collide (`:root` unlayered,
+last wins). Instead:
 
 1. `@theme inline` declares the `--color-*` mappings globally (harmless —
    nothing else uses `bg-popover` etc.).
-2. Value vars (`--popover`, `--popover-foreground`, `--foreground`,
-   `--primary`, `--primary-foreground`, `--muted`, `--muted-foreground`,
-   `--accent`, `--accent-foreground`, `--destructive`, `--border`, `--input`,
-   `--ring`, `--radius`) are set **only** on `[data-slot='dialog-content']`,
-   bound to the existing `mv-*` palette — so the dialog renders in the Marvis
-   app's own shadcn look (Outfit/Manrope, light) while the page stays Notion.
-3. Dialog internals use shadcn utilities only (no `.lead`/`.eyebrow`), so the
-   redefined `--muted`/`--accent` can't leak wrong values into site classes.
+2. Value vars (`--background`, `--foreground`, `--popover`, `--primary`,
+   `--primary-foreground`, `--secondary`, `--muted-foreground`,
+   `--destructive`, `--input`, `--ring`, …) are set **only** on
+   `[data-slot='dialog-content']`, bound to the site's tokens — so the dialog
+   renders in the landing page's own look (NotionInter/Inter, slate accent,
+   4px controls, 12px card) while the page tokens stay untouched.
+3. `--accent` (brand slate) and `--muted` (warm-gray text) are deliberately
+   **not** rebound: shadcn's `--primary` and the description copy read them
+   straight through, keeping the site the single source of truth.
+4. The dialog reuses the page's own classes and language — `.btn .btn-primary`,
+   `.eyebrow`, `.pill`, the `--elev-raised` card shadow — rather than the
+   `mv-*` product-UI palette. Internals that shadcn utilities would otherwise
+   color are restated unlayered, so they win without `!important`.
 
 ### `@marvis/ui` barrel additions
 

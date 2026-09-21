@@ -3,6 +3,7 @@
 import {
   Button,
   Dialog,
+  DialogClose,
   DialogContent,
   DialogDescription,
   DialogHeader,
@@ -10,6 +11,7 @@ import {
   DialogTrigger,
   Input,
   Label,
+  XIcon,
 } from '@marvis/ui';
 import { useId, useState } from 'react';
 import type { SubmitEvent } from 'react';
@@ -66,17 +68,29 @@ export const WaitlistDialog = ({
         }>
         {triggerLabel}
       </DialogTrigger>
-      <DialogContent>
+      <DialogContent showCloseButton={false}>
         <DialogHeader>
+          <p className='eyebrow'>Waitlist</p>
           <DialogTitle>Get Marvis for macOS</DialogTitle>
           <DialogDescription>
             Join the waitlist — we&rsquo;ll email you when the build is ready.
           </DialogDescription>
         </DialogHeader>
+
+        <DialogClose
+          className='waitlist-close'
+          aria-label='Close'>
+          <XIcon aria-hidden='true' />
+        </DialogClose>
+
         {status === 'success' ? (
-          <p className='text-sm text-muted-foreground'>
-            You&rsquo;re on the list — check your inbox for a confirmation.
-          </p>
+          <div className='waitlist-done'>
+            <p className='pill pill-green'>You&rsquo;re on the list</p>
+            <p className='waitlist-note'>
+              No account, no cloud sync — your keys and screen data stay on
+              your machine.
+            </p>
+          </div>
         ) : (
           <form
             onSubmit={onSubmit}
@@ -120,10 +134,11 @@ export const WaitlistDialog = ({
               }}
             />
             {status === 'error' && (
-              <p className='text-sm text-destructive'>{error}</p>
+              <p className='waitlist-error'>{error}</p>
             )}
             <Button
               type='submit'
+              className='btn btn-primary'
               disabled={status === 'submitting'}>
               {status === 'submitting' ? 'Joining…' : 'Join the waitlist'}
             </Button>

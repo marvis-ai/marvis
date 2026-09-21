@@ -1,3 +1,4 @@
+export { cn } from "./lib/utils"
 export { ThemeProvider, useTheme } from "./components/theme-provider"
 
 // The shadcn UI components

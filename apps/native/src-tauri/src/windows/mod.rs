@@ -115,8 +115,8 @@ pub enum Dir {
     Down,
 }
 
-const BAR_W: f64 = 353.0;
-const BAR_H: f64 = 47.0;
+const BAR_W: f64 = 441.0;
+const BAR_H: f64 = 59.0;
 /// The preferences window — a normal decorated macOS window (native
 /// traffic lights, opaque, NOT always-on-top), not an overlay panel.
 /// Label `prefs`, `?view=prefs`; it hosts both the settings sidebar and
@@ -125,7 +125,7 @@ pub const PREFS_LABEL: &str = "prefs";
 const PREFS_W: f64 = 720.0;
 const PREFS_H: f64 = 520.0;
 /// Transient alert toast — its own window because the bar is a fixed
-/// 353×47 pill with no room for an error row (the old inline row
+/// 441×59 pill with no room for an error row (the old inline row
 /// squeezed the pill's content). Label `alert`, `?view=alert`.
 pub const ALERT_LABEL: &str = "alert";
 const ALERT_W: f64 = 340.0;

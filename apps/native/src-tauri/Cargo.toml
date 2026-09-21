@@ -18,10 +18,31 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["macos-private-api", "tray-icon", "image-png", "image-ico"] }
 tauri-plugin-opener = "2"
+tauri-plugin-global-shortcut = "2"
+tauri-plugin-deep-link = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
+futures-util = "0.3"
+bytes = "1"
+rusqlite = { version = "0.32", features = ["bundled"] }
+base64 = "0.22"
+toml = "0.8"
+dirs = "6"
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
+screencapturekit = "10"
+objc2 = "0.6"
+block2 = "0.6"
+objc2-av-foundation = { version = "0.3", default-features = false, features = ["AVCaptureDevice", "AVMediaFormat", "block2"] }
+thiserror = "2"
+anyhow = "1"
+parking_lot = "0.12"
+log = "0.4"
+env_logger = "0.11"
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration

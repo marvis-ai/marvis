@@ -14,7 +14,8 @@
     "dev": "turbo dev",
     "build:dev": "turbo run build:dev",
     "lint": "turbo lint",
-    "check-types": "turbo check-types"
+    "check-types": "turbo check-types",
+    "test": "turbo test"
   },
   "type": "module",
   "homepage": "https://github.com/MarvisLLC/marvis#readme",
@@ -38,7 +39,7 @@
   "devEngines": {
     "packageManager": {
       "name": "bun",
-      "version": "1.3.4"
+      "version": "1.3.14"
     }
   }
 }

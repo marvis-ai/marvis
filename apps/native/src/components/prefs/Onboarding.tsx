@@ -30,10 +30,31 @@ import {
   windowShowSettings,
 } from '../../lib/commands';
 import { providerFor, PROVIDERS } from '../../lib/providers';
+import {
+  BTN_LG,
+  BTN_LINK,
+  BTN_LINK_LG,
+  BTN_OUTLINE,
+  BTN_PRIMARY,
+  FIELD,
+  LBL,
+  MODEL_SEL,
+  NUM,
+  PROV_ERR,
+  PROV_NOTE,
+  SPIN,
+  cn,
+} from '../../lib/classes';
 import type { PrefsData } from './types';
 
 const STEP_LABELS = ['welcome', 'screen access', 'bring your own key', 'done'];
 const URL_RE = /^https?:\/\//i;
+
+/* onboarding-mode text atoms (the 480px step column) */
+const H1 = 'mb-2 text-[21px] font-bold tracking-[-0.02em]';
+const LEDE = 'max-w-[44ch] text-[13px] leading-[1.6] text-muted-foreground';
+const ACTIONS = 'mt-5.5 flex items-center gap-2.5';
+const MARK = 'mb-3.5 size-11';
 
 export const Onboarding = ({ data }: { data: PrefsData }) => {
   const [step, setStep] = useState(0);
@@ -50,39 +71,49 @@ export const Onboarding = ({ data }: { data: PrefsData }) => {
   };
 
   return (
-    <div className='prf-ob'>
-      <div className='prf-ob-progress'>
+    <div className='flex min-h-0 flex-1 flex-col'>
+      <div className='flex flex-none items-center gap-3.5 px-6 pt-4.5'>
         <div
-          className='prf-ob-track'
+          className='flex flex-1 gap-1.25'
           aria-hidden='true'>
           {STEP_LABELS.map((l, i) => (
             <span
               key={l}
-              className={i < step ? 'done' : i === step ? 'on' : ''}
+              className={cn(
+                'h-0.75 flex-1 rounded-full transition-colors duration-(--motion-base) ease-(--ease) motion-reduce:transition-none',
+                i <= step
+                  ? 'bg-primary'
+                  : 'bg-[color-mix(in_oklch,var(--fg)_10%,transparent)]',
+              )}
             />
           ))}
         </div>
-        <span className='prf-ob-count'>
+        <span className='flex-none font-mono text-[10.5px] whitespace-nowrap text-muted-foreground'>
           {step + 1} / {STEP_LABELS.length} · {STEP_LABELS[step]}
         </span>
       </div>
 
-      <div className='prf-ob-main'>
-        {step === 0 && <WelcomeStep onNext={() => setStep(1)} />}
-        {step === 1 && (
-          <ScreenStep
-            onNext={() => setStep(2)}
-            onBack={() => setStep(0)}
-          />
-        )}
-        {step === 2 && (
-          <ByokStep
-            data={data}
-            onNext={() => setStep(3)}
-            onBack={() => setStep(1)}
-          />
-        )}
-        {step === 3 && <DoneStep onDone={() => void finish()} />}
+      <div className='min-h-0 flex-1 overflow-y-auto p-6'>
+        {/* 480px step column; keying on step re-runs the fade per page */}
+        <div
+          key={step}
+          className='mx-auto max-w-120 animate-fade-in'>
+          {step === 0 && <WelcomeStep onNext={() => setStep(1)} />}
+          {step === 1 && (
+            <ScreenStep
+              onNext={() => setStep(2)}
+              onBack={() => setStep(0)}
+            />
+          )}
+          {step === 2 && (
+            <ByokStep
+              data={data}
+              onNext={() => setStep(3)}
+              onBack={() => setStep(1)}
+            />
+          )}
+          {step === 3 && <DoneStep onDone={() => void finish()} />}
+        </div>
       </div>
     </div>
   );
@@ -93,24 +124,30 @@ export const Onboarding = ({ data }: { data: PrefsData }) => {
 const WelcomeStep = ({ onNext }: { onNext: () => void }) => (
   <>
     <img
-      className='prf-ob-mark'
+      className={MARK}
       src='/marvis-mark.svg'
       alt='Marvis mark'
     />
-    <h1>Welcome to Marvis</h1>
-    <p className='lede'>
+    <h1 className={H1}>Welcome to Marvis</h1>
+    <p className={LEDE}>
       A bar that floats over everything, sees what's on your screen, and answers
       in place.
     </p>
-    <div className='prf-ob-list'>
-      <div className='li'>A single bar that drifts with you</div>
-      <div className='li'>Ask about what's on screen — or about your call</div>
-      <div className='li'>Your keys stay on this Mac, under your providers</div>
+    <div className='mt-4 flex flex-col gap-2.5'>
+      <div className='flex items-start gap-2.5 text-[12.5px] text-muted-foreground'>
+        A single bar that drifts with you
+      </div>
+      <div className='flex items-start gap-2.5 text-[12.5px] text-muted-foreground'>
+        Ask about what's on screen — or about your call
+      </div>
+      <div className='flex items-start gap-2.5 text-[12.5px] text-muted-foreground'>
+        Your keys stay on this Mac, under your providers
+      </div>
     </div>
-    <div className='prf-ob-actions'>
+    <div className={ACTIONS}>
       <button
         type='button'
-        className='mv-btn mv-btn-primary'
+        className={cn(BTN_LG, BTN_PRIMARY)}
         onClick={onNext}>
         Set up Marvis
       </button>
@@ -146,37 +183,37 @@ const ScreenStep = ({
 
   return (
     <>
-      <div className='prf-ob-ico'>
-        <ShieldCheckIcon />
+      <div className='mb-3.5 grid size-11 place-items-center rounded-xl bg-fg-2 text-surface'>
+        <ShieldCheckIcon className='size-5' />
       </div>
-      <h1>Grant screen access</h1>
-      <p className='lede'>
+      <h1 className={H1}>Grant screen access</h1>
+      <p className={LEDE}>
         macOS asks once. After that, Marvis keeps a rolling 60-second window at
         4 fps — enough for one screenshot when you ask.
       </p>
-      <div className='prf-ob-actions'>
+      <div className={ACTIONS}>
         <button
           type='button'
-          className='mv-btn mv-btn-outline'
+          className={cn(BTN_LG, BTN_OUTLINE)}
           onClick={onBack}
           disabled={busy}>
           Back
         </button>
         <button
           type='button'
-          className='mv-btn mv-btn-outline'
+          className={cn(BTN_LG, BTN_OUTLINE)}
           onClick={onNext}
           disabled={busy}>
           Not now
         </button>
         <button
           type='button'
-          className='mv-btn mv-btn-primary'
+          className={cn(BTN_LG, BTN_PRIMARY)}
           onClick={() => void grant()}
           disabled={busy}>
           {busy ? (
             <>
-              <span className='mv-spin' />
+              <span className={SPIN} />
               Checking…
             </>
           ) : (
@@ -305,19 +342,24 @@ const ByokStep = ({
 
   return (
     <>
-      <h1>Bring your own key</h1>
-      <p className='lede'>
+      <h1 className={H1}>Bring your own key</h1>
+      <p className={LEDE}>
         Chat and listen run on whichever provider you configure. Keys live in{' '}
-        <span className='num'>~/.marvis/keys.json</span> — readable only by you,
+        <span className={NUM}>~/.marvis/keys.json</span> — readable only by you,
         never in the config file, never in logs.
       </p>
 
-      <div className='prf-ob-pills'>
+      <div className='mt-3.5 mb-3 flex flex-wrap gap-1.5'>
         {PROVIDERS.map((p) => (
           <button
             key={p.id}
             type='button'
-            className={`prf-ob-pill${prov === p.id ? ' is-on' : ''}`}
+            className={cn(
+              'rounded-full border bg-transparent px-3 py-1.5 text-xs font-[550] transition-[border-color,color,background] duration-(--motion-fast) ease-(--ease) motion-reduce:transition-none',
+              prov === p.id
+                ? 'border-primary bg-primary text-primary-foreground'
+                : 'border-border text-foreground hover:border-[color-mix(in_oklch,var(--fg)_30%,var(--border))]',
+            )}
             onClick={() => switchProv(p.id)}>
             {p.label}
           </button>
@@ -325,9 +367,9 @@ const ByokStep = ({
       </div>
 
       {isCompat && (
-        <div className='prf-fields'>
+        <div className='mb-2 flex flex-col gap-2'>
           <input
-            className='key-input'
+            className={FIELD}
             value={name}
             onChange={(e) => setName(e.target.value)}
             placeholder='Provider name — e.g. Groq, Together, vLLM'
@@ -335,7 +377,7 @@ const ByokStep = ({
             aria-label='Compatible provider name'
           />
           <input
-            className='key-input'
+            className={FIELD}
             value={baseUrl}
             onChange={(e) => setBaseUrl(e.target.value)}
             placeholder='Base URL — e.g. https://api.groq.com/openai/v1'
@@ -348,7 +390,7 @@ const ByokStep = ({
 
       {!isLocal && (
         <input
-          className='key-input prf-ob-key'
+          className={FIELD}
           type='password'
           autoComplete='off'
           value={key}
@@ -363,15 +405,15 @@ const ByokStep = ({
         />
       )}
 
-      <div className='prf-ob-actions prf-ob-actions-mid'>
+      <div className='mt-2.5 flex items-center gap-2.5'>
         <button
           type='button'
-          className='mv-btn mv-btn-primary'
+          className={cn(BTN_LG, BTN_PRIMARY)}
           onClick={() => void save()}
           disabled={!canSave}>
           {phase === 'saving' ? (
             <>
-              <span className='mv-spin' />
+              <span className={SPIN} />
               {isLocal ? 'Checking…' : 'Validating…'}
             </>
           ) : (
@@ -379,25 +421,25 @@ const ByokStep = ({
           )}
         </button>
       </div>
-      {err && <p className='prov-err show'>{err}</p>}
+      {err && <p className={PROV_ERR}>{err}</p>}
       {phase === 'saved' && !isLocal && (
-        <p className='prov-ok'>
-          <CheckIcon /> Endpoint verified — key stored.
+        <p className='mt-2 flex items-center gap-1.5 text-[11px] text-accent-text'>
+          <CheckIcon className='size-3.25' /> Endpoint verified — key stored.
         </p>
       )}
       {phase === 'saved' && isLocal && modelList.length === 0 && (
-        <p className='prov-note'>
+        <p className={PROV_NOTE}>
           Daemon answered but lists no models — pull one first.
         </p>
       )}
 
       {phase === 'saved' && (isCompat || isLocal || modelList.length > 0) && (
-        <div className='prf-ob-model'>
-          <span className='lbl'>Model</span>
+        <div className='mt-2.5 flex items-center gap-2'>
+          <span className={LBL}>Model</span>
           {isCompat ? (
             <>
               <input
-                className='key-input'
+                className={FIELD}
                 list='ob-compat-models'
                 value={model}
                 onChange={(e) => setModel(e.target.value)}
@@ -416,7 +458,7 @@ const ByokStep = ({
             </>
           ) : (
             <select
-              className='model-sel'
+              className={MODEL_SEL}
               value={model}
               onChange={(e) => setModel(e.target.value)}
               aria-label='Model'>
@@ -433,22 +475,22 @@ const ByokStep = ({
         </div>
       )}
 
-      <div className='prf-ob-actions'>
+      <div className={ACTIONS}>
         <button
           type='button'
-          className='mv-btn mv-btn-outline'
+          className={cn(BTN_LG, BTN_OUTLINE)}
           onClick={onBack}>
           Back
         </button>
         <button
           type='button'
-          className='mv-btn mv-btn-link'
+          className={cn(BTN_LINK_LG, BTN_LINK)}
           onClick={onNext}>
           Do this later
         </button>
         <button
           type='button'
-          className='mv-btn mv-btn-primary'
+          className={cn(BTN_LG, BTN_PRIMARY)}
           onClick={() => void cont()}
           disabled={phase !== 'saved' || !model.trim()}>
           Continue
@@ -463,20 +505,20 @@ const ByokStep = ({
 const DoneStep = ({ onDone }: { onDone: () => void }) => (
   <>
     <img
-      className='prf-ob-mark'
+      className={MARK}
       src='/marvis-mark.svg'
       alt='Marvis mark'
     />
-    <h1>You're set</h1>
-    <p className='lede'>
-      Marvis is always within reach. <span className='num'>⌘/</span> shows or
-      hides everything; <span className='num'>⌘⏎</span> asks about what's on
+    <h1 className={H1}>You're set</h1>
+    <p className={LEDE}>
+      Marvis is always within reach. <span className={NUM}>⌘/</span> shows or
+      hides everything; <span className={NUM}>⌘⏎</span> asks about what's on
       screen.
     </p>
-    <div className='prf-ob-actions'>
+    <div className={ACTIONS}>
       <button
         type='button'
-        className='mv-btn mv-btn-primary'
+        className={cn(BTN_LG, BTN_PRIMARY)}
         onClick={onDone}>
         Open settings
       </button>

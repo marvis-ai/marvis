@@ -92,8 +92,8 @@ mod tests {
     const BAR: Rect = Rect {
         x: 100.0,
         y: 21.0,
-        w: 353.0,
-        h: 47.0,
+        w: 441.0,
+        h: 59.0,
     };
     const WORK: Rect = Rect {
         x: 0.0,

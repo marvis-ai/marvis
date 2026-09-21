@@ -1,13 +1,15 @@
 {
-  "$schema": "https://turborepo.dev/schema.json",
+  "$schema": "https://v2-11-2.turborepo.dev/schema.json",
   "tasks": {
     "build": {
       "dependsOn": ["^build"],
+      "env": ["WAITLIST_API_URL"],
       "outputs": [".next/**", "!.next/cache/**", "!.next/dev/**", "dist/**"]
     },
     "check-types": {
       "dependsOn": ["^check-types"]
     },
+    "lint": {},
     "test": {},
     "dev": {
       "persistent": true,

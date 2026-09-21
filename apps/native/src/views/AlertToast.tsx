@@ -3,7 +3,7 @@
  * non-resizable; `windows/mod.rs` centers it under the bar).
  *
  * Errors used to render inside the bar pill, but the bar window is a
- * fixed 353×47 frame: an extra row squeezed the pill's content and broke
+ * fixed 441×59 frame: an extra row squeezed the pill's content and broke
  * the capsule⇄input morph. This window carries them instead, so no error
  * can change the bar's layout.
  *
@@ -18,6 +18,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { ShieldAlertIcon, XIcon } from '@marvis/ui';
 import { alertCurrent, alertDismiss, type AlertPayload } from '../lib/commands';
 import { EV_ALERT_SHOW, useTauriEvent } from '../lib/events';
+import { ICON_BTN, cn } from '../lib/classes';
 
 /** How long an alert stays up. */
 const AUTO_DISMISS_MS = 6000;
@@ -52,21 +53,23 @@ const AlertToast = () => {
 
   return (
     <div className='p-1'>
-      <div className='mv-alert'>
-        <header className='mv-alert-head'>
-          <ShieldAlertIcon className='mv-alert-ico' />
-          <p className='mv-alert-title'>Marvis ran into a problem</p>
+      <div className='flex flex-col gap-1.5 rounded-[14px] border border-[color-mix(in_oklch,var(--destructive)_28%,var(--border))] bg-[color-mix(in_oklch,var(--surface)_92%,transparent)] px-2.75 pt-2.25 pb-2.5 shadow-[0_18px_40px_-16px_color-mix(in_oklch,var(--fg)_34%,transparent)] backdrop-blur-lg'>
+        <header className='flex items-center gap-1.75'>
+          <ShieldAlertIcon className='size-3.75 flex-none text-destructive' />
+          <p className='min-w-0 flex-1 text-[12.5px] font-semibold'>
+            Marvis ran into a problem
+          </p>
           <button
             type='button'
-            className='mv-icon-btn shrink-0'
+            className={cn(ICON_BTN, 'shrink-0')}
             title='Dismiss'
             aria-label='Dismiss'
             onClick={dismiss}>
-            <XIcon />
+            <XIcon className='size-4' />
           </button>
         </header>
         <p
-          className='mv-alert-msg'
+          className='line-clamp-2 text-xs leading-[1.45] break-words text-muted-foreground select-text'
           title={alert.message}>
           {alert.message}
         </p>

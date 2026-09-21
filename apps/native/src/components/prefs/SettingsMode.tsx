@@ -18,6 +18,7 @@ import { GeneralTab } from './GeneralTab';
 import { HotkeysTab } from './HotkeysTab';
 import { PrivacyTab } from './PrivacyTab';
 import { ProvidersTab } from './ProvidersTab';
+import { cn } from '../../lib/classes';
 import type { PrefsData } from './types';
 
 const TABS = [
@@ -35,28 +36,36 @@ export const SettingsMode = ({ data }: { data: PrefsData }) => {
   const [tab, setTab] = useState<TabId>('general');
 
   return (
-    <div className='prf-body'>
+    <div className='grid min-h-0 flex-1 grid-cols-[168px_1fr]'>
       <nav
-        className='prf-side'
+        className='flex flex-col gap-0.5 border-r border-border bg-[color-mix(in_oklch,var(--bg)_55%,var(--surface))] px-2 py-2.5'
         aria-label='Settings sections'>
         {TABS.map(({ id, label, icon: Icon }) => (
           <button
             key={id}
             type='button'
-            className={`prf-side-item${tab === id ? ' is-on' : ''}`}
+            className={cn(
+              'flex w-full items-center gap-2 rounded-[7px] border-0 bg-transparent px-2.25 py-1.5 text-left text-[12.5px] font-medium text-foreground transition-[background,color] duration-(--motion-fast) ease-(--ease) hover:bg-fg-soft motion-reduce:transition-none',
+              tab === id && 'bg-[color-mix(in_oklch,var(--fg)_8%,transparent)]',
+            )}
             onClick={() => setTab(id)}>
-            <Icon />
+            <Icon
+              className={cn(
+                'size-3.75 flex-none',
+                tab === id ? 'text-accent-text' : 'text-muted-foreground',
+              )}
+            />
             {label}
           </button>
         ))}
-        <span className='prf-side-spacer' />
-        <span className='prf-side-foot'>
+        <span className='flex-1' />
+        <span className='px-2.25 pt-2 pb-0.5 text-center font-mono text-[10px] leading-[1.7] text-muted-foreground'>
           @2026 Marvis AI
           <br />
           made with 💗
         </span>
       </nav>
-      <div className='prf-main'>
+      <div className='min-w-0 overflow-y-auto px-6 pt-5 pb-5.5'>
         {tab === 'general' && <GeneralTab data={data} />}
         {tab === 'bar' && <BarTab />}
         {tab === 'providers' && <ProvidersTab data={data} />}

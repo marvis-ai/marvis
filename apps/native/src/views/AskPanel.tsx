@@ -38,6 +38,19 @@ import {
   EV_ASK_STATE,
   useTauriEvent,
 } from '../lib/events';
+import {
+  ASK_MD,
+  BTN_OUTLINE,
+  BTN_SM,
+  CHIP,
+  EMPTY,
+  ICON_BTN,
+  PANEL,
+  PANEL_BODY,
+  PANEL_HEAD,
+  SPIN,
+  cn,
+} from '../lib/classes';
 
 type AskPhase = 'loading' | 'streaming' | 'idle';
 
@@ -72,11 +85,6 @@ const AskPanel = () => {
   const scrollRef = useRef<HTMLDivElement>(null);
   /** Autoscroll is on until the user scrolls away from the bottom. */
   const pinnedRef = useRef(true);
-
-  useEffect(() => {
-    document.body.classList.add('ask');
-    return () => document.body.classList.remove('ask');
-  }, []);
 
   // The model chip is honest metadata — the active provider+model pair.
   useEffect(() => {
@@ -175,37 +183,37 @@ const AskPanel = () => {
       <div
         ref={panelRef}
         style={{ maxHeight: PANEL_MAX }}
-        className='mv-panel'>
-        <header className='mv-panel-head'>
+        className={PANEL}>
+        <header className={PANEL_HEAD}>
           <p
-            className='mv-panel-q'
+            className='min-w-0 flex-1 text-xs leading-[1.5] font-[550] break-words whitespace-pre-wrap line-clamp-2 select-text'
             title={question}>
             {question || 'Ask Marvis'}
           </p>
           <button
             type='button'
-            className='mv-icon-btn -mt-0.5 shrink-0'
+            className={cn(ICON_BTN, '-mt-0.5 shrink-0')}
             title='Settings'
             aria-label='Settings'
             onClick={() => void windowShowSettings().catch(() => {})}>
-            <SettingsIcon />
+            <SettingsIcon className='size-4' />
           </button>
           <button
             type='button'
-            className='mv-icon-btn -mt-0.5 shrink-0'
+            className={cn(ICON_BTN, '-mt-0.5 shrink-0')}
             title='Close'
             aria-label='Close'
             onClick={() => void askClose().catch(() => {})}>
-            <XIcon />
+            <XIcon className='size-4' />
           </button>
         </header>
         {error && (
-          <div className='mv-panel-err'>
-            <span className='err-msg'>{error.message}</span>
+          <div className='flex items-center gap-2 border-b border-border bg-[color-mix(in_oklch,var(--destructive)_9%,transparent)] px-3 py-2 text-xs text-destructive'>
+            <span className='min-w-0 flex-1 break-words'>{error.message}</span>
             {error.needsSetup && (
               <button
                 type='button'
-                className='mv-btn mv-btn-outline'
+                className={cn(BTN_SM, BTN_OUTLINE)}
                 onClick={() => void windowShowSettings().catch(() => {})}>
                 Open settings
               </button>
@@ -215,15 +223,15 @@ const AskPanel = () => {
         <div
           ref={scrollRef}
           onScroll={onScroll}
-          className='mv-panel-body'>
+          className={PANEL_BODY}>
           {phase === 'loading' && (
-            <div className='mv-thinking'>
-              <span className='mv-spin' />
+            <div className='flex items-center gap-2 py-0.5 text-xs text-muted-foreground'>
+              <span className={SPIN} />
               Thinking…
             </div>
           )}
           {response && (
-            <div className='ask-md'>
+            <div className={ASK_MD}>
               <ReactMarkdown
                 remarkPlugins={[remarkGfm]}
                 disallowedElements={['img']}
@@ -243,13 +251,15 @@ const AskPanel = () => {
               </ReactMarkdown>
             </div>
           )}
-          {phase === 'streaming' && <span className='mv-caret' />}
+          {phase === 'streaming' && (
+            <span className='ml-0.5 inline-block h-3.25 w-1.75 animate-caret bg-foreground align-[-2px] motion-reduce:animate-none' />
+          )}
           {phase === 'idle' && !response && !error && (
-            <p className='mv-empty'>Ask Marvis from the bar.</p>
+            <p className={EMPTY}>Ask Marvis from the bar.</p>
           )}
           {phase === 'idle' && response && model && (
-            <div className='mv-chiprow'>
-              <span className='mv-chip'>
+            <div className='mt-2.5 flex flex-wrap gap-1.5'>
+              <span className={CHIP}>
                 {model.model} · {model.provider}
               </span>
             </div>

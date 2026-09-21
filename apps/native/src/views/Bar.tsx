@@ -1,12 +1,12 @@
 /**
- * The 353×47 always-on-top bar (`?view=bar`). The window is transparent,
+ * The 441×59 always-on-top bar (`?view=bar`). The window is transparent,
  * frameless and non-resizable, so every state renders inside the same
  * pill — gate states can't grow the window, and `window_adjust_height`
  * is panel-only (windows/mod.rs).
  *
- * The pill itself morphs (DESIGN.md §6): at rest it's the 104px capsule —
+ * The pill itself morphs (DESIGN.md §6): at rest it's the 130px capsule —
  * iris + camera + mic — and clicking the iris, typing, or entering the
- * permission gate card opens the 345px input bar, which also carries the
+ * permission gate card opens the 431px input bar, which also carries the
  * settings gear (the capsule has no room for a fourth control; the
  * tray's Settings item and `Cmd+,` reach it from any state). All states
  * share one DOM tree so the morph is a class-driven transition, never a
@@ -26,7 +26,7 @@
  * (input/button) block it, so inputs and buttons stay usable.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { FormEvent } from 'react';
+import type { SubmitEvent } from 'react';
 import {
   ArrowLeftIcon,
   CameraIcon,
@@ -54,6 +54,14 @@ import {
 } from '../lib/events';
 import { Iris } from '../components/Iris';
 import { RetryCard } from '../components/RetryCard';
+import {
+  BTN_LINK,
+  BTN_LINK_SM,
+  BTN_PRIMARY,
+  BTN_SM,
+  ICON_BTN,
+  cn,
+} from '../lib/classes';
 
 /** Mirrors `app_gate` in lib.rs so the first render doesn't wait on `app:state`. */
 const gateFor = (screen: boolean): Gate =>
@@ -70,11 +78,11 @@ const raise = (message: string) => void alertShow(message).catch(() => {});
  */
 const grip = (
   <span
-    className='mv-grip'
+    className='-mx-0.75 grid w-3.5 max-w-0 flex-none cursor-grab place-items-center overflow-hidden text-muted-foreground opacity-0 transition-[max-width_var(--motion-base)_var(--ease),opacity_var(--motion-fast)_var(--ease),margin-inline_var(--motion-base)_var(--ease)] group-hover/bar:mx-0 group-hover/bar:max-w-3.5 group-hover/bar:opacity-100 active:cursor-grabbing motion-reduce:transition-none'
     data-tauri-drag-region='deep'
     title='Drag'
     aria-hidden='true'>
-    <GripVerticalIcon />
+    <GripVerticalIcon className='size-3.25' />
   </span>
 );
 
@@ -91,10 +99,10 @@ const edgeFor = async (): Promise<Edge> => {
     if (!mon) {
       return 'top';
     }
-    // All physical pixels: window is a logical 353×47, so scale up.
+    // All physical pixels: window is a logical 441×59, so scale up.
     const scale = mon.scaleFactor;
-    const cx = pos.x + (353 * scale) / 2;
-    const cy = pos.y + (47 * scale) / 2;
+    const cx = pos.x + (441 * scale) / 2;
+    const cy = pos.y + (59 * scale) / 2;
     const wa = mon.workArea;
     const dTop = Math.abs(cy - wa.position.y);
     const dBottom = Math.abs(wa.position.y + wa.size.height - cy);
@@ -120,7 +128,7 @@ const Bar = () => {
   const inputRef = useRef<HTMLInputElement>(null);
 
   // Capsule ⇄ input morph: the gate card and boot errors take the full
-  // 345px pill; `main` rests as the capsule until the iris opens it or
+  // 431px pill; `main` rests as the capsule until the iris opens it or
   // the user starts typing on the focused window.
   const expanded = bootError
     ? true
@@ -208,7 +216,7 @@ const Bar = () => {
     }
   };
 
-  const submitAsk = (e: FormEvent) => {
+  const submitAsk = (e: SubmitEvent<HTMLFormElement>) => {
     e.preventDefault();
     const t = text.trim();
     if (!t) {
@@ -219,12 +227,19 @@ const Bar = () => {
     void askSend(t).catch(() => raise('Send failed'));
   };
 
-  const pill = `mv-bar${expanded ? ' is-input' : ' is-mini'}`;
+  const inner = cn(
+    'flex min-h-0 flex-1 items-center gap-1.5',
+    expanded ? 'px-2.75' : 'px-1.75',
+  );
+  const pill = cn(
+    'group/bar flex h-12.25 flex-none flex-col justify-center rounded-full border border-border bg-[color-mix(in_oklch,var(--surface)_80%,transparent)] backdrop-blur-[14px] select-none animate-breath-top group-data-[pos=bottom]/stage:animate-breath-bottom group-data-[pos=left]/stage:animate-breath-left group-data-[pos=right]/stage:animate-breath-right transition-[width,border-color,box-shadow] duration-(--motion-base) ease-(--ease) motion-reduce:animate-none motion-reduce:transition-none',
+    expanded ? 'w-107.75' : 'w-32.5 hover:w-37.5',
+  );
   const body = () => {
     if (bootError) {
       return (
         <div
-          className='mv-bar-inner justify-center'
+          className={cn(inner, 'justify-center')}
           data-tauri-drag-region>
           {grip}
           <RetryCard onRetry={() => void bootstrap()} />
@@ -234,29 +249,29 @@ const Bar = () => {
     if (gate === 'needs_permission') {
       return (
         <div
-          className='mv-bar-inner'
+          className={inner}
           data-tauri-drag-region>
           {grip}
           <ShieldAlertIcon
-            className='mv-gate-ico'
+            className='size-3.75 flex-none text-muted-foreground'
             data-tauri-drag-region
           />
           <span
-            className='mv-bar-label'
+            className='min-w-0 flex-1 truncate text-xs text-muted-foreground'
             title='Marvis needs screen recording to see your screen'
             data-tauri-drag-region>
             Screen recording needed
           </span>
           <button
             type='button'
-            className='mv-btn mv-btn-primary'
+            className={cn(BTN_SM, BTN_PRIMARY)}
             onClick={() => void grantScreen()}
             disabled={busy}>
             Grant
           </button>
           <button
             type='button'
-            className='mv-btn mv-btn-link'
+            className={cn(BTN_LINK_SM, BTN_LINK)}
             onClick={() => void permissionsOpenPrefs('Privacy_ScreenCapture')}>
             Open settings
           </button>
@@ -268,18 +283,18 @@ const Bar = () => {
     return (
       <form
         onSubmit={submitAsk}
-        className='mv-bar-inner'
+        className={inner}
         data-tauri-drag-region>
         {grip}
         <button
           type='button'
-          className='mv-icon-btn mv-ask'
+          className={cn(ICON_BTN, 'relative')}
           aria-label={open ? 'Back to capsule' : 'Ask Marvis'}
           onClick={() => (open ? collapse() : setOpen(true))}
           disabled={gate !== 'main'}>
           <Iris />
-          <span className='mv-back'>
-            <ArrowLeftIcon />
+          <span className='pointer-events-none absolute inset-0 grid -rotate-90 scale-[0.4] place-items-center opacity-0 transition-[rotate_var(--motion-base)_var(--ease)_55ms,scale_var(--motion-base)_var(--ease)_55ms,opacity_var(--motion-fast)_var(--ease)_55ms] group-data-[expanded]/bar:rotate-none group-data-[expanded]/bar:scale-100 group-data-[expanded]/bar:opacity-100 motion-reduce:transition-none'>
+            <ArrowLeftIcon className='size-5' />
           </span>
         </button>
         <input
@@ -289,50 +304,57 @@ const Bar = () => {
           onFocus={() => gate === 'main' && setOpen(true)}
           placeholder='Ask Marvis…'
           aria-label='Ask Marvis'
-          className='mv-input'
+          className={cn(
+            'min-w-0 flex-1 self-stretch border-0 bg-transparent text-[12.5px] text-foreground caret-accent outline-none select-text placeholder:text-muted-foreground focus-visible:shadow-none transition-[max-width_var(--motion-base)_var(--ease),opacity_var(--motion-fast)_var(--ease),margin-inline_var(--motion-base)_var(--ease)] motion-reduce:transition-none',
+            expanded
+              ? 'max-w-80'
+              : 'pointer-events-none -mx-1.5 max-w-0 opacity-0',
+          )}
         />
         <button
           type='button'
-          className='mv-icon-btn'
+          className={ICON_BTN}
           aria-label='Ask about the screen'
           title='Ask about the screen'
           disabled={gate !== 'main'}
           onClick={() =>
             void askSendScreenOnly().catch(() => raise('Send failed'))
           }>
-          <CameraIcon />
+          <CameraIcon className='size-4' />
         </button>
         <button
           type='button'
-          className='mv-icon-btn mv-mic'
+          className={ICON_BTN}
           aria-label='Listen — arrives in Phase 2'
           title='Listen — arrives in Phase 2'
           disabled>
-          <MicIcon />
+          <MicIcon className='size-4' />
         </button>
-        {/* Collapses to nothing in the capsule (no room in 104px) — the
-            tray's Settings item and Cmd+, reach it from any state. */}
-        <button
-          type='button'
-          className='mv-icon-btn mv-gear'
-          aria-label='Settings'
-          title='Settings (⌘,)'
-          tabIndex={expanded ? 0 : -1}
-          disabled={gate !== 'main'}
-          onClick={() => void windowShowSettings().catch(() => {})}>
-          <SettingsIcon />
-        </button>
+        {/* Only rendered in the input bar — the 130px capsule has no room
+            for a fourth control (tray menu + Cmd+, reach it anyway). */}
+        {expanded && (
+          <button
+            type='button'
+            className={ICON_BTN}
+            aria-label='Settings'
+            title='Settings (⌘,)'
+            disabled={gate !== 'main'}
+            onClick={() => void windowShowSettings().catch(() => {})}>
+            <SettingsIcon className='size-4' />
+          </button>
+        )}
       </form>
     );
   };
 
   return (
     <div
-      className='mv-stage'
+      className='group/stage flex h-full flex-col items-center justify-center p-1'
       data-pos={edge}
       data-tauri-drag-region>
       <div
         className={pill}
+        data-expanded={expanded || undefined}
         data-tauri-drag-region='deep'>
         {body()}
       </div>

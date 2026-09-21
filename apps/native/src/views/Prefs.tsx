@@ -68,9 +68,7 @@ const Prefs = () => {
   }, []);
 
   useEffect(() => {
-    document.body.classList.add('prefs');
     void bootstrap();
-    return () => document.body.classList.remove('prefs');
   }, [bootstrap]);
 
   useTauriEvent<{ mode: string }>(EV_PREFS_MODE, (p) =>
@@ -99,9 +97,9 @@ const Prefs = () => {
   };
 
   return (
-    <div className='prf'>
+    <div className='relative flex h-full flex-col overflow-hidden bg-background text-foreground'>
       {bootError ? (
-        <div className='prf-boot-err'>
+        <div className='grid flex-1 place-items-center p-5'>
           <RetryCard onRetry={() => void bootstrap()} />
         </div>
       ) : mode === 'onboarding' ? (

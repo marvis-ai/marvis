@@ -10,6 +10,7 @@ import {
   windowRecenter,
   windowSnapEdge,
 } from '../../lib/commands';
+import { BTN_LG, BTN_OUTLINE, H2, PRF_ROWS, SUB, cn } from '../../lib/classes';
 import { PrefRow, Seg } from './bits';
 
 type Edge = 'top' | 'bottom' | 'left' | 'right';
@@ -42,12 +43,12 @@ export const BarTab = () => {
 
   return (
     <>
-      <h2>Bar</h2>
-      <p className='sub'>
+      <h2 className={H2}>Bar</h2>
+      <p className={SUB}>
         Drag the bar anywhere — it stays where you leave it, across restarts.
       </p>
 
-      <div className='prf-rows'>
+      <div className={PRF_ROWS}>
         <PrefRow
           label='Snap to edge'
           sub='Hug a work-area edge with a 12 px margin.'>
@@ -69,7 +70,7 @@ export const BarTab = () => {
           last>
           <button
             type='button'
-            className='mv-btn mv-btn-outline'
+            className={cn(BTN_LG, BTN_OUTLINE)}
             onClick={recenter}>
             Re-center
           </button>

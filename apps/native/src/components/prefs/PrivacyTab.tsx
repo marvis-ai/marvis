@@ -7,6 +7,17 @@
  */
 import { useRef, useState } from 'react';
 import { sessionDelete, sessionList } from '../../lib/commands';
+import {
+  BTN_DANGER,
+  BTN_LG,
+  BTN_OUTLINE,
+  H2,
+  NUM,
+  PROV_NOTE,
+  PRF_ROWS,
+  SUB,
+  cn,
+} from '../../lib/classes';
 import { PrefRow } from './bits';
 
 const CONFIRM_MS = 4000;
@@ -38,13 +49,13 @@ export const PrivacyTab = () => {
 
   return (
     <>
-      <h2>Privacy &amp; data</h2>
-      <p className='sub'>
+      <h2 className={H2}>Privacy &amp; data</h2>
+      <p className={SUB}>
         Three files on disk, nothing in a cloud. Windows are content-protected —
         they don't appear in screenshots or screen share.
       </p>
 
-      <div className='prf-filetree'>
+      <div className='mb-3.5 overflow-x-auto rounded-[10px] border border-border bg-[color-mix(in_oklch,var(--bg)_60%,var(--surface))] px-3.5 py-3 font-mono text-[11.5px] leading-[1.9] whitespace-pre text-foreground [&_em]:not-italic [&_em]:text-muted-foreground'>
         {'~/.marvis/\n├── config.toml   '}
         <em>0644 — models, hotkeys, bar position</em>
         {'\n├── keys.json     '}
@@ -53,38 +64,49 @@ export const PrivacyTab = () => {
         <em>sessions + messages, sqlite</em>
       </div>
 
-      <div className='prf-statrow'>
-        <div className='prf-stat'>
-          <div className='s-num num'>4 fps</div>
-          <div className='s-lbl'>
+      <div className='my-3.5 grid grid-cols-3 gap-2.5'>
+        <div className='border-t border-foreground pt-2'>
+          <div
+            className={cn(NUM, 'text-[22px] font-semibold tracking-[-0.02em]')}>
+            4 fps
+          </div>
+          <div className='mt-0.5 text-[11px] text-muted-foreground'>
             screen capture, hash-deduped — unchanged frames drop
           </div>
         </div>
-        <div className='prf-stat'>
-          <div className='s-num num'>60 s</div>
-          <div className='s-lbl'>ring buffer — 120 frames, capped at 64 MB</div>
+        <div className='border-t border-foreground pt-2'>
+          <div
+            className={cn(NUM, 'text-[22px] font-semibold tracking-[-0.02em]')}>
+            60 s
+          </div>
+          <div className='mt-0.5 text-[11px] text-muted-foreground'>
+            ring buffer — 120 frames, capped at 64 MB
+          </div>
         </div>
-        <div className='prf-stat'>
-          <div className='s-num num'>0</div>
-          <div className='s-lbl'>
+        <div className='border-t border-foreground pt-2'>
+          <div
+            className={cn(NUM, 'text-[22px] font-semibold tracking-[-0.02em]')}>
+            0
+          </div>
+          <div className='mt-0.5 text-[11px] text-muted-foreground'>
             accounts, sync services, or Marvis-side servers
           </div>
         </div>
       </div>
 
-      <div className='prf-rows'>
+      <div className={PRF_ROWS}>
         <PrefRow
           label='Session history'
           sub='ask and listen sessions in marvis.db. Deletes are permanent.'
           last>
           <button
             type='button'
-            className='mv-btn mv-btn-outline mv-btn-danger'
+            className={cn(BTN_LG, BTN_OUTLINE, BTN_DANGER)}
             onClick={() => void clearHistory()}>
             {confirming ? 'Click to confirm' : 'Clear history'}
           </button>
         </PrefRow>
-        {note && <p className='prov-note'>{note}</p>}
+        {note && <p className={PROV_NOTE}>{note}</p>}
       </div>
     </>
   );

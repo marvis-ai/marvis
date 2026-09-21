@@ -2,6 +2,7 @@ import { Badge } from '@marvis/ui';
 import { Fragment, type ReactNode } from 'react';
 import { MvAskPanel, MvBar } from './mv';
 import { PreLines } from './pre-lines';
+import { WaitlistDialog } from './waitlist-dialog';
 
 /* The mock editor's code pane relies on white-space: pre-wrap, so the
  * 16-space source indent is content — PreLines emits it explicitly. */
@@ -57,20 +58,20 @@ export const Hero = () => (
     <div className='container hero-center'>
       <p className='eyebrow'>Private / Personal AI for All</p>
       <h1 className='hero-h1'>
-        Ask anything about what&rsquo;s on your screen.
+        Ask anything about what&rsquo;s on your screen — and keep every frame
+        on your machine.
       </h1>
       <p className='lead'>
-        A translucent bar floating over your workspace. It sees your screen —
-        only with permission — and your keys, history, and screen data never
-        leave your machine.
+        A floating bar for developers and power users who live at the keyboard.
+        It sees your screen — only with permission — and your keys, history,
+        and screen data never leave your machine.
       </p>
       <div className='hero-cta'>
-        <a
-          className='btn btn-primary'
-          href='#download'
-          data-od-id='hero-cta-primary'>
-          Download for macOS
-        </a>
+        <WaitlistDialog
+          triggerClassName='btn btn-primary'
+          triggerLabel='Join the waitlist'
+          triggerDataOdId='hero-cta-primary'
+        />
         <a
           className='btn btn-ghost btn-arrow'
           href='#privacy'
@@ -78,6 +79,10 @@ export const Hero = () => (
           How it stays private
         </a>
       </div>
+      <p className='meta hero-note'>
+        macOS build in private testing — you&rsquo;ll get a download link by
+        email.
+      </p>
       <div className='hero-meta'>
         <Badge
           variant='outline'

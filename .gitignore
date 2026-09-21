@@ -11,8 +11,12 @@ node_modules
 dist
 dist-ssr
 *.local
+.env
+.env.*
 .next
 .superpowers
+.open-next
+.wrangler
 
 # Editor directories and files
 .vscode/*
@@ -27,3 +31,4 @@ dist-ssr
 
 # turbo
 .turbo
+.neon

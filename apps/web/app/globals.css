@@ -1,4 +1,10 @@
 @import 'tailwindcss';
+@import 'tw-animate-css';
+@import 'shadcn/tailwind.css';
+
+/* The ui package lives outside this app's auto-scan root — pull its source
+   in so Tailwind generates the shadcn utilities the waitlist dialog uses. */
+@source '../../../packages/ui/src';
 
 /* Marvis design system — ported from assets/marvis-landing.html (see design.md).
  * Kept unlayered so these tokens and rules take precedence over Tailwind's
@@ -743,6 +749,10 @@ h3 {
   gap: var(--space-3);
   flex-wrap: wrap;
   justify-content: center;
+}
+
+.hero-note {
+  margin-top: var(--space-4);
 }
 
 /* ─── hero scene: editor + floating bar ───────────────────────── */
@@ -1670,4 +1680,195 @@ h3 {
     oklch(0.27 0.018 240),
     oklch(0.2 0.014 240)
   );
+}
+
+/* ─── waitlist dialog: site design-system island ──────────────────
+ * The dialog's controls are shadcn (base-ui) and read shadcn's `--*`
+ * variable schema. The bridge below rebinds that schema to the site's
+ * Notion-derived tokens, and the rules that follow restate what tokens
+ * can't express (scrim, elevation, display type) — so the dialog reads as
+ * part of the page, not as a detached piece of the app UI.
+ *
+ * The site's `--accent` is deliberately NOT redeclared: shadcn's
+ * `--primary` reads it straight through, keeping the brand slate the
+ * single source of truth. Every rule below is unlayered, so it wins over
+ * Tailwind's utilities without `!important`. */
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --font-heading: var(--font-display);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
+}
+
+/* shadcn schema → site tokens, scoped to the dialog.
+ * `--accent` (brand slate) and `--muted` (warm-gray text) are deliberately
+ * left intact — shadcn's `--primary` and the description copy read them
+ * straight through, so the site stays the single source of truth. */
+[data-slot='dialog-content'] {
+  --background: var(--bg);
+  --foreground: var(--fg);
+  --card: var(--bg);
+  --card-foreground: var(--fg-2);
+  --popover: var(--bg);
+  --popover-foreground: var(--fg);
+  --secondary: var(--surface);
+  --secondary-foreground: var(--fg-2);
+  --muted-foreground: var(--meta);
+  --primary: var(--accent);
+  --primary-foreground: var(--accent-on);
+  --destructive: var(--danger);
+  --input: var(--border);
+  --ring: var(--accent);
+
+  /* the site's .card, at dialog scale */
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--elev-raised);
+  gap: 20px;
+  padding: 28px;
+  color: var(--fg);
+  font-family: var(--font-body);
+  font-size: 15px;
+  line-height: var(--leading-body);
+}
+
+/* scrim — warm and quiet; the page never goes black */
+[data-slot='dialog-overlay'] {
+  background: color-mix(in oklab, var(--fg-2) 40%, transparent);
+}
+
+/* header — display type at the site's h3 scale */
+[data-slot='dialog-content'] .eyebrow {
+  margin: 0;
+}
+
+[data-slot='dialog-content'] [data-slot='dialog-title'] {
+  font-family: var(--font-display);
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1.27;
+  letter-spacing: -0.01em;
+  color: var(--fg-2);
+}
+
+[data-slot='dialog-content'] [data-slot='dialog-description'] {
+  font-size: 15px;
+  line-height: var(--leading-body);
+  color: var(--muted);
+  max-width: 44ch;
+}
+
+/* form controls — 4px radius, whisper border, slate focus */
+[data-slot='dialog-content'] [data-slot='label'] {
+  color: var(--fg-2);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  letter-spacing: 0;
+}
+
+[data-slot='dialog-content'] [data-slot='input'] {
+  height: 38px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-body);
+  font-size: 15px;
+  transition:
+    border-color var(--motion-fast) var(--ease-standard),
+    box-shadow var(--motion-fast) var(--ease-standard);
+}
+
+[data-slot='dialog-content'] [data-slot='input']::placeholder {
+  color: var(--meta);
+}
+
+[data-slot='dialog-content'] [data-slot='input']:hover {
+  border-color: color-mix(in oklab, var(--fg) 24%, transparent);
+}
+
+[data-slot='dialog-content'] [data-slot='input']:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: var(--focus-ring);
+}
+
+/* the dialog's submit reuses the page's .btn language, at full width */
+[data-slot='dialog-content'] .btn {
+  justify-content: center;
+  width: 100%;
+  height: auto;
+}
+
+[data-slot='dialog-content'] .waitlist-error {
+  color: var(--danger);
+  font-size: var(--text-sm);
+}
+
+/* close — a quiet glyph, not a chrome button */
+[data-slot='dialog-content'] .waitlist-close {
+  position: absolute;
+  top: 18px;
+  right: 18px;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-sm);
+  color: var(--meta);
+  transition:
+    color var(--motion-fast) var(--ease-standard),
+    background var(--motion-fast) var(--ease-standard);
+}
+
+[data-slot='dialog-content'] .waitlist-close:hover {
+  color: var(--fg);
+  background: color-mix(in oklab, var(--fg) 5%, transparent);
+}
+
+[data-slot='dialog-content'] .waitlist-close:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+[data-slot='dialog-content'] .waitlist-close svg {
+  width: 16px;
+  height: 16px;
+}
+
+/* success — confirmation in the page's pill language */
+[data-slot='dialog-content'] .waitlist-done {
+  display: grid;
+  justify-items: start;
+  gap: 14px;
+}
+
+[data-slot='dialog-content'] .waitlist-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 15px;
 }

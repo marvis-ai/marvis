@@ -165,7 +165,9 @@ from the bar.
 ### Settings window (`assets/marvis-settings-window.html`)
 
 - macOS frame: traffic lights, centered dim title, **sidebar** (settings
-  mode) with mono section footer, main column of `pref-row`s.
+  mode: General / Bar / Providers / Hotkeys / Privacy & data / About,
+  mono credit footer `@2026 Marvis AI made with 💗`), main column of
+  `pref-row`s. "Re-run setup" lives in About → Setup.
 - **Onboarding = step-by-step wizard, no sidebar.** A 4-segment progress
   track across the window top (`ob-seg` fills `--primary`) + mono counter
   `2 / 4 · screen access`; steps centered in a ~480px column with Back /
@@ -184,11 +186,25 @@ from the bar.
 - **Provider rows are the failover chain** — Settings → Providers lists
   them in priority order. The grip at the row's left edge drags to
   re-rank (`providers.order`); the switch on the right toggles a provider
-  out of the chain (`providers.disabled`) without deleting its key.
+  out of the chain (`providers.disabled`) without deleting its key, and
+  only enables when the provider is usable (key/endpoint/model present).
   Disabled rows dim but stay editable. A "primary" tag marks the provider
   that would answer right now — the topmost enabled, configured one.
-- **Accent swatch** — General tab row: `sw-chip` dot in `--accent` + mono
-  `#3a7294`.
+- **Bar tab** — the four-edge snap picker (`top / bottom / left / right`)
+  animates the bar to that work-area edge. The bar also drags anywhere
+  with the pointer, and every move persists `window.bar_x/y` after a
+  400 ms debounce — position is remembered with no "remember" row.
+- **Accent** — General tab row: a native color well writes `app.accent`
+  (`#rrggbb`, `#3a7294` default); theme.ts applies it to `--accent` and
+  every token downstream (`--primary`, soft/text variants, focus ring)
+  derives live. The "one hue" rule holds — the user just picks which hue.
+- **Hotkeys are all rebindable** — the four actions
+  (`toggle_visibility` `Cmd+/`, `next_step` `Cmd+Enter`, `screen_only`
+  `Cmd+Shift+S`, `show_settings` `Cmd+,`) live in `[hotkeys]`; clicking a
+  binding captures the next chord (modifier required, Esc cancels) and
+  writes it through `config_set`, which delta-swaps the registered set.
+  No fixed move/scroll/click-through/display shortcuts — the bar moves
+  by drag or the Bar-tab picker.
 - Appearance control (Auto / Light / Dark segmented) lives in General;
   `is-dark` on the stage flips the whole scene.
 

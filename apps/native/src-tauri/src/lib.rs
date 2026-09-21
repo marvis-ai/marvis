@@ -29,8 +29,6 @@
 //!   `{"keys": [[provider, "…last4"], …]}`, broadcast after every key
 //!   mutation (`set_key`/`remove_key`). Keys live in plaintext
 //!   `keys.json` — there is no lock state.
-//! - `ask:scroll` `{"dir": "up"|"down"}` — to the `ask` window only,
-//!   fired by the scroll hotkeys.
 //! - `alert:show` `{"message": String}` — to the `alert` window only;
 //!   the toast that replaced the bar's inline error row
 //!   (`alert_current` re-reads it, `alert_dismiss` clears it).
@@ -49,7 +47,6 @@ mod storage;
 mod tray;
 mod windows;
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use parking_lot::Mutex;
@@ -123,7 +120,6 @@ pub struct AppState {
     /// via `alert_current` — an `alert:show` emit that races the
     /// webview's listener would otherwise be lost.
     alert: Mutex<Option<serde_json::Value>>,
-    click_through: AtomicBool,
 }
 
 impl AppState {
@@ -175,7 +171,6 @@ impl AppState {
             gate: Mutex::new(Gate::NeedsPermission),
             gate_transition: Mutex::new(()),
             alert: Mutex::new(None),
-            click_through: AtomicBool::new(false),
         }
     }
 }
@@ -313,7 +308,7 @@ fn hotkey_dispatch(app: &AppHandle) -> impl Fn(hotkey::Action) + Send + Sync + '
         let state = app.state::<AppState>();
         match action {
             hotkey::Action::ToggleVisibility => state.pool.lock().toggle_all(),
-            // `next_step` fires the screen-only ask (Task-11 brief's table).
+            // `next_step` and `screen_only` fire the screen-only ask.
             // The gate guard mirrors `ask_send_screen_only`'s — during
             // onboarding (gate != Main) the ask panel doesn't even exist.
             hotkey::Action::NextStep | hotkey::Action::ScreenOnly => {
@@ -321,19 +316,6 @@ fn hotkey_dispatch(app: &AppHandle) -> impl Fn(hotkey::Action) + Send + Sync + '
                     state.ask.send_screen_only(&app, &state.deps());
                 }
             }
-            hotkey::Action::Move(dir) => state.pool.lock().move_bar_step(dir),
-            hotkey::Action::ToggleClickThrough => {
-                let on = !state.click_through.fetch_not(Ordering::Relaxed);
-                state.pool.lock().set_click_through(on);
-            }
-            hotkey::Action::ScrollUp => {
-                let _ = app.emit_to("ask", "ask:scroll", json!({ "dir": "up" }));
-            }
-            hotkey::Action::ScrollDown => {
-                let _ = app.emit_to("ask", "ask:scroll", json!({ "dir": "down" }));
-            }
-            hotkey::Action::MoveToDisplay(n) => state.pool.lock().move_bar_to_display(n),
-            hotkey::Action::SnapEdge(dir) => state.pool.lock().snap_edge(dir),
             hotkey::Action::ShowSettings => show_settings(&app),
         }
     }
@@ -528,6 +510,30 @@ fn window_pref_value(value: &serde_json::Value) -> Result<Option<f64>, String> {
             .map(Some)
             .ok_or_else(|| "window position must be a number or null".to_string())
     }
+}
+
+/// Write the bar's live rect into `window.bar_x/bar_y` — "remembered
+/// position" with no settings row. Called from the bar's debounced
+/// `Moved` hook (windows/mod.rs `BAR_MOVE_GEN`), so it fires once per
+/// drag/snap/restack settle, not per pixel. Broadcasts `config:changed`
+/// like any other write.
+pub(crate) fn persist_bar_position(app: &AppHandle) {
+    let state = app.state::<AppState>();
+    let rect = state.pool.lock().current_bar_rect();
+    let updated = {
+        let mut cfg = state.config.lock();
+        if cfg.window.bar_x == Some(rect.x) && cfg.window.bar_y == Some(rect.y) {
+            return; // nothing moved since the last write
+        }
+        cfg.window.bar_x = Some(rect.x);
+        cfg.window.bar_y = Some(rect.y);
+        if let Err(e) = config::save(&cfg) {
+            log::warn!("persist bar position failed: {e}");
+            return;
+        }
+        cfg.clone()
+    };
+    let _ = app.emit("config:changed", &updated);
 }
 
 // ---------------------------------------------------------------------------
@@ -881,6 +887,46 @@ fn window_adjust_height(state: State<'_, AppState>, name: String, height: f64) {
     state.pool.lock().adjust_height(&name, height);
 }
 
+/// Settings → Bar picker: `edge` is `"top"|"bottom"|"left"|"right"`.
+/// Snaps (animated) the bar to that work-area edge; the resulting `Moved`
+/// event persists `window.bar_x/y` through the debounced write.
+#[tauri::command]
+fn window_snap_edge(state: State<'_, AppState>, edge: String) -> Result<(), String> {
+    let dir = match edge.as_str() {
+        "top" => windows::Dir::Up,
+        "bottom" => windows::Dir::Down,
+        "left" => windows::Dir::Left,
+        "right" => windows::Dir::Right,
+        _ => return Err(format!("unknown edge {edge:?}")),
+    };
+    state.pool.lock().snap_edge(dir);
+    Ok(())
+}
+
+/// Settings → Bar "Re-center": restores the default position —
+/// centered on the primary work area, just under the menu bar.
+/// Persists through the same `Moved` debounce as a drag.
+#[tauri::command]
+fn window_recenter(state: State<'_, AppState>) {
+    state.pool.lock().recenter_bar();
+}
+
+/// The edge the bar is currently nearest (`"top"` | `"bottom"` |
+/// `"left"` | `"right"`) — the Bar picker's selected value. Recomputed
+/// from the live rect so a just-finished drag reads correctly.
+#[tauri::command]
+fn window_bar_edge(state: State<'_, AppState>) -> String {
+    let mut pool = state.pool.lock();
+    pool.refresh_bar_rect();
+    match pool.bar_edge() {
+        windows::Dir::Up => "top",
+        windows::Dir::Down => "bottom",
+        windows::Dir::Left => "left",
+        windows::Dir::Right => "right",
+    }
+    .to_string()
+}
+
 // ---------------------------------------------------------------------------
 // Commands — permissions / capture
 // ---------------------------------------------------------------------------
@@ -963,7 +1009,8 @@ fn config_get(state: State<'_, AppState>) -> Config {
 
 /// Limited writable surface: `hotkeys.<action>`, `window.bar_x`,
 /// `window.bar_y` (number sets, null clears), `app.onboarding_done`
-/// (bool), `app.appearance` (`auto|light|dark`), `compat.name`,
+/// (bool), `app.appearance` (`auto|light|dark`), `app.accent`
+/// (`#rrggbb`, `""` resets to the spec slate), `compat.name`,
 /// `compat.base_url` (validated http(s) URL; `""` clears). Provider
 /// order/switches/models have their own commands (`providers_reorder`,
 /// `provider_set_enabled`, `model_set_selected`). Persists `config.toml`
@@ -998,6 +1045,24 @@ fn config_set(app: AppHandle, key: String, value: serde_json::Value) -> Result<C
                     return Err(format!("unknown appearance {v:?}"));
                 }
                 cfg.app.appearance = v.to_string();
+            }
+            "app.accent" => {
+                let v = value
+                    .as_str()
+                    .ok_or("app.accent must be a string")?
+                    .trim()
+                    .to_string();
+                if v.is_empty() {
+                    cfg.app.accent = config::DEFAULT_ACCENT.to_string();
+                } else {
+                    let ok = v.len() == 7
+                        && v.starts_with('#')
+                        && v[1..].chars().all(|c| c.is_ascii_hexdigit());
+                    if !ok {
+                        return Err("app.accent must be a #rrggbb color".to_string());
+                    }
+                    cfg.app.accent = v;
+                }
             }
             "compat.name" => {
                 cfg.compat.name = value
@@ -1088,7 +1153,6 @@ pub fn run() {
                 gate: Mutex::new(Gate::NeedsPermission),
                 gate_transition: Mutex::new(()),
                 alert: Mutex::new(None),
-                click_through: AtomicBool::new(false),
             });
             deeplink::init(handle, deeplink_dispatch(handle))?;
             // Warn-and-continue like hotkeys: a missing tray must never
@@ -1145,6 +1209,9 @@ pub fn run() {
             window_hide_prefs,
             prefs_mode,
             window_adjust_height,
+            window_snap_edge,
+            window_recenter,
+            window_bar_edge,
             permissions_status,
             permissions_request_screen,
             permissions_request_mic,
@@ -1165,7 +1232,7 @@ pub fn run() {
 mod tests {
     use super::*;
     use std::path::PathBuf;
-    use std::sync::atomic::AtomicU32;
+    use std::sync::atomic::{AtomicU32, Ordering};
 
     /// Unique temp dir per test; `Db::at` creates it.
     fn tmp_dir() -> PathBuf {

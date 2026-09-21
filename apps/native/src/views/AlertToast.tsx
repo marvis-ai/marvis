@@ -15,7 +15,7 @@
  * and self-dismiss after `AUTO_DISMISS_MS`.
  */
 import { useCallback, useEffect, useState } from 'react';
-import { ShieldAlert, X } from '@marvis/ui';
+import { ShieldAlertIcon, XIcon } from '@marvis/ui';
 import { alertCurrent, alertDismiss, type AlertPayload } from '../lib/commands';
 import { EV_ALERT_SHOW, useTauriEvent } from '../lib/events';
 
@@ -54,7 +54,7 @@ const AlertToast = () => {
     <div className='p-1'>
       <div className='mv-alert'>
         <header className='mv-alert-head'>
-          <ShieldAlert className='mv-alert-ico' />
+          <ShieldAlertIcon className='mv-alert-ico' />
           <p className='mv-alert-title'>Marvis ran into a problem</p>
           <button
             type='button'
@@ -62,7 +62,7 @@ const AlertToast = () => {
             title='Dismiss'
             aria-label='Dismiss'
             onClick={dismiss}>
-            <X />
+            <XIcon />
           </button>
         </header>
         <p

@@ -80,12 +80,15 @@ export interface WindowPrefs {
   bar_y?: number;
 }
 
-/** `[app]` section — first-run state + the appearance override. */
+/** `[app]` section — first-run state + the appearance/accent prefs. */
 export interface AppPrefs {
   /** `false` until the wizard finishes (or is finished early). */
   onboarding_done: boolean;
   /** `'auto' | 'light' | 'dark'` — validated server-side. */
   appearance: string;
+  /** `#rrggbb` — the one hue the UI derives (`--accent` and every
+   * `color-mix` off it). `''` in a file reads as the spec default. */
+  accent: string;
 }
 
 /** `[compat]` section — the OpenAI-compatible endpoint (DESIGN.md §6). */
@@ -215,6 +218,18 @@ export const windowHidePrefs = () => invoke<void>('window_hide_prefs');
  * emit that raced the loading webview still lands. */
 export const prefsMode = () => invoke<string>('prefs_mode');
 
+/** Bar edge picker — `'top'|'bottom'|'left'|'right'`; snaps the bar and
+ * the resulting position persists via the Moved→debounce write. */
+export const windowSnapEdge = (edge: string) =>
+  invoke<void>('window_snap_edge', { edge });
+
+/** Restore the default bar position — centered, 21 px under the primary
+ * work area's top. Persists via the same Moved→debounce write. */
+export const windowRecenter = () => invoke<void>('window_recenter');
+
+/** Nearest work-area edge of the live bar — the picker's current value. */
+export const windowBarEdge = () => invoke<string>('window_bar_edge');
+
 /** Panels only — `name` is `'ask' | 'listen'`, never `'bar'`/`'prefs'`. */
 export const windowAdjustHeight = (name: string, height: number) =>
   invoke<void>('window_adjust_height', { name, height });
@@ -260,11 +275,11 @@ export const configGet = () => invoke<Config>('config_get');
 /**
  * Writable keys only: `hotkeys.<action>`, `window.bar_x`, `window.bar_y`
  * (number sets, null clears), `app.onboarding_done` (bool),
- * `app.appearance` (`'auto'|'light'|'dark'`), `compat.name`,
- * `compat.base_url` (http(s) URL, `''` clears). Provider order/switches/
- * models go through `providersReorder`/`providerSetEnabled`/
- * `modelSetSelected`. Every successful write broadcasts
- * `config:changed` and resolves to the full updated config.
+ * `app.appearance` (`'auto'|'light'|'dark'`), `app.accent` (`'#rrggbb'`,
+ * `''` resets), `compat.name`, `compat.base_url` (http(s) URL, `''`
+ * clears). Provider order/switches/models go through `providersReorder`/
+ * `providerSetEnabled`/`modelSetSelected`. Every successful write
+ * broadcasts `config:changed` and resolves to the full updated config.
  */
 export const configSet = (key: string, value: unknown) =>
   invoke<Config>('config_set', { key, value });

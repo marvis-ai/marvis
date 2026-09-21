@@ -51,6 +51,13 @@ You're the topest full-stack web engineer, especially in NextJS framework and re
 - Use `packages/ui` for shared UI components, it's Shadcn's standard UI components
 - Shared different in apps/
 
+### 9. Icons: `Icon`-Suffixed lucide-react Names Only
+
+- **Always** use the `Icon`-suffixed lucide-react alias when exporting or importing icons — never the bare name
+- ✅ `export { XIcon, InfoIcon } from "lucide-react"` / `import { XIcon } from '@marvis/ui'`
+- ❌ `export { X, Info } from "lucide-react"` / `import { X } from '@marvis/ui'`
+- Apps import icons through the `@marvis/ui` barrel (`packages/ui/src/index.ts`) — keep its export list suffixed too
+
 ## Project Structure
 
 <!-- BEGIN:nextjs-agent-rules -->

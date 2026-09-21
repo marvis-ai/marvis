@@ -1,43 +1,32 @@
-//! Global hotkeys: config-driven bindings (`config.hotkeys`) plus the
-//! hardcoded Glass-parity shortcuts that must always exist.
+//! Global hotkeys: every binding is config-driven (`config.hotkeys`) —
+//! Settings → Hotkeys rebinds any of the four actions, and the bar's
+//! movement/snap is pointer-driven so there are no fixed-position
+//! shortcuts at all.
 //!
 //! Dispatch is decoupled: this module reports [`Action`]s through a
-//! caller-supplied closure — `ask` (Task 12) and `AppState` (Task 14)
-//! don't exist yet, so nothing here names them. Task 14 passes a closure
-//! that routes each `Action` onto the pool/ask service.
+//! caller-supplied closure that routes each one onto the pool/ask
+//! service (lib.rs `hotkey_dispatch`).
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use tauri::AppHandle;
-use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
+use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
 use crate::config;
-use crate::windows::Dir;
 
-/// A fired hotkey's intent. Task 14 maps each variant onto the real
-/// `WindowPool`/`ask` calls inside the `dispatch` closure.
+/// A fired hotkey's intent. The dispatch closure maps each variant onto
+/// the real `WindowPool`/`ask` call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
     /// `toggle_visibility` — hide all panels / restore the remembered set.
     ToggleVisibility,
     /// `next_step` — send the current input (or screen-only ask).
     NextStep,
-    /// `move_{up,down,left,right}` — step the bar 40 px.
-    Move(Dir),
-    /// `toggle_click_through` — flip `set_ignore_cursor_events`.
-    ToggleClickThrough,
-    /// `scroll_up` / `scroll_down` — scroll the ask panel.
-    ScrollUp,
-    ScrollDown,
-    /// Hardcoded `Cmd+Shift+S` — manual screenshot → screen-only ask.
+    /// `screen_only` — manual screenshot → screen-only ask (`Cmd+Shift+S`).
     ScreenOnly,
-    /// Hardcoded `Cmd+,` — show the prefs window (also the tray item).
+    /// `show_settings` — the prefs window (`Cmd+,`; also the tray item).
     ShowSettings,
-    /// Hardcoded `Cmd+Shift+<n>` — move the bar to display `n` (1-based).
-    MoveToDisplay(usize),
-    /// Hardcoded `Cmd+Shift+Left/Right` — snap bar to a work-area edge.
-    SnapEdge(Dir),
 }
 
 /// Config action name (`[hotkeys]` table key) → `Action`.
@@ -47,13 +36,8 @@ fn action_for(name: &str) -> Option<Action> {
     Some(match name {
         "toggle_visibility" => Action::ToggleVisibility,
         "next_step" => Action::NextStep,
-        "move_up" => Action::Move(Dir::Up),
-        "move_down" => Action::Move(Dir::Down),
-        "move_left" => Action::Move(Dir::Left),
-        "move_right" => Action::Move(Dir::Right),
-        "toggle_click_through" => Action::ToggleClickThrough,
-        "scroll_up" => Action::ScrollUp,
-        "scroll_down" => Action::ScrollDown,
+        "screen_only" => Action::ScreenOnly,
+        "show_settings" => Action::ShowSettings,
         _ => return None,
     })
 }
@@ -110,21 +94,8 @@ fn parse_accelerator(accel: &str) -> Option<Shortcut> {
     tokens.join("+").parse().ok()
 }
 
-/// `Digit1`–`Digit9` for the hardcoded `Cmd+Shift+<n>` display jumps.
-const DIGIT_CODES: [Code; 9] = [
-    Code::Digit1,
-    Code::Digit2,
-    Code::Digit3,
-    Code::Digit4,
-    Code::Digit5,
-    Code::Digit6,
-    Code::Digit7,
-    Code::Digit8,
-    Code::Digit9,
-];
-
-/// Every `(shortcut, action)` pair to register for `scope`: recognized
-/// `[hotkeys]` config entries plus the hardcoded Glass-parity set.
+/// Every `(shortcut, action)` pair to register for `scope` — the whole
+/// set is the four `[hotkeys]` config actions; nothing is hardcoded.
 /// Unknown action names and accelerators that don't parse are warned and
 /// skipped rather than failing the whole set.
 fn bindings(binds: &BTreeMap<String, String>, scope: Scope) -> Vec<(Shortcut, Action)> {
@@ -134,7 +105,12 @@ fn bindings(binds: &BTreeMap<String, String>, scope: Scope) -> Vec<(Shortcut, Ac
             log::warn!("hotkey: unknown action {name:?} (bound to {accel:?}); skipping");
             continue;
         };
-        if scope == Scope::Limited && action != Action::ToggleVisibility {
+        // While gated only the chrome shortcuts stay live — show/hide and
+        // settings (the window where the user fixes the gated state).
+        // `next_step`/`screen_only` touch LLM/capture, so they're Main-only.
+        if scope == Scope::Limited
+            && !matches!(action, Action::ToggleVisibility | Action::ShowSettings)
+        {
             continue;
         }
         match accelerator_for(accel) {
@@ -152,39 +128,9 @@ fn bindings(binds: &BTreeMap<String, String>, scope: Scope) -> Vec<(Shortcut, Ac
         }
     }
 
-    // Hardcoded Glass-parity bindings — deliberately not configurable.
-    // Edge snap and display jump are allowed while gated; `Cmd+Shift+S`
-    // touches capture/ask so it's full-scope only. Built with
-    // `Shortcut::new` (infallible) rather than re-parsing a literal.
-    let cmd_shift = Modifiers::SUPER | Modifiers::SHIFT;
-    for (code, action) in [
-        (Code::ArrowLeft, Action::SnapEdge(Dir::Left)),
-        (Code::ArrowRight, Action::SnapEdge(Dir::Right)),
-    ] {
-        out.push((Shortcut::new(Some(cmd_shift), code), action));
-    }
-    // `Cmd+,` is allowed while gated too (parity with the always-enabled
-    // tray item): settings is reachable before `Main` — it's where the
-    // user fixes the gated state rather than silently doing nothing.
-    out.push((
-        Shortcut::new(Some(Modifiers::SUPER), Code::Comma),
-        Action::ShowSettings,
-    ));
-    for (i, code) in DIGIT_CODES.iter().enumerate() {
-        out.push((
-            Shortcut::new(Some(cmd_shift), *code),
-            Action::MoveToDisplay(i + 1),
-        ));
-    }
-    if scope == Scope::All {
-        out.push((
-            Shortcut::new(Some(cmd_shift), Code::KeyS),
-            Action::ScreenOnly,
-        ));
-    }
     // Dedup by shortcut id — the plugin keys handlers by id, so a config
-    // collision (e.g. `scroll_up = "Cmd+Shift+S"`) would silently overwrite
-    // the first action's handler or fail OS registration. First wins.
+    // collision (e.g. `next_step = "Cmd+/"`) would silently overwrite the
+    // first action's handler or fail OS registration. First wins.
     let mut seen = std::collections::HashSet::new();
     out.retain(|(s, action)| {
         if seen.insert(s.id()) {
@@ -200,11 +146,10 @@ fn bindings(binds: &BTreeMap<String, String>, scope: Scope) -> Vec<(Shortcut, Ac
 /// Which set of bindings a `register_*` call installs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Scope {
-    /// Everything: all config actions + all hardcoded shortcuts.
+    /// Everything: all four config actions.
     All,
-    /// Gated state (Glass `reregister-shortcuts` parity): only
-    /// `toggle_visibility` + edge-snap + display-jump — nothing that
-    /// touches LLM/capture (no `next_step`, no `Cmd+Shift+S`).
+    /// Gated state: only `toggle_visibility` + `show_settings` — nothing
+    /// that touches LLM/capture (no `next_step`, no `screen_only`).
     Limited,
 }
 
@@ -231,9 +176,9 @@ impl RegisteredHotkeys {
     }
 }
 
-/// Register every binding: all recognized `[hotkeys]` config actions plus
-/// the full hardcoded Glass-parity set (`Cmd+Shift+S`, `Cmd+Shift+<n>`,
-/// `Cmd+Shift+Left/Right`). Called when the app reaches `main` state.
+/// Register every binding: all recognized `[hotkeys]` config actions
+/// (`toggle_visibility`, `next_step`, `screen_only`, `show_settings`).
+/// Called when the app reaches `main` state.
 ///
 /// **Re-registration contract:** on any register error this call
 /// unregisters only the shortcuts it registered during this call and
@@ -251,9 +196,9 @@ pub fn register_all(
     register(app, binds, Scope::All, dispatch)
 }
 
-/// Limited set for the gated state (Task 14 startup): only
-/// `toggle_visibility` plus the hardcoded edge-snap and display-jump
-/// shortcuts. Same re-registration contract as [`register_all`].
+/// Limited set for the gated state (startup): only `toggle_visibility`
+/// plus `show_settings` — the chrome shortcuts that don't touch
+/// LLM/capture. Same re-registration contract as [`register_all`].
 pub fn register_limited(
     app: &AppHandle,
     binds: &BTreeMap<String, String>,
@@ -410,6 +355,7 @@ fn register_pairs(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tauri_plugin_global_shortcut::{Code, Modifiers};
 
     #[test]
     fn accelerator_for_toggle_visibility_parses_cmd_slash() {
@@ -446,7 +392,7 @@ mod tests {
         // Regression net: a default that fails to parse silently loses a
         // core binding at registration time.
         let binds = config::default_hotkeys();
-        assert_eq!(binds.len(), 9);
+        assert_eq!(binds.len(), 4);
         for (action, accel) in &binds {
             let s = accelerator_for(accel)
                 .unwrap_or_else(|| panic!("default {action} = {accel:?} must parse"));
@@ -456,12 +402,10 @@ mod tests {
         // Spec spellings → expected codes.
         let expect = [
             ("Cmd+Enter", Code::Enter, Modifiers::SUPER),
-            ("Cmd+M", Code::KeyM, Modifiers::SUPER),
-            ("Cmd+Up", Code::ArrowUp, Modifiers::SUPER),
-            ("Cmd+Down", Code::ArrowDown, Modifiers::SUPER),
+            ("Cmd+,", Code::Comma, Modifiers::SUPER),
             (
-                "Cmd+Shift+Down",
-                Code::ArrowDown,
+                "Cmd+Shift+S",
+                Code::KeyS,
                 Modifiers::SUPER | Modifiers::SHIFT,
             ),
         ];
@@ -472,56 +416,35 @@ mod tests {
     }
 
     #[test]
-    fn hardcoded_glass_bindings_parse() {
-        for accel in ["Cmd+Shift+S", "Cmd+Shift+Left", "Cmd+Shift+Right"] {
-            assert!(accelerator_for(accel).is_some(), "{accel}");
-        }
-        for n in 1..=9usize {
-            let accel = format!("Cmd+Shift+{n}");
-            let s = accelerator_for(&accel).unwrap_or_else(|| panic!("{accel}"));
-            assert_eq!(s.mods, Modifiers::SUPER | Modifiers::SHIFT);
-        }
-    }
-
-    #[test]
     fn action_for_maps_config_names() {
         assert_eq!(
             action_for("toggle_visibility"),
             Some(Action::ToggleVisibility)
         );
         assert_eq!(action_for("next_step"), Some(Action::NextStep));
-        assert_eq!(action_for("move_up"), Some(Action::Move(Dir::Up)));
-        assert_eq!(action_for("move_down"), Some(Action::Move(Dir::Down)));
-        assert_eq!(action_for("move_left"), Some(Action::Move(Dir::Left)));
-        assert_eq!(action_for("move_right"), Some(Action::Move(Dir::Right)));
-        assert_eq!(
-            action_for("toggle_click_through"),
-            Some(Action::ToggleClickThrough)
-        );
-        assert_eq!(action_for("scroll_up"), Some(Action::ScrollUp));
-        assert_eq!(action_for("scroll_down"), Some(Action::ScrollDown));
+        assert_eq!(action_for("screen_only"), Some(Action::ScreenOnly));
+        assert_eq!(action_for("show_settings"), Some(Action::ShowSettings));
+        // Stale names from the old nine-action set no longer bind.
+        assert_eq!(action_for("move_up"), None);
+        assert_eq!(action_for("scroll_down"), None);
+        assert_eq!(action_for("toggle_click_through"), None);
         assert_eq!(action_for("bogus"), None);
     }
 
     #[test]
     fn bindings_limited_keeps_only_gated_set() {
-        // While gated: toggle_visibility + edge/display only — nothing
-        // that touches LLM/capture (no next_step, no ScreenOnly).
+        // While gated: toggle_visibility + show_settings only — nothing
+        // that touches LLM/capture (no next_step, no screen_only).
+        // Settings stays live because it's where the user fixes the
+        // gated state — parity with the always-enabled tray item.
         let binds = config::default_hotkeys();
         let got = bindings(&binds, Scope::Limited);
         let actions: Vec<Action> = got.iter().map(|(_, a)| *a).collect();
         assert!(actions.contains(&Action::ToggleVisibility));
-        assert!(actions.contains(&Action::SnapEdge(Dir::Left)));
-        assert!(actions.contains(&Action::SnapEdge(Dir::Right)));
-        for n in 1..=9 {
-            assert!(actions.contains(&Action::MoveToDisplay(n)));
-        }
+        assert!(actions.contains(&Action::ShowSettings));
         assert!(!actions.contains(&Action::ScreenOnly));
         assert!(!actions.contains(&Action::NextStep));
-        // Settings is reachable while gated (it's where the user fixes
-        // the gated state) — parity with the always-enabled tray item.
-        assert!(actions.contains(&Action::ShowSettings));
-        assert_eq!(got.len(), 1 + 2 + 9 + 1);
+        assert_eq!(got.len(), 2);
     }
 
     #[test]
@@ -529,10 +452,11 @@ mod tests {
         let binds = config::default_hotkeys();
         let got = bindings(&binds, Scope::All);
         let actions: Vec<Action> = got.iter().map(|(_, a)| *a).collect();
-        assert!(actions.contains(&Action::ScreenOnly));
+        assert!(actions.contains(&Action::ToggleVisibility));
         assert!(actions.contains(&Action::NextStep));
+        assert!(actions.contains(&Action::ScreenOnly));
         assert!(actions.contains(&Action::ShowSettings));
-        assert_eq!(got.len(), 9 + 2 + 9 + 1 + 1);
+        assert_eq!(got.len(), 4);
     }
 
     #[test]
@@ -565,8 +489,8 @@ mod tests {
         let dropped: Vec<Action> = drop.iter().map(|(_, a)| *a).collect();
         assert!(dropped.contains(&Action::ScreenOnly));
         assert!(dropped.contains(&Action::NextStep));
-        assert!(dropped.contains(&Action::ToggleClickThrough));
         assert!(!dropped.contains(&Action::ToggleVisibility));
+        assert!(!dropped.contains(&Action::ShowSettings));
     }
 
     #[test]
@@ -597,24 +521,24 @@ mod tests {
 
     #[test]
     fn plan_swap_rebound_shortcut_is_drop_plus_add() {
-        // `scroll_up = "Cmd+M"` collides with `toggle_click_through`'s
-        // default — `bindings` dedup gives Cmd+M to `scroll_up` (first in
-        // map order). The live Cmd+M pair changes action, so it must be
+        // `next_step = "Cmd+/"` collides with `toggle_visibility`'s
+        // default — `bindings` dedup gives Cmd+/ to `next_step` (first in
+        // map order). The live Cmd+/ pair changes action, so it must be
         // dropped and re-registered: keeping it would leave the old
         // handler firing the wrong action, and re-registering over it
         // would hit the OS duplicate error.
         let mut binds = config::default_hotkeys();
         let prev = bindings(&binds, Scope::All);
-        binds.insert("scroll_up".to_string(), "Cmd+M".to_string());
+        binds.insert("next_step".to_string(), "Cmd+/".to_string());
         let new = bindings(&binds, Scope::All);
         let (keep, drop, add) = plan_swap(&prev, &new);
-        let cmd_m = accelerator_for("Cmd+M").unwrap();
-        assert_eq!(add, vec![(cmd_m, Action::ScrollUp)]);
+        let cmd_slash = accelerator_for("Cmd+/").unwrap();
+        assert_eq!(add, vec![(cmd_slash, Action::NextStep)]);
         assert_eq!(drop.len(), 2);
-        assert!(drop.contains(&(cmd_m, Action::ToggleClickThrough)));
-        // The old scroll_up binding (Cmd+Shift+Up) is gone entirely.
-        let shift_up = accelerator_for("Cmd+Shift+Up").unwrap();
-        assert!(drop.contains(&(shift_up, Action::ScrollUp)));
+        assert!(drop.contains(&(cmd_slash, Action::ToggleVisibility)));
+        // The old next_step binding (Cmd+Enter) is gone entirely.
+        let cmd_enter = accelerator_for("Cmd+Enter").unwrap();
+        assert!(drop.contains(&(cmd_enter, Action::NextStep)));
         assert_eq!(keep.len() + drop.len(), prev.len());
     }
 }

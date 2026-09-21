@@ -15,7 +15,6 @@ export const EV_ASK_STATE = 'ask:state'; // { state: 'loading'|'streaming'|'idle
 export const EV_ASK_CHUNK = 'ask:chunk'; // { text: string }
 export const EV_ASK_DONE = 'ask:done'; // { full, provider, model } — who answered
 export const EV_ASK_ERROR = 'ask:error'; // { message: string, needs_setup?: bool }
-export const EV_ASK_SCROLL = 'ask:scroll'; // { dir: 'up'|'down' }
 /** Emitted to the `alert` window only — the toast payload (lib.rs
  * `show_alert`); `{ message }`. */
 export const EV_ALERT_SHOW = 'alert:show';

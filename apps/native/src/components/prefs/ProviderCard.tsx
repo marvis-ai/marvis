@@ -24,7 +24,7 @@
  */
 import { useEffect, useState } from 'react';
 import type { DragEvent, KeyboardEvent } from 'react';
-import { ChevronRight, GripVertical } from '@marvis/ui';
+import { ChevronRightIcon, GripVerticalIcon } from '@marvis/ui';
 import {
   configSet,
   keystoreRemoveKey,
@@ -303,7 +303,7 @@ export const ProviderCard = ({
           title='Drag to set failover priority — ↑/↓ also moves'
           aria-label={`Reorder ${label}`}
           {...drag.grip}>
-          <GripVertical />
+          <GripVerticalIcon />
         </span>
         <button
           type='button'
@@ -318,7 +318,7 @@ export const ProviderCard = ({
             {stateText}
           </span>
           <span className='prf-prov-expand'>
-            <ChevronRight />
+            <ChevronRightIcon />
           </span>
         </button>
         {isPrimary && <Tag>primary</Tag>}

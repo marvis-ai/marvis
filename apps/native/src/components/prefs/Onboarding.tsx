@@ -16,7 +16,7 @@
  * reveals the bar on that write.
  */
 import { useState } from 'react';
-import { Check, ShieldCheck } from '@marvis/ui';
+import { CheckIcon, ShieldCheckIcon } from '@marvis/ui';
 import {
   configSet,
   keystoreSetKey,
@@ -147,7 +147,7 @@ const ScreenStep = ({
   return (
     <>
       <div className='prf-ob-ico'>
-        <ShieldCheck />
+        <ShieldCheckIcon />
       </div>
       <h1>Grant screen access</h1>
       <p className='lede'>
@@ -382,7 +382,7 @@ const ByokStep = ({
       {err && <p className='prov-err show'>{err}</p>}
       {phase === 'saved' && !isLocal && (
         <p className='prov-ok'>
-          <Check /> Endpoint verified — key stored.
+          <CheckIcon /> Endpoint verified — key stored.
         </p>
       )}
       {phase === 'saved' && isLocal && modelList.length === 0 && (

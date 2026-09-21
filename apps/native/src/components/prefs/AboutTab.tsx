@@ -1,10 +1,14 @@
 /**
  * About — the supplied wordmark (never redrawn), one-line pitch, and
  * metadata rows. Version resolves from the bundle via `getVersion()`
- * with the Cargo.toml value as fallback.
+ * with the Cargo.toml value as fallback. "Re-run setup" re-opens the
+ * same window in onboarding mode through `window_show_onboarding`
+ * (backend emits `prefs:mode`, the shell remounts — the wizard resets
+ * to step 1 per spec).
  */
 import { useEffect, useState } from 'react';
 import { getVersion } from '@tauri-apps/api/app';
+import { windowShowOnboarding } from '../../lib/commands';
 import { PrefRow, Tag } from './bits';
 
 export const AboutTab = () => {
@@ -34,10 +38,19 @@ export const AboutTab = () => {
         <PrefRow label='License'>
           <Tag>MIT</Tag>
         </PrefRow>
+        <PrefRow label='Platforms'>
+          <Tag>macOS now · windows / linux planned</Tag>
+        </PrefRow>
         <PrefRow
-          label='Platforms'
+          label='Setup'
+          sub='Run the onboarding wizard again.'
           last>
-          <span className='num'>macOS now · windows / linux planned</span>
+          <button
+            type='button'
+            className='mv-btn mv-btn-outline'
+            onClick={() => void windowShowOnboarding().catch(() => {})}>
+            Re-run setup
+          </button>
         </PrefRow>
       </div>
     </>

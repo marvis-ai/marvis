@@ -227,7 +227,7 @@ to `1fr | auto` ≤640px with the description hidden.
 ## 6. The `.mv-*` overlay-UI system — recreated product views
 
 The hero scene and `#interface` section recreate the real app views 1:1 in DOM
-(sources: `apps/native/src/views/Bar.tsx`, `AskPanel.tsx`, `SettingsPanel.tsx`,
+(sources: `apps/native/src/views/Bar.tsx`, `AskPanel.tsx`,
 `ListenPanel.tsx` in the Marvis repo). They are honest recreations, not
 screenshots — the page copy says so.
 
@@ -250,19 +250,17 @@ from the page's NotionInter chrome.
 
 | View | Size | Notes |
 | --- | --- | --- |
-| Bar (`.mv-bar`) | **353×47** | 9999px pill, `card 80%` + `blur(14px)`, floats 21px below work-area top |
+| Bar (`.mv-bar`) | **353×47** | 9999px pill, `card 80%` + `blur(14px)`, floats 21px below work-area top; rests as a **104px capsule** (`is-mini`), morphs open on click or type-to-wake |
 | Ask (`.mv-panel`) | **600px** | `radius 18px`, `card 90%` frosted, drops 8px under the bar |
-| Settings (`.mv-settings`) | **240px**, ≤400px | Scrollable body, anchors to the bar's right edge |
 | Listen (`.mv-listen`) | **400px** wide | Frosted `rounded-2xl` card, docks 8px left of Ask when both open, centers under the bar when Ask is closed |
 
-### Bar gates (`.mv-bar-inner`)
+### Bar states (`.mv-bar-inner`)
 
-Faithful to `Bar.tsx`:
+Faithful to `Bar.tsx` — the real app has two gates plus a resting state:
 
+- `mini` — the 104px resting capsule: LogoMark + camera + mic icons.
 - `main` — LogoMark + `Ask Marvis…` input + mic icon (`is-off`, "Coming soon")
   - settings icon.
-- `needs_unlock` — LogoMark + "Unlock with Touch ID / password" +
-  primary `Unlock`.
 - `needs_permission` — shield icon + "Screen recording needed" +
   primary `Grant` + link `Open settings`.
 
@@ -271,22 +269,13 @@ Faithful to `Bar.tsx`:
 Header = the submitted question (12px/500, line-clamp-2) + X close; body =
 14px markdown stream with `.mv-caret` block caret blinking at 1.05s steps.
 
-### Settings panel
-
-`Settings` header + X → provider rows (`border-b`, px-3 py-2): name 12px/500 +
-right slot (`…last4` + `Remove` link · `no key set` · `local · no key needed`
-· `Phase 2`), then key input (`h-6`, placeholder `API key`/`Replace key`) +
-`Save`, then a model `select`. Rows: OpenAI (masked `…7B2q`, `gpt-4o`),
-Anthropic (`claude-sonnet-4-5`), Gemini (`gemini-2.0-flash`), Ollama (local,
-`llama3.2`), Deepgram dimmed `Phase 2`, then full-width outline `Lock keys`.
-
 ### Listen panel
 
-`ListenPanel.tsx` today renders only its Phase-2 chrome — a centered Mic icon
-
-- "Listen arrives in Phase 2" on a frosted `rounded-2xl` card. The mock
-(`.mv-listen` > `.mv-listen-chrome`) reproduces exactly that, so it stays
-honest rather than inventing a transcription UI that doesn't ship yet.
+`ListenPanel.tsx` today renders only its Phase-2 chrome — a muted five-bar
+waveform, "Listen arrives in Phase 2", and a `deepgram · stt` chip on a
+frosted `rounded-2xl` card. The mock (`.mv-listen` > `.mv-listen-chrome`)
+reproduces exactly that, so it stays honest rather than inventing a
+transcription UI that doesn't ship yet.
 
 ### Dark variant (`.shots[data-theme="dark"]`)
 
@@ -365,9 +354,10 @@ goes full-bleed.
 ## 9. Content & provenance rules
 
 - Every product claim on the page comes from the Marvis repo: 60s/120-frame/
-  64MB ring buffer, `keys.enc` + Argon2id/AES-256-GCM, masked `…last4`
-  display, lock teardown, all 8 hotkeys, `marvis://` deep links, real provider
-  list (OpenAI/Anthropic/Gemini/Ollama), real model names.
+  64MB ring buffer, `keys.json` plaintext at 0600 inside the 0700
+  `~/.marvis` root, masked `…last4` display, the 4 rebindable hotkeys,
+  `marvis://` deep links, real provider list
+  (OpenAI/Anthropic/Gemini/Ollama, Deepgram Phase 2), real model names.
 - Platform honesty: macOS = "Available now" (green pill); Windows and Linux =
   "In development" — the repo is explicit that Phase 1 is macOS-only.
 - No invented metrics, testimonials, or logos.
@@ -386,8 +376,8 @@ goes full-bleed.
 | `design.md` | This document |
 
 Sections in order: `hero` (live overlay scene over a code editor) →
-`features` (3 cells) → `interface` (composite desktop shot, 3 gate states,
-settings + listen at actual size, light/dark toggle persisted in
-`localStorage["marvis-iface-theme"]`) → `privacy` (dark — file tree + stats) → `hotkeys`
+`features` (3 cells) → `privacy` (dark — file tree + stats) → `interface`
+(composite desktop shot, resting capsule + 2 gate states, listen at actual
+size, light/dark toggle persisted in `localStorage["marvis-iface-theme"]`) → `hotkeys`
 (table + deep links) → `providers` (tags + platform log rows) → `download`
 (CTA) → footer.

@@ -1,21 +1,19 @@
 /**
  * Settings mode — the prototype's `osx-body`: 168px sidebar + scrolling
  * main. Icons are lucide glyphs; the active item is a surface pill, not
- * a second hue. "Re-run setup" re-opens the same window in onboarding
- * mode through `window_show_onboarding` (backend emits `prefs:mode`,
- * the shell remounts — the wizard resets to step 1 per spec).
+ * a second hue.
  */
 import { useState } from 'react';
 import {
-  Info,
-  Keyboard,
-  KeyRound,
-  RotateCcw,
-  Shield,
-  SlidersHorizontal,
+  InfoIcon,
+  KeyboardIcon,
+  KeyRoundIcon,
+  PanelTopIcon,
+  ShieldIcon,
+  SlidersHorizontalIcon,
 } from '@marvis/ui';
-import { windowShowOnboarding } from '../../lib/commands';
 import { AboutTab } from './AboutTab';
+import { BarTab } from './BarTab';
 import { GeneralTab } from './GeneralTab';
 import { HotkeysTab } from './HotkeysTab';
 import { PrivacyTab } from './PrivacyTab';
@@ -23,11 +21,12 @@ import { ProvidersTab } from './ProvidersTab';
 import type { PrefsData } from './types';
 
 const TABS = [
-  { id: 'general', label: 'General', icon: SlidersHorizontal },
-  { id: 'providers', label: 'Providers', icon: KeyRound },
-  { id: 'hotkeys', label: 'Hotkeys', icon: Keyboard },
-  { id: 'privacy', label: 'Privacy & data', icon: Shield },
-  { id: 'about', label: 'About', icon: Info },
+  { id: 'general', label: 'General', icon: SlidersHorizontalIcon },
+  { id: 'bar', label: 'Bar', icon: PanelTopIcon },
+  { id: 'providers', label: 'Providers', icon: KeyRoundIcon },
+  { id: 'hotkeys', label: 'Hotkeys', icon: KeyboardIcon },
+  { id: 'privacy', label: 'Privacy & data', icon: ShieldIcon },
+  { id: 'about', label: 'About', icon: InfoIcon },
 ] as const;
 
 type TabId = (typeof TABS)[number]['id'];
@@ -51,17 +50,15 @@ export const SettingsMode = ({ data }: { data: PrefsData }) => {
           </button>
         ))}
         <span className='prf-side-spacer' />
-        <button
-          type='button'
-          className='prf-side-item prf-side-muted'
-          onClick={() => void windowShowOnboarding().catch(() => {})}>
-          <RotateCcw />
-          Re-run setup
-        </button>
-        <span className='prf-side-foot'>tauri · rust</span>
+        <span className='prf-side-foot'>
+          @2026 Marvis AI
+          <br />
+          made with 💗
+        </span>
       </nav>
       <div className='prf-main'>
         {tab === 'general' && <GeneralTab data={data} />}
+        {tab === 'bar' && <BarTab />}
         {tab === 'providers' && <ProvidersTab data={data} />}
         {tab === 'hotkeys' && <HotkeysTab data={data} />}
         {tab === 'privacy' && <PrivacyTab />}

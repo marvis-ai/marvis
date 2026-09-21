@@ -39,7 +39,7 @@ impl Default for Config {
 }
 
 /// App-level state that isn't a provider or a window rect: first-run
-/// progress and the appearance override.
+/// progress, the appearance override, and the accent hue.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AppPrefs {
@@ -50,13 +50,22 @@ pub struct AppPrefs {
     pub onboarding_done: bool,
     /// `auto` | `light` | `dark`; validated by `config_set`.
     pub appearance: String,
+    /// `#rrggbb` accent — the single hue the whole UI derives from
+    /// (`--accent` in index.css; `--primary`, the soft tint, the text
+    /// variant, and the focus ring all `color-mix` off it). Validated by
+    /// `config_set`; `""` in a file reads as the default.
+    pub accent: String,
 }
+
+/// The spec's slate accent — `#3a7294` (DESIGN.md §2).
+pub const DEFAULT_ACCENT: &str = "#3a7294";
 
 impl Default for AppPrefs {
     fn default() -> Self {
         Self {
             onboarding_done: false,
             appearance: "auto".into(),
+            accent: DEFAULT_ACCENT.into(),
         }
     }
 }
@@ -169,31 +178,30 @@ pub struct WindowPrefs {
     pub bar_y: Option<f64>,
 }
 
-/// Default hotkey bindings (spec table). `Cmd+Shift+S` (manual screenshot),
-/// `Cmd+Shift+<n>` (display n) and `Cmd+Shift+Left/Right` (snap edge) are
-/// hardcoded elsewhere and deliberately absent.
+/// Default hotkey bindings — the whole configurable set (Settings →
+/// Hotkeys rebinds any of them). Bar movement/snap is pointer-driven,
+/// so there are deliberately no move/scroll/click-through actions.
 pub fn default_hotkeys() -> BTreeMap<String, String> {
     BTreeMap::from([
         ("toggle_visibility".into(), "Cmd+/".into()),
         ("next_step".into(), "Cmd+Enter".into()),
-        ("move_up".into(), "Cmd+Up".into()),
-        ("move_down".into(), "Cmd+Down".into()),
-        ("move_left".into(), "Cmd+Left".into()),
-        ("move_right".into(), "Cmd+Right".into()),
-        ("toggle_click_through".into(), "Cmd+M".into()),
-        ("scroll_up".into(), "Cmd+Shift+Up".into()),
-        ("scroll_down".into(), "Cmd+Shift+Down".into()),
+        ("screen_only".into(), "Cmd+Shift+S".into()),
+        ("show_settings".into(), "Cmd+,".into()),
     ])
 }
 
 /// A `[hotkeys]` table may list only user overrides; fill in the spec
-/// defaults for every action it doesn't mention.
+/// defaults for every action it doesn't mention, and drop names this
+/// build doesn't know (a stale `move_up` from an older config would
+/// otherwise sit in the file forever — nothing binds it).
 fn merge_default_hotkeys<'de, D>(deserializer: D) -> Result<BTreeMap<String, String>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
     let mut map = BTreeMap::<String, String>::deserialize(deserializer)?;
-    for (action, accel) in default_hotkeys() {
+    let defaults = default_hotkeys();
+    map.retain(|action, _| defaults.contains_key(action));
+    for (action, accel) in defaults {
         map.entry(action).or_insert(accel);
     }
     Ok(map)
@@ -454,15 +462,21 @@ mod tests {
     }
 
     #[test]
-    fn partial_hotkeys_merge_with_defaults() {
-        // User overrides one hotkey; the other spec actions still get defaults.
+    fn partial_hotkeys_merge_with_defaults_and_drop_stale() {
+        // User overrides one hotkey; the other actions still get
+        // defaults — and a stale name (`move_up`, removed from the
+        // configurable set) is dropped rather than kept forever.
         let tmp = tempfile_dir();
         let path = tmp.join("config.toml");
-        std::fs::write(&path, "[hotkeys]\nnext_step = \"Cmd+Shift+Enter\"\n").unwrap();
+        std::fs::write(
+            &path,
+            "[hotkeys]\nnext_step = \"Cmd+Shift+Enter\"\nmove_up = \"Cmd+Up\"\n",
+        )
+        .unwrap();
         let cfg = Config::load_from(&path).unwrap();
         assert_eq!(cfg.hotkeys["next_step"], "Cmd+Shift+Enter");
         assert_eq!(cfg.hotkeys["toggle_visibility"], "Cmd+/");
-        assert_eq!(cfg.hotkeys["scroll_down"], "Cmd+Shift+Down");
+        assert!(!cfg.hotkeys.contains_key("move_up"));
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
@@ -472,18 +486,12 @@ mod tests {
         let expected = [
             ("toggle_visibility", "Cmd+/"),
             ("next_step", "Cmd+Enter"),
-            ("move_up", "Cmd+Up"),
-            ("move_down", "Cmd+Down"),
-            ("move_left", "Cmd+Left"),
-            ("move_right", "Cmd+Right"),
-            ("toggle_click_through", "Cmd+M"),
-            ("scroll_up", "Cmd+Shift+Up"),
-            ("scroll_down", "Cmd+Shift+Down"),
+            ("screen_only", "Cmd+Shift+S"),
+            ("show_settings", "Cmd+,"),
         ];
+        assert_eq!(hk.len(), expected.len());
         for (action, accel) in expected {
             assert_eq!(hk[action], accel, "hotkey {action}");
         }
-        // Hardcoded elsewhere — must NOT be in the configurable map.
-        assert!(!hk.contains_key("manual_screenshot"));
     }
 }

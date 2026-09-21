@@ -23,7 +23,7 @@ import { useEffect, useRef, useState } from 'react';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { Settings, X } from '@marvis/ui';
+import { SettingsIcon, XIcon } from '@marvis/ui';
 import {
   askClose,
   modelGetSelected,
@@ -35,7 +35,6 @@ import {
   EV_ASK_CHUNK,
   EV_ASK_DONE,
   EV_ASK_ERROR,
-  EV_ASK_SCROLL,
   EV_ASK_STATE,
   useTauriEvent,
 } from '../lib/events';
@@ -54,7 +53,6 @@ const WINDOW_CAP = 900;
 const CHROME_PX = 8;
 /** Panel's own ceiling so the reported height never exceeds the cap. */
 const PANEL_MAX = WINDOW_CAP - CHROME_PX;
-const SCROLL_STEP = 200;
 /** Reported-height deadband + invoke throttle. */
 const HEIGHT_EPS = 4;
 const HEIGHT_MS = 150;
@@ -156,14 +154,6 @@ const AskPanel = () => {
       setError({ message: p.message, needsSetup: p.needs_setup === true });
     },
   );
-  // Hotkey-driven scroll (lib.rs ScrollUp/ScrollDown).
-  useTauriEvent<{ dir: 'up' | 'down' }>(EV_ASK_SCROLL, (p) => {
-    scrollRef.current?.scrollBy({
-      top: p.dir === 'down' ? SCROLL_STEP : -SCROLL_STEP,
-      behavior: 'smooth',
-    });
-  });
-
   // Repaint-per-token: stay glued to the bottom while pinned.
   useEffect(() => {
     const el = scrollRef.current;
@@ -198,7 +188,7 @@ const AskPanel = () => {
             title='Settings'
             aria-label='Settings'
             onClick={() => void windowShowSettings().catch(() => {})}>
-            <Settings />
+            <SettingsIcon />
           </button>
           <button
             type='button'
@@ -206,7 +196,7 @@ const AskPanel = () => {
             title='Close'
             aria-label='Close'
             onClick={() => void askClose().catch(() => {})}>
-            <X />
+            <XIcon />
           </button>
         </header>
         {error && (

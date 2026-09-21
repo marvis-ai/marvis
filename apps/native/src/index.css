@@ -355,6 +355,45 @@ body {
   pointer-events: none;
 }
 
+/* the drag grip — hidden until the pill is hovered, then it seats at
+   the front edge. A bare span: Tauri refuses drags that start on
+   buttons/inputs, and the capsule is wall-to-wall buttons — this is the
+   only real drag target it has. Collapses like `.mv-gear` so the reveal
+   rides the same morph transition. */
+.mv-grip {
+  flex: none;
+  width: 14px;
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+  cursor: grab;
+  opacity: 0;
+  max-width: 0;
+  overflow: hidden;
+  margin-inline: -3px;
+  transition:
+    max-width var(--motion-base) var(--ease),
+    opacity var(--motion-fast) var(--ease),
+    margin var(--motion-base) var(--ease);
+}
+.mv-bar:hover .mv-grip {
+  opacity: 1;
+  max-width: 14px;
+  margin-inline: 0;
+}
+.mv-grip:active {
+  cursor: grabbing;
+}
+.mv-grip svg {
+  width: 13px;
+  height: 13px;
+}
+/* the capsule grows to seat the grip — same width transition as the
+   capsule→input morph, so the reveal animates instead of jumping */
+.mv-bar.is-mini:hover {
+  width: 120px;
+}
+
 /* the gear rides the input bar only — the 104px capsule has no room for
    a fourth control (tray menu + Cmd+, reach settings from any state).
    Collapsed rather than unmounted so the morph animates (spec §9). */
@@ -488,6 +527,7 @@ body {
   display: -webkit-box;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
+  line-clamp: 2;
   overflow: hidden;
   font-size: 12px;
   line-height: 1.45;
@@ -1010,9 +1050,6 @@ body.prefs .prov-note {
 .prf-side-item.is-on svg {
   color: var(--accent-text);
 }
-.prf-side-item.prf-side-muted {
-  color: var(--muted);
-}
 .prf-side-spacer {
   flex: 1;
 }
@@ -1021,6 +1058,8 @@ body.prefs .prov-note {
   font-size: 10px;
   color: var(--muted);
   padding: 8px 9px 2px;
+  text-align: center;
+  line-height: 1.7;
 }
 .prf-main {
   padding: 20px 24px 22px;
@@ -1115,32 +1154,43 @@ body.prefs .prov-note {
   border-radius: 999px;
   padding: 3px 9px;
 }
-.prf-swatch {
+/* the accent picker — a native color well beside the hex readout */
+.prf-color {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  padding: 3px 11px 3px 4px;
+  gap: 10px;
+}
+.prf-color input[type='color'] {
+  width: 40px;
+  height: 24px;
+  padding: 2px;
   border: 1px solid var(--border);
-  border-radius: 999px;
-  font-family: var(--font-mono);
+  border-radius: 7px;
+  background: var(--surface);
+  cursor: pointer;
+}
+.prf-color input[type='color']::-webkit-color-swatch-wrapper {
+  padding: 1px;
+}
+.prf-color input[type='color']::-webkit-color-swatch {
+  border: 0;
+  border-radius: 4px;
+}
+.prf-color .num {
   font-size: 11.5px;
   color: var(--muted);
 }
-.prf-swatch .sw-chip {
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
-  background: var(--accent);
-  box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--fg) 12%, transparent);
+/* the rebind button — the kbd chip is the control; `is-listening`
+   pulses the accent edge while it waits for a chord */
+.prf-hk-bind {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  border-radius: 6px;
+  cursor: pointer;
 }
-.prf-hk-ctl {
-  gap: 10px;
-}
-.prf-hk-keys {
-  display: inline-flex;
-  gap: 3px;
-  flex-wrap: wrap;
-  justify-content: flex-end;
+.prf-hk-bind.is-listening {
+  box-shadow: var(--focus-ring);
 }
 
 /* provider rows — the failover list. Card padding on the row, accent

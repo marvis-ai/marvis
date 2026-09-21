@@ -1,7 +1,7 @@
 /**
  * Small shared controls for the prefs window — the building blocks the
- * prototype calls `pref-row`, `seg`, `tag`, `swatch`, `kbd`. One accent
- * rule applies throughout: slate only marks live/primary state.
+ * prototype calls `pref-row`, `seg`, `tag`, `kbd`. One accent rule
+ * applies throughout: the accent hue only marks live/primary state.
  */
 import type { ReactNode } from 'react';
 import { kbdTokens } from '../../lib/format';
@@ -60,14 +60,6 @@ export const Seg = <T extends string>({
 /** Muted pill — metadata labels (config.toml, marvis://…, MIT). */
 export const Tag = ({ children }: { children: ReactNode }) => (
   <span className='prf-tag'>{children}</span>
-);
-
-/** Accent swatch — the `#3a7294` row in General (pill + round chip). */
-export const Swatch = ({ hex }: { hex: string }) => (
-  <span className='prf-swatch'>
-    <i className='sw-chip' />
-    {hex}
-  </span>
 );
 
 /**

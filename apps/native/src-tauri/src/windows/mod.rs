@@ -8,6 +8,8 @@ pub mod layout;
 pub mod movement;
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use tauri::{
@@ -102,7 +104,8 @@ impl Panel {
     }
 }
 
-/// Cardinal direction for bar step-move and edge-snap.
+/// Cardinal direction — the bar's edge-snap target (Settings → Bar
+/// picker) and the persisted "nearest edge" read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Dir {
@@ -130,8 +133,6 @@ const ALERT_W: f64 = 340.0;
 const ALERT_H: f64 = 100.0;
 /// Distance below the work-area top for the default bar position.
 const BAR_TOP_OFFSET: f64 = 21.0;
-/// `Cmd+Arrow` step size.
-const MOVE_STEP: f64 = 40.0;
 /// Slide-in distance above the target rect when a panel appears.
 const SHOW_OFFSET_Y: f64 = 10.0;
 /// Lower bound for `adjust_height` so a panel can't collapse to nothing.
@@ -173,8 +174,12 @@ pub struct WindowPool {
     bar_rect: Rect,
     /// Content-driven heights reported by `adjust_height` (defaults until then).
     heights: BTreeMap<Panel, f64>,
-    click_through: bool,
 }
+
+/// Debounce counter for the bar's `Moved` event — a drag fires one event
+/// per frame, so the persist write waits for the LAST position (400 ms
+/// quiet) instead of rewriting `config.toml` on every pixel.
+static BAR_MOVE_GEN: AtomicU64 = AtomicU64::new(0);
 
 impl WindowPool {
     /// Build ONLY the bar window; panels are created later by
@@ -193,9 +198,28 @@ impl WindowPool {
             remembered: BTreeSet::new(),
             bar_rect: DEFAULT_WORK,
             heights: BTreeMap::new(),
-            click_through: false,
         };
         let bar = build_window(app, "bar", BAR_W, BAR_H)?;
+        {
+            // Persist the resting place on every move — user drags via
+            // `data-tauri-drag-region`, edge snaps, and reclamps alike.
+            // `Moved` fires per frame during a drag, so the write is
+            // debounced: the last generation wins after 400 ms of quiet.
+            let app_moved = app.clone();
+            bar.on_window_event(move |event| {
+                if !matches!(event, tauri::WindowEvent::Moved(_)) {
+                    return;
+                }
+                let gen = BAR_MOVE_GEN.fetch_add(1, Ordering::Relaxed) + 1;
+                let app = app_moved.clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(Duration::from_millis(400));
+                    if BAR_MOVE_GEN.load(Ordering::Relaxed) == gen {
+                        crate::persist_bar_position(&app);
+                    }
+                });
+            });
+        }
         pool.bar = Some(bar);
         // Built (hidden) up front so its webview is loaded and listening
         // before the first alert — an emit to a still-loading window
@@ -244,21 +268,17 @@ impl WindowPool {
             remembered: BTreeSet::new(),
             bar_rect: DEFAULT_WORK,
             heights: BTreeMap::new(),
-            click_through: false,
         }
     }
 
-    /// Build the three feature panels HIDDEN. Must not be called before the
-    /// Task-14 gate opens; panels must not exist earlier.
+    /// Build the feature panels HIDDEN. Must not be called before the
+    /// gate opens; panels must not exist earlier.
     pub fn create_feature_windows(&mut self, app: &AppHandle) -> anyhow::Result<()> {
         for panel in Panel::ALL {
             if self.panels.contains_key(&panel) {
                 continue;
             }
             let win = build_window(app, panel.label(), panel.width(), panel.default_height())?;
-            if self.click_through {
-                let _ = win.set_ignore_cursor_events(true);
-            }
             self.panels.insert(panel, win);
         }
         Ok(())
@@ -434,70 +454,32 @@ impl WindowPool {
         }
     }
 
-    /// `Cmd+M` click-through: ignore cursor events on every window.
-    pub fn set_click_through(&mut self, on: bool) {
-        self.click_through = on;
-        if let Some(bar) = &self.bar {
-            let _ = bar.set_ignore_cursor_events(on);
-        }
-        if let Some(alert) = &self.alert {
-            let _ = alert.set_ignore_cursor_events(on);
-        }
-        for w in self.panels.values() {
-            let _ = w.set_ignore_cursor_events(on);
-        }
-    }
-
-    /// `Cmd+Arrow`: move the bar 40 px, clamped to the work area; panels follow.
-    pub fn move_bar_step(&mut self, dir: Dir) {
-        self.reclamp();
+    /// The work-area edge the bar's center is nearest to — what the
+    /// Settings → Bar picker shows as the current position (the bar
+    /// can rest anywhere after a drag, so "current" is always an edge
+    /// read, not a stored field).
+    pub fn bar_edge(&self) -> Dir {
         let work = self.bar_work_area();
-        let mut b = self.bar_rect;
-        match dir {
-            Dir::Left => b.x -= MOVE_STEP,
-            Dir::Right => b.x += MOVE_STEP,
-            Dir::Up => b.y -= MOVE_STEP,
-            Dir::Down => b.y += MOVE_STEP,
+        let (cx, cy) = (self.bar_rect.center_x(), self.bar_rect.center_y());
+        let d_top = (cy - work.y).abs();
+        let d_bottom = (work.bottom() - cy).abs();
+        let d_left = (cx - work.x).abs();
+        let d_right = (work.right() - cx).abs();
+        let min = d_top.min(d_bottom).min(d_left).min(d_right);
+        if min == d_bottom {
+            Dir::Down
+        } else if min == d_left {
+            Dir::Left
+        } else if min == d_right {
+            Dir::Right
+        } else {
+            Dir::Up
         }
-        b = clamp_to_work_area(b, work);
-        self.bar_rect = b;
-        if let Some(bar) = &self.bar {
-            set_rect(bar, b);
-        }
-        self.restack();
     }
 
-    /// `Cmd+Shift+<n>`: move the bar to the `n`th monitor (1-indexed,
-    /// `available_monitors` order) — centered horizontally, `BAR_TOP_OFFSET`
-    /// px below the work-area top; panels follow. `n` out of range is a
-    /// warn + no-op; nothing is persisted (session-only placement).
-    pub fn move_bar_to_display(&mut self, n: usize) {
-        let Some(bar) = self.bar.clone() else {
-            return;
-        };
-        let Ok(monitors) = bar.available_monitors() else {
-            return;
-        };
-        if n == 0 || n > monitors.len() {
-            log::warn!(
-                "windows::move_bar_to_display({n}): only {} monitor(s)",
-                monitors.len()
-            );
-            return;
-        }
-        self.refresh_bar_rect();
-        let work = logical_work_area(&monitors[n - 1]);
-        self.bar_rect = Rect {
-            x: work.center_x() - self.bar_rect.w / 2.0,
-            y: work.y + BAR_TOP_OFFSET,
-            ..self.bar_rect
-        };
-        set_rect(&bar, self.bar_rect);
-        self.restack();
-    }
-
-    /// `Cmd+Shift+Arrow`: animate the bar to the named work-area edge (12 px
-    /// margin); panels follow.
+    /// Settings → Bar picker: animate the bar to the named work-area edge
+    /// (12 px margin); panels follow. The move fires `Moved`, so the new
+    /// position persists through the debounced write — no extra save here.
     pub fn snap_edge(&mut self, dir: Dir) {
         self.reclamp();
         let work = self.bar_work_area();
@@ -506,6 +488,23 @@ impl WindowPool {
             x,
             y,
             ..self.bar_rect
+        };
+        if let Some(bar) = &self.bar {
+            movement::animate(bar, self.bar_rect, ANIM_DUR);
+        }
+        self.restack();
+    }
+
+    /// Settings → Bar "Re-center": restore the startup default — centered
+    /// on the primary work area, 21 px under the top. Persists via the
+    /// `Moved` debounce like any other move.
+    pub fn recenter_bar(&mut self) {
+        let work = self.primary_work_area();
+        self.bar_rect = Rect {
+            x: work.center_x() - BAR_W / 2.0,
+            y: work.y + BAR_TOP_OFFSET,
+            w: BAR_W,
+            h: BAR_H,
         };
         if let Some(bar) = &self.bar {
             movement::animate(bar, self.bar_rect, ANIM_DUR);
@@ -677,12 +676,20 @@ impl WindowPool {
     }
 
     /// Pull the live bar rect from the OS so user drags stay authoritative.
-    fn refresh_bar_rect(&mut self) {
+    pub(crate) fn refresh_bar_rect(&mut self) {
         if let Some(bar) = &self.bar {
             if let Some(r) = window_rect(bar) {
                 self.bar_rect = r;
             }
         }
+    }
+
+    /// The bar rect with the OS as the source of truth: refresh first,
+    /// then return. The `Moved` debounce writer and `window_bar_edge`
+    /// both read through here so a just-finished drag is never stale.
+    pub(crate) fn current_bar_rect(&mut self) -> Rect {
+        self.refresh_bar_rect();
+        self.bar_rect
     }
 }
 

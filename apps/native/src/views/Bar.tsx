@@ -27,7 +27,14 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
-import { ArrowLeft, Camera, Mic, Settings, ShieldAlert } from '@marvis/ui';
+import {
+  ArrowLeftIcon,
+  CameraIcon,
+  GripVerticalIcon,
+  MicIcon,
+  SettingsIcon,
+  ShieldAlertIcon,
+} from '@marvis/ui';
 import { currentMonitor, getCurrentWindow } from '@tauri-apps/api/window';
 import {
   alertShow,
@@ -54,6 +61,22 @@ const gateFor = (screen: boolean): Gate =>
 
 /** Every bar error goes to the alert window — the pill has no room. */
 const raise = (message: string) => void alertShow(message).catch(() => {});
+
+/**
+ * The drag handle — revealed on hover at the pill's front edge. It's a
+ * bare span because Tauri refuses drags that start on interactive
+ * elements (button/input/a): the capsule is wall-to-wall buttons, so
+ * this is the only honest drag target it gets.
+ */
+const grip = (
+  <span
+    className='mv-grip'
+    data-tauri-drag-region='deep'
+    title='Drag'
+    aria-hidden='true'>
+    <GripVerticalIcon />
+  </span>
+);
 
 /** Which screen edge the bar hugs — the breath bobs away from it. */
 type Edge = 'top' | 'bottom' | 'left' | 'right';
@@ -203,6 +226,7 @@ const Bar = () => {
         <div
           className='mv-bar-inner justify-center'
           data-tauri-drag-region>
+          {grip}
           <RetryCard onRetry={() => void bootstrap()} />
         </div>
       );
@@ -212,7 +236,8 @@ const Bar = () => {
         <div
           className='mv-bar-inner'
           data-tauri-drag-region>
-          <ShieldAlert
+          {grip}
+          <ShieldAlertIcon
             className='mv-gate-ico'
             data-tauri-drag-region
           />
@@ -245,6 +270,7 @@ const Bar = () => {
         onSubmit={submitAsk}
         className='mv-bar-inner'
         data-tauri-drag-region>
+        {grip}
         <button
           type='button'
           className='mv-icon-btn mv-ask'
@@ -253,7 +279,7 @@ const Bar = () => {
           disabled={gate !== 'main'}>
           <Iris />
           <span className='mv-back'>
-            <ArrowLeft />
+            <ArrowLeftIcon />
           </span>
         </button>
         <input
@@ -274,7 +300,7 @@ const Bar = () => {
           onClick={() =>
             void askSendScreenOnly().catch(() => raise('Send failed'))
           }>
-          <Camera />
+          <CameraIcon />
         </button>
         <button
           type='button'
@@ -282,7 +308,7 @@ const Bar = () => {
           aria-label='Listen — arrives in Phase 2'
           title='Listen — arrives in Phase 2'
           disabled>
-          <Mic />
+          <MicIcon />
         </button>
         {/* Collapses to nothing in the capsule (no room in 104px) — the
             tray's Settings item and Cmd+, reach it from any state. */}
@@ -294,7 +320,7 @@ const Bar = () => {
           tabIndex={expanded ? 0 : -1}
           disabled={gate !== 'main'}
           onClick={() => void windowShowSettings().catch(() => {})}>
-          <Settings />
+          <SettingsIcon />
         </button>
       </form>
     );

@@ -3,6 +3,8 @@
  * render blank, so every view shows this when its initial command load
  * rejects.
  */
+import { BTN_OUTLINE, BTN_SM, cn } from '../lib/classes';
+
 export const RetryCard = ({
   onRetry,
   message = 'Failed to load',
@@ -17,7 +19,7 @@ export const RetryCard = ({
       <span className='text-xs text-destructive'>{message}</span>
       <button
         type='button'
-        className='mv-btn mv-btn-outline'
+        className={cn(BTN_SM, BTN_OUTLINE)}
         onClick={onRetry}>
         Retry
       </button>

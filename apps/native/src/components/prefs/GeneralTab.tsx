@@ -5,6 +5,7 @@
  * token `color-mix`es off it).
  */
 import { configSet } from '../../lib/commands';
+import { H2, NUM, PRF_ROWS } from '../../lib/classes';
 import { PrefRow, Seg } from './bits';
 import type { PrefsData } from './types';
 
@@ -28,9 +29,9 @@ export const GeneralTab = ({ data }: { data: PrefsData }) => {
 
   return (
     <>
-      <h2>General</h2>
+      <h2 className={H2}>General</h2>
 
-      <div className='prf-rows'>
+      <div className={PRF_ROWS}>
         <PrefRow
           label='Appearance'
           sub='Follows macOS by default — the capsule, chatbox, and this window share one setting.'>
@@ -53,14 +54,15 @@ export const GeneralTab = ({ data }: { data: PrefsData }) => {
           label='Accent color'
           sub='The one hue — live states, switches, and focus rings all derive from it.'
           last>
-          <span className='prf-color'>
+          <span className='inline-flex items-center gap-2.5'>
             <input
               type='color'
               aria-label='Accent color'
+              className='h-6 w-10 cursor-pointer rounded-[7px] border border-border bg-surface p-0.5 [&::-webkit-color-swatch-wrapper]:p-px [&::-webkit-color-swatch]:rounded [&::-webkit-color-swatch]:border-0'
               value={accent}
               onChange={(e) => setAccent(e.target.value)}
             />
-            <span className='num'>{accent}</span>
+            <span className={NUM}>{accent}</span>
           </span>
         </PrefRow>
       </div>

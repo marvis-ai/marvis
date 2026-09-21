@@ -19,10 +19,64 @@ const outfit = Outfit({
   subsets: ['latin'],
 });
 
-export const metadata: Metadata = {
+const SITE = {
+  name: 'Marvis',
+  url: 'https://getmarvis.com',
   title: 'Marvis — a private AI that floats above your desktop',
   description:
-    'Marvis is a small translucent bar that floats above your workspace. It sees your screen — only with your permission — and streams answers into an overlay panel, while your keys, history, and screen data never leave your machine.',
+    'Marvis is a private AI assistant for macOS. A floating bar sees your screen with permission, answers in an overlay, and never uploads your keys or screen data.',
+};
+
+export const metadata: Metadata = {
+  metadataBase: new URL(SITE.url),
+  title: SITE.title,
+  description: SITE.description,
+  alternates: {
+    canonical: '/',
+  },
+  openGraph: {
+    title: SITE.title,
+    description: SITE.description,
+    url: SITE.url,
+    siteName: SITE.name,
+    type: 'website',
+    locale: 'en_US',
+  },
+  twitter: {
+    card: 'summary_large_image',
+    title: SITE.title,
+    description: SITE.description,
+  },
+  robots: {
+    index: true,
+    follow: true,
+  },
+};
+
+const jsonLd = {
+  '@context': 'https://schema.org',
+  '@graph': [
+    {
+      '@type': 'WebSite',
+      '@id': `${SITE.url}/#website`,
+      url: SITE.url,
+      name: SITE.name,
+      description: SITE.description,
+    },
+    {
+      '@type': 'SoftwareApplication',
+      '@id': `${SITE.url}/#software`,
+      name: SITE.name,
+      description: SITE.description,
+      operatingSystem: 'macOS',
+      applicationCategory: 'DeveloperApplication',
+      offers: {
+        '@type': 'Offer',
+        price: '0',
+        priceCurrency: 'USD',
+      },
+    },
+  ],
 };
 
 const RootLayout = ({ children }: { children: ReactNode }) => {
@@ -30,7 +84,13 @@ const RootLayout = ({ children }: { children: ReactNode }) => {
     <html
       lang='en'
       className={`${inter.variable} ${galada.variable} ${outfit.variable}`}>
-      <body>{children}</body>
+      <body>
+        <script
+          type='application/ld+json'
+          dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
+        />
+        {children}
+      </body>
     </html>
   );
 };

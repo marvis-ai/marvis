@@ -4,21 +4,23 @@
  * waveform idiom muted and still: motion is state, and a dead waveform
  * animating would lie about being live.
  */
+import { CHIP, EMPTY, PANEL, cn } from '../lib/classes';
+
 const ListenPanel = () => {
   return (
     <div className='p-1'>
-      <div className='mv-panel items-center justify-center gap-2 px-4 py-6'>
+      <div className={cn(PANEL, 'items-center justify-center gap-2 px-4 py-6')}>
         <span
-          className='mv-wave'
+          className='flex h-4.5 items-center gap-0.75'
           aria-hidden>
-          <i />
-          <i />
-          <i />
-          <i />
-          <i />
+          <i className='h-2 w-0.75 rounded-xs bg-muted' />
+          <i className='h-3.5 w-0.75 rounded-xs bg-muted' />
+          <i className='h-4.5 w-0.75 rounded-xs bg-muted' />
+          <i className='h-3 w-0.75 rounded-xs bg-muted' />
+          <i className='h-1.75 w-0.75 rounded-xs bg-muted' />
         </span>
-        <p className='mv-empty'>Listen arrives in Phase 2</p>
-        <span className='mv-chip'>deepgram · stt</span>
+        <p className={EMPTY}>Listen arrives in Phase 2</p>
+        <span className={CHIP}>deepgram · stt</span>
       </div>
     </div>
   );

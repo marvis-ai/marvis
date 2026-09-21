@@ -120,7 +120,7 @@ Signature motions:
   (`iris-breath`). This is the only perpetual motion.
 - **Listening** — iris pulses on 1.6s (`iris-listen`), bar gains a slate ring
   (`accent 55%` border + `accent 16%` halo), waveform bars animate 1.1s.
-- **Capsule ⇄ input morph** — bar width 112⇄353px on `--motion-base`; the
+- **Capsule ⇄ input morph** — bar width 130⇄431px on `--motion-base`; the
   iris layer collapses (scale .3, fade) while a `←` arrow spins in from
   `rotate(-90°) scale(.4)` with a 55ms stagger. Requires persistent DOM —
   never re-render `innerHTML` mid-morph.
@@ -138,12 +138,15 @@ Signature motions:
 Real geometry: bar sits 21px from the docked screen edge; panels drop 8px
 from the bar.
 
+**2026-09-21 — bar enlarged +25%.** Window 353×47 → 441×59; input pill
+345×39 → 431×49; capsule 104 → 130px wide. Sizes below are the new values.
+
 | State | Size | Contents |
 | --- | --- | --- |
-| Capsule (idle) | 112×47, pill | iris · screenshot · mic |
-| Input status | 353×47, pill | iris/back · input · camera · mic |
-| Locked / permission gates | 353×47 | icon + label + primary action |
-| Rail (left/right dock) | 47×112 | same controls, vertical |
+| Capsule (idle) | 130×49, pill | iris · screenshot · mic |
+| Input status | 431×49, pill | iris/back · input · camera · mic |
+| Locked / permission gates | 431×49 | icon + label + primary action |
+| Rail (left/right dock) | 59×130 | same controls, vertical |
 
 - **Capsule → input:** click iris or start typing. Iris morphs into `←`
   (back). ⏎ sends; Esc or `←` collapses. Draft survives collapse.
@@ -220,14 +223,15 @@ from the bar.
 
 ### Buttons & controls
 
-- `.btn-primary` / `.mv-btn-primary` — pill, `--primary` fill, `--primary-fg`
+- `.btn-primary` / `BTN_PRIMARY` — pill, `--primary` fill, `--primary-fg`
   label. Hover `88% + black 12%`; **active `74% + black 26%`** (a deeper
   slate dip, plus `scale(.97)` on bar buttons). Disabled = only state allowed
   to lose contrast.
-- `.btn-outline` — transparent + `--border`; hover deepens border to `fg 30%`.
-- `.btn-link` / `.mv-btn-link` — muted text; hover → `--accent-text` +
+- `.btn-outline` / `BTN_OUTLINE` — transparent + `--border`; hover deepens
+  border to `fg 30%`.
+- `.btn-link` / `BTN_LINK` — muted text; hover → `--accent-text` +
   underline.
-- `.mv-icon-btn` — 28px round ghost; hover `fg-soft` fill + `fg` icon.
+- `ICON_BTN` — 26px round ghost; hover `fg-soft` fill + `fg` icon.
 - Inputs — `--input-well` fill, `--border`, r=8, mono value; focus →
   `accent` border + `--focus-ring`.
 - Segmented controls / switches — `--primary` fill for the on-segment.
@@ -267,6 +271,7 @@ Never redraw or substitute the iris/wordmark; reference the SVGs.
 - No white labels on the slate (use `--primary-fg` ink-light).
 - No sidebar in onboarding; no wizard steps inside the settings sidebar mode.
 - No `innerHTML` re-render of the bar mid-interaction (breaks the morph);
-  drive state with classes.
+  drive state with `data-*` attributes (the markup is Tailwind utilities —
+  shared bundles live in `src/lib/classes.ts`).
 - No `white-space: nowrap` on oversized type; no remote images, no invented
   providers/hotkeys/metrics.

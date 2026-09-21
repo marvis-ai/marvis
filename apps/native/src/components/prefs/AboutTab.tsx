@@ -9,6 +9,7 @@
 import { useEffect, useState } from 'react';
 import { getVersion } from '@tauri-apps/api/app';
 import { windowShowOnboarding } from '../../lib/commands';
+import { BTN_LG, BTN_OUTLINE, PRF_ROWS, cn } from '../../lib/classes';
 import { PrefRow, Tag } from './bits';
 
 export const AboutTab = () => {
@@ -23,15 +24,15 @@ export const AboutTab = () => {
   return (
     <>
       <img
-        className='prf-about-mark'
+        className='mt-2 mb-2.5 block h-8.5'
         src='/marvis-logo.svg'
         alt='Marvis'
       />
-      <p className='prf-about-sub'>
+      <p className='mb-4 max-w-[46ch] text-[12.5px] leading-normal text-muted-foreground'>
         Sees your screen. Answers in place. Nothing else.
       </p>
 
-      <div className='prf-rows'>
+      <div className={PRF_ROWS}>
         <PrefRow label='Version'>
           <Tag>{version}</Tag>
         </PrefRow>
@@ -47,7 +48,7 @@ export const AboutTab = () => {
           last>
           <button
             type='button'
-            className='mv-btn mv-btn-outline'
+            className={cn(BTN_LG, BTN_OUTLINE)}
             onClick={() => void windowShowOnboarding().catch(() => {})}>
             Re-run setup
           </button>

@@ -1,6 +1,6 @@
 /** The iris — Marvis' presence mark (DESIGN.md §6). The ::before pupil
    breathes; `data-expanded` on the pill (`group/bar`) folds it behind
-   the back arrow during the capsule⇄input morph. */
+   the back arrow during the icon-row⇄input-row swap. */
 export const Iris = () => (
   <span
     aria-hidden

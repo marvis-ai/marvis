@@ -1,5 +1,5 @@
 /**
- * `?view=alert` — the error toast (340×104, transparent, frameless,
+ * `?view=alert` — the error toast (340×100, transparent, frameless,
  * non-resizable; `windows/mod.rs` centers it under the bar).
  *
  * Errors used to render inside the bar pill, but the bar window is a

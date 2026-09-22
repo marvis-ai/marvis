@@ -76,13 +76,17 @@ const raise = (message: string) => void alertShow(message).catch(() => {});
  * elements (button/input/a): the capsule is wall-to-wall buttons, so
  * this is the only honest drag target it gets.
  */
+/** Bar controls step up from the 26px overlay default (`ICON_BTN`) —
+ *  the capsule is 64px tall, so buttons/icons scale ~1.3×. */
+const BAR_BTN = cn(ICON_BTN, 'size-8.5');
+
 const grip = (
   <span
-    className='-mx-0.75 grid w-3.5 max-w-0 flex-none cursor-grab place-items-center overflow-hidden text-muted-foreground opacity-0 transition-[max-width_var(--motion-base)_var(--ease),opacity_var(--motion-fast)_var(--ease),margin-inline_var(--motion-base)_var(--ease)] group-hover/bar:mx-0 group-hover/bar:max-w-3.5 group-hover/bar:opacity-100 active:cursor-grabbing motion-reduce:transition-none'
+    className='-mx-0.75 grid w-4 max-w-0 flex-none cursor-grab place-items-center overflow-hidden text-muted-foreground opacity-0 transition-[max-width_var(--motion-base)_var(--ease),opacity_var(--motion-fast)_var(--ease),margin-inline_var(--motion-base)_var(--ease)] group-hover/bar:mx-0 group-hover/bar:max-w-4 group-hover/bar:opacity-100 active:cursor-grabbing motion-reduce:transition-none'
     data-tauri-drag-region='deep'
     title='Drag'
     aria-hidden='true'>
-    <GripVerticalIcon className='size-3.25' />
+    <GripVerticalIcon className='size-3.75' />
   </span>
 );
 
@@ -218,7 +222,7 @@ const Bar = () => {
           data-tauri-drag-region>
           {grip}
           <ShieldAlertIcon
-            className='size-3.75 flex-none text-muted-foreground'
+            className='size-4.5 flex-none text-muted-foreground'
             data-tauri-drag-region
           />
           <span
@@ -253,13 +257,13 @@ const Bar = () => {
         {grip}
         <button
           type='button'
-          className={cn(ICON_BTN, 'relative')}
+          className={cn(BAR_BTN, 'relative')}
           aria-label={open ? 'Back to capsule' : 'Ask Marvis'}
           onClick={() => (open ? collapse() : setOpen(true))}
           disabled={gate !== 'main'}>
           <Iris />
           <span className='pointer-events-none absolute inset-0 grid -rotate-90 scale-[0.4] place-items-center opacity-0 transition-[rotate_var(--motion-base)_var(--ease)_55ms,scale_var(--motion-base)_var(--ease)_55ms,opacity_var(--motion-fast)_var(--ease)_55ms] group-data-expanded/bar:rotate-none group-data-expanded/bar:scale-100 group-data-expanded/bar:opacity-100 motion-reduce:transition-none'>
-            <ArrowLeftIcon className='size-5' />
+            <ArrowLeftIcon className='size-5.5' />
           </span>
         </button>
         <input
@@ -270,7 +274,7 @@ const Bar = () => {
           placeholder='Ask Marvis…'
           aria-label='Ask Marvis'
           className={cn(
-            'min-w-0 flex-1 self-stretch border-0 bg-transparent text-[12.5px] text-foreground caret-accent outline-none select-text placeholder:text-muted-foreground focus-visible:shadow-none transition-[max-width_var(--motion-base)_var(--ease),opacity_var(--motion-fast)_var(--ease),margin-inline_var(--motion-base)_var(--ease)] motion-reduce:transition-none',
+            'min-w-0 flex-1 self-stretch border-0 bg-transparent text-[13.5px] text-foreground caret-accent outline-none select-text placeholder:text-muted-foreground focus-visible:shadow-none transition-[max-width_var(--motion-base)_var(--ease),opacity_var(--motion-fast)_var(--ease),margin-inline_var(--motion-base)_var(--ease)] motion-reduce:transition-none',
             expanded
               ? 'max-w-80'
               : 'pointer-events-none -mx-1.5 max-w-0 opacity-0',
@@ -278,35 +282,35 @@ const Bar = () => {
         />
         <button
           type='button'
-          className={ICON_BTN}
+          className={BAR_BTN}
           aria-label='Ask about the screen'
           title='Ask about the screen'
           disabled={gate !== 'main'}
           onClick={() =>
             void askSendScreenOnly().catch(() => raise('Send failed'))
           }>
-          <CameraIcon className='size-4' />
+          <CameraIcon className='size-5' />
         </button>
         <button
           type='button'
-          className={ICON_BTN}
+          className={BAR_BTN}
           aria-label='Listen — arrives in Phase 2'
           title='Listen — arrives in Phase 2'
           disabled>
-          <MicIcon className='size-4' />
+          <MicIcon className='size-5' />
         </button>
-        {/* Only rendered in the input bar — the 112px idle capsule has
-            no room for a fourth control (tray menu + Cmd+, reach it
+        {/* Only rendered in the input bar — the idle capsule has no
+            room for a fourth control (tray menu + Cmd+, reach it
             anyway). */}
         {expanded && (
           <button
             type='button'
-            className={ICON_BTN}
+            className={BAR_BTN}
             aria-label='Settings'
             title='Settings (⌘,)'
             disabled={gate !== 'main'}
             onClick={() => void windowShowSettings().catch(() => {})}>
-            <SettingsIcon className='size-4' />
+            <SettingsIcon className='size-5' />
           </button>
         )}
       </form>

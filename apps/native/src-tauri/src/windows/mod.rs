@@ -128,7 +128,7 @@ pub enum Dir {
 /// The bar window's two widths: the capsule IS the window under liquid
 /// glass, so idle rests at BAR_IDLE_W (the 3-icon row) and any expanded
 /// content — input row, gate cards — uses BAR_W. Height never changes.
-const BAR_IDLE_W: f64 = 112.0;
+const BAR_IDLE_W: f64 = 136.0;
 const BAR_W: f64 = 480.0;
 const BAR_H: f64 = 64.0;
 /// The preferences window — a normal decorated macOS window (native

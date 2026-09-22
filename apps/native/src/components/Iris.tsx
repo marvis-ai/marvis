@@ -4,6 +4,6 @@
 export const Iris = () => (
   <span
     aria-hidden
-    className='relative grid size-4.5 flex-none place-items-center transition-[scale_var(--motion-base)_var(--ease),opacity_var(--motion-fast)_var(--ease)] group-data-expanded/bar:scale-30 group-data-expanded/bar:opacity-0 motion-reduce:transition-none before:size-2.75 before:animate-iris-breath before:rounded-full before:bg-fg-2 before:content-[""] after:absolute after:size-[4.5px] after:rounded-full after:bg-surface after:content-[""] motion-reduce:before:animate-none'
+    className='relative grid size-6 flex-none place-items-center transition-[scale_var(--motion-base)_var(--ease),opacity_var(--motion-fast)_var(--ease)] group-data-expanded/bar:scale-30 group-data-expanded/bar:opacity-0 motion-reduce:transition-none before:size-3.75 before:animate-iris-breath before:rounded-full before:bg-fg-2 before:content-[""] after:absolute after:size-[6px] after:rounded-full after:bg-surface after:content-[""] motion-reduce:before:animate-none'
   />
 );

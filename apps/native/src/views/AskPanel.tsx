@@ -62,10 +62,10 @@ interface AskStatePayload {
 
 /** `Panel::Ask::max_height` (windows/mod.rs) — mirrored client-side. */
 const WINDOW_CAP = 900;
-/** Outer `p-1` wrapper: 4 px top + bottom of transparent chrome. */
-const CHROME_PX = 8;
-/** Panel's own ceiling so the reported height never exceeds the cap. */
-const PANEL_MAX = WINDOW_CAP - CHROME_PX;
+/** Panel's own ceiling so the reported height never exceeds the cap —
+    the frost-mode stage wraps the card in `p-1` (8 px of chrome), so
+    the card stops that far short of the window cap. */
+const PANEL_MAX = WINDOW_CAP - 8;
 /** Reported-height deadband + invoke throttle. */
 const HEIGHT_EPS = 4;
 const HEIGHT_MS = 150;
@@ -81,7 +81,7 @@ const AskPanel = () => {
     message: string;
     needsSetup: boolean;
   } | null>(null);
-  const panelRef = useRef<HTMLDivElement>(null);
+  const stageRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   /** Autoscroll is on until the user scrolls away from the bottom. */
   const pinnedRef = useRef(true);
@@ -94,9 +94,12 @@ const AskPanel = () => {
   }, []);
 
   // Report content height: leading + trailing throttle, only on a real
-  // (>EPS) change — `adjust_height` animates the window per call.
+  // (>EPS) change — `adjust_height` animates the window per call. The
+  // stage is the window-filling element: frost keeps its `p-1` (card
+  // + 8 px), glass strips the padding so it IS the card — measuring it
+  // self-corrects for both modes.
   useEffect(() => {
-    const el = panelRef.current;
+    const el = stageRef.current;
     if (!el) {
       return;
     }
@@ -104,7 +107,7 @@ const AskPanel = () => {
     let lastSentAt = 0;
     let timer: number | undefined;
     const report = () => {
-      const h = Math.min(Math.ceil(el.offsetHeight + CHROME_PX), WINDOW_CAP);
+      const h = Math.min(Math.ceil(el.offsetHeight), WINDOW_CAP);
       if (Math.abs(h - lastValue) <= HEIGHT_EPS) {
         return;
       }
@@ -179,9 +182,10 @@ const AskPanel = () => {
   };
 
   return (
-    <div className='glass-stage p-1'>
+    <div
+      ref={stageRef}
+      className='glass-stage p-1'>
       <div
-        ref={panelRef}
         style={{ maxHeight: PANEL_MAX }}
         className={PANEL}>
         <header className={PANEL_HEAD}>

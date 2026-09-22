@@ -105,11 +105,11 @@ impl Panel {
         }
     }
 
-    /// Glass corner radius matching the panel's CSS card radius.
+    /// Glass corner radius matching the panel's CSS card radius — both
+    /// panels render the shared `PANEL` class (`rounded-[18px]`).
     fn corner_radius(self) -> f64 {
         match self {
-            Panel::Ask => 18.0,
-            Panel::Listen => 16.0,
+            Panel::Ask | Panel::Listen => 18.0,
         }
     }
 }
@@ -739,15 +739,26 @@ fn build_window(
     if let Err(e) = win.set_content_protected(true) {
         log::warn!("windows: set_content_protected failed for {label}: {e}");
     }
-    if let Err(e) = app.liquid_glass().set_effect(
-        &win,
-        LiquidGlassConfig {
-            corner_radius,
-            ..Default::default()
-        },
-    ) {
-        log::warn!("windows: liquid glass failed for {label}: {e}");
-    }
+    // set_effect dispatches to the main queue and blocks on it; callers
+    // hold the pool lock, which main-thread callbacks also take — apply
+    // on a detached thread so the lock is never held across the wait.
+    // Warn-only on failure, same as the calls above.
+    let app = app.clone();
+    let label = label.to_string();
+    std::thread::spawn({
+        let win = win.clone();
+        move || {
+            if let Err(e) = app.liquid_glass().set_effect(
+                &win,
+                LiquidGlassConfig {
+                    corner_radius,
+                    ..Default::default()
+                },
+            ) {
+                log::warn!("windows: liquid glass failed for {label}: {e}");
+            }
+        }
+    });
     Ok(win)
 }
 

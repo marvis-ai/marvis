@@ -3,9 +3,9 @@
  * non-resizable; `windows/mod.rs` centers it under the bar).
  *
  * Errors used to render inside the bar pill, but the bar window is a
- * fixed 480×64 frame: an extra row squeezed the pill's content and broke
- * the capsule⇄input morph. This window carries them instead, so no error
- * can change the bar's layout.
+ * fixed 480×64 frame: an extra row squeezed the pill and broke its
+ * icon-row⇄input-row content swap. This window carries them instead,
+ * so no error can change the bar's layout.
  *
  * The payload is read twice on purpose: `alert:show` is the live path,
  * and `alert_current` covers a show that raced this webview's listener
@@ -52,8 +52,8 @@ const AlertToast = () => {
   }
 
   return (
-    <div className='glass-stage p-1'>
-      <div className='glass-surface flex flex-col gap-1.5 rounded-[14px] border border-[color-mix(in_oklch,var(--destructive)_28%,var(--border))] bg-[color-mix(in_oklch,var(--surface)_92%,transparent)] px-2.75 pt-2.25 pb-2.5 shadow-[0_18px_40px_-16px_color-mix(in_oklch,var(--fg)_34%,transparent)] backdrop-blur-lg'>
+    <div className='glass-stage h-full p-1'>
+      <div className='glass-surface flex min-h-full flex-col justify-center gap-1.5 rounded-[14px] border border-[color-mix(in_oklch,var(--destructive)_28%,var(--border))] bg-[color-mix(in_oklch,var(--surface)_92%,transparent)] px-2.75 pt-2.25 pb-2.5 shadow-[0_18px_40px_-16px_color-mix(in_oklch,var(--fg)_34%,transparent)] backdrop-blur-lg'>
         <header className='flex items-center gap-1.75'>
           <ShieldAlertIcon className='size-3.75 flex-none text-destructive' />
           <p className='min-w-0 flex-1 text-[12.5px] font-semibold'>

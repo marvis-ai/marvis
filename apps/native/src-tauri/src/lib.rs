@@ -393,7 +393,7 @@ fn keystore_status_payload(keystore: &Keystore) -> serde_json::Value {
 
 /// Raise the alert toast with `message`.
 ///
-/// The toast is a window of its own because the bar is a fixed 441×59
+/// The toast is a window of its own because the bar is a fixed 480×64
 /// pill — the old inline error row squeezed the pill's content. It is
 /// purely informational and auto-dismisses.
 fn show_alert(app: &AppHandle, message: &str) {

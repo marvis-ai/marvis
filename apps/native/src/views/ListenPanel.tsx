@@ -8,7 +8,7 @@ import { CHIP, EMPTY, PANEL, cn } from '../lib/classes';
 
 const ListenPanel = () => {
   return (
-    <div className='p-1'>
+    <div className='glass-stage p-1'>
       <div className={cn(PANEL, 'items-center justify-center gap-2 px-4 py-6')}>
         <span
           className='flex h-4.5 items-center gap-0.75'

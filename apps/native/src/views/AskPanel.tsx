@@ -179,7 +179,7 @@ const AskPanel = () => {
   };
 
   return (
-    <div className='p-1'>
+    <div className='glass-stage p-1'>
       <div
         ref={panelRef}
         style={{ maxHeight: PANEL_MAX }}

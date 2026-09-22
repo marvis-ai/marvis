@@ -82,10 +82,6 @@
   --color-input-well: var(--input-well);
   --font-mono: var(--font-mono);
 
-  --animate-breath-top: mv-breath-top 7s var(--ease) infinite;
-  --animate-breath-bottom: mv-breath-bottom 7s var(--ease) infinite;
-  --animate-breath-left: mv-breath-left 7s var(--ease) infinite;
-  --animate-breath-right: mv-breath-right 7s var(--ease) infinite;
   --animate-iris-breath: iris-breath 7s var(--ease) infinite;
   --animate-iris-listen: iris-listen 1.6s var(--ease) infinite;
   --animate-caret: caret-blink 1.05s steps(1) infinite;
@@ -100,6 +96,20 @@ body,
   background: transparent;
   height: 100%;
   overflow: hidden;
+}
+
+/* Real material behind the window replaces the fake frost: marked
+   surfaces go transparent and edge-to-edge so the glass shape IS the
+   surface shape. `data-material` is set per window in main.tsx;
+   'none'/unset keeps the CSS frost (browser dev, future non-macOS). */
+[data-material='glass'] .glass-stage,
+[data-material='vibrancy'] .glass-stage {
+  padding: 0;
+}
+[data-material='glass'] .glass-surface,
+[data-material='vibrancy'] .glass-surface {
+  background-color: transparent;
+  backdrop-filter: none;
 }
 body {
   color: var(--fg);
@@ -116,45 +126,6 @@ body {
 /* The only CSS left: keyframes aren't classes, so the --animate-*
    tokens above point here. All component styling lives in markup —
    shared bundles in lib/classes.ts (buttons, fields, panels, chips). */
-
-/* the pill's idle bob — direction follows the docked edge
-   (`group-data-[pos=*]/stage:` picks the keyframe in Bar.tsx) */
-@keyframes mv-breath-top {
-  0%,
-  100% {
-    transform: translateY(0);
-  }
-  50% {
-    transform: translateY(-3px);
-  }
-}
-@keyframes mv-breath-bottom {
-  0%,
-  100% {
-    transform: translateY(0);
-  }
-  50% {
-    transform: translateY(3px);
-  }
-}
-@keyframes mv-breath-left {
-  0%,
-  100% {
-    transform: translateX(0);
-  }
-  50% {
-    transform: translateX(-3px);
-  }
-}
-@keyframes mv-breath-right {
-  0%,
-  100% {
-    transform: translateX(0);
-  }
-  50% {
-    transform: translateX(3px);
-  }
-}
 
 /* the iris pupil — breathes at rest, turns slate + pulses while
    listening (Phase-2 `--animate-iris-listen`) */

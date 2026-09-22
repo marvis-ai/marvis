@@ -1,15 +1,14 @@
 /**
- * The 441×59 always-on-top bar (`?view=bar`). The window is transparent,
- * frameless and non-resizable, so every state renders inside the same
- * pill — gate states can't grow the window, and `window_adjust_height`
+ * The 480×64 always-on-top bar (`?view=bar`). The window is transparent,
+ * frameless and non-resizable — the capsule IS the window, so every
+ * state renders inside the same full-size pill; `window_adjust_height`
  * is panel-only (windows/mod.rs).
  *
- * The pill itself morphs (DESIGN.md §6): at rest it's the 130px capsule —
- * iris + camera + mic — and clicking the iris, typing, or entering the
- * permission gate card opens the 431px input bar, which also carries the
- * settings gear (the capsule has no room for a fourth control; the
- * tray's Settings item and `Cmd+,` reach it from any state). All states
- * share one DOM tree so the morph is a class-driven transition, never a
+ * The pill swaps content, not size (DESIGN.md §6): at rest it's the
+ * centered icon row — iris + camera + mic + settings — and clicking the
+ * iris or typing swaps in the input row (iris morphs to a back arrow,
+ * the field unfolds); gate states replace the row entirely. All states
+ * share one DOM tree so the swap is a class-driven transition, never a
  * remount.
  *
  * The bar is only visible once onboarding has completed — while the
@@ -35,7 +34,6 @@ import {
   SettingsIcon,
   ShieldAlertIcon,
 } from '@marvis/ui';
-import { currentMonitor, getCurrentWindow } from '@tauri-apps/api/window';
 import {
   alertShow,
   askSend,
@@ -86,49 +84,16 @@ const grip = (
   </span>
 );
 
-/** Which screen edge the bar hugs — the breath bobs away from it. */
-type Edge = 'top' | 'bottom' | 'left' | 'right';
-
-const edgeFor = async (): Promise<Edge> => {
-  try {
-    const win = getCurrentWindow();
-    const [pos, mon] = await Promise.all([
-      win.outerPosition(),
-      currentMonitor(),
-    ]);
-    if (!mon) {
-      return 'top';
-    }
-    // All physical pixels: window is a logical 441×59, so scale up.
-    const scale = mon.scaleFactor;
-    const cx = pos.x + (441 * scale) / 2;
-    const cy = pos.y + (59 * scale) / 2;
-    const wa = mon.workArea;
-    const dTop = Math.abs(cy - wa.position.y);
-    const dBottom = Math.abs(wa.position.y + wa.size.height - cy);
-    const dLeft = Math.abs(cx - wa.position.x);
-    const dRight = Math.abs(wa.position.x + wa.size.width - cx);
-    const min = Math.min(dTop, dBottom, dLeft, dRight);
-    if (min === dBottom) return 'bottom';
-    if (min === dLeft) return 'left';
-    if (min === dRight) return 'right';
-    return 'top';
-  } catch {
-    return 'top';
-  }
-};
-
 const Bar = () => {
   const [gate, setGate] = useState<Gate | null>(null);
   const [bootError, setBootError] = useState(false);
   const [busy, setBusy] = useState(false);
   const [text, setText] = useState('');
   const [open, setOpen] = useState(false);
-  const [edge, setEdge] = useState<Edge>('top');
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // Capsule ⇄ input morph: the gate card and boot errors take the full
-  // 431px pill; `main` rests as the capsule until the iris opens it or
+  // Icon-row ⇄ input-row swap: the gate card and boot errors count as
+  // expanded; `main` rests as the icon row until the iris opens it or
   // the user starts typing on the focused window.
   const expanded = bootError
     ? true
@@ -149,14 +114,6 @@ const Bar = () => {
   useEffect(() => {
     void bootstrap();
   }, [bootstrap]);
-
-  useEffect(() => {
-    void edgeFor().then(setEdge);
-    const unlisten = getCurrentWindow().onMoved(
-      () => void edgeFor().then(setEdge),
-    );
-    return () => void unlisten.then((f) => f());
-  }, []);
 
   useTauriEvent<AppStatePayload>(EV_APP_STATE, (p) => setGate(p.gate));
   // Mid-session screen-permission revocation (ask.rs detects it when a
@@ -229,11 +186,10 @@ const Bar = () => {
 
   const inner = cn(
     'flex min-h-0 flex-1 items-center gap-1.5',
-    expanded ? 'px-2.75' : 'px-1.75',
+    expanded ? 'px-2.75' : 'justify-center px-1.75',
   );
   const pill = cn(
-    'group/bar flex h-12.25 flex-none flex-col justify-center rounded-full border border-border bg-[color-mix(in_oklch,var(--surface)_80%,transparent)] backdrop-blur-[14px] select-none animate-breath-top group-data-[pos=bottom]/stage:animate-breath-bottom group-data-[pos=left]/stage:animate-breath-left group-data-[pos=right]/stage:animate-breath-right transition-[width,border-color,box-shadow] duration-(--motion-base) ease-(--ease) motion-reduce:animate-none motion-reduce:transition-none',
-    expanded ? 'w-107.75' : 'w-32.5 hover:w-37.5',
+    'group/bar glass-surface flex h-full w-full flex-none flex-col justify-center rounded-full border border-border bg-[color-mix(in_oklch,var(--surface)_80%,transparent)] backdrop-blur-[14px] select-none transition-[border-color,box-shadow] duration-(--motion-base) ease-(--ease) motion-reduce:transition-none',
   );
   const body = () => {
     if (bootError) {
@@ -293,7 +249,7 @@ const Bar = () => {
           onClick={() => (open ? collapse() : setOpen(true))}
           disabled={gate !== 'main'}>
           <Iris />
-          <span className='pointer-events-none absolute inset-0 grid -rotate-90 scale-[0.4] place-items-center opacity-0 transition-[rotate_var(--motion-base)_var(--ease)_55ms,scale_var(--motion-base)_var(--ease)_55ms,opacity_var(--motion-fast)_var(--ease)_55ms] group-data-[expanded]/bar:rotate-none group-data-[expanded]/bar:scale-100 group-data-[expanded]/bar:opacity-100 motion-reduce:transition-none'>
+          <span className='pointer-events-none absolute inset-0 grid -rotate-90 scale-[0.4] place-items-center opacity-0 transition-[rotate_var(--motion-base)_var(--ease)_55ms,scale_var(--motion-base)_var(--ease)_55ms,opacity_var(--motion-fast)_var(--ease)_55ms] group-data-expanded/bar:rotate-none group-data-expanded/bar:scale-100 group-data-expanded/bar:opacity-100 motion-reduce:transition-none'>
             <ArrowLeftIcon className='size-5' />
           </span>
         </button>
@@ -330,27 +286,22 @@ const Bar = () => {
           disabled>
           <MicIcon className='size-4' />
         </button>
-        {/* Only rendered in the input bar — the 130px capsule has no room
-            for a fourth control (tray menu + Cmd+, reach it anyway). */}
-        {expanded && (
-          <button
-            type='button'
-            className={ICON_BTN}
-            aria-label='Settings'
-            title='Settings (⌘,)'
-            disabled={gate !== 'main'}
-            onClick={() => void windowShowSettings().catch(() => {})}>
-            <SettingsIcon className='size-4' />
-          </button>
-        )}
+        <button
+          type='button'
+          className={ICON_BTN}
+          aria-label='Settings'
+          title='Settings (⌘,)'
+          disabled={gate !== 'main'}
+          onClick={() => void windowShowSettings().catch(() => {})}>
+          <SettingsIcon className='size-4' />
+        </button>
       </form>
     );
   };
 
   return (
     <div
-      className='group/stage flex h-full flex-col items-center justify-center p-1'
-      data-pos={edge}
+      className='group/stage glass-stage flex h-full flex-col items-center justify-center p-1'
       data-tauri-drag-region>
       <div
         className={pill}

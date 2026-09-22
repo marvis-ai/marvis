@@ -1,6 +1,8 @@
+import type { ReactNode } from 'react';
 import type { Metadata } from 'next';
 import { Galada, Inter, Outfit } from 'next/font/google';
-import type { ReactNode } from 'react';
+import { GoogleTagManager } from '@next/third-parties/google';
+
 import './globals.css';
 
 const inter = Inter({
@@ -24,8 +26,10 @@ const SITE = {
   url: 'https://getmarvis.com',
   title: 'Marvis — a private AI that floats above your desktop',
   description:
-    'Marvis is a private AI assistant for macOS. A floating bar sees your screen with permission, answers in an overlay, and never uploads your keys or screen data.',
+    'Marvis AI is a private AI assistant for macOS. A floating bar sees your screen with permission, answers in an overlay, and never uploads your keys or screen data.',
 };
+
+const GA_ID = 'G-DRDLX9D2CV';
 
 export const metadata: Metadata = {
   metadataBase: new URL(SITE.url),
@@ -90,6 +94,7 @@ const RootLayout = ({ children }: { children: ReactNode }) => {
           dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
         />
         {children}
+        <GoogleTagManager gtmId={GA_ID} />
       </body>
     </html>
   );

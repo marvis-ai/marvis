@@ -34,6 +34,7 @@ import {
   MicIcon,
   SettingsIcon,
   ShieldAlertIcon,
+  ShineBorder,
 } from '@marvis/ui';
 import {
   alertShow,
@@ -77,8 +78,9 @@ const raise = (message: string) => void alertShow(message).catch(() => {});
  * this is the only honest drag target it gets.
  */
 /** Bar controls step up from the 26px overlay default (`ICON_BTN`) —
- *  the capsule is 64px tall, so buttons/icons scale ~1.3×. */
-const BAR_BTN = cn(ICON_BTN, 'size-8.5');
+ *  the capsule is 64px tall, so buttons/icons scale ~1.3×; `fg-2` reads
+ *  better than `muted` on glass. */
+const BAR_BTN = cn(ICON_BTN, 'size-8.5 text-fg-2');
 
 const grip = (
   <span
@@ -202,7 +204,7 @@ const Bar = () => {
     expanded ? 'px-2.75' : 'justify-center px-1.75',
   );
   const pill = cn(
-    'group/bar glass-surface flex h-full w-full flex-none flex-col justify-center rounded-full border border-border bg-[color-mix(in_oklch,var(--surface)_80%,transparent)] backdrop-blur-[14px] select-none transition-[border-color,box-shadow] duration-(--motion-base) ease-(--ease) motion-reduce:transition-none',
+    'group/bar glass-surface relative flex h-full w-full flex-none flex-col justify-center rounded-full border border-border bg-[color-mix(in_oklch,var(--surface)_80%,transparent)] backdrop-blur-[14px] select-none transition-[border-color,box-shadow] duration-(--motion-base) ease-(--ease) motion-reduce:transition-none',
   );
   const body = () => {
     if (bootError) {
@@ -326,6 +328,9 @@ const Bar = () => {
         data-expanded={expanded || undefined}
         data-tauri-drag-region='deep'>
         {body()}
+        {/* Capsule shimmer — accent duotone follows light/dark via the
+            tokens; masked to the border ring, pointer-events-none. */}
+        <ShineBorder shineColor={['var(--accent)', 'var(--accent-text)']} />
       </div>
     </div>
   );

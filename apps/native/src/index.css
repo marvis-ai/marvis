@@ -108,7 +108,10 @@ body,
 }
 [data-material='glass'] .glass-surface,
 [data-material='vibrancy'] .glass-surface {
-  background-color: transparent;
+  /* Not fully transparent — a faint surface veil keeps text/icons
+     readable on the real material (it follows --surface, so light/dark
+     adapt for free). */
+  background-color: color-mix(in oklch, var(--surface) 30%, transparent);
   backdrop-filter: none;
 }
 body {

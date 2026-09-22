@@ -829,6 +829,18 @@ fn ask_send_screen_only(app: AppHandle) {
     state.ask.send_screen_only(&app, &state.deps());
 }
 
+/// `{"state": "idle"|"loading"|"streaming", "question": ..., "response":
+/// ...}` — the live tail a re-expanded chat resyncs from (the persisted
+/// session already carries every completed turn).
+#[tauri::command]
+fn ask_current(state: State<'_, AppState>) -> serde_json::Value {
+    json!({
+        "state": state.ask.state().as_str(),
+        "question": state.ask.current_question(),
+        "response": state.ask.current_response(),
+    })
+}
+
 /// Phase-2 placeholder on the command surface — the listen pipeline
 /// (dual STT + live summary) isn't implemented yet.
 #[tauri::command]
@@ -1308,6 +1320,7 @@ pub fn run() {
             ask_send,
             ask_close,
             ask_send_screen_only,
+            ask_current,
             listen_stub,
             alert_show,
             alert_current,

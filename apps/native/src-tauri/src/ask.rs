@@ -78,6 +78,17 @@ pub enum AskState {
     Streaming,
 }
 
+impl AskState {
+    /// The `ask:state` / `ask_current` wire value.
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Idle => "idle",
+            Self::Loading => "loading",
+            Self::Streaming => "streaming",
+        }
+    }
+}
+
 /// The `AppState` fields the ask pipeline needs, bundled so this module
 /// compiles before `AppState` exists. `db` is an owned `Arc` (the spawned
 /// stream task outlives the call); the rest are locked only during
@@ -115,17 +126,14 @@ impl AskService {
         }
     }
 
-    #[allow(dead_code)] // status consumers land with the webview tasks
     pub fn state(&self) -> AskState {
         *self.state.lock()
     }
 
-    #[allow(dead_code)] // status consumers land with the webview tasks
     pub fn current_response(&self) -> String {
         self.current_response.lock().clone()
     }
 
-    #[allow(dead_code)] // status consumers land with the webview tasks
     pub fn current_question(&self) -> String {
         self.current_question.lock().clone()
     }
@@ -1279,5 +1287,12 @@ mod tests {
             ]
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ask_state_as_str_matches_the_wire_names() {
+        assert_eq!(AskState::Idle.as_str(), "idle");
+        assert_eq!(AskState::Loading.as_str(), "loading");
+        assert_eq!(AskState::Streaming.as_str(), "streaming");
     }
 }

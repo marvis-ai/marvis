@@ -1045,6 +1045,20 @@ fn session_delete(state: State<'_, AppState>, id: i64) -> Result<(), String> {
     state.db.session_delete(id).map_err(|e| e.to_string())
 }
 
+/// "New chat": end the active session of `kind` (`"ask"`) so the next
+/// send starts a fresh conversation. `true` when one was ended, `false`
+/// when none was open (no junk row created).
+#[tauri::command]
+fn session_end_active(state: State<'_, AppState>, kind: String) -> Result<bool, String> {
+    match state.db.session_active_id(&kind).map_err(|e| e.to_string())? {
+        Some(id) => {
+            state.db.session_end(id).map_err(|e| e.to_string())?;
+            Ok(true)
+        }
+        None => Ok(false),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Commands — config / app
 // ---------------------------------------------------------------------------
@@ -1317,6 +1331,7 @@ pub fn run() {
             session_list,
             session_get,
             session_delete,
+            session_end_active,
             config_get,
             config_set,
             surface_material,

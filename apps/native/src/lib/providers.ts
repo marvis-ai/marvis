@@ -59,6 +59,23 @@ export const PROVIDERS: ProviderDef[] = [
 export const providerFor = (id: string): ProviderDef | undefined =>
   PROVIDERS.find((p) => p.id === id);
 
+/** The screen-reader pick list (Settings → Providers → Screen reading)
+ * — mirrors `ProviderKind::is_vision` on the Rust side. Anthropic and
+ * Ollama read images but aren't offered; the chain still passes frames
+ * to them directly when the reader is off. */
+export const VISION_PROVIDERS: ProviderDef[] = PROVIDERS.filter((p) =>
+  ['openai', 'gemini', 'openrouter', 'compatible'].includes(p.id),
+);
+
+/** What a reader pick resolves to when `vision.models.<id>` is empty —
+ * mirrors `llm::vision_default_model` (cheap/fast vision models, not
+ * the chat flagships). Compatible has no default — free-text only. */
+export const VISION_DEFAULT_MODEL: Record<string, string> = {
+  openai: 'gpt-4o-mini',
+  gemini: 'gemini-2.5-flash',
+  openrouter: 'google/gemini-2.0-flash-001',
+};
+
 /**
  * The catalog in the user's failover order (`config.providers.order`).
  * Unknown ids are skipped; catalog entries missing from `order` append

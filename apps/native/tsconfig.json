@@ -6,6 +6,10 @@
     "module": "ESNext",
     "skipLibCheck": true,
 
+    /* packages/ui sources import "@/…" (their own src) — resolve it for
+       consumers that typecheck across the package boundary. */
+    "paths": { "@/*": ["../../packages/ui/src/*"] },
+
     /* Bundler mode */
     "moduleResolution": "bundler",
     "allowImportingTsExtensions": true,

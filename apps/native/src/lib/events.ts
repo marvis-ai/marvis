@@ -9,7 +9,7 @@ import { listen } from '@tauri-apps/api/event';
 export const EV_APP_STATE = 'app:state';
 /** Broadcast after every keystore mutation; payload = `KeystoreStatus`. */
 export const EV_KEYSTORE_CHANGED = 'keystore:changed';
-/** Ask-window stream protocol (ask.rs), emitted to the `ask` window only. */
+/** Ask stream protocol (ask.rs), emitted to the `bar` window only. */
 // `loading` also carries `question` — the run's submitted text.
 export const EV_ASK_STATE = 'ask:state'; // { state: 'loading'|'streaming'|'idle', question?: string }
 export const EV_ASK_CHUNK = 'ask:chunk'; // { text: string }

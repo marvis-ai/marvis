@@ -69,6 +69,10 @@ const EV_ERROR: &str = "ask:error";
 /// `send_screen_only`'s fixed question (spec §Hotkeys `Cmd+Shift+S`).
 const SCREEN_ONLY_PROMPT: &str = "Describe what is on my screen and how you can help.";
 
+/// Context window: only the trailing N persisted `ai_messages` ride
+/// along with each ask (spec: last 20, text-only).
+const HISTORY_TAIL: usize = 20;
+
 /// Lifecycle of one ask run. Mirrors the `ask:state` event so Rust-side
 /// status reads see exactly what the webview sees.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -341,7 +345,11 @@ pub(crate) async fn send_chain(
     frame: Option<&Frame>,
     cancel: &CancellationToken,
 ) -> Result<String, LlmError> {
-    let session_id = persist_user_message(db, text);
+    // Order matters: history is read BEFORE the new user row persists —
+    // the new turn is appended separately so it can carry the frame.
+    let session_id = open_ask_session(db);
+    let history = load_history(db, session_id);
+    persist_user_message(db, session_id, text);
     emit(EV_STATE, json!({"state": "loading", "question": text}));
 
     // A configured screen reader intercepts the frame: it describes the
@@ -385,6 +393,7 @@ pub(crate) async fn send_chain(
         match stream_candidate(
             &*cand.provider,
             emit,
+            &history,
             text,
             frame,
             screen.as_deref(),
@@ -430,13 +439,14 @@ pub(crate) async fn send_chain(
 async fn stream_candidate(
     provider: &dyn Provider,
     emit: &(dyn Fn(&str, serde_json::Value) + Send + Sync),
+    history: &[ChatMessage],
     text: &str,
     frame: Option<&Frame>,
     screen: Option<&str>,
     cancel: &CancellationToken,
 ) -> CandidateOutcome {
     let mut streaming = false;
-    let mut msgs = build_messages(text, frame, screen);
+    let mut msgs = build_messages(history, text, frame, screen);
     let mut retried = false;
     loop {
         match stream_once(provider, &msgs, emit, cancel, &mut streaming).await {
@@ -446,7 +456,7 @@ async fn stream_candidate(
                 // Vision-incapable model gets ONE retry without the frame.
                 if !retried && frame.is_some() && e.is_multimodal() {
                     retried = true;
-                    msgs = build_messages(text, None, screen);
+                    msgs = build_messages(history, text, None, screen);
                     continue;
                 }
                 return CandidateOutcome::Failed(e);
@@ -525,37 +535,76 @@ async fn stream_once(
     }
 }
 
-/// `[system, user]` — the user message pairs `text` with the frame's
-/// JPEG when one was captured, else with the screen reader's `<screen>`
-/// description when a vision provider read it; text-only otherwise (and
-/// on the retry — the description, when present, survives it).
-fn build_messages(text: &str, frame: Option<&Frame>, screen: Option<&str>) -> Vec<ChatMessage> {
-    vec![
-        ChatMessage::text(Role::System, system_prompt("")),
-        match (frame, screen) {
-            (Some(f), _) => ChatMessage::user_with_image(text, f.jpeg.clone()),
-            (None, Some(desc)) => {
-                ChatMessage::text(Role::User, format!("{text}\n\n<screen>\n{desc}\n</screen>"))
-            }
-            (None, None) => ChatMessage::text(Role::User, text),
-        },
-    ]
+/// `[system] + history + [user]` — history rows are text-only; only the
+/// new user turn pairs `text` with the frame's JPEG when one was
+/// captured, else with the screen reader's `<screen>` description when
+/// a vision provider read it; text-only otherwise (and on the retry —
+/// the description, when present, survives it).
+fn build_messages(
+    history: &[ChatMessage],
+    text: &str,
+    frame: Option<&Frame>,
+    screen: Option<&str>,
+) -> Vec<ChatMessage> {
+    let mut msgs = Vec::with_capacity(history.len() + 2);
+    msgs.push(ChatMessage::text(Role::System, system_prompt("")));
+    msgs.extend(history.iter().cloned());
+    msgs.push(match (frame, screen) {
+        (Some(f), _) => ChatMessage::user_with_image(text, f.jpeg.clone()),
+        (None, Some(desc)) => {
+            ChatMessage::text(Role::User, format!("{text}\n\n<screen>\n{desc}\n</screen>"))
+        }
+        (None, None) => ChatMessage::text(Role::User, text),
+    });
+    msgs
 }
 
-/// Session row + the user message. `None` when the session lookup itself
-/// failed — the assistant row then has nowhere to go either.
-fn persist_user_message(db: &Db, text: &str) -> Option<i64> {
-    let sid = match db.session_get_or_create_active("ask") {
-        Ok(sid) => sid,
+/// The active `ask` session id, or `None` when the lookup itself fails —
+/// history and the assistant row then have nowhere to go.
+fn open_ask_session(db: &Db) -> Option<i64> {
+    match db.session_get_or_create_active("ask") {
+        Ok(sid) => Some(sid),
         Err(e) => {
             log::warn!("ask: session_get_or_create_active failed: {e}");
-            return None;
+            None
         }
+    }
+}
+
+/// The trailing persisted turns as text-only `ChatMessage`s — at most
+/// `HISTORY_TAIL` rows, user/assistant roles only (images were never
+/// persisted, so history is text by construction).
+fn load_history(db: &Db, session_id: Option<i64>) -> Vec<ChatMessage> {
+    let Some(sid) = session_id else {
+        return Vec::new();
+    };
+    let rows = match db.ai_messages_for(sid) {
+        Ok(rows) => rows,
+        Err(e) => {
+            log::warn!("ask: history load failed: {e}");
+            return Vec::new();
+        }
+    };
+    rows.iter()
+        .skip(rows.len().saturating_sub(HISTORY_TAIL))
+        .filter_map(|m| match m.role.as_str() {
+            "user" => Some(ChatMessage::text(Role::User, m.content.clone())),
+            "assistant" => Some(ChatMessage::text(Role::Assistant, m.content.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The new user row, next to its session. `None` session (lookup
+/// failed) skips the write — the stream must not die on a storage
+/// hiccup.
+fn persist_user_message(db: &Db, session_id: Option<i64>, text: &str) {
+    let Some(sid) = session_id else {
+        return;
     };
     if let Err(e) = db.ai_message_add(sid, "user", text) {
         log::warn!("ask: failed to persist user message: {e}");
     }
-    Some(sid)
 }
 
 /// The completed assistant reply, next to its user row.
@@ -1286,6 +1335,85 @@ mod tests {
                 ev(EV_STATE, json!({"state": "idle"})),
             ]
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn send_chain_sends_prior_turns_as_text_only_history() {
+        let dir = tmp_dir();
+        let db = Db::at(dir.join("marvis.db")).unwrap();
+        let sid = db.session_get_or_create_active("ask").unwrap();
+        db.ai_message_add(sid, "user", "first q").unwrap();
+        db.ai_message_add(sid, "assistant", "first a").unwrap();
+        let provider = MockProvider::new(vec![Behavior::Tokens(vec!["ok".into()])]);
+        let calls = provider.calls();
+        let (_events, emit) = recorder();
+        let frame = fake_frame();
+        let cancel = CancellationToken::new();
+
+        send_chain(
+            vec![candidate("openai", provider)],
+            None,
+            &db,
+            &emit,
+            "follow-up",
+            Some(&frame),
+            &cancel,
+        )
+        .await
+        .unwrap();
+
+        let calls = calls.lock();
+        let msgs = &calls[0];
+        // [system] + 2 history rows + new user turn.
+        assert_eq!(msgs.len(), 4);
+        assert_eq!(msgs[0].role, Role::System);
+        // History rides along text-only, oldest first, roles preserved.
+        assert_eq!(msgs[1].role, Role::User);
+        assert_eq!(msgs[1].content, vec![ContentPart::Text("first q".into())]);
+        assert_eq!(msgs[2].role, Role::Assistant);
+        assert_eq!(msgs[2].content, vec![ContentPart::Text("first a".into())]);
+        assert!(!has_image(&msgs[1]));
+        assert!(!has_image(&msgs[2]));
+        // Only the NEW user turn carries the frame.
+        assert_eq!(msgs[3].role, Role::User);
+        assert!(has_image(&msgs[3]));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn send_chain_history_tail_is_capped_at_20() {
+        let dir = tmp_dir();
+        let db = Db::at(dir.join("marvis.db")).unwrap();
+        let sid = db.session_get_or_create_active("ask").unwrap();
+        for i in 0..12 {
+            db.ai_message_add(sid, "user", &format!("u{i}")).unwrap();
+            db.ai_message_add(sid, "assistant", &format!("a{i}")).unwrap();
+        }
+        let provider = MockProvider::new(vec![Behavior::Tokens(vec!["ok".into()])]);
+        let calls = provider.calls();
+        let (_events, emit) = recorder();
+        let cancel = CancellationToken::new();
+
+        send_chain(
+            vec![candidate("openai", provider)],
+            None,
+            &db,
+            &emit,
+            "new q",
+            None,
+            &cancel,
+        )
+        .await
+        .unwrap();
+
+        let calls = calls.lock();
+        let msgs = &calls[0];
+        // system + 20-row tail + new user turn = 22; tail starts at u2.
+        assert_eq!(msgs.len(), 22);
+        assert_eq!(msgs[1].content, vec![ContentPart::Text("u2".into())]);
+        assert_eq!(msgs[20].content, vec![ContentPart::Text("a11".into())]);
+        assert_eq!(msgs[21].content, vec![ContentPart::Text("new q".into())]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

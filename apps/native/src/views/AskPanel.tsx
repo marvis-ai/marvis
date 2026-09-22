@@ -190,7 +190,7 @@ const AskPanel = () => {
         className={PANEL}>
         <header className={PANEL_HEAD}>
           <p
-            className='min-w-0 flex-1 text-xs leading-[1.5] font-[550] break-words whitespace-pre-wrap line-clamp-2 select-text'
+            className='min-w-0 flex-1 text-xs leading-normal font-[550] wrap-break-word whitespace-pre-wrap line-clamp-2 select-text'
             title={question}>
             {question || 'Ask Marvis'}
           </p>
@@ -213,7 +213,9 @@ const AskPanel = () => {
         </header>
         {error && (
           <div className='flex items-center gap-2 border-b border-border bg-[color-mix(in_oklch,var(--destructive)_9%,transparent)] px-3 py-2 text-xs text-destructive'>
-            <span className='min-w-0 flex-1 break-words'>{error.message}</span>
+            <span className='min-w-0 flex-1 wrap-break-word'>
+              {error.message}
+            </span>
             {error.needsSetup && (
               <button
                 type='button'

@@ -22,12 +22,14 @@
 ### Task 1: Plugin registration + `surface_material` channel
 
 **Files:**
+
 - Modify: `apps/native/src-tauri/Cargo.toml` (via `cargo add`)
 - Modify: `apps/native/src-tauri/src/lib.rs`
 - Modify: `apps/native/src/lib/commands.ts`
 - Test: manual — `cargo check` + `bun run build` compile cleanly
 
 **Interfaces:**
+
 - Produces: `surface_material` Tauri command → `'glass' | 'vibrancy' | 'none'`; frontend wrapper `surfaceMaterial()` in `src/lib/commands.ts`. Task 3's CSS and `main.tsx` consume these.
 
 - [ ] **Step 1: Add the Rust dependency**
@@ -114,10 +116,12 @@ git commit -m "feat(native): register liquid-glass plugin + surface_material com
 ### Task 2: Apply glass in `build_window` + new bar dimensions
 
 **Files:**
+
 - Modify: `apps/native/src-tauri/src/windows/mod.rs`
 - Test: `cargo test` (existing layout tests must still pass — they don't touch glass)
 
 **Interfaces:**
+
 - Consumes: `LiquidGlassExt`/`LiquidGlassConfig` from Task 1's dependency.
 - Produces: `build_window(app, label, w, h, corner_radius)` signature; `Panel::corner_radius()`; `BAR_W = 480`, `BAR_H = 64`. The unified-bar spec later re-calls `set_effect` to swap the bar radius 32⇄18 on expand.
 
@@ -234,6 +238,7 @@ git commit -m "feat(native): apply liquid glass per overlay window; bar 480x64"
 ### Task 3: Webview adapts — capsule fills window, frost strips under glass
 
 **Files:**
+
 - Modify: `apps/native/src/main.tsx`
 - Modify: `apps/native/src/index.css`
 - Modify: `apps/native/src/lib/classes.ts` (PANEL const)
@@ -244,6 +249,7 @@ git commit -m "feat(native): apply liquid glass per overlay window; bar 480x64"
 - Test: `bun run build` (tsc catches removed imports/props)
 
 **Interfaces:**
+
 - Consumes: `surfaceMaterial()` from Task 1.
 - Produces: `.glass-stage` / `.glass-surface` marker classes + `data-material` on `<html>` — reused by the unified-bar work.
 

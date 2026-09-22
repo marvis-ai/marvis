@@ -101,11 +101,14 @@ impl Db {
         })
     }
 
-    /// The most recently active open (`ended_at IS NULL`) session of `kind`,
-    /// or a fresh row when none exists.
-    pub fn session_get_or_create_active(&self, kind: &str) -> anyhow::Result<i64> {
-        let conn = self.conn.lock();
-        if let Some(id) = conn
+    /// The most recently active open (`ended_at IS NULL`) session of
+    /// `kind`, or `None` — the read half of
+    /// `session_get_or_create_active` for callers that must not create
+    /// (e.g. `session_end_active`).
+    pub fn session_active_id(&self, kind: &str) -> anyhow::Result<Option<i64>> {
+        Ok(self
+            .conn
+            .lock()
             .query_row(
                 "SELECT id FROM sessions
                  WHERE type = ?1 AND ended_at IS NULL
@@ -114,10 +117,16 @@ impl Db {
                 [kind],
                 |row| row.get(0),
             )
-            .optional()?
-        {
+            .optional()?)
+    }
+
+    /// The most recently active open (`ended_at IS NULL`) session of `kind`,
+    /// or a fresh row when none exists.
+    pub fn session_get_or_create_active(&self, kind: &str) -> anyhow::Result<i64> {
+        if let Some(id) = self.session_active_id(kind)? {
             return Ok(id);
         }
+        let conn = self.conn.lock();
         conn.execute(
             "INSERT INTO sessions (type, title, started_at, ended_at, last_active_at)
              VALUES (?1, NULL, ?2, NULL, ?2)",
@@ -138,7 +147,6 @@ impl Db {
 
     /// Mark the session ended (`ended_at = now`); a later
     /// `session_get_or_create_active` for the same kind starts a new one.
-    #[allow(dead_code)] // Phase 2 session lifecycle
     pub fn session_end(&self, id: i64) -> anyhow::Result<()> {
         self.conn.lock().execute(
             "UPDATE sessions SET ended_at = ?1 WHERE id = ?2",
@@ -391,6 +399,20 @@ mod tests {
         let _db = Db::at(&path).unwrap();
         let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn session_active_id_reads_without_creating() {
+        let dir = tmp_dir();
+        let db = Db::at(dir.join("marvis.db")).unwrap();
+        // None before any session — and must not create one.
+        assert_eq!(db.session_active_id("ask").unwrap(), None);
+        assert!(db.session_list().unwrap().is_empty());
+        let sid = db.session_get_or_create_active("ask").unwrap();
+        assert_eq!(db.session_active_id("ask").unwrap(), Some(sid));
+        db.session_end(sid).unwrap();
+        assert_eq!(db.session_active_id("ask").unwrap(), None);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

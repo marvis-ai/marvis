@@ -23,6 +23,8 @@ pub struct Config {
     pub hotkeys: BTreeMap<String, String>,
     pub window: WindowPrefs,
     pub compat: CompatPrefs,
+    /// The dedicated screen reader — see [`VisionPrefs`].
+    pub vision: VisionPrefs,
 }
 
 impl Default for Config {
@@ -34,6 +36,7 @@ impl Default for Config {
             hotkeys: default_hotkeys(),
             window: WindowPrefs::default(),
             compat: CompatPrefs::default(),
+            vision: VisionPrefs::default(),
         }
     }
 }
@@ -81,6 +84,42 @@ pub struct CompatPrefs {
     pub name: String,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub base_url: String,
+}
+
+/// The dedicated screen reader (`[vision]`): when `provider` names one
+/// of the vision-capable providers (`ProviderKind::is_vision`), an ask
+/// that has a frame sends it to this model FIRST — the reply is a text
+/// description the failover chain then answers over, so chat providers
+/// never need image support. Keys and `compat.base_url` are shared with
+/// the matching provider row; `providers.order`/`disabled` don't apply
+/// here — this pick is independent of the chain. `""` = off: the frame
+/// attaches to the answering provider as before.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct VisionPrefs {
+    /// `"openai"` | `"gemini"` | `"openrouter"` | `"compatible"` | `""`.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub provider: String,
+    /// Per-provider vision model memory (`vision.models.<id>`) — the
+    /// same shape as `providers.models`, so switching the reader away
+    /// and back restores its pick. Empty falls back to
+    /// `llm::vision_default_model`.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub models: BTreeMap<String, String>,
+}
+
+impl VisionPrefs {
+    /// The model the reader answers with: its remembered pick, else the
+    /// provider's vision default (`""` for compatible — free-text only).
+    pub fn model_for(&self, id: &str) -> String {
+        if let Some(m) = self.models.get(id).filter(|m| !m.is_empty()) {
+            return m.clone();
+        }
+        ProviderKind::from_str(id)
+            .and_then(crate::llm::vision_default_model)
+            .unwrap_or_default()
+            .to_string()
+    }
 }
 
 /// Provider enable/order/model memory (`[providers]`). The ordered list
@@ -253,6 +292,17 @@ impl Config {
                 .entry(self.models.llm_provider.clone())
                 .or_insert_with(|| self.models.llm_model.clone());
         }
+
+        // The vision pick is stricter than the chain's: an id outside
+        // `is_vision` (or junk) turns the reader off rather than letting
+        // a hand-edited file name a provider the UI can't represent.
+        let vision = |id: &str| ProviderKind::from_str(id).is_some_and(|k| k.is_vision());
+        if !self.vision.provider.is_empty() && !vision(&self.vision.provider) {
+            self.vision.provider.clear();
+        }
+        self.vision
+            .models
+            .retain(|id, m| vision(id) && !m.is_empty());
     }
 
     /// Atomic write: `config.toml.tmp` then rename — the same pattern
@@ -417,6 +467,65 @@ mod tests {
             .models
             .insert("openai".into(), "gpt-4o-mini".into());
         assert_eq!(cfg.providers.model_for("openai"), "gpt-4o-mini");
+    }
+
+    #[test]
+    fn vision_section_roundtrips_and_defaults_to_off() {
+        // No [vision] in the file → reader off with empty memory.
+        let tmp = tempfile_dir();
+        let cfg = Config::load_from(tmp.join("config.toml")).unwrap();
+        assert_eq!(cfg.vision.provider, "");
+        assert!(cfg.vision.models.is_empty());
+
+        let mut cfg = Config::default();
+        cfg.vision.provider = "gemini".into();
+        cfg.vision
+            .models
+            .insert("gemini".into(), "gemini-2.5-pro".into());
+        let path = tmp.join("config.toml");
+        cfg.save_to(&path).unwrap();
+        let back = Config::load_from(&path).unwrap();
+        assert_eq!(back.vision.provider, "gemini");
+        assert_eq!(back.vision.models["gemini"], "gemini-2.5-pro");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn normalize_drops_non_vision_provider_and_stale_models() {
+        // Anthropic reads images but isn't in the reader's pick list —
+        // a hand-edited config can't name it; unknown ids clear too.
+        // Model memory keeps only vision ids with a non-empty pick.
+        let tmp = tempfile_dir();
+        let path = tmp.join("config.toml");
+        std::fs::write(
+            &path,
+            "[vision]\nprovider = \"anthropic\"\n\
+             [vision.models]\nanthropic = \"claude-opus-4-1\"\nopenai = \"gpt-4o-mini\"\nbogus = \"x\"\n",
+        )
+        .unwrap();
+        let cfg = Config::load_from(&path).unwrap();
+        assert_eq!(cfg.vision.provider, "");
+        assert!(!cfg.vision.models.contains_key("anthropic"));
+        assert!(!cfg.vision.models.contains_key("bogus"));
+        assert_eq!(cfg.vision.models["openai"], "gpt-4o-mini");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn vision_model_for_falls_back_to_the_vision_default() {
+        let cfg = Config::default();
+        // Vision defaults are the cheap readers, not the chat flagships.
+        assert_eq!(cfg.vision.model_for("openai"), "gpt-4o-mini");
+        assert_eq!(cfg.vision.model_for("gemini"), "gemini-2.5-flash");
+        assert_eq!(
+            cfg.vision.model_for("openrouter"),
+            "google/gemini-2.0-flash-001"
+        );
+        // Compatible is free-text — no static default exists.
+        assert_eq!(cfg.vision.model_for("compatible"), "");
+        let mut cfg = Config::default();
+        cfg.vision.models.insert("openai".into(), "gpt-4o".into());
+        assert_eq!(cfg.vision.model_for("openai"), "gpt-4o");
     }
 
     #[test]

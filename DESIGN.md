@@ -233,7 +233,7 @@ screenshots — the page copy says so.
 
 **Scope tokens** (declared on `.mv`, light shadcn-style OKLch):
 
-```
+```css
 --mv-fg:        oklch(0.148 0.004 228.8)    foreground
 --mv-card:      oklch(1 0 0)                panel fill
 --mv-muted:     oklch(0.963 0.002 197.1)    muted fill
@@ -283,7 +283,7 @@ The `.mv-*` system is fully tokenized, so dark mode is a pure token swap using
 the app's real `.dark` scope from `packages/ui/src/index.css` — never an
 invented palette:
 
-```
+```css
 --mv-card:      oklch(0.218 0.008 223.9)    dark panel fill
 --mv-fg:        oklch(0.987 0.002 197.1)
 --mv-muted:     oklch(0.275 0.011 216.9)    muted fill
@@ -292,6 +292,7 @@ invented palette:
 --mv-input:     oklch(1 0 0 / 15%)          input wells
 --mv-primary:   oklch(0.925 0.005 214.3)    inverts — light pill, dark text
 --mv-primary-fg:oklch(0.218 0.008 223.9)
+
 ```
 
 Scene chrome follows in the same scope: `.shot` card → dark fill +

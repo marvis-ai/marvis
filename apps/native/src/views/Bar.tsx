@@ -35,6 +35,7 @@ import {
   SettingsIcon,
   ShieldAlertIcon,
   ShineBorder,
+  cn,
 } from '@marvis/ui';
 import {
   alertShow,
@@ -61,7 +62,6 @@ import {
   BTN_PRIMARY,
   BTN_SM,
   ICON_BTN,
-  cn,
 } from '../lib/classes';
 
 /** Mirrors `app_gate` in lib.rs so the first render doesn't wait on `app:state`. */
@@ -330,7 +330,9 @@ const Bar = () => {
         {body()}
         {/* Capsule shimmer — accent duotone follows light/dark via the
             tokens; masked to the border ring, pointer-events-none. */}
-        <ShineBorder shineColor={['var(--accent)', 'var(--accent-text)']} />
+        <ShineBorder
+          shineColor={['#A07CFE', '#FE8FB5', '#FFBE7B', 'var(--accent)']}
+        />
       </div>
     </div>
   );

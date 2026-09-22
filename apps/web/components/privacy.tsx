@@ -47,7 +47,7 @@ export const Privacy = () => (
         className='grid-2'
         style={{ alignItems: 'start' }}>
         <div
-          className='card'
+          className='card min-w-0'
           data-od-id='marvis-dir-card'>
           <p
             className='meta'
@@ -72,7 +72,7 @@ export const Privacy = () => (
           </p>
         </div>
         <div
-          className='stack'
+          className='stack min-w-0'
           style={{ gap: '28px' }}>
           <div
             className='stat'

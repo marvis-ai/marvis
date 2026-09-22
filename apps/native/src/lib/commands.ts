@@ -97,6 +97,16 @@ export interface CompatPrefs {
   base_url: string;
 }
 
+/** `[vision]` section — the dedicated screen reader. `provider` is a
+ * vision-capable provider id or `''` (off — frames attach to the
+ * answering chat provider); `models.<id>` is its per-provider model
+ * memory, same shape as `providers.models`. Keys and the compat
+ * endpoint are shared with the provider rows above. */
+export interface VisionPrefs {
+  provider: string;
+  models: Record<string, string>;
+}
+
 /** `config_get` / `config_set` return / `config:changed` payload. */
 export interface Config {
   app: AppPrefs;
@@ -105,6 +115,7 @@ export interface Config {
   hotkeys: Record<string, string>;
   window: WindowPrefs;
   compat: CompatPrefs;
+  vision: VisionPrefs;
 }
 
 /** `session_list` row (storage.rs `Session`; `kind` is the `type` column). */
@@ -180,6 +191,19 @@ export const askSendScreenOnly = () => invoke<void>('ask_send_screen_only');
 
 export const askClose = () => invoke<void>('ask_close');
 
+/** `ask_current` return — the in-flight run's resync payload. */
+export interface AskCurrent {
+  state: 'idle' | 'loading' | 'streaming';
+  question: string;
+  response: string;
+  /** Last `ask:error` payload or `null` — re-delivers a pre-flight
+   * error that fired before this webview's `listen()` was up. */
+  error: { message: string; needs_setup?: boolean } | null;
+}
+
+/** The live ask tail — a re-expanded chat resyncs from this. */
+export const askCurrent = () => invoke<AskCurrent>('ask_current');
+
 // ---------------------------------------------------------------------------
 // windows
 // ---------------------------------------------------------------------------
@@ -230,9 +254,27 @@ export const windowRecenter = () => invoke<void>('window_recenter');
 /** Nearest work-area edge of the live bar — the picker's current value. */
 export const windowBarEdge = () => invoke<string>('window_bar_edge');
 
-/** Panels only — `name` is `'ask' | 'listen'`, never `'bar'`/`'prefs'`. */
-export const windowAdjustHeight = (name: string, height: number) =>
-  invoke<void>('window_adjust_height', { name, height });
+/** Reports the whole card's desired TOTAL window height — expanded
+ * mode only; the backend clamps [104, min(900, free space)]. */
+export const windowAdjustHeight = (height: number) =>
+  invoke<void>('window_adjust_height', { height });
+
+/** Direct card open/close — the mic button's listen mode and the
+ * permission-needed collapse use it (toggle would close an open card
+ * when the user only wants to switch modes). */
+export const windowSetChatOpen = (open: boolean) =>
+  invoke<void>('window_set_chat_open', { open });
+
+/** The pill⇄input morph resizes the window itself (the capsule IS the
+ * window under liquid glass) — report `expanded` so Rust can animate
+ * the idle 112 ⇄ expanded 480 width change. */
+export const windowSetBarExpanded = (expanded: boolean) =>
+  invoke<void>('window_set_bar_expanded', { expanded });
+
+/** `'glass' | 'vibrancy' | 'none'` — whether a native material backs the
+ * window; CSS strips its fake frost when one does. */
+export const surfaceMaterial = () =>
+  invoke<'glass' | 'vibrancy' | 'none'>('surface_material');
 
 // ---------------------------------------------------------------------------
 // permissions / capture
@@ -266,6 +308,10 @@ export const sessionGet = (id: number) =>
 export const sessionDelete = (id: number) =>
   invoke<void>('session_delete', { id });
 
+/** End the active session of `kind` — ChatSection's "New chat". */
+export const sessionEndActive = (kind: string) =>
+  invoke<boolean>('session_end_active', { kind });
+
 // ---------------------------------------------------------------------------
 // config / app
 // ---------------------------------------------------------------------------
@@ -277,7 +323,9 @@ export const configGet = () => invoke<Config>('config_get');
  * (number sets, null clears), `app.onboarding_done` (bool),
  * `app.appearance` (`'auto'|'light'|'dark'`), `app.accent` (`'#rrggbb'`,
  * `''` resets), `compat.name`, `compat.base_url` (http(s) URL, `''`
- * clears). Provider order/switches/models go through `providersReorder`/
+ * clears), `vision.provider` (`''` or a vision-capable provider id),
+ * `vision.models.<id>` (string; `''` removes). Provider
+ * order/switches/models go through `providersReorder`/
  * `providerSetEnabled`/`modelSetSelected`. Every successful write
  * broadcasts `config:changed` and resolves to the full updated config.
  */

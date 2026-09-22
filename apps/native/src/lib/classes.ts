@@ -55,7 +55,7 @@ export const PROV_ERR =
 
 /* ─── panel + toast chrome ──────────────────────────────────────── */
 export const PANEL =
-  'flex flex-col overflow-hidden rounded-[18px] border border-border bg-[color-mix(in_oklch,var(--surface)_90%,transparent)] backdrop-blur-lg';
+  'glass-surface flex flex-col overflow-hidden rounded-[18px] border border-border bg-[color-mix(in_oklch,var(--surface)_90%,transparent)] backdrop-blur-lg';
 export const PANEL_HEAD =
   'flex items-start gap-1.5 border-b border-border px-3 py-2.25';
 export const PANEL_BODY =

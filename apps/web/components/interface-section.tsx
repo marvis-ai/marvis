@@ -1,44 +1,12 @@
 'use client';
 
+import { useTheme } from 'next-themes';
 import { useSyncExternalStore } from 'react';
 import { MarvisAppIcon, MoonIcon, SunIcon } from './icons';
 import { MvAskPanel, MvBar, MvListen } from './mv';
 import { leadTop, mutedBody, sectionStack } from './styles';
 
-const THEME_KEY = 'marvis-iface-theme';
-type Theme = 'light' | 'dark';
-
-/* Interface shots can run in the app's real dark theme (design.md §6).
- * The toggle persists to localStorage[marvis-iface-theme], validated to
- * light/dark with light default; storage access is try/catch-wrapped so
- * storage-less contexts degrade gracefully. localStorage is read through
- * useSyncExternalStore — light renders server-side, the saved value lands
- * post-hydration (mirrors the original inline script). */
-const listeners = new Set<() => void>();
-
-const readTheme = (): Theme => {
-  try {
-    return localStorage.getItem(THEME_KEY) === 'dark' ? 'dark' : 'light';
-  } catch {
-    return 'light';
-  }
-};
-
-const themeStore = {
-  get: (): Theme => (typeof window === 'undefined' ? 'light' : readTheme()),
-  set: (theme: Theme) => {
-    try {
-      localStorage.setItem(THEME_KEY, theme);
-    } catch {
-      /* storage-less preview context */
-    }
-    listeners.forEach((listener) => listener());
-  },
-  subscribe: (listener: () => void) => {
-    listeners.add(listener);
-    return () => listeners.delete(listener);
-  },
-};
+const noopSubscribe = () => () => {};
 
 /* The bar's real states, faithful to Bar.tsx (design.md §6): the resting
  * capsule plus the two gates — main and needs_permission. */
@@ -73,12 +41,16 @@ const GATES: {
 ];
 
 export const InterfaceSection = () => {
-  const theme = useSyncExternalStore(
-    themeStore.subscribe,
-    themeStore.get,
-    () => 'light' as Theme,
+  const { theme, setTheme } = useTheme();
+  /* mounted comes from useSyncExternalStore: getServerSnapshot holds 'light'
+   * through SSR and the hydration pass, getSnapshot flips true right after —
+   * the saved theme lands post-hydration without an effect-driven setState. */
+  const mounted = useSyncExternalStore(
+    noopSubscribe,
+    () => true,
+    () => false,
   );
-  const apply = themeStore.set;
+  const active = mounted && theme === 'dark' ? 'dark' : 'light';
 
   return (
     <section
@@ -87,7 +59,6 @@ export const InterfaceSection = () => {
       data-od-id='interface'>
       <div
         className='container stack shots'
-        data-theme={theme}
         style={sectionStack}>
         <div className='iface-head'>
           <div style={{ maxWidth: '42ch' }}>
@@ -109,19 +80,19 @@ export const InterfaceSection = () => {
             data-od-id='interface-theme-toggle'>
             <button
               type='button'
-              className={`seg-btn ${theme === 'light' ? 'is-on' : ''}`}
+              className={`seg-btn ${active === 'light' ? 'is-on' : ''}`}
               data-theme-btn='light'
-              aria-pressed={theme === 'light'}
-              onClick={() => apply('light')}>
+              aria-pressed={active === 'light'}
+              onClick={() => setTheme('light')}>
               <SunIcon />
               Light
             </button>
             <button
               type='button'
-              className={`seg-btn ${theme === 'dark' ? 'is-on' : ''}`}
+              className={`seg-btn ${active === 'dark' ? 'is-on' : ''}`}
               data-theme-btn='dark'
-              aria-pressed={theme === 'dark'}
-              onClick={() => apply('dark')}>
+              aria-pressed={active === 'dark'}
+              onClick={() => setTheme('dark')}>
               <MoonIcon />
               Dark
             </button>
@@ -137,10 +108,10 @@ export const InterfaceSection = () => {
               <span className='dim'>File</span>
               <span className='dim'>Edit</span>
               <span className='dim'>View</span>
-              <span className='dim'>Go</span>
-              <span className='dim'>Window</span>
-              <span className='dim'>Help</span>
-              <span className='shot-clock'>Fri 9:41 AM</span>
+              <span className='dim max-[480px]:hidden'>Go</span>
+              <span className='dim max-[480px]:hidden'>Window</span>
+              <span className='dim max-[480px]:hidden'>Help</span>
+              <span className='shot-clock whitespace-nowrap'>Fri 9:41 AM</span>
             </div>
             <div
               className='ghost-win'

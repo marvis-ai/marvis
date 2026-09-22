@@ -24,7 +24,7 @@
  */
 import { useEffect, useState } from 'react';
 import type { DragEvent, KeyboardEvent } from 'react';
-import { ChevronRightIcon, GripVerticalIcon } from '@marvis/ui';
+import { ChevronRightIcon, GripVerticalIcon, Input } from '@marvis/ui';
 import {
   configSet,
   keystoreRemoveKey,
@@ -95,6 +95,7 @@ export const ProviderCard = ({
 
   const [open, setOpen] = useState(false);
   const [keyInput, setKeyInput] = useState('');
+  const [keyEditing, setKeyEditing] = useState(false);
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
   const [models, setModels] = useState<string[] | null>(null);
@@ -383,7 +384,7 @@ export const ProviderCard = ({
               </p>
             )}
             <div className='mb-2 flex flex-col gap-2'>
-              <input
+              <Input
                 className={FIELD}
                 value={name}
                 onChange={(e) => setName(e.target.value)}
@@ -391,7 +392,7 @@ export const ProviderCard = ({
                 autoComplete='off'
                 aria-label='Compatible provider name'
               />
-              <input
+              <Input
                 className={FIELD}
                 value={baseUrl}
                 onChange={(e) => setBaseUrl(e.target.value)}
@@ -407,11 +408,19 @@ export const ProviderCard = ({
 
         {def.id !== 'ollama' && (
           <div className='mt-1.5 flex items-center gap-1.5'>
-            <input
+            {/* A saved key fills the field as the backend's `…last4`
+                mask (readOnly, type=text so the mask stays readable);
+                focus flips to a fresh password entry. The mask is the
+                only form a key ever takes in the DOM — plaintext never
+                echoes back. */}
+            <Input
               className={FIELD}
-              type='password'
+              type={keyEditing || keyInput ? 'password' : 'text'}
+              readOnly={!keyEditing && masked !== null}
               autoComplete='off'
-              value={keyInput}
+              value={keyEditing || keyInput ? keyInput : (masked ?? '')}
+              onFocus={() => setKeyEditing(true)}
+              onBlur={() => setKeyEditing(false)}
               onChange={(e) => setKeyInput(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && void save()}
               placeholder={
@@ -503,7 +512,7 @@ export const ProviderCard = ({
           <span className={LBL}>Model</span>
           {def.compat ? (
             <>
-              <input
+              <Input
                 className={FIELD}
                 list={`models-${def.id}`}
                 value={modelText}

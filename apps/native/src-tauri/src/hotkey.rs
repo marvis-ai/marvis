@@ -19,7 +19,7 @@ use crate::config;
 /// the real `WindowPool`/`ask` call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
-    /// `toggle_visibility` — hide all panels / restore the remembered set.
+    /// `toggle_visibility` — collapse/expand the unified card (Cmd+/).
     ToggleVisibility,
     /// `next_step` — send the current input (or screen-only ask).
     NextStep,

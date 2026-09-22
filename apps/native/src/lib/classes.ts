@@ -55,7 +55,7 @@ export const PROV_ERR =
 
 /* ─── panel + toast chrome ──────────────────────────────────────── */
 export const PANEL =
-  'flex flex-col overflow-hidden rounded-[18px] border border-border bg-[color-mix(in_oklch,var(--surface)_90%,transparent)] backdrop-blur-lg';
+  'glass-surface flex flex-col overflow-hidden rounded-[18px] border border-border bg-[color-mix(in_oklch,var(--surface)_90%,transparent)] backdrop-blur-lg';
 export const PANEL_HEAD =
   'flex items-start gap-1.5 border-b border-border px-3 py-2.25';
 export const PANEL_BODY =
@@ -75,12 +75,12 @@ export const PR_LABEL = 'text-[13px] font-[550]';
 export const PR_SUB = 'mt-0.5 max-w-[40ch] text-[11.5px] text-muted-foreground';
 export const PR_CTL = 'inline-flex flex-none items-center gap-2';
 export const H2 = 'mb-1 text-[17px] font-[650] tracking-[-0.01em]';
-export const SUB = 'mb-4 text-[12.5px] leading-[1.5] text-muted-foreground';
+export const SUB = 'mb-4 text-[12.5px] leading-normal text-muted-foreground';
 
 /* react-markdown output can't take classNames, so the sheet styles
    every element as a descendant of this wrapper (was `.ask-md`). */
 export const ASK_MD = cn(
-  'leading-[1.5]',
+  'leading-normal',
   '[&_h1]:mt-[0.6em] [&_h1]:mb-[0.3em] [&_h1]:text-[1.05rem] [&_h1]:font-semibold',
   '[&_h2]:mt-[0.6em] [&_h2]:mb-[0.3em] [&_h2]:text-[1rem] [&_h2]:font-semibold',
   '[&_h3]:mt-[0.6em] [&_h3]:mb-[0.3em] [&_h3]:text-[0.92rem] [&_h3]:font-semibold',

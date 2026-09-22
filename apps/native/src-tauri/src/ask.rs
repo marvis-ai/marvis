@@ -1,26 +1,30 @@
 //! `ask` — question + latest screen frame → streaming LLM → persisted.
 //!
-//! Pipeline (spec §Ask): [`AskService::send`] shows the ask panel,
+//! Pipeline (spec §Ask): [`AskService::send`] expands the card,
 //! resolves the FAILOVER CHAIN (`providers.order` minus disabled/unusable
 //! — see `provider_candidates` in lib.rs), grabs the newest
 //! [`RingBuffer`] frame (`None` → text-only), then tries each candidate
 //! in turn: a failed provider logs and hands off to the next; only when
-//! every candidate fails does `ask:error` fire. Both sides of the
-//! exchange land in the `ask` session's `ai_messages` rows (the user row
-//! persists once, before the first attempt). A provider
+//! every candidate fails does `ask:error` fire. When a screen reader is
+//! configured (`[vision]` — see `vision_candidate` in lib.rs), the frame
+//! goes to it FIRST: its text description replaces the image and the
+//! chain answers over a `<screen>` block, so chat providers never need
+//! image support; a failed read falls back to attaching the frame.
+//! Both sides of the exchange land in the `ask` session's `ai_messages`
+//! rows (the user row persists once, before the first attempt). A provider
 //! `MultimodalUnsupported` rejection retries once without the image
 //! (per attempt); [`AskService::close`] aborts any in-flight stream via
 //! a [`CancellationToken`].
 //!
-//! Event protocol (emitted to the `ask` window via `app.emit_to`):
+//! Event protocol (emitted to the `bar` window via `app.emit_to`):
 //! - `ask:state` `{"state": "loading"|"streaming"|"idle"}` — `streaming`
 //!   fires on each attempt's FIRST token; every `loading` carries
-//!   `"question"` so the panel resets its buffer + header per run AND
+//!   `"question"` so the card resets its buffer + header per run AND
 //!   per failover retry (pre-flight errors emit `loading` → `error` →
 //!   `idle` too).
 //! - `ask:chunk` `{"text": token}` per token.
 //! - `ask:done` `{"full": full_reply, "provider": id, "model": id}` on
-//!   success — the pair that actually answered, for the panel's chip.
+//!   success — the pair that actually answered, for the card's chip.
 //! - `ask:error` `{"message": ..., "needs_setup": bool?}` on failure —
 //!   `needs_setup` when the chain was empty (no usable provider at all).
 //!
@@ -52,7 +56,7 @@ use crate::keystore::Keystore;
 use crate::llm::{ChatMessage, LlmError, Provider, Role};
 use crate::prompts::system_prompt;
 use crate::storage::Db;
-use crate::windows::{Panel, WindowPool};
+use crate::windows::{BAR_LABEL, WindowPool};
 use crate::ProviderCandidate;
 
 /// Event names — part of the webview contract; change together with
@@ -65,6 +69,10 @@ const EV_ERROR: &str = "ask:error";
 /// `send_screen_only`'s fixed question (spec §Hotkeys `Cmd+Shift+S`).
 const SCREEN_ONLY_PROMPT: &str = "Describe what is on my screen and how you can help.";
 
+/// Context window: only the trailing N persisted `ai_messages` ride
+/// along with each ask (spec: last 20, text-only).
+const HISTORY_TAIL: usize = 20;
+
 /// Lifecycle of one ask run. Mirrors the `ask:state` event so Rust-side
 /// status reads see exactly what the webview sees.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -72,6 +80,17 @@ pub enum AskState {
     Idle,
     Loading,
     Streaming,
+}
+
+impl AskState {
+    /// The `ask:state` / `ask_current` wire value.
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Idle => "idle",
+            Self::Loading => "loading",
+            Self::Streaming => "streaming",
+        }
+    }
 }
 
 /// The `AppState` fields the ask pipeline needs, bundled so this module
@@ -95,6 +114,10 @@ pub struct AskService {
     current_response: Mutex<String>,
     /// Last submitted user text.
     current_question: Mutex<String>,
+    /// The last `ask:error` payload — kept so `ask_current` can resync
+    /// an error that fired before the webview was listening (pre-flight
+    /// errors land ~0ms after the card starts opening).
+    last_error: Mutex<Option<serde_json::Value>>,
     /// Bumped per `send`: a stale (cancelled) task's trailing events are
     /// dropped instead of clobbering a newer run's state/UI.
     generation: AtomicU64,
@@ -107,23 +130,34 @@ impl AskService {
             cancel: Mutex::new(CancellationToken::new()),
             current_response: Mutex::new(String::new()),
             current_question: Mutex::new(String::new()),
+            last_error: Mutex::new(None),
             generation: AtomicU64::new(0),
         }
     }
 
-    #[allow(dead_code)] // status consumers land with the webview tasks
     pub fn state(&self) -> AskState {
         *self.state.lock()
     }
 
-    #[allow(dead_code)] // status consumers land with the webview tasks
     pub fn current_response(&self) -> String {
         self.current_response.lock().clone()
     }
 
-    #[allow(dead_code)] // status consumers land with the webview tasks
     pub fn current_question(&self) -> String {
         self.current_question.lock().clone()
+    }
+
+    /// The `ask_current` resync payload: live `state` + the run's
+    /// question/reply tail + the last `ask:error` (`null` normally —
+    /// kept so a pre-flight error that beat the webview's `listen()`
+    /// still renders on mount).
+    pub fn current_payload(&self) -> serde_json::Value {
+        json!({
+            "state": self.state().as_str(),
+            "question": self.current_question(),
+            "response": self.current_response(),
+            "error": self.last_error.lock().clone(),
+        })
     }
 
     /// Ask a free-text question. A send while `Loading`/`Streaming` is
@@ -144,15 +178,16 @@ impl AskService {
 
     /// `ask_close`: cancel the in-flight stream (its `select!` arm emits
     /// the final `ask:state{idle}`), mint a fresh token for the next run,
-    /// reset state, hide the panel. Emits nothing itself.
+    /// reset state, collapse the card. Emits nothing itself.
     ///
     /// Order matters: replace the token BEFORE flipping state to Idle —
     /// a `send` gated on `Idle` must never clone the cancelled token.
-    pub fn close(&self, pool: &Mutex<WindowPool>) {
+    pub fn close(&self, app: &AppHandle, pool: &Mutex<WindowPool>) {
         self.cancel.lock().cancel();
         *self.cancel.lock() = CancellationToken::new();
         *self.state.lock() = AskState::Idle;
-        pool.lock().hide(Panel::Ask);
+        *self.last_error.lock() = None;
+        pool.lock().set_chat_open(app, false);
     }
 
     /// Shared pre-flight + spawn behind `send`/`send_screen_only`.
@@ -171,16 +206,24 @@ impl AskService {
             self.generation.fetch_add(1, Ordering::SeqCst) + 1
         };
         *self.current_question.lock() = text.to_string();
-        // Show first so any pre-flight error still renders in the panel.
-        deps.pool.lock().show(Panel::Ask);
+        // Run boundary: the `ask_current` resync tail must not leak the
+        // previous run's reply or error into this one.
+        *self.current_response.lock() = String::new();
+        *self.last_error.lock() = None;
+        // Expand first so any pre-flight error still renders in the card.
+        deps.pool.lock().set_chat_open(app, true);
 
         // The failover chain: `providers.order` minus disabled/unusable.
         // An empty chain is the "no usable provider" error — nothing to
-        // fall back TO, so the panel links straight to settings.
-        let candidates = {
+        // fall back TO, so the card links straight to settings. The
+        // screen reader (`[vision]`) resolves under the same lock.
+        let (candidates, vision) = {
             let cfg = deps.config.lock();
             let ks = deps.keystore.lock();
-            crate::provider_candidates(&cfg, &ks)
+            (
+                crate::provider_candidates(&cfg, &ks),
+                crate::vision_candidate(&cfg, &ks),
+            )
         };
         if candidates.is_empty() {
             return self.pre_spawn_error(
@@ -242,10 +285,11 @@ impl AskService {
                     }
                 }
                 svc.observe(name, &payload);
-                let _ = app.emit_to("ask", name, payload);
+                let _ = app.emit_to(BAR_LABEL, name, payload);
             };
             let _ = send_chain(
                 candidates,
+                vision,
                 db.as_ref(),
                 &emit,
                 &text,
@@ -260,27 +304,39 @@ impl AskService {
     /// the busy check already flipped state to Loading — emit the same
     /// `ask:state{loading}` → `ask:error` → `ask:state{idle}` sequence
     /// `send_with`'s failure path uses (the `loading` carries the
-    /// question so the panel's run-reset/header work here too), then
-    /// reset Rust-side state to match.
+    /// question so the card's run-reset/header work here too), then
+    /// reset Rust-side state to match. The error folds through
+    /// [`observe`] before emitting — it lands ~0ms after the card
+    /// starts opening, so the `ask_current` resync is the only reliable
+    /// delivery to the still-mounting webview.
     fn pre_spawn_error(&self, app: &AppHandle, text: &str, payload: serde_json::Value) {
         let _ = app.emit_to(
-            "ask",
+            BAR_LABEL,
             EV_STATE,
             json!({"state": "loading", "question": text}),
         );
-        let _ = app.emit_to("ask", EV_ERROR, payload);
+        self.observe(EV_ERROR, &payload);
+        let _ = app.emit_to(BAR_LABEL, EV_ERROR, payload);
         *self.state.lock() = AskState::Idle;
-        let _ = app.emit_to("ask", EV_STATE, json!({"state": "idle"}));
+        let _ = app.emit_to(BAR_LABEL, EV_STATE, json!({"state": "idle"}));
     }
 
     /// Fold one outgoing event into Rust-side state: `ask:state` is
     /// folded by the emit closure under its generation-guarded lock (the
-    /// busy-check source of truth); `ask:done` records the reply here.
+    /// busy-check source of truth); `ask:done` records the reply here;
+    /// `ask:error` is kept for `ask_current` resyncs until a `loading`
+    /// boundary (a new run or a failover retry) supersedes it — the
+    /// trailing `idle` must NOT clear it, or the cold-open pre-flight
+    /// error would be lost before the webview starts listening.
     fn observe(&self, name: &str, payload: &serde_json::Value) {
         if name == EV_DONE {
             if let Some(full) = payload["full"].as_str() {
                 *self.current_response.lock() = full.to_string();
             }
+        } else if name == EV_ERROR {
+            *self.last_error.lock() = Some(payload.clone());
+        } else if name == EV_STATE && payload["state"].as_str() == Some("loading") {
+            *self.last_error.lock() = None;
         }
     }
 }
@@ -302,7 +358,7 @@ impl Default for AskService {
 /// 3. Each [`ProviderCandidate`] streams via [`stream_candidate`]:
 ///    `Done` → persist assistant + `ask:done{full, provider, model}` +
 ///    `ask:state{idle}`; `Failed` → warn-log, re-emit `loading` (the
-///    panel resets its buffer — a dead provider's partial chunks must
+///    card resets its buffer — a dead provider's partial chunks must
 ///    not bleed into the next attempt), and try the NEXT candidate;
 ///    `Cancelled` → `ask:state{idle}` and stop immediately — the user
 ///    asked to stop, so no failover may start a new request.
@@ -317,23 +373,69 @@ impl Default for AskService {
 /// the return value, drive the UI.
 pub(crate) async fn send_chain(
     candidates: Vec<ProviderCandidate>,
+    vision: Option<ProviderCandidate>,
     db: &Db,
     emit: &(dyn Fn(&str, serde_json::Value) + Send + Sync),
     text: &str,
     frame: Option<&Frame>,
     cancel: &CancellationToken,
 ) -> Result<String, LlmError> {
-    let session_id = persist_user_message(db, text);
+    // Order matters: history is read BEFORE the new user row persists —
+    // the new turn is appended separately so it can carry the frame.
+    let session_id = open_ask_session(db);
+    let history = load_history(db, session_id);
+    persist_user_message(db, session_id, text);
     emit(EV_STATE, json!({"state": "loading", "question": text}));
+
+    // A configured screen reader intercepts the frame: it describes the
+    // screen as text and the chain answers over the description — chat
+    // providers that can't see images never receive one. A failed read
+    // falls back to attaching the frame to the chain directly (which
+    // keeps its own text-only retry on a multimodal rejection).
+    let mut frame = frame;
+    let mut screen: Option<String> = None;
+    if let (Some(f), Some(vis)) = (frame, vision.as_ref()) {
+        match describe_screen(&*vis.provider, f, cancel).await {
+            StreamOutcome::Done(desc) => {
+                screen = Some(desc);
+                frame = None;
+            }
+            // Same rule as a mid-stream cancel: the user asked to stop,
+            // so no chain attempt may start a new request.
+            StreamOutcome::Cancelled => {
+                emit(EV_STATE, json!({"state": "idle"}));
+                return Err(LlmError::Http {
+                    status: 0,
+                    message: "cancelled".to_string(),
+                });
+            }
+            StreamOutcome::Failed(e) => {
+                log::warn!(
+                    "ask: vision read via {} failed ({e}); attaching the frame to the chain",
+                    vis.id
+                );
+            }
+        }
+    }
 
     let mut last_err: Option<LlmError> = None;
     for (i, cand) in candidates.iter().enumerate() {
-        // A failover hand-off re-announces `loading` so the panel drops
+        // A failover hand-off re-announces `loading` so the card drops
         // the failed attempt's partial chunks before the next stream.
         if i > 0 {
             emit(EV_STATE, json!({"state": "loading", "question": text}));
         }
-        match stream_candidate(&*cand.provider, emit, text, frame, cancel).await {
+        match stream_candidate(
+            &*cand.provider,
+            emit,
+            &history,
+            text,
+            frame,
+            screen.as_deref(),
+            cancel,
+        )
+        .await
+        {
             CandidateOutcome::Done(full) => {
                 persist_assistant_message(db, session_id, &full);
                 emit(
@@ -372,12 +474,14 @@ pub(crate) async fn send_chain(
 async fn stream_candidate(
     provider: &dyn Provider,
     emit: &(dyn Fn(&str, serde_json::Value) + Send + Sync),
+    history: &[ChatMessage],
     text: &str,
     frame: Option<&Frame>,
+    screen: Option<&str>,
     cancel: &CancellationToken,
 ) -> CandidateOutcome {
     let mut streaming = false;
-    let mut msgs = build_messages(text, frame);
+    let mut msgs = build_messages(history, text, frame, screen);
     let mut retried = false;
     loop {
         match stream_once(provider, &msgs, emit, cancel, &mut streaming).await {
@@ -387,12 +491,35 @@ async fn stream_candidate(
                 // Vision-incapable model gets ONE retry without the frame.
                 if !retried && frame.is_some() && e.is_multimodal() {
                     retried = true;
-                    msgs = build_messages(text, None);
+                    msgs = build_messages(history, text, None, screen);
                     continue;
                 }
                 return CandidateOutcome::Failed(e);
             }
         }
+    }
+}
+
+/// The screen read: one frame → a text description for the chain to
+/// answer over. Silent — these tokens are intermediate, not the reply,
+/// so they never reach the card (the `loading` state already covers
+/// the wait). Races the cancel token like `stream_once` does.
+async fn describe_screen(
+    provider: &dyn Provider,
+    frame: &Frame,
+    cancel: &CancellationToken,
+) -> StreamOutcome {
+    let msgs = vec![ChatMessage::user_with_image(
+        crate::prompts::VISION_PROMPT,
+        frame.jpeg.clone(),
+    )];
+    let mut sink = |_: &str| {};
+    tokio::select! {
+        _ = cancel.cancelled() => StreamOutcome::Cancelled,
+        r = provider.stream_chat(&msgs, &mut sink) => match r {
+            Ok(full) => StreamOutcome::Done(full),
+            Err(e) => StreamOutcome::Failed(e),
+        },
     }
 }
 
@@ -443,32 +570,76 @@ async fn stream_once(
     }
 }
 
-/// `[system, user]` — the user message pairs `text` with the frame's
-/// JPEG when one was captured; text-only otherwise (and on the retry).
-fn build_messages(text: &str, frame: Option<&Frame>) -> Vec<ChatMessage> {
-    vec![
-        ChatMessage::text(Role::System, system_prompt("")),
-        match frame {
-            Some(f) => ChatMessage::user_with_image(text, f.jpeg.clone()),
-            None => ChatMessage::text(Role::User, text),
-        },
-    ]
+/// `[system] + history + [user]` — history rows are text-only; only the
+/// new user turn pairs `text` with the frame's JPEG when one was
+/// captured, else with the screen reader's `<screen>` description when
+/// a vision provider read it; text-only otherwise (and on the retry —
+/// the description, when present, survives it).
+fn build_messages(
+    history: &[ChatMessage],
+    text: &str,
+    frame: Option<&Frame>,
+    screen: Option<&str>,
+) -> Vec<ChatMessage> {
+    let mut msgs = Vec::with_capacity(history.len() + 2);
+    msgs.push(ChatMessage::text(Role::System, system_prompt("")));
+    msgs.extend(history.iter().cloned());
+    msgs.push(match (frame, screen) {
+        (Some(f), _) => ChatMessage::user_with_image(text, f.jpeg.clone()),
+        (None, Some(desc)) => {
+            ChatMessage::text(Role::User, format!("{text}\n\n<screen>\n{desc}\n</screen>"))
+        }
+        (None, None) => ChatMessage::text(Role::User, text),
+    });
+    msgs
 }
 
-/// Session row + the user message. `None` when the session lookup itself
-/// failed — the assistant row then has nowhere to go either.
-fn persist_user_message(db: &Db, text: &str) -> Option<i64> {
-    let sid = match db.session_get_or_create_active("ask") {
-        Ok(sid) => sid,
+/// The active `ask` session id, or `None` when the lookup itself fails —
+/// history and the assistant row then have nowhere to go.
+fn open_ask_session(db: &Db) -> Option<i64> {
+    match db.session_get_or_create_active("ask") {
+        Ok(sid) => Some(sid),
         Err(e) => {
             log::warn!("ask: session_get_or_create_active failed: {e}");
-            return None;
+            None
         }
+    }
+}
+
+/// The trailing persisted turns as text-only `ChatMessage`s — at most
+/// `HISTORY_TAIL` rows, user/assistant roles only (images were never
+/// persisted, so history is text by construction).
+fn load_history(db: &Db, session_id: Option<i64>) -> Vec<ChatMessage> {
+    let Some(sid) = session_id else {
+        return Vec::new();
+    };
+    let rows = match db.ai_messages_for(sid) {
+        Ok(rows) => rows,
+        Err(e) => {
+            log::warn!("ask: history load failed: {e}");
+            return Vec::new();
+        }
+    };
+    rows.iter()
+        .skip(rows.len().saturating_sub(HISTORY_TAIL))
+        .filter_map(|m| match m.role.as_str() {
+            "user" => Some(ChatMessage::text(Role::User, m.content.clone())),
+            "assistant" => Some(ChatMessage::text(Role::Assistant, m.content.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The new user row, next to its session. `None` session (lookup
+/// failed) skips the write — the stream must not die on a storage
+/// hiccup.
+fn persist_user_message(db: &Db, session_id: Option<i64>, text: &str) {
+    let Some(sid) = session_id else {
+        return;
     };
     if let Err(e) = db.ai_message_add(sid, "user", text) {
         log::warn!("ask: failed to persist user message: {e}");
     }
-    Some(sid)
 }
 
 /// The completed assistant reply, next to its user row.
@@ -632,6 +803,7 @@ mod tests {
 
         let full = send_chain(
             vec![candidate("openai", provider)],
+            None,
             &db,
             &emit,
             "what is this?",
@@ -695,6 +867,7 @@ mod tests {
 
         let full = send_chain(
             vec![candidate("openai", first), candidate("gemini", second)],
+            None,
             &db,
             &emit,
             "q",
@@ -746,6 +919,7 @@ mod tests {
 
         let err = send_chain(
             vec![candidate("openai", first), candidate("gemini", second)],
+            None,
             &db,
             &emit,
             "q",
@@ -788,6 +962,7 @@ mod tests {
         });
         let err = send_chain(
             vec![candidate("openai", first), candidate("gemini", second)],
+            None,
             &db,
             &emit,
             "q",
@@ -818,6 +993,7 @@ mod tests {
 
         let full = send_chain(
             vec![candidate("openai", provider)],
+            None,
             &db,
             &emit,
             "q",
@@ -866,6 +1042,7 @@ mod tests {
 
         let err = send_chain(
             vec![candidate("openai", provider)],
+            None,
             &db,
             &emit,
             "q",
@@ -912,6 +1089,7 @@ mod tests {
         });
         let err = send_chain(
             vec![candidate("openai", provider)],
+            None,
             &db,
             &emit,
             "q",
@@ -953,6 +1131,7 @@ mod tests {
 
         send_chain(
             vec![candidate("openai", provider)],
+            None,
             &db,
             &emit,
             "q",
@@ -983,6 +1162,7 @@ mod tests {
 
         let err = send_chain(
             vec![candidate("openai", provider)],
+            None,
             &db,
             &emit,
             "q",
@@ -1007,5 +1187,292 @@ mod tests {
         assert_eq!(ask_messages(&db).len(), 1); // user row only
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The whole point of the screen reader: the vision provider gets
+    /// the frame, the chain answers over its text description — image
+    /// never reaches a chat provider.
+    #[tokio::test]
+    async fn send_chain_vision_reader_describes_the_frame_for_the_chain() {
+        let dir = tmp_dir();
+        let db = Db::at(dir.join("marvis.db")).unwrap();
+        let vision = MockProvider::new(vec![Behavior::Tokens(vec![
+            "a terminal with an error".into()
+        ])]);
+        let chat = MockProvider::new(vec![Behavior::Tokens(vec!["answer".into()])]);
+        let vision_calls = vision.calls();
+        let chat_calls = chat.calls();
+        let (events, emit) = recorder();
+        let frame = fake_frame();
+        let cancel = CancellationToken::new();
+
+        let full = send_chain(
+            vec![candidate("openai", chat)],
+            Some(candidate("gemini", vision)),
+            &db,
+            &emit,
+            "what broke?",
+            Some(&frame),
+            &cancel,
+        )
+        .await
+        .unwrap();
+        assert_eq!(full, "answer");
+
+        // The reader got the frame (one user message, no system prompt);
+        // the chain got text only — the question plus the description
+        // in a <screen> block.
+        let vcalls = vision_calls.lock();
+        assert_eq!(vcalls.len(), 1);
+        assert!(has_image(&vcalls[0][0]));
+        drop(vcalls);
+        let ccalls = chat_calls.lock();
+        assert_eq!(ccalls.len(), 1);
+        let user = &ccalls[0][1];
+        assert!(!has_image(user));
+        assert_eq!(
+            user.content,
+            vec![ContentPart::Text(
+                "what broke?\n\n<screen>\na terminal with an error\n</screen>".to_string()
+            )]
+        );
+        drop(ccalls);
+
+        // The reader's tokens are intermediate — only the reply reached
+        // the card, and `ask:done` names the chain provider that spoke.
+        let got = events.lock().clone();
+        assert_eq!(
+            got,
+            vec![
+                ev(
+                    EV_STATE,
+                    json!({"state": "loading", "question": "what broke?"})
+                ),
+                ev(EV_STATE, json!({"state": "streaming"})),
+                ev(EV_CHUNK, json!({"text": "answer"})),
+                ev(
+                    EV_DONE,
+                    json!({"full": "answer", "provider": "openai", "model": "mock-model"})
+                ),
+                ev(EV_STATE, json!({"state": "idle"})),
+            ]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A failed read must not eat the frame: the chain falls back to
+    /// attaching the image, same as before the reader existed.
+    #[tokio::test]
+    async fn send_chain_vision_failure_falls_back_to_attaching_the_frame() {
+        let dir = tmp_dir();
+        let db = Db::at(dir.join("marvis.db")).unwrap();
+        let vision = MockProvider::new(vec![Behavior::Fail(LlmError::Http {
+            status: 500,
+            message: "boom".into(),
+        })]);
+        let chat = MockProvider::new(vec![Behavior::Tokens(vec!["ok".into()])]);
+        let chat_calls = chat.calls();
+        let (_events, emit) = recorder();
+        let frame = fake_frame();
+        let cancel = CancellationToken::new();
+
+        let full = send_chain(
+            vec![candidate("openai", chat)],
+            Some(candidate("gemini", vision)),
+            &db,
+            &emit,
+            "q",
+            Some(&frame),
+            &cancel,
+        )
+        .await
+        .unwrap();
+        assert_eq!(full, "ok");
+
+        let ccalls = chat_calls.lock();
+        assert_eq!(ccalls.len(), 1);
+        assert!(has_image(&ccalls[0][1]));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// No frame → no read — the reader never runs for text-only asks.
+    #[tokio::test]
+    async fn send_chain_vision_reader_is_skipped_without_a_frame() {
+        let dir = tmp_dir();
+        let db = Db::at(dir.join("marvis.db")).unwrap();
+        let vision = MockProvider::new(vec![Behavior::Tokens(vec!["unused".into()])]);
+        let chat = MockProvider::new(vec![Behavior::Tokens(vec!["ok".into()])]);
+        let vision_calls = vision.calls();
+        let chat_calls = chat.calls();
+        let (_events, emit) = recorder();
+        let cancel = CancellationToken::new();
+
+        send_chain(
+            vec![candidate("openai", chat)],
+            Some(candidate("gemini", vision)),
+            &db,
+            &emit,
+            "q",
+            None,
+            &cancel,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(vision_calls.lock().len(), 0);
+        let ccalls = chat_calls.lock();
+        assert_eq!(
+            ccalls[0][1].content,
+            vec![ContentPart::Text("q".to_string())]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Cancel mid-read stops the run before the chain starts — the user
+    /// asked to stop, so no provider may open a new request.
+    #[tokio::test]
+    async fn send_chain_cancel_during_vision_read_stops_the_run() {
+        let dir = tmp_dir();
+        let db = Db::at(dir.join("marvis.db")).unwrap();
+        let vision = MockProvider::new(vec![Behavior::Hang]);
+        let chat = MockProvider::new(vec![Behavior::Tokens(vec!["nope".into()])]);
+        let chat_calls = chat.calls();
+        let (events, emit) = recorder();
+        let frame = fake_frame();
+        let cancel = CancellationToken::new();
+
+        let c2 = cancel.clone();
+        let cancels = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            c2.cancel();
+        });
+        let err = send_chain(
+            vec![candidate("openai", chat)],
+            Some(candidate("gemini", vision)),
+            &db,
+            &emit,
+            "q",
+            Some(&frame),
+            &cancel,
+        )
+        .await
+        .unwrap_err();
+        cancels.await.unwrap();
+        assert_eq!(err.to_string(), "http 0: cancelled");
+        assert_eq!(chat_calls.lock().len(), 0);
+
+        // loading → idle only: the read produced no events of its own.
+        let got = events.lock().clone();
+        assert_eq!(
+            got,
+            vec![
+                ev(EV_STATE, json!({"state": "loading", "question": "q"})),
+                ev(EV_STATE, json!({"state": "idle"})),
+            ]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn send_chain_sends_prior_turns_as_text_only_history() {
+        let dir = tmp_dir();
+        let db = Db::at(dir.join("marvis.db")).unwrap();
+        let sid = db.session_get_or_create_active("ask").unwrap();
+        db.ai_message_add(sid, "user", "first q").unwrap();
+        db.ai_message_add(sid, "assistant", "first a").unwrap();
+        let provider = MockProvider::new(vec![Behavior::Tokens(vec!["ok".into()])]);
+        let calls = provider.calls();
+        let (_events, emit) = recorder();
+        let frame = fake_frame();
+        let cancel = CancellationToken::new();
+
+        send_chain(
+            vec![candidate("openai", provider)],
+            None,
+            &db,
+            &emit,
+            "follow-up",
+            Some(&frame),
+            &cancel,
+        )
+        .await
+        .unwrap();
+
+        let calls = calls.lock();
+        let msgs = &calls[0];
+        // [system] + 2 history rows + new user turn.
+        assert_eq!(msgs.len(), 4);
+        assert_eq!(msgs[0].role, Role::System);
+        // History rides along text-only, oldest first, roles preserved.
+        assert_eq!(msgs[1].role, Role::User);
+        assert_eq!(msgs[1].content, vec![ContentPart::Text("first q".into())]);
+        assert_eq!(msgs[2].role, Role::Assistant);
+        assert_eq!(msgs[2].content, vec![ContentPart::Text("first a".into())]);
+        assert!(!has_image(&msgs[1]));
+        assert!(!has_image(&msgs[2]));
+        // Only the NEW user turn carries the frame.
+        assert_eq!(msgs[3].role, Role::User);
+        assert!(has_image(&msgs[3]));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn send_chain_history_tail_is_capped_at_20() {
+        let dir = tmp_dir();
+        let db = Db::at(dir.join("marvis.db")).unwrap();
+        let sid = db.session_get_or_create_active("ask").unwrap();
+        for i in 0..12 {
+            db.ai_message_add(sid, "user", &format!("u{i}")).unwrap();
+            db.ai_message_add(sid, "assistant", &format!("a{i}")).unwrap();
+        }
+        let provider = MockProvider::new(vec![Behavior::Tokens(vec!["ok".into()])]);
+        let calls = provider.calls();
+        let (_events, emit) = recorder();
+        let cancel = CancellationToken::new();
+
+        send_chain(
+            vec![candidate("openai", provider)],
+            None,
+            &db,
+            &emit,
+            "new q",
+            None,
+            &cancel,
+        )
+        .await
+        .unwrap();
+
+        let calls = calls.lock();
+        let msgs = &calls[0];
+        // system + 20-row tail + new user turn = 22; tail starts at u2.
+        assert_eq!(msgs.len(), 22);
+        assert_eq!(msgs[1].content, vec![ContentPart::Text("u2".into())]);
+        assert_eq!(msgs[20].content, vec![ContentPart::Text("a11".into())]);
+        assert_eq!(msgs[21].content, vec![ContentPart::Text("new q".into())]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ask_state_as_str_matches_the_wire_names() {
+        assert_eq!(AskState::Idle.as_str(), "idle");
+        assert_eq!(AskState::Loading.as_str(), "loading");
+        assert_eq!(AskState::Streaming.as_str(), "streaming");
+    }
+
+    /// The cold-open resync contract: `ask:error` rides `ask_current`
+    /// until a `loading` boundary supersedes it — the trailing `idle`
+    /// of the loading→error→idle sequence must NOT clear it, or a
+    /// pre-flight error would be lost before the webview listens.
+    #[test]
+    fn observe_keeps_the_last_error_for_resync_until_loading() {
+        let svc = AskService::new();
+        assert!(svc.current_payload()["error"].is_null());
+        svc.observe(EV_ERROR, &json!({"message": "boom", "needs_setup": true}));
+        svc.observe(EV_STATE, &json!({"state": "idle"}));
+        let payload = svc.current_payload();
+        assert_eq!(payload["error"]["message"], "boom");
+        assert_eq!(payload["error"]["needs_setup"], true);
+        svc.observe(EV_STATE, &json!({"state": "loading"}));
+        assert!(svc.current_payload()["error"].is_null());
     }
 }

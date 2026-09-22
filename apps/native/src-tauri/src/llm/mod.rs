@@ -108,6 +108,17 @@ impl ProviderKind {
     pub fn key_optional(&self) -> bool {
         matches!(self, Self::Ollama | Self::Compatible)
     }
+
+    /// Selectable as the dedicated screen reader (Settings → Providers →
+    /// Screen reading): the hosted vision APIs plus a compatible endpoint.
+    /// Anthropic and Ollama can read images too, but aren't in the pick
+    /// list — the chain still passes frames to them directly.
+    pub fn is_vision(&self) -> bool {
+        matches!(
+            self,
+            Self::OpenAi | Self::Gemini | Self::OpenRouter | Self::Compatible
+        )
+    }
 }
 
 /// Message author; serializes to the lowercase wire name every API uses.
@@ -260,13 +271,9 @@ pub fn make_provider(
         ProviderKind::Gemini => Box::new(gemini::GeminiProvider::new(api_key, model)),
         // OpenRouter is a CompatProvider with its endpoint pinned —
         // `base_url` is ignored; the key is required by the adapter.
-        ProviderKind::OpenRouter => {
-            Box::new(compat::CompatProvider::openrouter(api_key, model))
-        }
+        ProviderKind::OpenRouter => Box::new(compat::CompatProvider::openrouter(api_key, model)),
         ProviderKind::Ollama => Box::new(ollama::OllamaProvider::new(api_key, model)),
-        ProviderKind::Compatible => {
-            Box::new(compat::CompatProvider::new(api_key, model, base_url))
-        }
+        ProviderKind::Compatible => Box::new(compat::CompatProvider::new(api_key, model, base_url)),
     }
 }
 
@@ -287,6 +294,19 @@ pub(crate) fn static_models(kind: ProviderKind) -> &'static [&'static str] {
             "google/gemini-2.0-flash-001",
         ],
         ProviderKind::Ollama | ProviderKind::Compatible => &[],
+    }
+}
+
+/// What the screen reader resolves to when `vision.models.<id>` is
+/// empty — cheap/fast vision models, not the chat flagships. A
+/// compatible endpoint gets no default: its model id is free text in
+/// Settings (there's no static catalog to guess from).
+pub(crate) fn vision_default_model(kind: ProviderKind) -> Option<&'static str> {
+    match kind {
+        ProviderKind::OpenAi => Some("gpt-4o-mini"),
+        ProviderKind::Gemini => Some("gemini-2.5-flash"),
+        ProviderKind::OpenRouter => Some("google/gemini-2.0-flash-001"),
+        _ => None,
     }
 }
 
@@ -423,9 +443,7 @@ fn take_tail_lines(buf: &mut Vec<u8>) -> Vec<String> {
 
 /// Pass a 2xx response through; otherwise read the body (capped) and map
 /// the status to an [`LlmError`].
-pub(crate) async fn check_status(
-    resp: reqwest::Response,
-) -> Result<reqwest::Response, LlmError> {
+pub(crate) async fn check_status(resp: reqwest::Response) -> Result<reqwest::Response, LlmError> {
     if resp.status().is_success() {
         return Ok(resp);
     }
@@ -648,8 +666,7 @@ mod tests {
             ProviderKind::Gemini,
             ProviderKind::OpenRouter,
         ] {
-            let provider: Box<dyn Provider> =
-                make_provider(kind, None, "some-model".into(), None);
+            let provider: Box<dyn Provider> = make_provider(kind, None, "some-model".into(), None);
             let mut on_token = |tok: &str| panic!("emitted token {tok:?} without a key");
             let err = provider
                 .stream_chat(&[ChatMessage::text(Role::User, "hi")], &mut on_token)
@@ -704,7 +721,7 @@ mod tests {
         // A 401 from a keyed endpoint is a genuine failure and must NOT be
         // swallowed by the optional-/models allowance.
         let url = serve_once(vec![
-            b"HTTP/1.1 401 Unauthorized\r\ncontent-length: 0\r\n\r\n".to_vec()
+            b"HTTP/1.1 401 Unauthorized\r\ncontent-length: 0\r\n\r\n".to_vec(),
         ])
         .await;
         let base = url.trim_end_matches('/').to_string();
@@ -729,7 +746,12 @@ mod tests {
         );
         let url = serve_once(vec![sse_response(body)]).await;
         let base = url.trim_end_matches('/').to_string();
-        let provider = make_provider(ProviderKind::Compatible, None, "local-model".into(), Some(base));
+        let provider = make_provider(
+            ProviderKind::Compatible,
+            None,
+            "local-model".into(),
+            Some(base),
+        );
         let mut tokens: Vec<String> = Vec::new();
         let mut on_token = |t: &str| tokens.push(t.to_string());
         let full = provider

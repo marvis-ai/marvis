@@ -2,6 +2,7 @@ import type { ReactNode } from 'react';
 import type { Metadata } from 'next';
 import { Galada, Inter, Outfit } from 'next/font/google';
 import { GoogleTagManager } from '@next/third-parties/google';
+import { ThemeProvider } from '@/components/theme-provider';
 
 import './globals.css';
 
@@ -87,13 +88,14 @@ const RootLayout = ({ children }: { children: ReactNode }) => {
   return (
     <html
       lang='en'
+      suppressHydrationWarning
       className={`${inter.variable} ${galada.variable} ${outfit.variable}`}>
       <body>
         <script
           type='application/ld+json'
           dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
         />
-        {children}
+        <ThemeProvider>{children}</ThemeProvider>
         <GoogleTagManager gtmId={GA_ID} />
       </body>
     </html>

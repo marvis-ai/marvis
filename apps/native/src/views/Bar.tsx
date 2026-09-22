@@ -204,7 +204,7 @@ const Bar = () => {
     expanded ? 'px-2.75' : 'justify-center px-1.75',
   );
   const pill = cn(
-    'group/bar glass-surface relative flex h-full w-full flex-none flex-col justify-center rounded-full border border-border bg-[color-mix(in_oklch,var(--surface)_80%,transparent)] backdrop-blur-[14px] select-none transition-[border-color,box-shadow] duration-(--motion-base) ease-(--ease) motion-reduce:transition-none',
+    'group/bar glass-surface relative flex h-full w-full flex-none flex-col justify-center rounded-full bg-[color-mix(in_oklch,var(--surface)_80%,transparent)] backdrop-blur-[14px] select-none transition-[border-color,box-shadow] duration-(--motion-base) ease-(--ease) motion-reduce:transition-none',
   );
   const body = () => {
     if (bootError) {
@@ -332,6 +332,7 @@ const Bar = () => {
             tokens; masked to the border ring, pointer-events-none. */}
         <ShineBorder
           shineColor={['#A07CFE', '#FE8FB5', '#FFBE7B', 'var(--accent)']}
+          borderWidth={1.8}
         />
       </div>
     </div>

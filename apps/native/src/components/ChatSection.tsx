@@ -151,6 +151,15 @@ export const ChatSection = () => {
           );
           setPhase(cur.state);
         }
+        // A pre-flight error's loading→error→idle completes before this
+        // mount — `state` is already `idle`, so the error resyncs on its
+        // own (same fold as the live `ask:error` listener).
+        if (!cancelled && cur.error) {
+          setError({
+            message: cur.error.message,
+            needsSetup: cur.error.needs_setup === true,
+          });
+        }
       } catch {
         /* history is best-effort */
       }

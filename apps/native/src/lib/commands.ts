@@ -196,6 +196,9 @@ export interface AskCurrent {
   state: 'idle' | 'loading' | 'streaming';
   question: string;
   response: string;
+  /** Last `ask:error` payload or `null` — re-delivers a pre-flight
+   * error that fired before this webview's `listen()` was up. */
+  error: { message: string; needs_setup?: boolean } | null;
 }
 
 /** The live ask tail — a re-expanded chat resyncs from this. */

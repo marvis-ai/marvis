@@ -114,6 +114,10 @@ pub struct AskService {
     current_response: Mutex<String>,
     /// Last submitted user text.
     current_question: Mutex<String>,
+    /// The last `ask:error` payload — kept so `ask_current` can resync
+    /// an error that fired before the webview was listening (pre-flight
+    /// errors land ~0ms after the card starts opening).
+    last_error: Mutex<Option<serde_json::Value>>,
     /// Bumped per `send`: a stale (cancelled) task's trailing events are
     /// dropped instead of clobbering a newer run's state/UI.
     generation: AtomicU64,
@@ -126,6 +130,7 @@ impl AskService {
             cancel: Mutex::new(CancellationToken::new()),
             current_response: Mutex::new(String::new()),
             current_question: Mutex::new(String::new()),
+            last_error: Mutex::new(None),
             generation: AtomicU64::new(0),
         }
     }
@@ -140,6 +145,19 @@ impl AskService {
 
     pub fn current_question(&self) -> String {
         self.current_question.lock().clone()
+    }
+
+    /// The `ask_current` resync payload: live `state` + the run's
+    /// question/reply tail + the last `ask:error` (`null` normally —
+    /// kept so a pre-flight error that beat the webview's `listen()`
+    /// still renders on mount).
+    pub fn current_payload(&self) -> serde_json::Value {
+        json!({
+            "state": self.state().as_str(),
+            "question": self.current_question(),
+            "response": self.current_response(),
+            "error": self.last_error.lock().clone(),
+        })
     }
 
     /// Ask a free-text question. A send while `Loading`/`Streaming` is
@@ -168,6 +186,7 @@ impl AskService {
         self.cancel.lock().cancel();
         *self.cancel.lock() = CancellationToken::new();
         *self.state.lock() = AskState::Idle;
+        *self.last_error.lock() = None;
         pool.lock().set_chat_open(app, false);
     }
 
@@ -187,6 +206,10 @@ impl AskService {
             self.generation.fetch_add(1, Ordering::SeqCst) + 1
         };
         *self.current_question.lock() = text.to_string();
+        // Run boundary: the `ask_current` resync tail must not leak the
+        // previous run's reply or error into this one.
+        *self.current_response.lock() = String::new();
+        *self.last_error.lock() = None;
         // Expand first so any pre-flight error still renders in the card.
         deps.pool.lock().set_chat_open(app, true);
 
@@ -282,13 +305,17 @@ impl AskService {
     /// `ask:state{loading}` → `ask:error` → `ask:state{idle}` sequence
     /// `send_with`'s failure path uses (the `loading` carries the
     /// question so the card's run-reset/header work here too), then
-    /// reset Rust-side state to match.
+    /// reset Rust-side state to match. The error folds through
+    /// [`observe`] before emitting — it lands ~0ms after the card
+    /// starts opening, so the `ask_current` resync is the only reliable
+    /// delivery to the still-mounting webview.
     fn pre_spawn_error(&self, app: &AppHandle, text: &str, payload: serde_json::Value) {
         let _ = app.emit_to(
             BAR_LABEL,
             EV_STATE,
             json!({"state": "loading", "question": text}),
         );
+        self.observe(EV_ERROR, &payload);
         let _ = app.emit_to(BAR_LABEL, EV_ERROR, payload);
         *self.state.lock() = AskState::Idle;
         let _ = app.emit_to(BAR_LABEL, EV_STATE, json!({"state": "idle"}));
@@ -296,12 +323,20 @@ impl AskService {
 
     /// Fold one outgoing event into Rust-side state: `ask:state` is
     /// folded by the emit closure under its generation-guarded lock (the
-    /// busy-check source of truth); `ask:done` records the reply here.
+    /// busy-check source of truth); `ask:done` records the reply here;
+    /// `ask:error` is kept for `ask_current` resyncs until a `loading`
+    /// boundary (a new run or a failover retry) supersedes it — the
+    /// trailing `idle` must NOT clear it, or the cold-open pre-flight
+    /// error would be lost before the webview starts listening.
     fn observe(&self, name: &str, payload: &serde_json::Value) {
         if name == EV_DONE {
             if let Some(full) = payload["full"].as_str() {
                 *self.current_response.lock() = full.to_string();
             }
+        } else if name == EV_ERROR {
+            *self.last_error.lock() = Some(payload.clone());
+        } else if name == EV_STATE && payload["state"].as_str() == Some("loading") {
+            *self.last_error.lock() = None;
         }
     }
 }
@@ -1422,5 +1457,22 @@ mod tests {
         assert_eq!(AskState::Idle.as_str(), "idle");
         assert_eq!(AskState::Loading.as_str(), "loading");
         assert_eq!(AskState::Streaming.as_str(), "streaming");
+    }
+
+    /// The cold-open resync contract: `ask:error` rides `ask_current`
+    /// until a `loading` boundary supersedes it — the trailing `idle`
+    /// of the loading→error→idle sequence must NOT clear it, or a
+    /// pre-flight error would be lost before the webview listens.
+    #[test]
+    fn observe_keeps_the_last_error_for_resync_until_loading() {
+        let svc = AskService::new();
+        assert!(svc.current_payload()["error"].is_null());
+        svc.observe(EV_ERROR, &json!({"message": "boom", "needs_setup": true}));
+        svc.observe(EV_STATE, &json!({"state": "idle"}));
+        let payload = svc.current_payload();
+        assert_eq!(payload["error"]["message"], "boom");
+        assert_eq!(payload["error"]["needs_setup"], true);
+        svc.observe(EV_STATE, &json!({"state": "loading"}));
+        assert!(svc.current_payload()["error"].is_null());
     }
 }

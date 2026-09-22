@@ -830,15 +830,13 @@ fn ask_send_screen_only(app: AppHandle) {
 }
 
 /// `{"state": "idle"|"loading"|"streaming", "question": ..., "response":
-/// ...}` — the live tail a re-expanded chat resyncs from (the persisted
-/// session already carries every completed turn).
+/// ..., "error": {...}|null}` — the live tail a re-expanded chat
+/// resyncs from (the persisted session already carries every completed
+/// turn); `error` re-delivers the last `ask:error`, which can fire
+/// before the webview's `listen()` is up (cold-open pre-flight errors).
 #[tauri::command]
 fn ask_current(state: State<'_, AppState>) -> serde_json::Value {
-    json!({
-        "state": state.ask.state().as_str(),
-        "question": state.ask.current_question(),
-        "response": state.ask.current_response(),
-    })
+    state.ask.current_payload()
 }
 
 /// Phase-2 placeholder on the command surface — the listen pipeline

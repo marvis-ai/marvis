@@ -147,7 +147,6 @@ impl Db {
 
     /// Mark the session ended (`ended_at = now`); a later
     /// `session_get_or_create_active` for the same kind starts a new one.
-    #[allow(dead_code)] // Phase 2 session lifecycle
     pub fn session_end(&self, id: i64) -> anyhow::Result<()> {
         self.conn.lock().execute(
             "UPDATE sessions SET ended_at = ?1 WHERE id = ?2",

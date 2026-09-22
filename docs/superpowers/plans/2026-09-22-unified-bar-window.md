@@ -771,7 +771,7 @@ A re-expanded chat resyncs an in-flight run — the persisted session covers com
 
 **Interfaces:**
 
-- Produces: `AskState::as_str(&self) -> &'static str`; command `ask_current() -> {"state": "idle"|"loading"|"streaming", "question": string, "response": string}` (serde_json::Value).
+- Produces: `AskState::as_str(&self) -> &'static str`; command `ask_current() -> {"state": "idle"|"loading"|"streaming", "question": string, "response": string, "error": {...}|null}` (serde_json::Value) — the `error` key was added by the final-review fix (cold-open `ask:error` resync).
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1688,6 +1688,7 @@ const Bar = () => {
   const [listenWanted, setListenWanted] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
+  const cardRef = useRef<HTMLDivElement>(null);
   /** Last collapsed-mode outer y — the baseline the expand direction
    *  is detected against. */
   const collapsedY = useRef<number | null>(null);
@@ -1798,11 +1799,17 @@ const Bar = () => {
 
   // Report the card's desired TOTAL window height: leading + trailing
   // throttle, only on a real (>EPS) change — `adjust_height` animates
-  // per call. `scrollHeight` measures the card's content (the stage is
-  // window-filling): frost keeps its `p-1`, glass strips it — measuring
-  // it self-corrects for both modes.
+  // per call. The observer watches the CARD element (content-sized,
+  // capped at CARD_MAX) — NOT the window-fixed `h-full` stage, whose
+  // box only changes on real window resizes, so streaming content
+  // growth/shrink actually triggers reports. `scrollHeight` reads the
+  // uncapped content height (overflow counts); the backend clamps to
+  // min(900, free). The stage's vertical padding is added back (frost
+  // keeps `p-1`, glass strips it) so the report is total window height
+  // under both materials.
   useEffect(() => {
-    const el = stageRef.current;
+    const el = cardRef.current;
+    const stage = stageRef.current;
     if (!el || !cardOpen) {
       return;
     }
@@ -1810,7 +1817,14 @@ const Bar = () => {
     let lastSentAt = 0;
     let timer: number | undefined;
     const report = () => {
-      const h = Math.min(Math.ceil(el.scrollHeight), 900);
+      const cs = stage ? getComputedStyle(stage) : null;
+      const padY = cs
+        ? parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom)
+        : 0;
+      const h = Math.min(
+        Math.ceil(el.scrollHeight + (Number.isFinite(padY) ? padY : 0)),
+        900,
+      );
       if (Math.abs(h - lastValue) <= HEIGHT_EPS) {
         return;
       }
@@ -2050,6 +2064,7 @@ const Bar = () => {
       data-pos={growDir === 'up' ? 'bottom' : 'top'}
       data-dir={growDir}>
       <div
+        ref={cardRef}
         className={cn(
           'group/bar glass-surface relative flex w-full flex-none select-none',
           cardOpen

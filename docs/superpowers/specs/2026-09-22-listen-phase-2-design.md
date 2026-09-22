@@ -209,7 +209,7 @@ Commands (webview → Rust):
 | `listen_start` | Gate=`Main`; resolves STT provider, requests mic, starts capture + sessions. Returns `listen_status` payload. |
 | `listen_stop` | Stops everything, ends the `listen` session. |
 | `listen_status` | `{state, provider, session_id, turns}` — resync for a reopened card. |
-| `whisper_status` | `{binary: path | null, models: [ggml-*.bin…]}` — prefs + fallback hints. |
+| `whisper_status` | `{binary: path \| null, models: [ggml-*.bin…]}` — prefs + fallback hints. |
 | ~~`listen_stub`~~ | Removed. |
 
 `config_set` gains writable `models.stt_provider` (`"deepgram"|"whisper"`)
@@ -220,7 +220,7 @@ Events (Rust → `bar` window):
 
 | Event | Payload |
 | --- | --- |
-| `listen:state` | `{state: "listening" | "idle" | "error", provider, mic: bool}` |
+| `listen:state` | `{state: "listening" \| "idle" \| "error", provider, mic: bool}` |
 | `listen:turn` | `{speaker, text, final, ts}` — `final:false` = interim repaint |
 | `listen:summary` | `{tldr, bullets[], follow_ups[], topic}` |
 | `listen:error` | `{message}` — also folds `state:"error"` into `listen:state` |

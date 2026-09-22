@@ -1,12 +1,10 @@
-//! Pure layout math for the bar + feature panels — no Tauri calls, all
-//! logical pixels. Unit-tested exhaustively.
+//! Pure layout math for the bar window (pill ⇄ card) — no Tauri calls,
+//! all logical pixels. Unit-tested exhaustively.
 
-use std::collections::{BTreeMap, BTreeSet};
+use super::{Dir, Rect};
 
-use super::{Dir, Panel, Rect};
-
-/// Vertical gap between the bar's bottom edge and the panel row, and the
-/// horizontal gap between adjacent panels.
+/// Vertical gap between the bar's (or expanded card's) bottom edge and
+/// the alert toast.
 pub const PANEL_PAD: f64 = 8.0;
 /// Margin kept between the bar and a work-area edge on `snap_edge`.
 pub const EDGE_MARGIN: f64 = 12.0;
@@ -82,53 +80,6 @@ pub fn derive_pill_rect(card: Rect, pill_w: f64, pill_h: f64, dir: Dir) -> Rect 
     }
 }
 
-/// Rects for every panel in `visible`, stacked under `bar`.
-///
-/// Rules (spec):
-/// - `ask` 600w centered under the bar (`y = bar.bottom + 8`).
-/// - `listen` 400w to the LEFT of `ask` when both are visible (8 px gap),
-///   else centered under the bar.
-///
-/// Settings is no longer a panel — it lives in the decorated `prefs`
-/// window, which the pool positions independently.
-///
-/// Heights are each panel's [`Panel::default_height`]; `WindowPool` overrides
-/// them with stored content heights when applying the layout.
-pub fn panel_rects(bar: Rect, visible: &BTreeSet<Panel>) -> BTreeMap<Panel, Rect> {
-    let mut out = BTreeMap::new();
-    let y = bar.bottom() + PANEL_PAD;
-
-    if visible.contains(&Panel::Ask) {
-        out.insert(
-            Panel::Ask,
-            Rect {
-                x: bar.center_x() - Panel::Ask.width() / 2.0,
-                y,
-                w: Panel::Ask.width(),
-                h: Panel::Ask.default_height(),
-            },
-        );
-    }
-
-    if visible.contains(&Panel::Listen) {
-        let x = match out.get(&Panel::Ask) {
-            Some(ask) => ask.x - Panel::Listen.width() - PANEL_PAD,
-            None => bar.center_x() - Panel::Listen.width() / 2.0,
-        };
-        out.insert(
-            Panel::Listen,
-            Rect {
-                x,
-                y,
-                w: Panel::Listen.width(),
-                h: Panel::Listen.default_height(),
-            },
-        );
-    }
-
-    out
-}
-
 /// Keep `rect`'s position inside `work`. Position-only clamp — a rect larger
 /// than the work area keeps its top-left edge inside and overflows.
 pub fn clamp_to_work_area(rect: Rect, work: Rect) -> Rect {
@@ -180,49 +131,6 @@ mod tests {
         w: 480.0,
         h: 64.0,
     };
-
-    fn vis(panels: &[Panel]) -> BTreeSet<Panel> {
-        panels.iter().copied().collect()
-    }
-
-    #[test]
-    fn ask_is_centered_under_bar() {
-        let rects = panel_rects(BAR, &vis(&[Panel::Ask]));
-        let ask = rects[&Panel::Ask];
-        assert_eq!(ask.w, 600.0);
-        assert_eq!(ask.y, BAR.bottom() + 8.0);
-        assert_eq!(ask.center_x(), BAR.center_x());
-    }
-
-    #[test]
-    fn listen_offsets_left_of_ask_when_both_visible() {
-        let rects = panel_rects(BAR, &vis(&[Panel::Ask, Panel::Listen]));
-        let ask = rects[&Panel::Ask];
-        let listen = rects[&Panel::Listen];
-        assert_eq!(listen.w, 400.0);
-        assert_eq!(listen.right() + 8.0, ask.x);
-        assert_eq!(listen.y, ask.y);
-    }
-
-    #[test]
-    fn listen_is_centered_when_ask_hidden() {
-        let rects = panel_rects(BAR, &vis(&[Panel::Listen]));
-        let listen = rects[&Panel::Listen];
-        assert_eq!(listen.center_x(), BAR.center_x());
-        assert_eq!(listen.y, BAR.bottom() + 8.0);
-    }
-
-    #[test]
-    fn both_visible_do_not_overlap() {
-        let rects = panel_rects(BAR, &vis(&[Panel::Ask, Panel::Listen]));
-        assert_eq!(rects.len(), 2);
-        let v: Vec<Rect> = rects.values().copied().collect();
-        for i in 0..v.len() {
-            for j in (i + 1)..v.len() {
-                assert!(!v[i].intersects(&v[j]), "rects {i} and {j} overlap: {v:?}");
-            }
-        }
-    }
 
     #[test]
     fn snap_right_lands_twelve_px_from_edge() {

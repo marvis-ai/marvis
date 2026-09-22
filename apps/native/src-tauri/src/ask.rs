@@ -1,6 +1,6 @@
 //! `ask` — question + latest screen frame → streaming LLM → persisted.
 //!
-//! Pipeline (spec §Ask): [`AskService::send`] shows the ask panel,
+//! Pipeline (spec §Ask): [`AskService::send`] expands the card,
 //! resolves the FAILOVER CHAIN (`providers.order` minus disabled/unusable
 //! — see `provider_candidates` in lib.rs), grabs the newest
 //! [`RingBuffer`] frame (`None` → text-only), then tries each candidate
@@ -16,15 +16,15 @@
 //! (per attempt); [`AskService::close`] aborts any in-flight stream via
 //! a [`CancellationToken`].
 //!
-//! Event protocol (emitted to the `ask` window via `app.emit_to`):
+//! Event protocol (emitted to the `bar` window via `app.emit_to`):
 //! - `ask:state` `{"state": "loading"|"streaming"|"idle"}` — `streaming`
 //!   fires on each attempt's FIRST token; every `loading` carries
-//!   `"question"` so the panel resets its buffer + header per run AND
+//!   `"question"` so the card resets its buffer + header per run AND
 //!   per failover retry (pre-flight errors emit `loading` → `error` →
 //!   `idle` too).
 //! - `ask:chunk` `{"text": token}` per token.
 //! - `ask:done` `{"full": full_reply, "provider": id, "model": id}` on
-//!   success — the pair that actually answered, for the panel's chip.
+//!   success — the pair that actually answered, for the card's chip.
 //! - `ask:error` `{"message": ..., "needs_setup": bool?}` on failure —
 //!   `needs_setup` when the chain was empty (no usable provider at all).
 //!
@@ -56,7 +56,7 @@ use crate::keystore::Keystore;
 use crate::llm::{ChatMessage, LlmError, Provider, Role};
 use crate::prompts::system_prompt;
 use crate::storage::Db;
-use crate::windows::{Panel, WindowPool};
+use crate::windows::{BAR_LABEL, WindowPool};
 use crate::ProviderCandidate;
 
 /// Event names — part of the webview contract; change together with
@@ -148,15 +148,15 @@ impl AskService {
 
     /// `ask_close`: cancel the in-flight stream (its `select!` arm emits
     /// the final `ask:state{idle}`), mint a fresh token for the next run,
-    /// reset state, hide the panel. Emits nothing itself.
+    /// reset state, collapse the card. Emits nothing itself.
     ///
     /// Order matters: replace the token BEFORE flipping state to Idle —
     /// a `send` gated on `Idle` must never clone the cancelled token.
-    pub fn close(&self, pool: &Mutex<WindowPool>) {
+    pub fn close(&self, app: &AppHandle, pool: &Mutex<WindowPool>) {
         self.cancel.lock().cancel();
         *self.cancel.lock() = CancellationToken::new();
         *self.state.lock() = AskState::Idle;
-        pool.lock().hide(Panel::Ask);
+        pool.lock().set_chat_open(app, false);
     }
 
     /// Shared pre-flight + spawn behind `send`/`send_screen_only`.
@@ -175,12 +175,12 @@ impl AskService {
             self.generation.fetch_add(1, Ordering::SeqCst) + 1
         };
         *self.current_question.lock() = text.to_string();
-        // Show first so any pre-flight error still renders in the panel.
-        deps.pool.lock().show(Panel::Ask);
+        // Expand first so any pre-flight error still renders in the card.
+        deps.pool.lock().set_chat_open(app, true);
 
         // The failover chain: `providers.order` minus disabled/unusable.
         // An empty chain is the "no usable provider" error — nothing to
-        // fall back TO, so the panel links straight to settings. The
+        // fall back TO, so the card links straight to settings. The
         // screen reader (`[vision]`) resolves under the same lock.
         let (candidates, vision) = {
             let cfg = deps.config.lock();
@@ -250,7 +250,7 @@ impl AskService {
                     }
                 }
                 svc.observe(name, &payload);
-                let _ = app.emit_to("ask", name, payload);
+                let _ = app.emit_to(BAR_LABEL, name, payload);
             };
             let _ = send_chain(
                 candidates,
@@ -269,17 +269,17 @@ impl AskService {
     /// the busy check already flipped state to Loading — emit the same
     /// `ask:state{loading}` → `ask:error` → `ask:state{idle}` sequence
     /// `send_with`'s failure path uses (the `loading` carries the
-    /// question so the panel's run-reset/header work here too), then
+    /// question so the card's run-reset/header work here too), then
     /// reset Rust-side state to match.
     fn pre_spawn_error(&self, app: &AppHandle, text: &str, payload: serde_json::Value) {
         let _ = app.emit_to(
-            "ask",
+            BAR_LABEL,
             EV_STATE,
             json!({"state": "loading", "question": text}),
         );
-        let _ = app.emit_to("ask", EV_ERROR, payload);
+        let _ = app.emit_to(BAR_LABEL, EV_ERROR, payload);
         *self.state.lock() = AskState::Idle;
-        let _ = app.emit_to("ask", EV_STATE, json!({"state": "idle"}));
+        let _ = app.emit_to(BAR_LABEL, EV_STATE, json!({"state": "idle"}));
     }
 
     /// Fold one outgoing event into Rust-side state: `ask:state` is
@@ -311,7 +311,7 @@ impl Default for AskService {
 /// 3. Each [`ProviderCandidate`] streams via [`stream_candidate`]:
 ///    `Done` → persist assistant + `ask:done{full, provider, model}` +
 ///    `ask:state{idle}`; `Failed` → warn-log, re-emit `loading` (the
-///    panel resets its buffer — a dead provider's partial chunks must
+///    card resets its buffer — a dead provider's partial chunks must
 ///    not bleed into the next attempt), and try the NEXT candidate;
 ///    `Cancelled` → `ask:state{idle}` and stop immediately — the user
 ///    asked to stop, so no failover may start a new request.
@@ -369,7 +369,7 @@ pub(crate) async fn send_chain(
 
     let mut last_err: Option<LlmError> = None;
     for (i, cand) in candidates.iter().enumerate() {
-        // A failover hand-off re-announces `loading` so the panel drops
+        // A failover hand-off re-announces `loading` so the card drops
         // the failed attempt's partial chunks before the next stream.
         if i > 0 {
             emit(EV_STATE, json!({"state": "loading", "question": text}));
@@ -449,7 +449,7 @@ async fn stream_candidate(
 
 /// The screen read: one frame → a text description for the chain to
 /// answer over. Silent — these tokens are intermediate, not the reply,
-/// so they never reach the panel (the `loading` state already covers
+/// so they never reach the card (the `loading` state already covers
 /// the wait). Races the cancel token like `stream_once` does.
 async fn describe_screen(
     provider: &dyn Provider,
@@ -1147,7 +1147,7 @@ mod tests {
         drop(ccalls);
 
         // The reader's tokens are intermediate — only the reply reached
-        // the panel, and `ask:done` names the chain provider that spoke.
+        // the card, and `ask:done` names the chain provider that spoke.
         let got = events.lock().clone();
         assert_eq!(
             got,

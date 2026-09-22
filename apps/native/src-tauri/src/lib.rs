@@ -11,8 +11,8 @@
 //! [`Gate`] = `NeedsPermission` → `Main`. `Main` needs BOTH halves of
 //! first-run readiness: `app.onboarding_done` AND screen-recording
 //! permission — while the wizard runs the gate never reaches `Main`, so
-//! feature panels, capture, and the full hotkey set simply don't exist
-//! yet. [`transition_gate`] recomputes the gate after every mutation that
+//! the card can't open and capture + the full hotkey set simply don't
+//! exist yet. [`transition_gate`] recomputes the gate after every mutation that
 //! can change it (`config_set` on `app.onboarding_done`,
 //! `permissions_request_screen`, and once at startup) and ALWAYS emits
 //! `app:state`.
@@ -61,7 +61,7 @@ use hotkey::RegisteredHotkeys;
 use keystore::Keystore;
 use llm::{make_provider, ProviderKind};
 use storage::{AiMessage, Db, Session};
-use windows::{Panel, WindowPool};
+use windows::WindowPool;
 
 /// Frame ring caps from the spec: 120 frames / 64 MB (~60 s horizon).
 const RING_MAX_FRAMES: usize = 120;
@@ -70,8 +70,8 @@ const RING_MAX_BYTES: usize = 64 * 1024 * 1024;
 /// Local Ollama daemon's model list (same host the adapter streams from).
 const OLLAMA_TAGS_URL: &str = "http://localhost:11434/api/tags";
 
-/// Which UI state the bar may show. Feature panels, the full hotkey set,
-/// and capture exist only in `Main`. (Onboarding isn't a gate state —
+/// Which UI state the bar may show. The card, the full hotkey set, and
+/// capture exist only in `Main`. (Onboarding isn't a gate state —
 /// it's a visibility overlay on top: `onboarding_done` is one of `Main`'s
 /// two preconditions, so the wizard can never share the screen with the
 /// bar's live machinery.)
@@ -81,7 +81,7 @@ pub enum Gate {
     /// permission card covers both (during onboarding the bar is hidden
     /// anyway, so the label never misleads).
     NeedsPermission,
-    /// Fully live: panels, full hotkeys, capture.
+    /// Fully live: card, full hotkeys, capture.
     Main,
 }
 
@@ -143,6 +143,12 @@ impl AppState {
         self.config.lock().app.onboarding_done
     }
 
+    /// The gate read `WindowPool::set_chat_open` needs — opening the
+    /// card is `Main`-only.
+    pub(crate) fn gate_is_main(&self) -> bool {
+        *self.gate.lock() == Gate::Main
+    }
+
     /// The single source of truth for bar visibility. Re-reads
     /// `onboarding_done` and asks the pool to reconcile — the bar floats
     /// only when onboarding is done AND the wizard isn't on screen
@@ -182,9 +188,9 @@ impl AppState {
 
 /// `Main` needs both first-run halves: `app.onboarding_done` AND
 /// `permissions::screen_status()`. While the wizard runs the gate stays
-/// `NeedsPermission`, so `enter_main` (feature panels, capture, full
-/// hotkeys) can't fire underneath it — finishing onboarding re-evaluates
-/// through `config_set` → `transition_gate`.
+/// `NeedsPermission`, so `enter_main` (capture, full hotkeys) can't
+/// fire underneath it — finishing onboarding re-evaluates through
+/// `config_set` → `transition_gate`.
 fn app_gate(state: &AppState) -> Gate {
     let ready = state.config.lock().app.onboarding_done && permissions::screen_status();
     if ready {
@@ -215,14 +221,10 @@ fn transition_gate(app: &AppHandle) {
     let _ = app.emit("app:state", json!({ "gate": new_gate.name() }));
 }
 
-/// `Main` entry: feature panels (created once — the call is idempotent),
-/// full hotkey set, capture. Every step warns and continues — a failed
-/// piece must never wedge the gate.
+/// `Main` entry: full hotkey set + capture. Every step warns and
+/// continues — a failed piece must never wedge the gate.
 fn enter_main(app: &AppHandle) {
     let state = app.state::<AppState>();
-    if let Err(e) = state.pool.lock().create_feature_windows(app) {
-        log::warn!("gate: create_feature_windows failed: {e}");
-    }
     swap_hotkeys(app, true);
     let mut slot = state.capture.lock();
     if slot.is_none() {
@@ -244,14 +246,15 @@ fn enter_main(app: &AppHandle) {
     }
 }
 
-/// `Main` exit (onboarding reset / permission revoked): stop + drop
-/// capture, hide every panel, downgrade hotkeys to the gated limited set.
+/// `Main` exit (onboarding reset / permission revoked): cancel the
+/// in-flight ask and collapse the card, stop + drop capture, hide the
+/// alert toast, downgrade hotkeys to the gated limited set.
 fn leave_main(app: &AppHandle) {
     let state = app.state::<AppState>();
     // Cancel any in-flight ask — an unbounded stream left running would
     // hold `AskState::Streaming` past a leave/re-enter and wedge every
     // future send on the busy-check until it resolves on its own.
-    state.ask.close(&state.pool);
+    state.ask.close(app, &state.pool);
     // Take the capture out and release the lock BEFORE `stop()` — it
     // joins the capture worker, which must not hold `state.capture`
     // while `capture_status` waits on it.
@@ -259,12 +262,7 @@ fn leave_main(app: &AppHandle) {
     if let Some(capture) = capture {
         capture.stop();
     }
-    {
-        let mut pool = state.pool.lock();
-        for panel in Panel::ALL {
-            pool.hide(panel);
-        }
-    }
+    state.pool.lock().hide_alert();
     swap_hotkeys(app, false);
 }
 
@@ -308,10 +306,10 @@ fn hotkey_dispatch(app: &AppHandle) -> impl Fn(hotkey::Action) + Send + Sync + '
     move |action| {
         let state = app.state::<AppState>();
         match action {
-            hotkey::Action::ToggleVisibility => state.pool.lock().toggle_all(),
+            hotkey::Action::ToggleVisibility => state.pool.lock().toggle_chat(&app),
             // `next_step` and `screen_only` fire the screen-only ask.
             // The gate guard mirrors `ask_send_screen_only`'s — during
-            // onboarding (gate != Main) the ask panel doesn't even exist.
+            // onboarding (gate != Main) the card can't open.
             hotkey::Action::NextStep | hotkey::Action::ScreenOnly => {
                 if *state.gate.lock() == Gate::Main {
                     state.ask.send_screen_only(&app, &state.deps());
@@ -372,7 +370,7 @@ fn deeplink_dispatch(app: &AppHandle) -> impl Fn(deeplink::Action) + Send + Sync
 /// `app.exit(0)`.
 fn tray_menu_dispatch() -> impl Fn(&AppHandle, tauri::menu::MenuEvent) + Send + Sync + 'static {
     move |app, event| match event.id().as_ref() {
-        tray::MENU_TOGGLE => app.state::<AppState>().pool.lock().toggle_all(),
+        tray::MENU_TOGGLE => app.state::<AppState>().pool.lock().toggle_chat(app),
         tray::MENU_SETTINGS => show_settings(app),
         tray::MENU_QUIT => app.exit(0),
         _ => {}
@@ -544,7 +542,7 @@ fn window_pref_value(value: &serde_json::Value) -> Result<Option<f64>, String> {
 /// Write the bar's live rect into `window.bar_x/bar_y` — "remembered
 /// position" with no settings row. Called from the bar's debounced
 /// `Moved` hook (windows/mod.rs `BAR_MOVE_GEN`), so it fires once per
-/// drag/snap/restack settle, not per pixel. Broadcasts `config:changed`
+/// drag/snap/morph settle, not per pixel. Broadcasts `config:changed`
 /// like any other write.
 pub(crate) fn persist_bar_position(app: &AppHandle) {
     let state = app.state::<AppState>();
@@ -798,7 +796,7 @@ async fn model_list_available(app: AppHandle, provider: String) -> Vec<String> {
 // ---------------------------------------------------------------------------
 
 /// Fire an ask; returns after synchronous pre-flight — tokens stream to
-/// the `ask` window as `ask:*` events on a spawned task.
+/// the `bar` window as `ask:*` events on a spawned task.
 #[tauri::command]
 fn ask_send(app: AppHandle, text: String) {
     let state = app.state::<AppState>();
@@ -812,10 +810,11 @@ fn ask_send(app: AppHandle, text: String) {
     state.ask.send(&app, &state.deps(), &text);
 }
 
-/// Cancel the in-flight stream and hide the ask panel.
+/// Cancel the in-flight stream and collapse the card.
 #[tauri::command]
-fn ask_close(state: State<'_, AppState>) {
-    state.ask.close(&state.pool);
+fn ask_close(app: AppHandle) {
+    let state = app.state::<AppState>();
+    state.ask.close(&app, &state.pool);
 }
 
 /// The bar's camera affordance — same screen-only ask as `Cmd+Shift+S`
@@ -841,10 +840,22 @@ fn listen_stub() -> &'static str {
 // Commands — windows
 // ---------------------------------------------------------------------------
 
-/// `Cmd+/` behaviour as a command: hide all panels / restore the set.
+/// `Cmd+/` behaviour as a command: collapse/expand the unified card.
 #[tauri::command]
-fn window_toggle_all(state: State<'_, AppState>) {
-    state.pool.lock().toggle_all();
+fn window_toggle_all(app: AppHandle) {
+    app.state::<AppState>().pool.lock().toggle_chat(&app);
+}
+
+/// Direct card open/close — the mic button's listen mode and the
+/// `capture:permission-needed` collapse use it (toggle semantics would
+/// close an open card when the user only wants to switch modes, and
+/// `ask_close` would cancel an in-flight text-only ask).
+#[tauri::command]
+fn window_set_chat_open(app: AppHandle, open: bool) {
+    app.state::<AppState>()
+        .pool
+        .lock()
+        .set_chat_open(&app, open);
 }
 
 /// Same entry point as `Cmd+,` and the tray's Settings item.
@@ -907,11 +918,12 @@ fn alert_dismiss(state: State<'_, AppState>) {
     state.pool.lock().hide_alert();
 }
 
-/// `name` is the window label (`"ask"|"listen"`); `height` is
-/// the requested content height in px — the pool clamps and animates.
+/// `height` is the desired TOTAL window height (the frontend measures
+/// the whole card) — the pool clamps and animates, anchored edge fixed.
+/// Expanded-only.
 #[tauri::command]
-fn window_adjust_height(state: State<'_, AppState>, name: String, height: f64) {
-    state.pool.lock().adjust_height(&name, height);
+fn window_adjust_height(state: State<'_, AppState>, height: f64) {
+    state.pool.lock().adjust_height(height);
 }
 
 /// The webview's pill⇄input morph signal — under liquid glass the
@@ -1055,8 +1067,8 @@ fn config_get(state: State<'_, AppState>) -> Config {
 /// re-render (appearance flips, provider lists, the bar's drag hint).
 ///
 /// `app.onboarding_done` is the wizard's completion write: `true` ends
-/// onboarding → `transition_gate` can now reach `Main` (panels, capture,
-/// full hotkeys) and the bar appears; `false` (a re-run) reverses it.
+/// onboarding → `transition_gate` can now reach `Main` (capture, full
+/// hotkeys, the card) and the bar appears; `false` (a re-run) reverses it.
 #[tauri::command]
 fn config_set(app: AppHandle, key: String, value: serde_json::Value) -> Result<Config, String> {
     let state = app.state::<AppState>();
@@ -1160,7 +1172,7 @@ fn config_set(app: AppHandle, key: String, value: serde_json::Value) -> Result<C
         swap_hotkeys(&app, all);
     }
     if onboarding_changed {
-        // Gate first: `enter_main` builds the panels/capture while the
+        // Gate first: `enter_main` starts capture while the
         // wizard is still the visible window; then the bar un-hides.
         transition_gate(&app);
         state.sync_bar_visibility();
@@ -1221,8 +1233,8 @@ pub fn run() {
             // Plaintext `keys.json` — loads eagerly; a missing/corrupt
             // file is just an empty store, never a gate.
             let keystore = Keystore::new();
-            // Bar only — feature panels are created when the gate opens.
-            // The bar itself stays hidden until onboarding is done.
+            // Bar only — it hosts the chat/listen card modes itself; the
+            // bar stays hidden until onboarding is done.
             let pool = WindowPool::create_bar_only(handle, onboarding_done)?;
             app.manage(AppState {
                 keystore: Mutex::new(keystore),
@@ -1254,7 +1266,7 @@ pub fn run() {
             }
             // Computes the gate, enters `Main` if it's already open, and
             // emits `app:state` either way. Onboarding blocks `Main`, so
-            // a first run can never light panels/capture/hotkeys here.
+            // a first run can never light capture/hotkeys here.
             transition_gate(handle);
             // First run (or any install that predates onboarding_done):
             // the wizard takes the decorated prefs window — alone; the
@@ -1287,6 +1299,7 @@ pub fn run() {
             alert_current,
             alert_dismiss,
             window_toggle_all,
+            window_set_chat_open,
             window_show_settings,
             window_show_onboarding,
             window_hide_prefs,

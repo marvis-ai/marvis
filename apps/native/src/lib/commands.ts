@@ -191,6 +191,16 @@ export const askSendScreenOnly = () => invoke<void>('ask_send_screen_only');
 
 export const askClose = () => invoke<void>('ask_close');
 
+/** `ask_current` return — the in-flight run's resync payload. */
+export interface AskCurrent {
+  state: 'idle' | 'loading' | 'streaming';
+  question: string;
+  response: string;
+}
+
+/** The live ask tail — a re-expanded chat resyncs from this. */
+export const askCurrent = () => invoke<AskCurrent>('ask_current');
+
 // ---------------------------------------------------------------------------
 // windows
 // ---------------------------------------------------------------------------
@@ -241,9 +251,16 @@ export const windowRecenter = () => invoke<void>('window_recenter');
 /** Nearest work-area edge of the live bar — the picker's current value. */
 export const windowBarEdge = () => invoke<string>('window_bar_edge');
 
-/** Panels only — `name` is `'ask' | 'listen'`, never `'bar'`/`'prefs'`. */
-export const windowAdjustHeight = (name: string, height: number) =>
-  invoke<void>('window_adjust_height', { name, height });
+/** Reports the whole card's desired TOTAL window height — expanded
+ * mode only; the backend clamps [104, min(900, free space)]. */
+export const windowAdjustHeight = (height: number) =>
+  invoke<void>('window_adjust_height', { height });
+
+/** Direct card open/close — the mic button's listen mode and the
+ * permission-needed collapse use it (toggle would close an open card
+ * when the user only wants to switch modes). */
+export const windowSetChatOpen = (open: boolean) =>
+  invoke<void>('window_set_chat_open', { open });
 
 /** The pill⇄input morph resizes the window itself (the capsule IS the
  * window under liquid glass) — report `expanded` so Rust can animate
@@ -287,6 +304,10 @@ export const sessionGet = (id: number) =>
 
 export const sessionDelete = (id: number) =>
   invoke<void>('session_delete', { id });
+
+/** End the active session of `kind` — ChatSection's "New chat". */
+export const sessionEndActive = (kind: string) =>
+  invoke<boolean>('session_end_active', { kind });
 
 // ---------------------------------------------------------------------------
 // config / app

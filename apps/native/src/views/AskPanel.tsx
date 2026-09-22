@@ -115,7 +115,7 @@ const AskPanel = () => {
       if (wait <= 0) {
         lastValue = h;
         lastSentAt = Date.now();
-        void windowAdjustHeight('ask', h).catch(() => {});
+        void windowAdjustHeight(h).catch(() => {});
       } else if (timer === undefined) {
         timer = window.setTimeout(() => {
           timer = undefined;

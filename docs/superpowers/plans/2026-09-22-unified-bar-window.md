@@ -109,16 +109,28 @@ Append to `mod tests` in `layout.rs` (the existing `WORK` const is reused; `PILL
 
     #[test]
     fn expanded_rect_grow_up_anchors_bottom() {
+        // PILL.bottom()=97, WORK.y=25 → free above is 72 < the 104 floor,
+        // so h floors at 104 and the anchored bottom edge still holds
+        // (y = 97−104 = −7: the floor case may overflow the far edge —
+        // spec fixes the anchor, not the far edge).
         let r = expanded_rect(PILL, Dir::Up, 200.0, WORK);
         assert_eq!(r.bottom(), PILL.bottom());
-        assert_eq!(r.y, PILL.bottom() - (PILL.h + 200.0));
+        assert_eq!(r.h, PILL.h + MIN_CHAT_H);
+        assert_eq!(r.y, PILL.bottom() - (PILL.h + MIN_CHAT_H));
         assert_eq!(r.center_x(), PILL.center_x());
     }
 
     #[test]
     fn expanded_rect_clamps_height_to_900_and_free_space() {
-        let r = expanded_rect(PILL, Dir::Down, 5000.0, WORK);
+        // A work area tall enough that the 900 ceiling actually binds
+        // (WORK's 875 height caps free space at 867 first).
+        let tall = Rect { x: 0.0, y: 0.0, w: 1440.0, h: 1200.0 };
+        let pill = Rect { y: 33.0, ..PILL };
+        let r = expanded_rect(pill, Dir::Down, 5000.0, tall);
         assert_eq!(r.h, 900.0);
+        // Inside WORK, free space below the pill caps first: 900−33=867.
+        let r = expanded_rect(PILL, Dir::Down, 5000.0, WORK);
+        assert_eq!(r.h, WORK.bottom() - PILL.y);
         // Bar near the work bottom growing down: free space caps below 900.
         let low = Rect {
             y: WORK.bottom() - 300.0,
@@ -220,15 +232,15 @@ pub fn expanded_rect(bar: Rect, dir: Dir, chat_h: f64, work: Rect) -> Rect {
     } else {
         bar.y
     };
-    clamp_to_work_area(
-        Rect {
-            x: bar.center_x() - EXPANDED_W / 2.0,
-            y,
-            w: EXPANDED_W,
-            h,
-        },
-        work,
-    )
+    // Only the recentered x clamps inside `work` — a y-position clamp
+    // would move the anchored edge (breaking `derive_pill_rect`'s
+    // round-trip) whenever the floor height overflows the far edge.
+    let x = if EXPANDED_W >= work.w {
+        work.x
+    } else {
+        (bar.center_x() - EXPANDED_W / 2.0).clamp(work.x, work.right() - EXPANDED_W)
+    };
+    Rect { x, y, w: EXPANDED_W, h }
 }
 
 /// The pill rect implied by the live expanded window — the inverse of

@@ -234,6 +234,12 @@ export const windowBarEdge = () => invoke<string>('window_bar_edge');
 export const windowAdjustHeight = (name: string, height: number) =>
   invoke<void>('window_adjust_height', { name, height });
 
+/** The pill⇄input morph resizes the window itself (the capsule IS the
+ * window under liquid glass) — report `expanded` so Rust can animate
+ * the idle 112 ⇄ expanded 480 width change. */
+export const windowSetBarExpanded = (expanded: boolean) =>
+  invoke<void>('window_set_bar_expanded', { expanded });
+
 /** `'glass' | 'vibrancy' | 'none'` — whether a native material backs the
  * window; CSS strips its fake frost when one does. */
 export const surfaceMaterial = () =>

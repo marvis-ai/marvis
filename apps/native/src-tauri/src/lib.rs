@@ -393,9 +393,9 @@ fn keystore_status_payload(keystore: &Keystore) -> serde_json::Value {
 
 /// Raise the alert toast with `message`.
 ///
-/// The toast is a window of its own because the bar is a fixed 480×64
-/// pill — the old inline error row squeezed the pill's content. It is
-/// purely informational and auto-dismisses.
+/// The toast is a window of its own because the bar is a fixed-height
+/// capsule (112⇄480 wide) — the old inline error row squeezed the
+/// pill's content. It is purely informational and auto-dismisses.
 fn show_alert(app: &AppHandle, message: &str) {
     let state = app.state::<AppState>();
     let payload = json!({ "message": message });
@@ -520,7 +520,10 @@ fn window_pref_value(value: &serde_json::Value) -> Result<Option<f64>, String> {
 /// like any other write.
 pub(crate) fn persist_bar_position(app: &AppHandle) {
     let state = app.state::<AppState>();
-    let rect = state.pool.lock().current_bar_rect();
+    // The idle capsule rect, not the live one: a drag while the bar is
+    // expanded (480) must persist the capsule's anchor, else relaunch
+    // shifts the capsule left by half the expansion.
+    let rect = state.pool.lock().idle_bar_rect();
     let updated = {
         let mut cfg = state.config.lock();
         if cfg.window.bar_x == Some(rect.x) && cfg.window.bar_y == Some(rect.y) {
@@ -888,6 +891,14 @@ fn window_adjust_height(state: State<'_, AppState>, name: String, height: f64) {
     state.pool.lock().adjust_height(&name, height);
 }
 
+/// The webview's pill⇄input morph signal — under liquid glass the
+/// capsule IS the window, so the window resizes to match (idle 112,
+/// expanded 480, same 64 height and capsule radius).
+#[tauri::command]
+fn window_set_bar_expanded(state: State<'_, AppState>, expanded: bool) {
+    state.pool.lock().set_bar_expanded(expanded);
+}
+
 /// Settings → Bar picker: `edge` is `"top"|"bottom"|"left"|"right"`.
 /// Snaps (animated) the bar to that work-area edge; the resulting `Moved`
 /// event persists `window.bar_x/y` through the debounced write.
@@ -1235,6 +1246,7 @@ pub fn run() {
             window_snap_edge,
             window_recenter,
             window_bar_edge,
+            window_set_bar_expanded,
             permissions_status,
             permissions_request_screen,
             permissions_request_mic,

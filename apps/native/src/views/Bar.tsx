@@ -1,15 +1,16 @@
 /**
- * The 480×64 always-on-top bar (`?view=bar`). The window is transparent,
- * frameless and non-resizable — the capsule IS the window, so every
- * state renders inside the same full-size pill; `window_adjust_height`
- * is panel-only (windows/mod.rs).
+ * The always-on-top bar (`?view=bar`) — a 64px-tall transparent,
+ * frameless window whose width morphs: 112 idle, 480 expanded. The
+ * capsule IS the window (liquid glass fills the frame), so the morph
+ * is a real window resize — `expanded` reports to
+ * `window_set_bar_expanded` and Rust animates/recenter/clamps.
  *
- * The pill swaps content, not size (DESIGN.md §6): at rest it's the
- * centered icon row — iris + camera + mic + settings — and clicking the
- * iris or typing swaps in the input row (iris morphs to a back arrow,
- * the field unfolds); gate states replace the row entirely. All states
- * share one DOM tree so the swap is a class-driven transition, never a
- * remount.
+ * Content swaps inside it (DESIGN.md §6): at rest it's the centered
+ * 3-icon row — iris + camera + mic — and clicking the iris or typing
+ * swaps in the input row (iris morphs to a back arrow, the field
+ * unfolds, the settings gear appears); gate states replace the row
+ * entirely. All states share one DOM tree so the swap is a
+ * class-driven transition, never a remount.
  *
  * The bar is only visible once onboarding has completed — while the
  * wizard is up, the backend keeps this window hidden (windows/mod.rs
@@ -41,6 +42,7 @@ import {
   permissionsOpenPrefs,
   permissionsRequestScreen,
   permissionsStatus,
+  windowSetBarExpanded,
   windowShowSettings,
   type AppStatePayload,
   type Gate,
@@ -121,6 +123,13 @@ const Bar = () => {
   useTauriEvent<{ permission: string }>(EV_CAPTURE_PERMISSION_NEEDED, () =>
     setGate('needs_permission'),
   );
+
+  // The capsule IS the window under liquid glass, so the morph resizes
+  // it: idle rests at 112 (the 3-icon row), expanded grows to 480 —
+  // recentred on center-x by the backend.
+  useEffect(() => {
+    void windowSetBarExpanded(expanded).catch(() => {});
+  }, [expanded]);
 
   // Focus the field whenever the pill opens.
   useEffect(() => {
@@ -286,15 +295,20 @@ const Bar = () => {
           disabled>
           <MicIcon className='size-4' />
         </button>
-        <button
-          type='button'
-          className={ICON_BTN}
-          aria-label='Settings'
-          title='Settings (⌘,)'
-          disabled={gate !== 'main'}
-          onClick={() => void windowShowSettings().catch(() => {})}>
-          <SettingsIcon className='size-4' />
-        </button>
+        {/* Only rendered in the input bar — the 112px idle capsule has
+            no room for a fourth control (tray menu + Cmd+, reach it
+            anyway). */}
+        {expanded && (
+          <button
+            type='button'
+            className={ICON_BTN}
+            aria-label='Settings'
+            title='Settings (⌘,)'
+            disabled={gate !== 'main'}
+            onClick={() => void windowShowSettings().catch(() => {})}>
+            <SettingsIcon className='size-4' />
+          </button>
+        )}
       </form>
     );
   };

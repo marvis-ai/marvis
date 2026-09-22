@@ -125,6 +125,10 @@ pub enum Dir {
     Down,
 }
 
+/// The bar window's two widths: the capsule IS the window under liquid
+/// glass, so idle rests at BAR_IDLE_W (the 3-icon row) and any expanded
+/// content — input row, gate cards — uses BAR_W. Height never changes.
+const BAR_IDLE_W: f64 = 112.0;
 const BAR_W: f64 = 480.0;
 const BAR_H: f64 = 64.0;
 /// The preferences window — a normal decorated macOS window (native
@@ -209,7 +213,7 @@ impl WindowPool {
             bar_rect: DEFAULT_WORK,
             heights: BTreeMap::new(),
         };
-        let bar = build_window(app, "bar", BAR_W, BAR_H, BAR_H / 2.0)?;
+        let bar = build_window(app, "bar", BAR_IDLE_W, BAR_H, BAR_H / 2.0)?;
         {
             // Persist the resting place on every move — user drags via
             // `data-tauri-drag-region`, edge snaps, and reclamps alike.
@@ -517,11 +521,37 @@ impl WindowPool {
     pub fn recenter_bar(&mut self) {
         let work = self.primary_work_area();
         self.bar_rect = Rect {
-            x: work.center_x() - BAR_W / 2.0,
+            x: work.center_x() - BAR_IDLE_W / 2.0,
             y: work.y + BAR_TOP_OFFSET,
-            w: BAR_W,
+            w: BAR_IDLE_W,
             h: BAR_H,
         };
+        if let Some(bar) = &self.bar {
+            movement::animate(bar, self.bar_rect, ANIM_DUR);
+        }
+        self.restack();
+    }
+
+    /// `window_set_bar_expanded(bool)` — the webview reports its
+    /// pill⇄input morph so the window can match it: under liquid glass
+    /// the capsule IS the window, so idle rests at `BAR_IDLE_W` and any
+    /// expanded content (input row, gate cards) needs `BAR_W`. Width
+    /// changes recenter on center-x — the capsule blooms symmetrically —
+    /// then re-clamp inside the work area.
+    pub fn set_bar_expanded(&mut self, expanded: bool) {
+        self.refresh_bar_rect();
+        let w = if expanded { BAR_W } else { BAR_IDLE_W };
+        if (self.bar_rect.w - w).abs() < f64::EPSILON {
+            return;
+        }
+        self.bar_rect = clamp_to_work_area(
+            Rect {
+                x: self.bar_rect.center_x() - w / 2.0,
+                w,
+                ..self.bar_rect
+            },
+            self.bar_work_area(),
+        );
         if let Some(bar) = &self.bar {
             movement::animate(bar, self.bar_rect, ANIM_DUR);
         }
@@ -565,15 +595,15 @@ impl WindowPool {
             (Some(x), Some(y)) => Rect {
                 x,
                 y,
-                w: BAR_W,
+                w: BAR_IDLE_W,
                 h: BAR_H,
             },
             _ => {
                 let work = self.primary_work_area();
                 Rect {
-                    x: work.center_x() - BAR_W / 2.0,
+                    x: work.center_x() - BAR_IDLE_W / 2.0,
                     y: work.y + BAR_TOP_OFFSET,
-                    w: BAR_W,
+                    w: BAR_IDLE_W,
                     h: BAR_H,
                 }
             }
@@ -700,12 +730,17 @@ impl WindowPool {
         }
     }
 
-    /// The bar rect with the OS as the source of truth: refresh first,
-    /// then return. The `Moved` debounce writer and `window_bar_edge`
-    /// both read through here so a just-finished drag is never stale.
-    pub(crate) fn current_bar_rect(&mut self) -> Rect {
+    /// The resting capsule rect — what `persist_bar_position` writes.
+    /// Expansion recenters on center-x, so the persisted anchor is always
+    /// the idle capsule: a drag on the expanded bar must not shift where
+    /// the capsule reappears next launch.
+    pub(crate) fn idle_bar_rect(&mut self) -> Rect {
         self.refresh_bar_rect();
-        self.bar_rect
+        Rect {
+            x: self.bar_rect.x + (self.bar_rect.w - BAR_IDLE_W) / 2.0,
+            w: BAR_IDLE_W,
+            ..self.bar_rect
+        }
     }
 }
 

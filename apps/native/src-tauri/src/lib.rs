@@ -52,6 +52,7 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 use serde_json::json;
 use tauri::{AppHandle, Emitter, Manager, State};
+use tauri_plugin_liquid_glass::LiquidGlassExt;
 
 use ask::AskService;
 use capture::{FrameSource, MacosCapture, RingBuffer};
@@ -1109,6 +1110,27 @@ fn config_set(app: AppHandle, key: String, value: serde_json::Value) -> Result<C
     Ok(updated)
 }
 
+/// `"glass" | "vibrancy" | "none"` — which native material backs the
+/// overlay windows. macOS 26+ reports glass; older macOS gets the
+/// plugin's NSVisualEffectView fallback; other OSes get none (the
+/// webview keeps its CSS frost).
+#[tauri::command]
+fn surface_material(app: AppHandle) -> &'static str {
+    #[cfg(target_os = "macos")]
+    {
+        if app.liquid_glass().is_supported() {
+            "glass"
+        } else {
+            "vibrancy"
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = app;
+        "none"
+    }
+}
+
 #[tauri::command]
 fn quit_application(app: AppHandle) {
     app.exit(0);
@@ -1128,6 +1150,7 @@ pub fn run() {
         // Required before `app.global_shortcut()` (hotkey registration).
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_liquid_glass::init())
         .setup(|app| {
             let handle = app.handle();
             // `~/.marvis` must exist before Db/keystore touch it.
@@ -1222,6 +1245,7 @@ pub fn run() {
             session_delete,
             config_get,
             config_set,
+            surface_material,
             quit_application,
         ])
         .run(tauri::generate_context!())

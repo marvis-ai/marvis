@@ -17,6 +17,8 @@ use tauri::{
     WebviewWindowBuilder,
 };
 
+use tauri_plugin_liquid_glass::{LiquidGlassConfig, LiquidGlassExt};
+
 use layout::{clamp_to_work_area, panel_rects};
 
 /// A rectangle in logical pixels.
@@ -102,6 +104,14 @@ impl Panel {
             Panel::Ask | Panel::Listen => 480.0,
         }
     }
+
+    /// Glass corner radius matching the panel's CSS card radius.
+    fn corner_radius(self) -> f64 {
+        match self {
+            Panel::Ask => 18.0,
+            Panel::Listen => 16.0,
+        }
+    }
 }
 
 /// Cardinal direction — the bar's edge-snap target (Settings → Bar
@@ -115,8 +125,8 @@ pub enum Dir {
     Down,
 }
 
-const BAR_W: f64 = 441.0;
-const BAR_H: f64 = 59.0;
+const BAR_W: f64 = 480.0;
+const BAR_H: f64 = 64.0;
 /// The preferences window — a normal decorated macOS window (native
 /// traffic lights, opaque, NOT always-on-top), not an overlay panel.
 /// Label `prefs`, `?view=prefs`; it hosts both the settings sidebar and
@@ -125,7 +135,7 @@ pub const PREFS_LABEL: &str = "prefs";
 const PREFS_W: f64 = 720.0;
 const PREFS_H: f64 = 520.0;
 /// Transient alert toast — its own window because the bar is a fixed
-/// 441×59 pill with no room for an error row (the old inline row
+/// 480×64 pill with no room for an error row (the old inline row
 /// squeezed the pill's content). Label `alert`, `?view=alert`.
 pub const ALERT_LABEL: &str = "alert";
 const ALERT_W: f64 = 340.0;
@@ -199,7 +209,7 @@ impl WindowPool {
             bar_rect: DEFAULT_WORK,
             heights: BTreeMap::new(),
         };
-        let bar = build_window(app, "bar", BAR_W, BAR_H)?;
+        let bar = build_window(app, "bar", BAR_W, BAR_H, BAR_H / 2.0)?;
         {
             // Persist the resting place on every move — user drags via
             // `data-tauri-drag-region`, edge snaps, and reclamps alike.
@@ -224,7 +234,7 @@ impl WindowPool {
         // Built (hidden) up front so its webview is loaded and listening
         // before the first alert — an emit to a still-loading window
         // would be dropped.
-        pool.alert = Some(build_window(app, ALERT_LABEL, ALERT_W, ALERT_H)?);
+        pool.alert = Some(build_window(app, ALERT_LABEL, ALERT_W, ALERT_H, 14.0)?);
         pool.position_bar_at_startup();
         if show_bar {
             if let Some(bar) = &pool.bar {
@@ -278,7 +288,13 @@ impl WindowPool {
             if self.panels.contains_key(&panel) {
                 continue;
             }
-            let win = build_window(app, panel.label(), panel.width(), panel.default_height())?;
+            let win = build_window(
+                app,
+                panel.label(),
+                panel.width(),
+                panel.default_height(),
+                panel.corner_radius(),
+            )?;
             self.panels.insert(panel, win);
         }
         Ok(())
@@ -693,11 +709,18 @@ impl WindowPool {
     }
 }
 
-/// Shared builder flags for every Marvis window (spec): frameless,
+/// Shared builder flags for every Marvis overlay window (spec): frameless,
 /// transparent, always-on-top, non-resizable, skip-taskbar, no shadow —
-/// then `set_visible_on_all_workspaces` and `set_content_protected`.
-/// The frosted look lives in the webview's `backdrop-filter` CSS.
-fn build_window(app: &AppHandle, label: &str, w: f64, h: f64) -> anyhow::Result<WebviewWindow> {
+/// then `set_visible_on_all_workspaces`, `set_content_protected`, and the
+/// liquid-glass material. `corner_radius` matches the surface's CSS radius —
+/// the glass view fills the window, so its shape IS the surface shape.
+fn build_window(
+    app: &AppHandle,
+    label: &str,
+    w: f64,
+    h: f64,
+    corner_radius: f64,
+) -> anyhow::Result<WebviewWindow> {
     let url = WebviewUrl::App(format!("index.html?view={label}").into());
     let win = WebviewWindowBuilder::new(app, label, url)
         .inner_size(w, h)
@@ -715,6 +738,15 @@ fn build_window(app: &AppHandle, label: &str, w: f64, h: f64) -> anyhow::Result<
     // Unconditional per arch rule — no toggle.
     if let Err(e) = win.set_content_protected(true) {
         log::warn!("windows: set_content_protected failed for {label}: {e}");
+    }
+    if let Err(e) = app.liquid_glass().set_effect(
+        &win,
+        LiquidGlassConfig {
+            corner_radius,
+            ..Default::default()
+        },
+    ) {
+        log::warn!("windows: liquid glass failed for {label}: {e}");
     }
     Ok(win)
 }

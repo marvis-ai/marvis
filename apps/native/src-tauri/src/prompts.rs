@@ -10,6 +10,14 @@
 /// string is ours, per the task brief).
 const EMPTY_HISTORY_FALLBACK: &str = "No conversation history available.";
 
+/// The screen reader's prompt (ask.rs `describe_screen`): the configured
+/// vision model turns the frame into text, and the chat chain answers
+/// over that description inside a `<screen>` block instead of seeing the
+/// image itself.
+pub const VISION_PROMPT: &str = "Describe this screenshot in detail — visible apps and windows, \
+     text content, UI state, and anything a user might ask about — so another assistant \
+     can answer questions about the screen without seeing it.";
+
 /// The assembled system prompt template. `{{CONVERSATION_HISTORY}}` is the
 /// placeholder Glass leaves in `outputInstructions` for later substitution.
 const SYSTEM_PROMPT_TEMPLATE: &str = r#"<core_identity>

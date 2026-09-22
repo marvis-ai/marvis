@@ -474,6 +474,34 @@ pub(crate) fn provider_candidates(cfg: &Config, ks: &Keystore) -> Vec<ProviderCa
         .collect()
 }
 
+/// The configured screen reader (`[vision]`): `vision.provider` resolved
+/// the same way as a chain candidate — key where one is required,
+/// `compat.base_url` for a compatible endpoint, a resolvable model from
+/// `vision.models.<id>` or the provider's vision default — but
+/// INDEPENDENT of `providers.order`/`disabled` (a chat-disabled provider
+/// may still read the screen). `None` = off or unusable; the ask then
+/// attaches the frame to the answering provider as before.
+pub(crate) fn vision_candidate(cfg: &Config, ks: &Keystore) -> Option<ProviderCandidate> {
+    let kind = ProviderKind::from_str(&cfg.vision.provider).filter(|k| k.is_vision())?;
+    let api_key = ks.key(kind.as_str());
+    if api_key.is_none() && !kind.key_optional() {
+        return None; // no key — can't read
+    }
+    let base_url = Some(cfg.compat.base_url.clone()).filter(|u| !u.is_empty());
+    if kind == ProviderKind::Compatible && base_url.is_none() {
+        return None; // endpoint never configured
+    }
+    let model = cfg.vision.model_for(kind.as_str());
+    if model.is_empty() {
+        return None; // compatible with no model id typed yet
+    }
+    Some(ProviderCandidate {
+        id: kind.as_str().to_string(),
+        provider: make_provider(kind, api_key, model.clone(), base_url),
+        model,
+    })
+}
+
 /// `GET /api/tags` → model names; any error (daemon down, bad body) maps
 /// to an empty list — the dropdown just shows nothing.
 async fn ollama_models() -> Vec<String> {
@@ -699,11 +727,7 @@ fn providers_reorder(app: AppHandle, order: Vec<String>) -> Result<Config, Strin
 /// slot in `order` and their stored key — they're skipped at ask time
 /// but stay visible (and draggable) in settings.
 #[tauri::command]
-fn provider_set_enabled(
-    app: AppHandle,
-    provider: String,
-    enabled: bool,
-) -> Result<Config, String> {
+fn provider_set_enabled(app: AppHandle, provider: String, enabled: bool) -> Result<Config, String> {
     if ProviderKind::from_str(&provider).is_none() {
         return Err(format!("unknown provider {provider:?}"));
     }
@@ -751,8 +775,7 @@ async fn model_list_available(app: AppHandle, provider: String) -> Vec<String> {
                 .keystore
                 .lock()
                 .key(ProviderKind::OpenRouter.as_str());
-            let live =
-                llm::compat::list_models(llm::compat::OPENROUTER_BASE_URL, key).await;
+            let live = llm::compat::list_models(llm::compat::OPENROUTER_BASE_URL, key).await;
             if live.is_empty() {
                 llm::static_models(ProviderKind::OpenRouter)
                     .iter()
@@ -1093,6 +1116,32 @@ fn config_set(app: AppHandle, key: String, value: serde_json::Value) -> Result<C
                 }
                 cfg.compat.base_url = v.to_string();
             }
+            "vision.provider" => {
+                let v = value
+                    .as_str()
+                    .ok_or("vision.provider must be a string")?
+                    .trim();
+                let ok = v.is_empty() || ProviderKind::from_str(v).is_some_and(|k| k.is_vision());
+                if !ok {
+                    return Err(format!("unknown vision provider {v:?}"));
+                }
+                cfg.vision.provider = v.to_string();
+            }
+            _ if key.starts_with("vision.models.") => {
+                let id = &key["vision.models.".len()..];
+                if ProviderKind::from_str(id).is_none_or(|k| !k.is_vision()) {
+                    return Err(format!("unknown vision provider {id:?}"));
+                }
+                let model = value
+                    .as_str()
+                    .ok_or("vision.models.* must be a string")?
+                    .trim();
+                if model.is_empty() {
+                    cfg.vision.models.remove(id);
+                } else {
+                    cfg.vision.models.insert(id.to_string(), model.to_string());
+                }
+            }
             _ if key.starts_with("hotkeys.") => {
                 let name = &key["hotkeys.".len()..];
                 let accel = value.as_str().ok_or("hotkey binding must be a string")?;
@@ -1395,6 +1444,73 @@ mod tests {
             .map(|c| c.id)
             .collect();
         assert_eq!(ids, Vec::<String>::new());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// The screen reader is off until `vision.provider` names a usable
+    /// pick — keyed for hosted, `compat.base_url` + a model for
+    /// compatible — and resolves its model from `vision.models` or the
+    /// vision default.
+    #[test]
+    fn vision_candidate_resolves_only_when_usable() {
+        let tmp = tmp_dir();
+        let state = AppState::for_test(&tmp);
+        {
+            let mut ks = state.keystore.lock();
+            ks.set_key("gemini", "AIza-b").unwrap();
+        }
+        let (cfg, ks) = (state.config.lock(), state.keystore.lock());
+
+        // Unset → off.
+        assert!(vision_candidate(&cfg, &ks).is_none());
+
+        // A keyed provider resolves its vision default model.
+        let mut cfg = cfg.clone();
+        cfg.vision.provider = "gemini".into();
+        let c = vision_candidate(&cfg, &ks).unwrap();
+        assert_eq!(c.id, "gemini");
+        assert_eq!(c.model, "gemini-2.5-flash");
+
+        // `vision.models` beats the default.
+        cfg.vision
+            .models
+            .insert("gemini".into(), "gemini-2.5-pro".into());
+        assert_eq!(vision_candidate(&cfg, &ks).unwrap().model, "gemini-2.5-pro");
+
+        // A hosted pick with no key is unusable → off.
+        cfg.vision.provider = "openai".into();
+        assert!(vision_candidate(&cfg, &ks).is_none());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// The reader ignores `providers.disabled` — a chat-disabled provider
+    /// may still read the screen. Compatible additionally needs the
+    /// shared endpoint and an explicit model id.
+    #[test]
+    fn vision_candidate_ignores_disabled_and_supports_compatible() {
+        let tmp = tmp_dir();
+        let state = AppState::for_test(&tmp);
+        {
+            let mut ks = state.keystore.lock();
+            ks.set_key("openai", "sk-a").unwrap();
+        }
+        let mut cfg = state.config.lock().clone();
+        cfg.providers.disabled = vec!["openai".into()];
+        cfg.vision.provider = "openai".into();
+        let ks = state.keystore.lock();
+        let c = vision_candidate(&cfg, &ks).unwrap();
+        assert_eq!(c.id, "openai");
+
+        // Compatible: no endpoint → unusable; endpoint but no model →
+        // unusable; both → resolves the typed id.
+        cfg.vision.provider = "compatible".into();
+        assert!(vision_candidate(&cfg, &ks).is_none());
+        cfg.compat.base_url = "http://localhost:8000/v1".into();
+        assert!(vision_candidate(&cfg, &ks).is_none());
+        cfg.vision
+            .models
+            .insert("compatible".into(), "qwen2.5-vl".into());
+        assert_eq!(vision_candidate(&cfg, &ks).unwrap().model, "qwen2.5-vl");
         let _ = std::fs::remove_dir_all(&tmp);
     }
 }

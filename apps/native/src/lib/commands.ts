@@ -97,6 +97,16 @@ export interface CompatPrefs {
   base_url: string;
 }
 
+/** `[vision]` section — the dedicated screen reader. `provider` is a
+ * vision-capable provider id or `''` (off — frames attach to the
+ * answering chat provider); `models.<id>` is its per-provider model
+ * memory, same shape as `providers.models`. Keys and the compat
+ * endpoint are shared with the provider rows above. */
+export interface VisionPrefs {
+  provider: string;
+  models: Record<string, string>;
+}
+
 /** `config_get` / `config_set` return / `config:changed` payload. */
 export interface Config {
   app: AppPrefs;
@@ -105,6 +115,7 @@ export interface Config {
   hotkeys: Record<string, string>;
   window: WindowPrefs;
   compat: CompatPrefs;
+  vision: VisionPrefs;
 }
 
 /** `session_list` row (storage.rs `Session`; `kind` is the `type` column). */
@@ -288,7 +299,9 @@ export const configGet = () => invoke<Config>('config_get');
  * (number sets, null clears), `app.onboarding_done` (bool),
  * `app.appearance` (`'auto'|'light'|'dark'`), `app.accent` (`'#rrggbb'`,
  * `''` resets), `compat.name`, `compat.base_url` (http(s) URL, `''`
- * clears). Provider order/switches/models go through `providersReorder`/
+ * clears), `vision.provider` (`''` or a vision-capable provider id),
+ * `vision.models.<id>` (string; `''` removes). Provider
+ * order/switches/models go through `providersReorder`/
  * `providerSetEnabled`/`modelSetSelected`. Every successful write
  * broadcasts `config:changed` and resolves to the full updated config.
  */

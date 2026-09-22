@@ -282,7 +282,7 @@ export const ChatSection = () => {
             <div
               key={i}
               className='mb-2 flex justify-end'>
-              <p className='max-w-[85%] rounded-2xl rounded-br-sm bg-fg-soft px-3 py-1.5 text-[13px] leading-[1.5] wrap-break-word whitespace-pre-wrap select-text'>
+              <p className='max-w-[85%] rounded-2xl rounded-br-sm bg-fg-soft px-3 py-1.5 text-[13px] leading-normal wrap-break-word whitespace-pre-wrap select-text'>
                 {m.content}
               </p>
             </div>

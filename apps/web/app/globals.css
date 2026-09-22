@@ -1572,7 +1572,8 @@ h3 {
 
 /* Dark variant — the app's own .dark token set (packages/ui/src/index.css),
  * swapped in under the same --mv-* names the views consume. Scene chrome
- * (desktop, menubar, ghost window, dock) follows with matching dark values. */
+ * (desktop, menubar, ghost window, dock) follows with matching dark values.
+ * next-themes puts data-theme on <html>; every rule still scopes to .shots. */
 .shots .shot,
 .shots .shot-desktop,
 .shots .shot-menubar,
@@ -1594,7 +1595,7 @@ h3 {
     color var(--motion-base) var(--ease-standard);
 }
 
-.shots[data-theme='dark'] .mv {
+[data-theme='dark'] .shots .mv {
   --mv-fg: oklch(0.987 0.002 197.1);
   --mv-card: oklch(0.218 0.008 223.9);
   --mv-muted: oklch(0.275 0.011 216.9);
@@ -1605,26 +1606,26 @@ h3 {
   --mv-primary-fg: oklch(0.218 0.008 223.9);
 }
 
-.shots[data-theme='dark'] .shot {
+[data-theme='dark'] .shots .shot {
   background: oklch(0.148 0.004 228.8);
   border-color: oklch(1 0 0 / 10%);
 }
 
-.shots[data-theme='dark'] .shot-pad h3 {
+[data-theme='dark'] .shots .shot-pad h3 {
   color: oklch(0.987 0.002 197.1);
 }
 
-.shots[data-theme='dark'] .shot-pad p,
-.shots[data-theme='dark'] .gate-label,
-.shots[data-theme='dark'] .shot-cap {
+[data-theme='dark'] .shots .shot-pad p,
+[data-theme='dark'] .shots .gate-label,
+[data-theme='dark'] .shots .shot-cap {
   color: oklch(0.723 0.014 214.4);
 }
 
-.shots[data-theme='dark'] .shot-cap {
+[data-theme='dark'] .shots .shot-cap {
   border-color: oklch(1 0 0 / 10%);
 }
 
-.shots[data-theme='dark'] .shot-desktop {
+[data-theme='dark'] .shots .shot-desktop {
   background: radial-gradient(
     130% 100% at 72% -10%,
     oklch(0.3 0.032 245) 0%,
@@ -1632,49 +1633,49 @@ h3 {
   );
 }
 
-.shots[data-theme='dark'] .shot-menubar {
+[data-theme='dark'] .shots .shot-menubar {
   background: color-mix(in oklch, oklch(0.148 0.004 228.8) 62%, transparent);
   color: oklch(0.93 0.008 230);
 }
 
-.shots[data-theme='dark'] .shot-menubar .dim,
-.shots[data-theme='dark'] .shot-menubar .shot-clock {
+[data-theme='dark'] .shots .shot-menubar .dim,
+[data-theme='dark'] .shots .shot-menubar .shot-clock {
   color: oklch(0.64 0.02 232);
 }
 
-.shots[data-theme='dark'] .ghost-win {
+[data-theme='dark'] .shots .ghost-win {
   border-color: oklch(1 0 0 / 8%);
   background: color-mix(in oklch, oklch(0.25 0.012 235) 80%, transparent);
 }
 
-.shots[data-theme='dark'] .ghost-win .gw-chrome {
+[data-theme='dark'] .shots .ghost-win .gw-chrome {
   border-color: oklch(1 0 0 / 7%);
 }
 
-.shots[data-theme='dark'] .ghost-win .gw-chrome > i {
+[data-theme='dark'] .shots .ghost-win .gw-chrome > i {
   background: oklch(1 0 0 / 16%);
 }
 
-.shots[data-theme='dark'] .ghost-win .gw-url {
+[data-theme='dark'] .shots .ghost-win .gw-url {
   background: oklch(1 0 0 / 6%);
   color: oklch(0.64 0.02 232);
 }
 
-.shots[data-theme='dark'] .ghost-win .gw-lines i {
+[data-theme='dark'] .shots .ghost-win .gw-lines i {
   background: oklch(1 0 0 / 8%);
 }
 
-.shots[data-theme='dark'] .shot-dock {
+[data-theme='dark'] .shots .shot-dock {
   background: oklch(1 0 0 / 8%);
   border-color: oklch(1 0 0 / 10%);
 }
 
-.shots[data-theme='dark'] .shot-dock i {
+[data-theme='dark'] .shots .shot-dock i {
   background: oklch(1 0 0 / 10%);
   border-color: oklch(1 0 0 / 8%);
 }
 
-.shots[data-theme='dark'] .mv-stage {
+[data-theme='dark'] .shots .mv-stage {
   background: linear-gradient(
     115deg,
     oklch(0.27 0.018 240),

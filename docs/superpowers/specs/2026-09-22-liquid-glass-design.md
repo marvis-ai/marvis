@@ -48,7 +48,7 @@ unified-bar spec, so nothing is thrown away.
 | --- | --- | --- |
 | `bar` | 32 | Full capsule (h/2) |
 | `ask` | 18 | `radius-lg` |
-| `listen` | 16 | `rounded-2xl` |
+| `listen` | 18 | `rounded-[18px]` (shared `PANEL`) |
 | `alert` | 14 | `rounded-[14px]` |
 | `prefs` | — | skipped — decorated opaque window, separate builder |
 

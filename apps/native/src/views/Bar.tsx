@@ -296,7 +296,10 @@ const Bar = () => {
     if (existing !== null) {
       // A stop is already in flight — a redundant invoke can't return
       // a different draft. A discard stop downgrades the pending
-      // apply; an apply stop leaves the earlier decision alone.
+      // apply; an apply stop leaves the earlier decision alone. Clear
+      // any newer anchor too: while this stop is settling there is no
+      // safe way to target two sessions.
+      dictationRange.current = null;
       if (!applyFinal) {
         existing.applyDraft = false;
       }
@@ -891,7 +894,10 @@ const Bar = () => {
             // An active session stops first — `speechBusy` stays held
             // until it settles so a follow-up press can't start the
             // other mode mid-teardown.
-            if (dictationState === 'listening') {
+            if (
+              dictationState === 'listening' ||
+              dictationStopPending.current !== null
+            ) {
               void stopDictation(true).finally(() => {
                 speechBusy.current = false;
               });

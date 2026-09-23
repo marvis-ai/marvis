@@ -53,6 +53,43 @@ export interface ReconcileDictationEditResult {
   intersects: boolean;
 }
 
+export interface DictationSelection {
+  start: number;
+  end: number;
+}
+
+/**
+ * Map the input's selection across a draft replacement. The dictated
+ * slice is the only changed text, so positions before it stay put,
+ * positions after it shift by the draft-length delta, and positions
+ * inside it are clamped into the replacement. `null` means no usable
+ * selection was observed — fall back to the normal dictation caret
+ * after the inserted draft.
+ */
+export const selectionAfterDictationDraft = (
+  selection: DictationSelection | null,
+  range: DictationRange,
+  draftLength: number,
+): DictationSelection => {
+  const rangeEnd = range.start + range.length;
+  const map = (position: number) => {
+    if (position <= range.start) {
+      return position;
+    }
+    if (position >= rangeEnd) {
+      return position + draftLength - range.length;
+    }
+    return range.start + Math.min(position - range.start, draftLength);
+  };
+  if (selection === null) {
+    const caret = range.start + draftLength;
+    return { start: caret, end: caret };
+  }
+  const start = map(selection.start);
+  const end = map(selection.end);
+  return { start: Math.min(start, end), end: Math.max(start, end) };
+};
+
 /**
  * Classify a user edit (`prev` → `next`, caret at `nextCaret`) against the
  * live dictated range.

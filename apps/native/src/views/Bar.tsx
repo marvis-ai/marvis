@@ -86,8 +86,10 @@ import {
 import {
   applyDictationDraft,
   reconcileDictationEdit,
+  selectionAfterDictationDraft,
   type ApplyDictationDraftResult,
   type DictationRange,
+  type DictationSelection,
 } from '../lib/dictation';
 import { ChatSection } from '../components/ChatSection';
 import { Iris } from '../components/Iris';
@@ -199,9 +201,10 @@ const Bar = () => {
    *  moment a stop begins so a late live draft or another stop can
    *  never touch the input again. */
   const dictationRange = useRef<DictationRange | null>(null);
-  /** Caret to restore after the next `text` commit — dictation keeps
-   *  it right after the dictated slice. */
-  const pendingCaret = useRef<number | null>(null);
+  /** Selection to restore after the next `text` commit — mapped across
+   *  the draft replacement so user edits outside the dictated slice keep
+   *  their position instead of jumping to its end. */
+  const pendingSelection = useRef<DictationSelection | null>(null);
   /** A `dictation_start` in flight: a stale `dictation:state` snapshot
    *  emitted before it must not drop the freshly captured anchor. */
   const dictationStarting = useRef(false);
@@ -219,7 +222,7 @@ const Bar = () => {
    *  PRE-edit selection for the next edit: one that covered the whole
    *  field marks a wholesale clear/replace the diff alone can't see
    *  (a boundary caret anchor never intersects it). */
-  const inputSelection = useRef<{ start: number; end: number } | null>(null);
+  const inputSelection = useRef<DictationSelection | null>(null);
   /** The in-flight `dictation_stop` — evolved per edit while it
    *  settles; also the handle a second Enter queues its submit on. */
   const dictationStopPending = useRef<PendingDictationStop | null>(null);
@@ -260,19 +263,31 @@ const Bar = () => {
     inputSelection.current = { start, end };
   };
 
-  /** Commit a draft application to the input. When the value actually
-   *  changes the caret is queued for the `[text]`-keyed restore
-   *  effect; when it doesn't, React skips the commit and a queued
-   *  caret would go stale — restore the selection immediately
-   *  instead. */
-  const commitDictationText = (applied: ApplyDictationDraftResult) => {
+  /** Commit a draft application to the input. The current selection is
+   *  mapped across the replaced slice instead of always jumping to the
+   *  draft end: a caret following dictation still follows it, while text
+   *  the user selected or typed outside the slice keeps its position.
+   *  When the value doesn't change React skips the commit, so restore
+   *  immediately instead of leaving a stale queued selection. */
+  const commitDictationText = (
+    applied: ApplyDictationDraftResult,
+    previousRange: DictationRange,
+  ) => {
+    const nextSelection = selectionAfterDictationDraft(
+      inputSelection.current,
+      previousRange,
+      applied.range.length,
+    );
     if (applied.value === textRef.current) {
-      pendingCaret.current = null;
-      inputRef.current?.setSelectionRange(applied.caret, applied.caret);
-      inputSelection.current = { start: applied.caret, end: applied.caret };
+      pendingSelection.current = null;
+      inputRef.current?.setSelectionRange(
+        nextSelection.start,
+        nextSelection.end,
+      );
+      inputSelection.current = nextSelection;
       return;
     }
-    pendingCaret.current = applied.caret;
+    pendingSelection.current = nextSelection;
     setText(applied.value);
   };
 
@@ -335,6 +350,7 @@ const Bar = () => {
         }
         commitDictationText(
           applyDictationDraft(textRef.current, finalRange, draft.text),
+          finalRange,
         );
         if (inputRendered) {
           inputRef.current?.focus();
@@ -420,7 +436,7 @@ const Bar = () => {
     const applied = applyDictationDraft(textRef.current, range, p.text);
     dictationRange.current = applied.range;
     dictationDraftLanded.current = true;
-    commitDictationText(applied);
+    commitDictationText(applied, range);
   });
   // `dictation:error` doubles as the `dictation_start` rejection
   // message — `lastDictationError` dedupes the alert.
@@ -556,15 +572,15 @@ const Bar = () => {
   }, [showInputRow, gate]);
 
   // Dictation writes go through `setText` like any edit; once the value
-  // commits, restore the caret to just after the dictated slice.
+  // commits, restore the selection mapped across the dictated slice.
   useEffect(() => {
-    if (pendingCaret.current === null) {
+    if (pendingSelection.current === null) {
       return;
     }
-    const caret = pendingCaret.current;
-    pendingCaret.current = null;
-    inputRef.current?.setSelectionRange(caret, caret);
-    inputSelection.current = { start: caret, end: caret };
+    const selection = pendingSelection.current;
+    pendingSelection.current = null;
+    inputRef.current?.setSelectionRange(selection.start, selection.end);
+    inputSelection.current = selection;
   }, [text]);
 
   // Dictation is bound to the visible Ask input — when the input leaves
@@ -801,8 +817,8 @@ const Bar = () => {
           value={text}
           onChange={(e) => {
             // A keystroke commits its own caret — don't let a queued
-            // dictation-caret restore jump it to the dictated slice.
-            pendingCaret.current = null;
+            // dictation-selection restore jump it to the dictated slice.
+            pendingSelection.current = null;
             const prev = textRef.current;
             const next = e.target.value;
             const caret = e.target.selectionEnd ?? next.length;

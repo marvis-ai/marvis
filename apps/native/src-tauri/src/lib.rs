@@ -46,6 +46,7 @@ mod llm;
 mod paths;
 mod permissions;
 mod prompts;
+mod sherpa_models;
 mod storage;
 pub mod stt;
 mod tray;

@@ -9,6 +9,8 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "build:dev": "tauri dev",
+    "check:task-2": "bash src-tauri/scripts/check-task-2-packaging.sh --fixture",
+    "check:task-2:staged": "bash src-tauri/scripts/check-task-2-packaging.sh",
     "test": "bun test --pass-with-no-tests"
   },
   "dependencies": {

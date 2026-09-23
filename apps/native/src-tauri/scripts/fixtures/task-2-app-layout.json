@@ -1,0 +1,5 @@
+{
+  "bundle_relative_path": "Contents/MacOS/whisper-cli-aarch64-apple-darwin",
+  "architecture": "arm64",
+  "executable": true
+}

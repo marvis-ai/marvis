@@ -172,3 +172,7 @@ consistent:
 ## License
 
 MIT
+
+---
+
+Inspired by [Cheating Daddy](https://github.com/sohzm/cheating-daddy) and [Glass](https://github.com/pickle-com/glass).

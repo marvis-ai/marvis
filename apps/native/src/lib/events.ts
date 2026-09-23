@@ -20,6 +20,11 @@ export const EV_LISTEN_STATE = 'listen:state';
 export const EV_LISTEN_TURN = 'listen:turn';
 export const EV_LISTEN_SUMMARY = 'listen:summary';
 export const EV_LISTEN_ERROR = 'listen:error';
+/** Dictation lifecycle, live draft, and terminal error events — emitted to
+ * the `bar` window only (lib.rs `emit_dictation_*`). */
+export const EV_DICTATION_STATE = 'dictation:state';
+export const EV_DICTATION_DRAFT = 'dictation:draft';
+export const EV_DICTATION_ERROR = 'dictation:error';
 /** Whisper model download byte progress; contains no URL or local path. */
 export const EV_WHISPER_DOWNLOAD_PROGRESS = 'whisper:download-progress';
 /** Whisper model download failure; contains only the model and safe error text. */
@@ -54,6 +59,22 @@ export interface ListenSummaryPayload {
   topic: string | null;
 }
 export interface ListenErrorPayload {
+  message: string;
+  needs_setup: boolean;
+}
+/** `dictation:state` payload — the whole durable `DictationStatus`. */
+export interface DictationStatePayload {
+  state: 'idle' | 'listening' | 'error';
+  provider: string | null;
+  error: DictationErrorPayload | null;
+}
+/** `dictation:draft` payload — `final` only on the authoritative stop
+ * draft; live snapshots are `final: false`. */
+export interface DictationDraftPayload {
+  text: string;
+  final: boolean;
+}
+export interface DictationErrorPayload {
   message: string;
   needs_setup: boolean;
 }

@@ -68,12 +68,12 @@ fixture = json.loads(Path(sys.argv[1]).read_text())
 expected = {
     "targets": {
         "aarch64-apple-darwin": {
-            "bundle_relative_path": "Contents/MacOS/whisper-cli-aarch64-apple-darwin",
+            "bundle_relative_path": "Contents/MacOS/whisper-cli",
             "architecture": "arm64",
             "executable": True,
         },
         "x86_64-apple-darwin": {
-            "bundle_relative_path": "Contents/MacOS/whisper-cli-x86_64-apple-darwin",
+            "bundle_relative_path": "Contents/MacOS/whisper-cli",
             "architecture": "x86_64",
             "executable": True,
         },

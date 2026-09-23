@@ -316,6 +316,35 @@ impl Db {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
+    /// The newest `limit` listen turns, returned in the same oldest-first order
+    /// as [`transcripts_for`].
+    pub fn transcripts_tail(
+        &self,
+        session_id: i64,
+        limit: usize,
+    ) -> anyhow::Result<Vec<Transcript>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT id, session_id, speaker, text, ts FROM transcripts
+             WHERE session_id = ?1 ORDER BY ts DESC, id DESC LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![session_id, limit as i64], |row| {
+            Ok(Transcript {
+                id: row.get(0)?,
+                session_id: row.get(1)?,
+                speaker: row.get(2)?,
+                text: row.get(3)?,
+                ts: row.get(4)?,
+            })
+        })?;
+        let mut rows = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+        rows.reverse();
+        Ok(rows)
+    }
+
     /// Persist a structured listen summary; returns the new row id.
     pub fn summary_add(
         &self,
@@ -512,6 +541,24 @@ mod tests {
         assert_eq!(limited.len(), 2);
         assert_eq!(limited[0].text, "hello");
         assert_eq!(limited[1].text, "hi there");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn transcript_tail_returns_latest_rows_oldest_first() {
+        let dir = tmp_dir();
+        let db = Db::at(dir.join("marvis.db")).unwrap();
+        let sid = db.session_get_or_create_active("listen").unwrap();
+        for id in 0..25 {
+            db.transcript_add(sid, "me", &format!("turn-{id}")).unwrap();
+        }
+
+        let tail = db.transcripts_tail(sid, 20).unwrap();
+        assert_eq!(tail.len(), 20);
+        assert_eq!(tail.first().unwrap().text, "turn-5");
+        assert_eq!(tail.last().unwrap().text, "turn-24");
+        assert!(tail.windows(2).all(|rows| rows[0].id < rows[1].id));
 
         let _ = std::fs::remove_dir_all(&dir);
     }

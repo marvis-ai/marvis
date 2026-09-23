@@ -594,6 +594,23 @@ mod tests {
         }
     }
     #[test]
+    fn listen_status_serializes_documented_wire_field_names() {
+        let status = ListenStatus {
+            state: "listening".into(),
+            provider: Some("whisper".into()),
+            session_id: Some(42),
+            turns: 3,
+            mic: true,
+        };
+        let payload = serde_json::to_value(status).unwrap();
+        assert_eq!(
+            payload.as_object().unwrap().keys().cloned().collect::<Vec<_>>(),
+            vec!["mic", "provider", "session_id", "state", "turns"]
+        );
+        assert_eq!(payload["session_id"], 42);
+    }
+
+    #[test]
     fn interim_replaces_with_different_final_without_duplication() {
         let mut a = TurnAssembler::new();
         let t = Instant::now();

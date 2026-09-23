@@ -81,6 +81,30 @@ pub(crate) fn validate_stt_model(value: &str) -> Result<String, String> {
     }
 }
 
+/// Apply the two STT config command keys. Returns `true` when `key` is an STT
+/// key, allowing the command layer to keep its other writable keys separate.
+pub(crate) fn apply_stt_config(
+    models: &mut ModelPrefs,
+    key: &str,
+    value: &serde_json::Value,
+) -> Result<bool, String> {
+    match key {
+        "models.stt_provider" => {
+            let value = value
+                .as_str()
+                .ok_or("models.stt_provider must be a string")?;
+            models.stt_provider = validate_stt_provider(value)?;
+            Ok(true)
+        }
+        "models.stt_model" => {
+            let value = value.as_str().ok_or("models.stt_model must be a string")?;
+            models.stt_model = validate_stt_model(value)?;
+            Ok(true)
+        }
+        _ => Ok(false),
+    }
+}
+
 impl Default for AppPrefs {
     fn default() -> Self {
         Self {
@@ -377,6 +401,42 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn stt_command_keys_apply_and_validate_values() {
+        let mut models = ModelPrefs::default();
+        assert!(apply_stt_config(
+            &mut models,
+            "models.stt_provider",
+            &serde_json::json!(" whisper "),
+        )
+        .unwrap());
+        assert_eq!(models.stt_provider, "whisper");
+        assert!(apply_stt_config(
+            &mut models,
+            "models.stt_model",
+            &serde_json::json!("  base.en  "),
+        )
+        .unwrap());
+        assert_eq!(models.stt_model, "base.en");
+        assert_eq!(
+            apply_stt_config(
+                &mut models,
+                "models.stt_provider",
+                &serde_json::json!("unknown"),
+            )
+            .unwrap_err(),
+            "unknown STT provider \"unknown\""
+        );
+        assert_eq!(
+            apply_stt_config(&mut models, "models.stt_model", &serde_json::json!("  "),)
+                .unwrap_err(),
+            "STT model must not be empty"
+        );
+        assert!(
+            !apply_stt_config(&mut models, "models.other", &serde_json::json!("value"),).unwrap()
+        );
     }
 
     #[test]

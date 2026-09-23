@@ -607,7 +607,7 @@ fn load_listen_context(db: &Db) -> String {
     let Some(session_id) = db.session_active_id("listen").ok().flatten() else {
         return String::new();
     };
-    match db.transcripts_for(session_id, Some(HISTORY_TAIL)) {
+    match db.transcripts_tail(session_id, HISTORY_TAIL) {
         Ok(rows) => rows
             .iter()
             .map(|row: &Transcript| format!("{}: {}", row.speaker, row.text))

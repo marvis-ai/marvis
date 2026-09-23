@@ -127,6 +127,14 @@ pub struct AppState {
     /// section or two overlapping transitions can interleave (stale
     /// emit landing last, or hotkeys/capture from a dead gate state).
     gate_transition: Mutex<()>,
+    /// Serializes `listen_start`/`dictation_start` end-to-end — the peer
+    /// status check, the mic-permission await, and the service start
+    /// must be one critical section or two concurrent first-starts can
+    /// both see the peer idle and double-open the microphone. Async so
+    /// the guard can be held across the permission await while the
+    /// command futures stay `Send`. Stops don't take it: dictation's
+    /// start/stop epoch already makes a mid-flight start lose safely.
+    speech_lifecycle: tokio::sync::Mutex<()>,
     /// Payload of the alert toast currently on screen (`None` when
     /// dismissed). Kept server-side so the toast can re-read it on mount
     /// via `alert_current` — an `alert:show` emit that races the
@@ -192,6 +200,7 @@ impl AppState {
             hotkeys: Mutex::new(None),
             gate: Mutex::new(Gate::NeedsPermission),
             gate_transition: Mutex::new(()),
+            speech_lifecycle: tokio::sync::Mutex::new(()),
             alert: Mutex::new(None),
             voice_models: voice_models::VoiceModelManager::at(
                 root.join("models").join("whisper").join("models"),
@@ -265,8 +274,9 @@ fn enter_main(app: &AppHandle) {
 }
 
 /// `Main` exit (onboarding reset / permission revoked): cancel the
-/// in-flight ask and collapse the card, stop + drop capture, hide the
-/// alert toast, downgrade hotkeys to the gated limited set.
+/// in-flight ask and collapse the card, stop dictation, stop + drop
+/// capture, hide the alert toast, downgrade hotkeys to the gated
+/// limited set.
 fn leave_main(app: &AppHandle) {
     let state = app.state::<AppState>();
     // Cancel any in-flight ask — an unbounded stream left running would
@@ -274,6 +284,16 @@ fn leave_main(app: &AppHandle) {
     // future send on the busy-check until it resolves on its own.
     // Listen is independent of card visibility; only `listen_stop` stops it.
     state.ask.close(app, &state.pool);
+    // Dictation is bound to the ask input that leaving Main hides — an
+    // invisible session must not keep the microphone. (Its epoch also
+    // aborts any `dictation_start` still in flight.) Emit the state only
+    // when one was live so bar views resync; `dictation_status` covers
+    // the rest on mount.
+    let dictation_was_live = state.dictation.status().is_listening();
+    let _ = state.dictation.stop();
+    if dictation_was_live {
+        emit_dictation_state(app, &state.dictation.status());
+    }
     // Take the capture out and release the lock BEFORE `stop()` — it
     // joins the capture worker, which must not hold `state.capture`
     // while `capture_status` waits on it.
@@ -945,6 +965,11 @@ fn emit_listen_event(app: &AppHandle, event: ListenEvent) {
 #[tauri::command]
 async fn listen_start(app: AppHandle) -> Result<listen::ListenStatus, String> {
     let state = app.state::<AppState>();
+    // Serialized with `dictation_start` end-to-end: the peer-status
+    // check, the mic-permission await, and the service start are one
+    // critical section — two concurrent first-starts can no longer both
+    // see the peer idle and double-open the microphone.
+    let _lifecycle = state.speech_lifecycle.lock().await;
     if *state.gate.lock() != Gate::Main {
         return Err("Listen is unavailable until setup is complete".into());
     }
@@ -1029,6 +1054,11 @@ fn emit_dictation_event(app: &AppHandle, event: DictationEvent) {
 #[tauri::command]
 async fn dictation_start(app: AppHandle) -> Result<dictation::DictationStatus, String> {
     let state = app.state::<AppState>();
+    // Serialized with `listen_start` end-to-end: the peer-status check,
+    // the mic-permission await, and the service start are one critical
+    // section — two concurrent first-starts can no longer both see the
+    // peer idle and double-open the microphone.
+    let _lifecycle = state.speech_lifecycle.lock().await;
     if *state.gate.lock() != Gate::Main {
         return Err("Dictation is unavailable until setup is complete".into());
     }
@@ -1053,6 +1083,14 @@ async fn dictation_start(app: AppHandle) -> Result<dictation::DictationStatus, S
         // setup failures have already emitted needs_setup:true, so
         // re-emitting here would produce a contradictory second event.
         return Err(error.to_string());
+    }
+    // `leave_main` may have run while the session was being built —
+    // dictation is bound to the (now hidden) ask input, so a start that
+    // outlived `Main` stops itself instead of running invisibly.
+    if *state.gate.lock() != Gate::Main {
+        let _ = state.dictation.stop();
+        emit_dictation_state(&app, &state.dictation.status());
+        return Err("Dictation is unavailable until setup is complete".into());
     }
     let status = state.dictation.status();
     emit_dictation_state(&app, &status);
@@ -1618,6 +1656,7 @@ pub fn run() {
                 hotkeys: Mutex::new(None),
                 gate: Mutex::new(Gate::NeedsPermission),
                 gate_transition: Mutex::new(()),
+                speech_lifecycle: tokio::sync::Mutex::new(()),
                 alert: Mutex::new(None),
                 voice_models,
             });
@@ -1775,6 +1814,43 @@ mod tests {
         assert!(source.contains("dictation:state"));
         assert!(source.contains("dictation:draft"));
         assert!(source.contains("dictation:error"));
+    }
+
+    /// Both start commands must hold `speech_lifecycle` across their
+    /// peer check, the mic-permission await, and the service start —
+    /// that's what makes the mutual exclusion atomic against a
+    /// concurrent first-start (the check-then-act gap is what raced).
+    #[test]
+    fn speech_starts_share_a_lifecycle_lock() {
+        let source = include_str!("lib.rs");
+        assert!(source.contains("speech_lifecycle: tokio::sync::Mutex<()>"));
+        for signature in ["async fn listen_start", "async fn dictation_start"] {
+            let body = source
+                .split(signature)
+                .nth(1)
+                .and_then(|rest| rest.split("\n#[tauri::command]").next())
+                .unwrap_or_else(|| panic!("{signature} body not found"));
+            assert!(
+                body.contains("state.speech_lifecycle.lock().await"),
+                "{signature} must hold the speech lifecycle lock across the await"
+            );
+        }
+    }
+
+    /// `leave_main` must stop dictation: the session is bound to the
+    /// ask input that leaving Main hides, so an invisible dictation
+    /// must not keep the microphone. Listen is deliberately untouched —
+    /// meeting Listen is independent of card visibility.
+    #[test]
+    fn leave_main_stops_dictation_but_not_listen() {
+        let source = include_str!("lib.rs");
+        let body = source
+            .split("fn leave_main(app: &AppHandle)")
+            .nth(1)
+            .and_then(|rest| rest.split("\nfn ").next())
+            .expect("leave_main body not found");
+        assert!(body.contains("state.dictation.stop()"));
+        assert!(!body.contains("state.listen.stop()"));
     }
 
     /// Mutual exclusion keys off the durable `listening` state of each

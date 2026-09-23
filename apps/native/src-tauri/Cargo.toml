@@ -44,6 +44,7 @@ parking_lot = "0.12"
 log = "0.4"
 env_logger = "0.11"
 tauri-plugin-liquid-glass = "0.1.6"
+cpal = "0.18.2"
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration

@@ -34,6 +34,7 @@
 //!   (`alert_current` re-reads it, `alert_dismiss` clears it).
 
 mod ask;
+pub mod audio;
 mod capture;
 mod config;
 mod deeplink;

@@ -136,6 +136,30 @@ const grip = (
   </span>
 );
 
+/** An in-flight `dictation_stop`. While the invoke settles the tracked
+ *  slice is evolved per user `onChange` — with THAT edit's caret —
+ *  instead of diffing old/new text at resolve time, so the returned
+ *  final draft lands at the right place or not at all once the user
+ *  takes the text over. A second Enter attaches to `promise` to submit
+ *  behind the apply decision. */
+interface PendingDictationStop {
+  /** The dictated slice in current-text coordinates — shifted by each
+   *  edit outside it; `null` when the stop began without an anchor
+   *  (nothing can be applied then). */
+  range: DictationRange | null;
+  /** Whether the returned final draft may land — the stop's
+   *  `applyFinal` intent, downgraded to `false` by an edit inside the
+   *  slice, a wholesale clear/replace, Escape, type-to-wake, or a
+   *  discard stop. */
+  applyDraft: boolean;
+  /** Whether a live draft had already replaced the slice — an empty
+   *  final draft deletes the slice only then; otherwise the slice
+   *  still holds the user's own text. */
+  draftLanded: boolean;
+  /** The invoke promise queued Enter attaches to. */
+  promise: Promise<void>;
+}
+
 const Bar = () => {
   const [gate, setGate] = useState<Gate | null>(null);
   const [bootError, setBootError] = useState(false);
@@ -189,17 +213,16 @@ const Bar = () => {
    *  until then the slice still holds the user's own (e.g. selected)
    *  text, so an empty final draft must leave it untouched. */
   const dictationDraftLanded = useRef(false);
-  /** Invalidation counter for in-flight `dictation_stop` invokes —
-   *  bumped by wholesale clear/replace paths (Escape, type-to-wake)
-   *  that reconcile can't classify: a zero-length boundary anchor
-   *  never intersects a wipe ending/starting exactly at the caret,
-   *  so a pending applyFinal stop snapshots the token and discards
-   *  its returned draft when it moved. */
-  const dictationStopToken = useRef(0);
-  /** The in-flight `dictation_stop` promise — a second Enter while
-   *  `dictationState` still reads `listening` queues its submit
-   *  behind the final-draft application instead of re-stopping. */
-  const dictationStopPending = useRef<Promise<void> | null>(null);
+  /** The input's last known selection — refreshed on `onSelect`, after
+   *  each `onChange`, at programmatic caret restores, and initialized
+   *  when a stop begins. While a stop is in flight it holds the
+   *  PRE-edit selection for the next edit: one that covered the whole
+   *  field marks a wholesale clear/replace the diff alone can't see
+   *  (a boundary caret anchor never intersects it). */
+  const inputSelection = useRef<{ start: number; end: number } | null>(null);
+  /** The in-flight `dictation_stop` — evolved per edit while it
+   *  settles; also the handle a second Enter queues its submit on. */
+  const dictationStopPending = useRef<PendingDictationStop | null>(null);
 
   // Icon-row ⇄ input-row swap: the gate card and boot errors count as
   // expanded; `main` rests as the icon row until the iris opens it or
@@ -234,6 +257,7 @@ const Bar = () => {
     const end = input?.selectionEnd ?? start;
     dictationRange.current = { start, length: Math.max(0, end - start) };
     dictationDraftLanded.current = false;
+    inputSelection.current = { start, end };
   };
 
   /** Commit a draft application to the input. When the value actually
@@ -245,93 +269,83 @@ const Bar = () => {
     if (applied.value === textRef.current) {
       pendingCaret.current = null;
       inputRef.current?.setSelectionRange(applied.caret, applied.caret);
+      inputSelection.current = { start: applied.caret, end: applied.caret };
       return;
     }
     pendingCaret.current = applied.caret;
     setText(applied.value);
   };
 
-  /** Stop the live dictation session. The tracked range is cleared up
-   *  front so a late live draft (or a second stop) can never rewrite
-   *  the input again — then `applyFinal` decides whether the
-   *  authoritative draft the invoke returns lands at all (mic toggle,
-   *  Enter, row hiding) or is discarded (Escape, a slice edit,
-   *  type-to-wake — the user's version wins).
-   *
-   *  `dictation_stop` blocks server-side across the worker join, so
-   *  the text can drift while the invoke is in flight; the base text
-   *  is snapshotted alongside the range and the drift is reconciled
-   *  on resolve: edits outside the dictated slice just shift where
-   *  the final draft lands, edits inside it discard the draft. A
-   *  wholesale clear/replace is caught separately — a zero-length
-   *  boundary anchor can never intersect a wipe that ends or starts
-   *  exactly at the caret — via the stop token (Escape, type-to-wake)
-   *  and the every-edge-changed check (select-all+type). And if no
-   *  live draft ever landed (e.g. Enter during an in-flight start),
-   *  the slice still holds the user's selected text — an empty final
-   *  must not delete it. Resolves when the stop settles so the mic
-   *  button can hold `speechBusy` across it and a queued Enter can
-   *  submit behind the final draft. */
+  /** Stop the live dictation session. The tracked range moves into a
+   *  pending-stop object and `dictationRange` is cleared up front so
+   *  a late live draft can never rewrite the input again. While the
+   *  `dictation_stop` invoke is in flight it blocks server-side
+   *  across the worker join, so the user can keep editing — each
+   *  `onChange` reconciles against `pending.range` with THAT edit's
+   *  caret: edits outside shift where the final draft lands, edits
+   *  inside it or a wholesale clear/replace (Escape, type-to-wake,
+   *  full-selection overwrite, emptying the field) downgrade
+   *  `applyDraft` so the returned draft is discarded and the user's
+   *  version wins. If no live draft ever landed (e.g. Enter during
+   *  an in-flight start) the slice still holds the user's selected
+   *  text — an empty final must not delete it. A second stop joins
+   *  the pending one instead of re-invoking; a queued Enter attaches
+   *  to `promise` to submit behind the apply decision. */
   const stopDictation = (applyFinal: boolean) => {
+    const existing = dictationStopPending.current;
+    if (existing !== null) {
+      // A stop is already in flight — a redundant invoke can't return
+      // a different draft. A discard stop downgrades the pending
+      // apply; an apply stop leaves the earlier decision alone.
+      if (!applyFinal) {
+        existing.applyDraft = false;
+      }
+      return existing.promise;
+    }
     const range = dictationRange.current;
-    const baseText = textRef.current;
-    const draftLanded = dictationDraftLanded.current;
-    const stopToken = dictationStopToken.current;
     dictationRange.current = null;
     if (range === null && dictationState !== 'listening') {
       return Promise.resolve();
     }
-    const pending = dictationStop()
+    // Seed the selection tracker so the first mid-flight edit sees
+    // the selection the edit was made with.
+    const input = inputRef.current;
+    inputSelection.current = input
+      ? { start: input.selectionStart ?? 0, end: input.selectionEnd ?? 0 }
+      : null;
+    const pending: PendingDictationStop = {
+      range,
+      applyDraft: applyFinal && range !== null,
+      draftLanded: dictationDraftLanded.current,
+      // Replaced below once the invoke chain exists — the field lets
+      // the chain's callbacks self-reference `pending`.
+      promise: Promise.resolve(),
+    };
+    const promise = dictationStop()
       .then((draft) => {
-        if (
-          !applyFinal ||
-          range === null ||
-          stopToken !== dictationStopToken.current
-        ) {
-          // A wholesale clear/replace bumped the token — discard the
-          // returned draft, the user's version stands.
+        const finalRange = pending.range;
+        if (!pending.applyDraft || finalRange === null) {
           return;
         }
-        const current = textRef.current;
-        const edit = reconcileDictationEdit(
-          baseText,
-          current,
-          inputRef.current?.selectionEnd ?? current.length,
-          range,
-        );
-        if (edit.intersects) {
-          // The user edited inside the dictated slice while the stop
-          // was settling — their version wins, the draft is dropped.
-          return;
-        }
-        if (
-          baseText !== '' &&
-          current[0] !== baseText[0] &&
-          current[current.length - 1] !== baseText[baseText.length - 1]
-        ) {
-          // Every edge of the base text changed — a select-all+type /
-          // full wipe reconcile reads as "before/after" a boundary
-          // caret anchor rather than an intersection. Discard.
-          return;
-        }
-        if (draft.text === '' && !draftLanded) {
+        if (draft.text === '' && !pending.draftLanded) {
           return;
         }
         commitDictationText(
-          applyDictationDraft(current, edit.range, draft.text),
+          applyDictationDraft(textRef.current, finalRange, draft.text),
         );
         if (inputRendered) {
           inputRef.current?.focus();
         }
       })
       .catch(() => raise('Stop failed'));
+    pending.promise = promise;
     dictationStopPending.current = pending;
-    void pending.finally(() => {
+    void promise.finally(() => {
       if (dictationStopPending.current === pending) {
         dictationStopPending.current = null;
       }
     });
-    return pending;
+    return promise;
   };
 
   const bootstrap = useCallback(async () => {
@@ -547,6 +561,7 @@ const Bar = () => {
     const caret = pendingCaret.current;
     pendingCaret.current = null;
     inputRef.current?.setSelectionRange(caret, caret);
+    inputSelection.current = { start: caret, end: caret };
   }, [text]);
 
   // Dictation is bound to the visible Ask input — when the input leaves
@@ -570,10 +585,13 @@ const Bar = () => {
           return;
         }
         // Esc discards the field — stop without applying the final
-        // draft so the cleared text stays cleared. Bumping the stop
-        // token also invalidates a stop already in flight: its
-        // returned draft must not land in the cleared field.
-        dictationStopToken.current += 1;
+        // draft so the cleared text stays cleared, and discard a stop
+        // already in flight: its returned draft must not land in the
+        // cleared field.
+        const pendingStop = dictationStopPending.current;
+        if (pendingStop !== null) {
+          pendingStop.applyDraft = false;
+        }
         if (dictationRange.current !== null) {
           void stopDictation(false);
         }
@@ -595,9 +613,12 @@ const Bar = () => {
       if (e.key.length === 1) {
         // Type-to-wake replaces the input — drop any tracked anchor so
         // the wake character isn't treated as an edit inside it, and
-        // bump the stop token so an in-flight stop's draft can't be
-        // spliced into the replacement text either.
-        dictationStopToken.current += 1;
+        // discard a pending stop's draft so it can't splice into the
+        // replacement text either.
+        const pendingStop = dictationStopPending.current;
+        if (pendingStop !== null) {
+          pendingStop.applyDraft = false;
+        }
         if (dictationRange.current !== null) {
           void stopDictation(false);
         }
@@ -650,9 +671,12 @@ const Bar = () => {
       // A stop is already settling — Enter's contract is "submit the
       // final text", so queue it behind the draft application rather
       // than re-stop (the still-`listening` state would swallow it).
-      // A new session anchored meanwhile vetoes the send.
-      void pendingStop.then(() => {
-        if (dictationRange.current === null) {
+      // A session anchored or stopping meanwhile vetoes the send.
+      void pendingStop.promise.then(() => {
+        if (
+          dictationRange.current === null &&
+          dictationStopPending.current === null
+        ) {
           sendAsk();
         }
       });
@@ -776,14 +800,12 @@ const Bar = () => {
             // A keystroke commits its own caret — don't let a queued
             // dictation-caret restore jump it to the dictated slice.
             pendingCaret.current = null;
+            const prev = textRef.current;
+            const next = e.target.value;
+            const caret = e.target.selectionEnd ?? next.length;
             const range = dictationRange.current;
             if (range !== null) {
-              const edit = reconcileDictationEdit(
-                textRef.current,
-                e.target.value,
-                e.target.selectionEnd ?? e.target.value.length,
-                range,
-              );
+              const edit = reconcileDictationEdit(prev, next, caret, range);
               if (edit.intersects) {
                 // The edit touches dictated text — stop the session and
                 // keep the user's version; the returning final draft is
@@ -792,8 +814,49 @@ const Bar = () => {
               } else {
                 dictationRange.current = edit.range;
               }
+            } else {
+              const pendingStop = dictationStopPending.current;
+              if (
+                pendingStop !== null &&
+                pendingStop.applyDraft &&
+                pendingStop.range !== null
+              ) {
+                // A stop is in flight — evolve its tracked slice per
+                // edit (with THIS edit's caret, not a resolve-time
+                // read): outside edits shift where the final draft
+                // lands; inside edits, a full-selection overwrite, or
+                // clearing the field discard it.
+                const sel = inputSelection.current;
+                const wholesale =
+                  (prev !== '' && next === '') ||
+                  (prev !== '' &&
+                    sel !== null &&
+                    sel.start === 0 &&
+                    sel.end === prev.length);
+                const edit = reconcileDictationEdit(
+                  prev,
+                  next,
+                  caret,
+                  pendingStop.range,
+                );
+                if (wholesale || edit.intersects) {
+                  pendingStop.applyDraft = false;
+                } else {
+                  pendingStop.range = edit.range;
+                }
+              }
             }
-            setText(e.target.value);
+            inputSelection.current = {
+              start: e.target.selectionStart ?? caret,
+              end: caret,
+            };
+            setText(next);
+          }}
+          onSelect={(e) => {
+            inputSelection.current = {
+              start: e.currentTarget.selectionStart ?? 0,
+              end: e.currentTarget.selectionEnd ?? 0,
+            };
           }}
           onFocus={() => gate === 'main' && setOpen(true)}
           placeholder='Ask Marvis…'

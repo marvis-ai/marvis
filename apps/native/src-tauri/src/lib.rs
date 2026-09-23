@@ -1082,8 +1082,10 @@ fn config_get(state: State<'_, AppState>) -> Config {
 /// `window.bar_y` (number sets, null clears), `app.onboarding_done`
 /// (bool), `app.appearance` (`auto|light|dark`), `app.accent`
 /// (`#rrggbb`, `""` resets to the spec slate), `compat.name`,
-/// `compat.base_url` (validated http(s) URL; `""` clears). Provider
-/// order/switches/models have their own commands (`providers_reorder`,
+/// `compat.base_url` (validated http(s) URL; `""` clears),
+/// `models.stt_provider` (`deepgram|whisper`), and `models.stt_model`
+/// (a trimmed non-empty identifier). Provider order/switches/models have
+/// their own commands (`providers_reorder`,
 /// `provider_set_enabled`, `model_set_selected`). Persists `config.toml`
 /// and returns the updated config. A `hotkeys.*` write re-registers the
 /// active set (full or limited, matching the current gate). Every
@@ -1151,6 +1153,18 @@ fn config_set(app: AppHandle, key: String, value: serde_json::Value) -> Result<C
                     return Err("compat.base_url must be an http(s):// URL".to_string());
                 }
                 cfg.compat.base_url = v.to_string();
+            }
+            "models.stt_provider" => {
+                let v = value
+                    .as_str()
+                    .ok_or("models.stt_provider must be a string")?;
+                cfg.models.stt_provider = config::validate_stt_provider(v)?;
+            }
+            "models.stt_model" => {
+                let v = value
+                    .as_str()
+                    .ok_or("models.stt_model must be a string")?;
+                cfg.models.stt_model = config::validate_stt_model(v)?;
             }
             "vision.provider" => {
                 let v = value

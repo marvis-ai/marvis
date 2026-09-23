@@ -268,8 +268,16 @@ export interface WhisperDownload {
   total: number;
 }
 
+export type WhisperBinarySource = 'Bundled' | 'Path' | 'Homebrew' | 'User';
+
+export interface WhisperBinaryStatus {
+  available: boolean;
+  source: WhisperBinarySource | null;
+}
+
 export interface WhisperStatus {
   binary: string | null;
+  binary_status: WhisperBinaryStatus;
   models: WhisperInstalledModel[];
   download: WhisperDownload | null;
 }

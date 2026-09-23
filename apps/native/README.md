@@ -58,8 +58,9 @@ keys, storage — the webview is UI only.
 - At least one provider: an API key (OpenAI / Anthropic / Gemini /
   OpenRouter / compatible endpoint) **or** a local
   [Ollama](https://ollama.com) daemon
-- Optional for local transcription: `whisper-cli` via
-  `src-tauri/scripts/build-whisper-cli.sh` (release bundles only)
+- Optional for local transcription: a validated `whisper-cli-<target>` artifact
+  staged by `src-tauri/scripts/build-whisper-cli.sh`, or a PATH/Homebrew/user
+  fallback
 
 ## Getting started
 
@@ -67,8 +68,13 @@ From the repo root:
 
 ```bash
 bun install          # install workspace deps
-bun run build:dev    # vite dev server + tauri dev → launches the app
+bun run build:dev    # stage a dev whisper-cli if present, then vite + tauri dev
 ```
+
+If `src-tauri/binaries/whisper-cli-<target>` already exists, `build:dev` copies
+that validated artifact beside `target/debug/Marvis` so the debug app reports
+`Bundled with Marvis`. If no validated artifact exists, development continues
+with the PATH/Homebrew/user fallback instead of failing.
 
 First launch walks you through onboarding: appearance → screen-recording
 permission → a provider key → optional voice models. The bar appears

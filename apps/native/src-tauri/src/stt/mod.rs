@@ -2,7 +2,10 @@
 
 use crate::audio::PcmChunk;
 
+mod deepgram;
 mod whisper;
+
+pub use deepgram::DeepgramProvider;
 pub use whisper::{WhisperProvider, WhisperStatus};
 
 /// The source channel represented by a transcript event.
@@ -28,6 +31,25 @@ pub struct TranscriptEvent {
 }
 
 /// Platform-independent speech-to-text provider.
+/// Construct the configured provider. Callers retrieve the Deepgram key from
+/// `Keystore` and pass it here; this module never accesses the keystore.
+pub fn make_stt_provider(
+    provider: &str,
+    key: Option<String>,
+    model: String,
+    channel: SpeakerChannel,
+) -> anyhow::Result<Box<dyn SttProvider>> {
+    match provider {
+        "deepgram" => Ok(Box::new(DeepgramProvider::new(
+            key.ok_or_else(|| anyhow::anyhow!("Deepgram API key is not configured"))?,
+            model,
+            channel,
+        ))),
+        "whisper" => Ok(Box::new(WhisperProvider::new(model, channel))),
+        _ => anyhow::bail!("unsupported STT provider: {provider}"),
+    }
+}
+
 pub trait SttProvider: Send {
     /// Start processing chunks and call `callback` from the provider worker.
     fn start(&mut self, callback: Box<dyn Fn(TranscriptEvent) + Send + Sync>)

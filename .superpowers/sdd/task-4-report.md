@@ -61,6 +61,24 @@ Diff review:
 - `git diff --check` — pass.
 - `cargo fmt --all -- --check` still reports pre-existing formatting differences in unrelated `llm/*` and `windows/movement.rs` files; those files were intentionally not included in this change.
 
+## Critical finding fix
+
+The original runtime candidate incorrectly used Tauri's `resource_dir()` (`Contents/Resources`), but the checked-in Task 2 externalBin fixture stages the sidecar at `Contents/MacOS/whisper-cli-<target-triple>`. The single source of truth now derives the candidate from `current_exe().parent()` and the existing target-specific filename helper. The helper and test names/comments explicitly describe the externalBin executable-directory layout; fallback precedence remains bundled, PATH, Homebrew, then the user-local binary. The packaging validation and fixture were left unchanged because they already enforce the correct `Contents/MacOS` layout.
+
+## Critical-fix verification
+
+- `bash apps/native/src-tauri/scripts/check-task-2-packaging.sh --fixture` — pass.
+- `cargo test paths:: -- --nocapture` — pass (3 tests).
+- `cargo test stt::whisper -- --nocapture` — pass on rerun (9 tests; an initial run hit the pre-existing timestamp-based temporary-directory collision in `fallback_order_and_invalid_candidates_are_source_safe`).
+- `cargo test listen -- --nocapture` — pass as part of the focused run.
+- `cargo test tests:: -- --nocapture` — pass as part of the focused run.
+- `cargo test` — pass: 214 passed, 1 ignored.
+- `cargo clippy --all-targets --all-features -- -D warnings` — pass.
+- `cargo check` — pass.
+- Frontend checks were not rerun because this fix changes no DTO/API or frontend files.
+- `git diff --check` — pass.
+
 ## Commit
 
-Committed as `1598ad9` (`Expose bundled Whisper runtime status`).
+Original implementation committed as `1598ad9` (`Expose bundled Whisper runtime status`).
+Critical-fix follow-up committed as `74c4fe4` (`Fix bundled Whisper externalBin path`).

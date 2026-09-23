@@ -4,7 +4,7 @@
 //! never opens `SystemAudioSource`.
 
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc};
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -133,7 +133,17 @@ struct Running {
 /// emit closure, exactly like `ListenService`.
 pub struct DictationService {
     state: Arc<Mutex<DictationStatus>>,
+    /// Held across a `stop()`'s whole teardown (including the worker
+    /// join) and across a `commit()`'s store+status write, so the two
+    /// can never interleave into an untracked worker or a stale
+    /// `listening`/`error` overwrite.
     running: Mutex<Option<Running>>,
+    /// Start/stop generation: `stop()` bumps it before touching
+    /// `running`, and `start()` snapshots it after its own reset — a
+    /// stop (or newer start) that lands while a start is still building
+    /// makes that start's `commit`/`fail`/error-callback writes no-op
+    /// instead of overwriting the winner's status.
+    epoch: Arc<AtomicU64>,
 }
 
 impl DictationService {
@@ -145,6 +155,7 @@ impl DictationService {
                 error: None,
             })),
             running: Mutex::new(None),
+            epoch: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -159,6 +170,12 @@ impl DictationService {
     /// the invoke — and both carry curated/sanitized text only (no paths,
     /// keys, URLs, or process output). `listening` is set only after the
     /// source AND provider are both live.
+    ///
+    /// The epoch snapshot is taken after the reset: a `stop()` (or a
+    /// newer start's reset) landing anywhere later bumps the epoch, which
+    /// turns this start's `commit`/`fail` writes into no-ops and aborts
+    /// the commit — a racing stop can never be overwritten by a late
+    /// `listening`/`error` write or leave an untracked mic worker.
     pub fn start(
         &self,
         keystore: &Keystore,
@@ -168,11 +185,13 @@ impl DictationService {
         emit: Arc<dyn Fn(DictationEvent) + Send + Sync>,
     ) -> anyhow::Result<()> {
         let _ = self.stop();
+        let epoch = self.epoch.load(Ordering::Acquire);
         let provider_name = config.models.stt_provider.clone();
         let model = config.models.stt_model.clone();
 
         if !mic_allowed {
             return Err(self.fail(
+                epoch,
                 &provider_name,
                 "Microphone permission is required to dictate",
                 true,
@@ -186,6 +205,7 @@ impl DictationService {
         };
         if provider_name == "deepgram" && key.is_none() {
             return Err(self.fail(
+                epoch,
                 &provider_name,
                 "Speech-to-text provider is not configured",
                 true,
@@ -199,7 +219,7 @@ impl DictationService {
                 &WhisperProvider::status_with_bundled(bundled_whisper),
                 &model,
             ) {
-                return Err(self.fail(&provider_name, message, true, &emit));
+                return Err(self.fail(epoch, &provider_name, message, true, &emit));
             }
         }
 
@@ -216,6 +236,7 @@ impl DictationService {
             Err(error) => {
                 log::warn!("dictation STT provider init failed: {error}");
                 return Err(self.fail(
+                    epoch,
                     &provider_name,
                     &sanitize_provider_error(&error.to_string()),
                     true,
@@ -229,6 +250,7 @@ impl DictationService {
             // Raw source errors can name devices — log them, emit a curated one.
             log::warn!("dictation microphone start failed: {error}");
             return Err(self.fail(
+                epoch,
                 &provider_name,
                 "Microphone could not be started",
                 false,
@@ -239,11 +261,12 @@ impl DictationService {
         let assembler = Arc::new(Mutex::new(DraftAssembler::new()));
         if let Err(error) = stt.start(
             transcript_callback(&assembler, &emit),
-            provider_error_callback(&self.state, &cancel, &emit),
+            provider_error_callback(&self.state, &cancel, &self.epoch, epoch, &emit),
         ) {
             source.stop();
             log::warn!("dictation STT start failed: {error}");
             return Err(self.fail(
+                epoch,
                 &provider_name,
                 "Speech-to-text could not be started",
                 false,
@@ -251,12 +274,48 @@ impl DictationService {
             ));
         }
 
-        *self.running.lock() = Some(Running {
-            worker: spawn_pump(rx, stt, source, cancel.clone()),
-            cancel,
-            assembler,
-        });
+        self.commit(
+            epoch,
+            provider_name,
+            Running {
+                worker: spawn_pump(rx, stt, source, cancel.clone()),
+                cancel,
+                assembler,
+            },
+        )
+    }
+
+    /// Commit phase of [`start`]: the epoch re-check, the `running`
+    /// store, and the `listening` write are one critical section — a
+    /// `stop()` holds the same lock for its whole teardown, so the two
+    /// cannot interleave. If a stop/newer start already bumped the
+    /// epoch, or the provider already died (its error callback sets
+    /// `cancel`), this start lost the race: cancel + join the pump it
+    /// just spawned — outside the lock — and leave the winner's status
+    /// untouched.
+    fn commit(&self, epoch: u64, provider_name: String, running: Running) -> anyhow::Result<()> {
+        let mut slot = self.running.lock();
+        if self.epoch.load(Ordering::Acquire) != epoch || running.cancel.load(Ordering::Acquire) {
+            let Running { cancel, worker, .. } = running;
+            cancel.store(true, Ordering::Release);
+            drop(slot);
+            let _ = worker.join();
+            return Err(anyhow::anyhow!("dictation start was interrupted"));
+        }
+        *slot = Some(running);
         let mut status = self.state.lock();
+        if self.epoch.load(Ordering::Acquire) != epoch
+            || slot
+                .as_ref()
+                .is_some_and(|running| running.cancel.load(Ordering::Acquire))
+        {
+            let running = slot.take().expect("just stored");
+            running.cancel.store(true, Ordering::Release);
+            drop(status);
+            drop(slot);
+            let _ = running.worker.join();
+            return Err(anyhow::anyhow!("dictation start was interrupted"));
+        }
         status.state = "listening".into();
         status.provider = Some(provider_name);
         status.error = None;
@@ -265,9 +324,13 @@ impl DictationService {
 
     /// Cancel + join the pump (which stops the provider and source), then
     /// finalize the draft exactly once. Idempotent: repeated calls return
-    /// an empty final draft and leave state `idle`.
+    /// an empty final draft and leave state `idle`. The epoch bump lands
+    /// before the `running` lock, so an in-flight `start()` always sees
+    /// it — the losing start cleans itself up at commit.
     pub fn stop(&self) -> DictationDraft {
-        let Some(running) = self.running.lock().take() else {
+        self.epoch.fetch_add(1, Ordering::AcqRel);
+        let mut slot = self.running.lock();
+        let Some(running) = slot.take() else {
             *self.state.lock() = DictationStatus {
                 state: "idle".into(),
                 provider: None,
@@ -281,7 +344,8 @@ impl DictationService {
         running.cancel.store(true, Ordering::Release);
         // The worker stops the provider and source before exiting, so the
         // join doubles as the teardown boundary — no callback can mutate
-        // the assembler after this point.
+        // the assembler after this point. `slot` stays held across the
+        // join so a racing `commit` serializes behind the whole stop.
         let _ = running.worker.join();
         let draft = running.assembler.lock().finish();
         *self.state.lock() = DictationStatus {
@@ -293,16 +357,27 @@ impl DictationService {
     }
 
     /// Record a failure in the durable status, emit it as a sanitized
-    /// `dictation:error`, and return it for the invoke result.
+    /// `dictation:error`, and return it for the invoke result. When the
+    /// epoch has moved on (a `stop()`/newer start landed mid-build) the
+    /// status write and emit are skipped — a stale start must not
+    /// overwrite the winner's `idle`/`listening` — but the `Err` still
+    /// rejects the invoke.
     fn fail(
         &self,
+        epoch: u64,
         provider: &str,
         message: &str,
         needs_setup: bool,
         emit: &Arc<dyn Fn(DictationEvent) + Send + Sync>,
     ) -> anyhow::Error {
         let message = sanitize_provider_error(message);
-        *self.state.lock() = DictationStatus {
+        // The epoch check and the status write share the `state` lock so
+        // a `stop()`'s `idle` write can never land between them.
+        let mut status = self.state.lock();
+        if self.epoch.load(Ordering::Acquire) != epoch {
+            return anyhow::anyhow!(message);
+        }
+        *status = DictationStatus {
             state: "error".into(),
             provider: Some(provider.to_string()),
             error: Some(DictationError {
@@ -310,6 +385,7 @@ impl DictationService {
                 needs_setup,
             }),
         };
+        drop(status);
         (emit)(DictationEvent::Error {
             message: message.clone(),
             needs_setup,
@@ -335,17 +411,27 @@ fn transcript_callback(
 }
 
 /// Terminal provider-error callback: cancel the pump, mark the durable
-/// status `error`, and emit one sanitized `dictation:error`.
+/// status `error`, and emit one sanitized `dictation:error`. The cancel
+/// always lands (it also makes `commit` abort a start whose provider
+/// died mid-build), but the status write and emit are skipped once the
+/// epoch moved on — a late error from a session a `stop()` already tore
+/// down must not clobber the winner's status.
 fn provider_error_callback(
     state: &Arc<Mutex<DictationStatus>>,
     cancel: &Arc<AtomicBool>,
+    epoch: &Arc<AtomicU64>,
+    start_epoch: u64,
     emit: &Arc<dyn Fn(DictationEvent) + Send + Sync>,
 ) -> Box<dyn Fn(String) + Send + Sync> {
     let state = state.clone();
     let cancel = cancel.clone();
+    let epoch = epoch.clone();
     let emit = emit.clone();
     Box::new(move |message| {
         cancel.store(true, Ordering::Release);
+        if epoch.load(Ordering::Acquire) != start_epoch {
+            return;
+        }
         let error = DictationError {
             message: sanitize_provider_error(&message),
             needs_setup: false,
@@ -718,8 +804,9 @@ mod tests {
             error: None,
         }));
         let cancel = Arc::new(AtomicBool::new(false));
+        let epoch = Arc::new(AtomicU64::new(7));
         let (events, emit) = event_log();
-        let callback = provider_error_callback(&state, &cancel, &emit);
+        let callback = provider_error_callback(&state, &cancel, &epoch, 7, &emit);
 
         callback("first line\nsecond line with detail".to_string());
 
@@ -746,5 +833,164 @@ mod tests {
                 needs_setup: false,
             })
         );
+    }
+
+    /// Once the epoch moved on — a `stop()` or a newer start won the
+    /// race — a late provider error still cancels the pump but must not
+    /// write status or emit `dictation:error` for a dead session.
+    #[test]
+    fn provider_error_callback_is_suppressed_after_epoch_bump() {
+        let state = Arc::new(Mutex::new(DictationStatus {
+            state: "idle".into(),
+            provider: None,
+            error: None,
+        }));
+        let cancel = Arc::new(AtomicBool::new(false));
+        let epoch = Arc::new(AtomicU64::new(3));
+        let (events, emit) = event_log();
+        let callback = provider_error_callback(&state, &cancel, &epoch, 3, &emit);
+
+        epoch.fetch_add(1, Ordering::AcqRel);
+        callback("late failure".to_string());
+
+        assert!(cancel.load(Ordering::Acquire));
+        assert!(events.lock().unwrap().is_empty());
+        assert_eq!(state.lock().state, "idle");
+        assert_eq!(state.lock().error, None);
+    }
+
+    /// A `Running` whose pump is just a cancellable sleep loop — enough
+    /// to exercise commit/stop teardown without audio hardware or a
+    /// real STT process.
+    fn dummy_running() -> (Running, Arc<AtomicBool>, Arc<Mutex<DraftAssembler>>) {
+        let cancel = Arc::new(AtomicBool::new(false));
+        let assembler = Arc::new(Mutex::new(DraftAssembler::new()));
+        let worker = {
+            let cancel = cancel.clone();
+            std::thread::spawn(move || {
+                while !cancel.load(Ordering::Acquire) {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            })
+        };
+        (
+            Running {
+                cancel: cancel.clone(),
+                worker,
+                assembler: assembler.clone(),
+            },
+            cancel,
+            assembler,
+        )
+    }
+
+    /// An uninterrupted commit stores the session and reports
+    /// `listening`; the stop that follows still recovers the draft and
+    /// leaves `idle`.
+    #[test]
+    fn commit_marks_listening_and_stop_recovers_the_draft() {
+        let service = DictationService::new();
+        let epoch = service.epoch.load(Ordering::Acquire);
+        let (running, _cancel, assembler) = dummy_running();
+        assembler
+            .lock()
+            .push(event(SpeakerChannel::Me, "hello", Finality::Final));
+
+        service
+            .commit(epoch, "deepgram".into(), running)
+            .expect("uncontested commit");
+
+        assert!(service.status().is_listening());
+        assert!(service.running.lock().is_some());
+        let draft = service.stop();
+        assert_eq!(draft.text, "hello");
+        assert!(draft.finality);
+        assert_eq!(service.status().state, "idle");
+        assert!(service.running.lock().is_none());
+    }
+
+    /// A `stop()` landing between a start's reset and its commit wins:
+    /// the losing start cancels and joins the pump it just spawned
+    /// instead of storing an untracked worker or overwriting `idle`.
+    #[test]
+    fn stop_during_start_commit_wins_and_leaves_no_worker() {
+        let service = DictationService::new();
+        // The snapshot a real `start()` takes after its internal reset.
+        let epoch = service.epoch.load(Ordering::Acquire);
+        // The racing stop lands while the start is still building.
+        let _ = service.stop();
+
+        let (running, cancel, _assembler) = dummy_running();
+        let result = service.commit(epoch, "deepgram".into(), running);
+
+        assert!(result.is_err());
+        // The aborted start's pump was cancelled, not orphaned.
+        assert!(cancel.load(Ordering::Acquire));
+        assert_eq!(service.status().state, "idle");
+        assert!(service.running.lock().is_none());
+    }
+
+    /// A provider error that already fired mid-build (cancel set, same
+    /// epoch) also aborts the commit — no `listening` overwrite on a
+    /// dead session.
+    #[test]
+    fn commit_aborts_when_provider_already_failed() {
+        let service = DictationService::new();
+        let epoch = service.epoch.load(Ordering::Acquire);
+        let (running, cancel, _assembler) = dummy_running();
+        cancel.store(true, Ordering::Release);
+
+        let result = service.commit(epoch, "deepgram".into(), running);
+
+        assert!(result.is_err());
+        assert!(service.running.lock().is_none());
+        assert!(!service.status().is_listening());
+    }
+
+    /// Hammering stop from several threads while a commit races in ends
+    /// one way: `idle`, nothing running, every stop returning a final
+    /// draft — no stale `listening`, no untracked worker.
+    #[test]
+    fn concurrent_stops_and_a_racing_commit_never_leave_stale_status() {
+        let service = Arc::new(DictationService::new());
+        let epoch = service.epoch.load(Ordering::Acquire);
+        let (running, _cancel, _assembler) = dummy_running();
+
+        let commit = {
+            let service = service.clone();
+            std::thread::spawn(move || service.commit(epoch, "deepgram".into(), running))
+        };
+        let stops: Vec<_> = (0..4)
+            .map(|_| {
+                let service = service.clone();
+                std::thread::spawn(move || service.stop())
+            })
+            .collect();
+
+        let _ = commit.join().expect("commit thread");
+        for stop in stops {
+            let draft = stop.join().expect("stop thread");
+            assert!(draft.finality);
+        }
+        assert_eq!(service.status().state, "idle");
+        assert!(service.running.lock().is_none());
+    }
+
+    /// Repeated stops are idempotent even when interleaved with an
+    /// aborted start — the second and later stops return empty final
+    /// drafts and the status stays `idle`.
+    #[test]
+    fn repeated_stops_after_aborted_start_stay_idle() {
+        let service = DictationService::new();
+        let epoch = service.epoch.load(Ordering::Acquire);
+        let _ = service.stop();
+        let (running, _cancel, _assembler) = dummy_running();
+        assert!(service.commit(epoch, "deepgram".into(), running).is_err());
+        for _ in 0..3 {
+            let draft = service.stop();
+            assert_eq!(draft.text, "");
+            assert!(draft.finality);
+            assert_eq!(service.status().state, "idle");
+        }
     }
 }

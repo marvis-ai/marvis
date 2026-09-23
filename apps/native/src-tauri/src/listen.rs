@@ -22,12 +22,22 @@ const HISTORY_LIMIT: usize = 20;
 const WORKER_TICK: Duration = Duration::from_millis(100);
 const SUMMARY_TIMEOUT: Duration = Duration::from_secs(30);
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClosedTurn {
+    pub speaker: SpeakerChannel,
+    pub text: String,
+    pub ts: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ListenTurn {
     #[serde(serialize_with = "serialize_speaker")]
     pub speaker: SpeakerChannel,
     pub text: String,
     pub ts: i64,
+    pub session_id: i64,
+    #[serde(rename = "final")]
+    pub finality: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -100,6 +110,15 @@ impl TurnAssembler {
     }
     pub fn flush_at(&mut self, now: Instant) -> Vec<ClosedTurn> {
         self.flush_due(now)
+    }
+
+    pub fn interim(&self, channel: SpeakerChannel) -> Option<String> {
+        let pending = self.pending(channel);
+        let mut text = pending.committed.clone();
+        if let Some(provisional) = &pending.provisional {
+            append_segment(&mut text, provisional);
+        }
+        (!text.trim().is_empty()).then(|| text.trim().to_string())
     }
 
     fn flush_due(&mut self, now: Instant) -> Vec<ClosedTurn> {
@@ -247,7 +266,7 @@ pub struct ListenStatus {
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "kind", content = "payload")]
 pub enum ListenEvent {
-    Turn(ClosedTurn),
+    Turn(ListenTurn),
     Summary(ListenSummary),
     Error { message: String, needs_setup: bool },
 }
@@ -362,9 +381,24 @@ impl ListenService {
                 let callback_context = context.clone();
                 if let Err(error) = stt.start(
                     Box::new(move |event| {
-                        let turns = callback_assembler.lock().push(event);
+                        let channel = event.channel;
+                        let (turns, interim) = {
+                            let mut assembler = callback_assembler.lock();
+                            let turns = assembler.push(event);
+                            let interim = assembler.interim(channel);
+                            (turns, interim)
+                        };
                         for turn in turns {
                             persist_turn(&callback_context, turn);
+                        }
+                        if let Some(text) = interim {
+                            (callback_context.emit)(ListenEvent::Turn(ListenTurn {
+                                speaker: channel,
+                                text,
+                                ts: now_unix(),
+                                session_id: callback_context.session_id,
+                                finality: false,
+                            }));
                         }
                     }),
                     Box::new({
@@ -502,13 +536,25 @@ fn persist_turn(context: &Arc<SessionContext>, turn: ClosedTurn) {
         {
             context.status.lock().turns += 1;
         }
-        (context.emit)(ListenEvent::Turn(turn));
+        (context.emit)(ListenEvent::Turn(ListenTurn {
+            speaker: turn.speaker,
+            text: turn.text,
+            ts: turn.ts,
+            session_id: context.session_id,
+            finality: true,
+        }));
         return;
     };
     {
         context.status.lock().turns += 1;
     }
-    (context.emit)(ListenEvent::Turn(turn));
+    (context.emit)(ListenEvent::Turn(ListenTurn {
+        speaker: turn.speaker,
+        text: turn.text,
+        ts: turn.ts,
+        session_id: context.session_id,
+        finality: true,
+    }));
 
     if count % SUMMARY_EVERY == 0 {
         let transcript = history_snapshot.expect("successful insert has history snapshot");

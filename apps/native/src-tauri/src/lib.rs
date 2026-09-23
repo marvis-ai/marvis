@@ -953,18 +953,9 @@ async fn listen_start(app: AppHandle) -> Result<listen::ListenStatus, String> {
             .listen
             .start(Arc::clone(&state.db), &keystore, &config, mic_allowed, emit)
     {
-        let message = error.to_string();
-        let _ = app.emit_to(
-            windows::BAR_LABEL,
-            EV_LISTEN_ERROR,
-            json!({ "message": message, "needs_setup": false }),
-        );
-        let status = state.listen.status();
-        let _ = app.emit_to(
-            windows::BAR_LABEL,
-            EV_LISTEN_STATE,
-            json!({ "state": "error", "provider": status.provider, "session_id": status.session_id, "mic": status.mic }),
-        );
+        // ListenService owns the event contract for failures it emits. In
+        // particular, setup failures have already emitted needs_setup:true;
+        // re-emitting here would produce a contradictory second event.
         return Err(error.to_string());
     }
     let status = state.listen.status();

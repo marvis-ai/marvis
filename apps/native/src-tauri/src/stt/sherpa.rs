@@ -33,18 +33,30 @@ struct DecodeJob {
 /// and a per-channel model would double the ~450MB working set.
 pub struct SherpaEngine {
     jobs: mpsc::Sender<DecodeJob>,
+    /// Kept only for `alive()` — never joined: the engine outlives providers.
+    thread: JoinHandle<()>,
 }
 
 static ENGINE: Mutex<Option<(PathBuf, Arc<SherpaEngine>)>> = Mutex::new(None);
 
 fn engine_for(model_dir: &Path) -> Result<Arc<SherpaEngine>, String> {
+    engine_for_with(model_dir, SherpaEngine::spawn)
+}
+
+/// `spawn` is a seam so tests can stand up engines without model files.
+fn engine_for_with(
+    model_dir: &Path,
+    spawn: impl FnOnce(&Path) -> Result<SherpaEngine, String>,
+) -> Result<Arc<SherpaEngine>, String> {
     let mut slot = ENGINE.lock();
     if let Some((dir, engine)) = &*slot {
-        if dir == model_dir {
+        // A cached engine whose decode thread died can never decode again —
+        // fall through and respawn rather than hand out the dead Arc forever.
+        if dir == model_dir && engine.alive() {
             return Ok(engine.clone());
         }
     }
-    let engine = Arc::new(SherpaEngine::spawn(model_dir)?);
+    let engine = Arc::new(spawn(model_dir)?);
     *slot = Some((model_dir.to_path_buf(), engine.clone()));
     Ok(engine)
 }
@@ -57,7 +69,7 @@ impl SherpaEngine {
         let (jobs, rx) = mpsc::channel::<DecodeJob>();
         let (init, ready) = mpsc::channel::<Result<(), String>>();
         let dir = model_dir.to_path_buf();
-        thread::spawn(move || {
+        let thread = thread::spawn(move || {
             let recognizer = match create_recognizer(&dir) {
                 Ok(recognizer) => {
                     let _ = init.send(Ok(()));
@@ -85,9 +97,15 @@ impl SherpaEngine {
         // hung native load must not wedge every later start. On timeout the
         // thread exits on its own once creation returns (jobs sender dropped).
         match ready.recv_timeout(INIT_TIMEOUT) {
-            Ok(result) => result.map(|()| Self { jobs }),
+            Ok(result) => result.map(|()| Self { jobs, thread }),
             Err(_) => Err("the speech model could not be loaded".to_string()),
         }
+    }
+
+    /// `false` once the decode thread has exited — its job receiver is gone,
+    /// so the engine can never decode again.
+    fn alive(&self) -> bool {
+        !self.thread.is_finished()
     }
 
     /// Hand one VAD segment to the engine thread and wait for its transcript.
@@ -307,6 +325,44 @@ fn emit_segment(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A live engine stand-in: the thread parks on the job queue until every
+    /// sender drops, like the real decode loop.
+    fn test_engine() -> SherpaEngine {
+        let (jobs, rx) = mpsc::channel::<DecodeJob>();
+        let thread = thread::spawn(move || while rx.recv().is_ok() {});
+        SherpaEngine { jobs, thread }
+    }
+
+    /// An engine whose decode thread has already exited — the state a
+    /// panicked job loop leaves behind.
+    fn dead_engine() -> SherpaEngine {
+        let (jobs, rx) = mpsc::channel::<DecodeJob>();
+        drop(rx); // sends fail, same as a thread that died mid-loop
+        let thread = thread::spawn(|| {});
+        while !thread.is_finished() {
+            thread::yield_now();
+        }
+        SherpaEngine { jobs, thread }
+    }
+
+    #[test]
+    fn engine_for_respawns_after_the_engine_thread_dies() {
+        let dir = Path::new("dead-engine-test-dir");
+        // Seed the registry the way a dead decode thread leaves it: the
+        // cached Arc is still valid but can never decode again.
+        let dead = Arc::new(dead_engine());
+        assert!(!dead.alive());
+        *ENGINE.lock() = Some((dir.to_path_buf(), dead.clone()));
+        let next = engine_for_with(dir, |_| Ok(test_engine())).unwrap();
+        // A fresh engine replaces the dead Arc — not the poisoned slot.
+        assert!(next.alive());
+        assert!(!Arc::ptr_eq(&dead, &next));
+        // The live replacement is cached and reused on the next call.
+        let again = engine_for_with(dir, |_| Ok(test_engine())).unwrap();
+        assert!(Arc::ptr_eq(&next, &again));
+        *ENGINE.lock() = None;
+    }
 
     #[test]
     fn emit_segment_maps_clean_text_to_a_final_event() {

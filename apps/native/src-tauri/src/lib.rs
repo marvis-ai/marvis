@@ -38,6 +38,7 @@ pub mod audio;
 mod capture;
 mod config;
 mod deeplink;
+mod dictation;
 mod hotkey;
 mod keystore;
 mod listen;

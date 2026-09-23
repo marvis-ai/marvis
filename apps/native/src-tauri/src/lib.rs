@@ -1256,18 +1256,7 @@ fn config_set(app: AppHandle, key: String, value: serde_json::Value) -> Result<C
                 }
                 cfg.compat.base_url = v.to_string();
             }
-            "models.stt_provider" => {
-                let v = value
-                    .as_str()
-                    .ok_or("models.stt_provider must be a string")?;
-                cfg.models.stt_provider = config::validate_stt_provider(v)?;
-            }
-            "models.stt_model" => {
-                let v = value
-                    .as_str()
-                    .ok_or("models.stt_model must be a string")?;
-                cfg.models.stt_model = config::validate_stt_model(v)?;
-            }
+            key if config::apply_stt_config(&mut cfg.models, key, &value)? => {}
             "vision.provider" => {
                 let v = value
                     .as_str()
@@ -1487,6 +1476,18 @@ mod tests {
             std::process::id(),
             N.fetch_add(1, Ordering::Relaxed)
         ))
+    }
+
+    #[test]
+    fn removed_listen_placeholder_is_absent_from_command_contract() {
+        // Keep this tied to the actual registration source rather than a
+        // second hand-maintained list of command names.
+        assert!(!include_str!("lib.rs").contains(concat!("listen_", "stub")));
+        let source = include_str!("lib.rs");
+        assert!(source.contains("listen_start,"));
+        assert!(source.contains("listen_stop,"));
+        assert!(source.contains("listen_status,"));
+        assert!(source.contains("whisper_status,"));
     }
 
     /// Brief smoke test: `config_get` against a temp `AppState` returns

@@ -435,6 +435,26 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     #[test]
+    fn whisper_status_serializes_documented_wire_field_names() {
+        let status = WhisperStatus {
+            binary: Some("/tmp/whisper-cli".into()),
+            models: vec!["base.en.bin".into()],
+        };
+        let payload = serde_json::to_value(status).unwrap();
+        assert_eq!(
+            payload
+                .as_object()
+                .unwrap()
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>(),
+            vec!["binary", "models"]
+        );
+        assert_eq!(payload["binary"], "/tmp/whisper-cli");
+        assert_eq!(payload["models"][0], "base.en.bin");
+    }
+
+    #[test]
     fn reports_repeated_worker_failures_but_not_silence() {
         let (sender, receiver) = mpsc::sync_channel(4);
         let errors = Arc::new(Mutex::new(Vec::new()));

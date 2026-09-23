@@ -17,8 +17,8 @@ and user-local fallbacks for development and advanced users.
 | Question | Decision |
 | --- | --- |
 | Installation model | Bundle `whisper-cli` with the Marvis app; do not download the CLI at model-download time. |
-| Binary source | Pinned prebuilt official whisper.cpp release binaries. |
-| Architectures | Bundle arm64 and x86_64 macOS binaries; resolve the one matching the running app architecture. |
+| Binary source | Build pinned official whisper.cpp source in macOS CI; do not use community binaries or runtime compilation. |
+| Architectures | Build and bundle arm64 and x86_64 macOS binaries; resolve the one matching the running app architecture. |
 | Model relationship | Model download remains a separate Hugging Face operation. The bundled CLI is already available when the model is downloaded. |
 | Fallbacks | Preserve PATH, `/opt/homebrew/bin/whisper-cli`, and `~/.marvis/models/whisper/bin/whisper-cli` fallback resolution. |
 
@@ -40,9 +40,25 @@ The optional Voice setup/model-download feature already downloads curated
 Whisper model data into `~/.marvis/models/whisper/models/`. This design changes
 binary provisioning only. Models remain user data and are never executed.
 
-## Packaging
+## Packaging and CI production
 
-Add pinned prebuilt binaries to the native packaging input:
+The official whisper.cpp releases do not provide a ready-made universal macOS
+`whisper-cli` executable. Marvis therefore builds the CLI from a pinned
+official whisper.cpp source revision in macOS CI.
+
+The CI build produces:
+
+```text
+whisper-cli-aarch64-apple-darwin
+whisper-cli-x86_64-apple-darwin
+```
+
+The pinned source revision, build flags, and SHA-256 checksums are recorded in
+the release configuration. No unversioned `main` checkout, community binary,
+or user-machine build is accepted. CI must verify each produced binary before
+packaging.
+
+The resulting binaries are added to the native packaging input:
 
 ```text
 apps/native/src-tauri/
@@ -51,12 +67,8 @@ apps/native/src-tauri/
 │   └── whisper-cli-x86_64-apple-darwin
 ```
 
-The exact whisper.cpp release/version and SHA-256 checksums are pinned in the
-release configuration. No unversioned `main` branch artifact is accepted. The
-release preparation flow must verify each binary checksum before packaging.
-
-The binaries are bundled as Tauri external binaries/resources and included in
-the signed macOS `.app`. They must:
+They are bundled as Tauri external binaries/resources and included in the
+signed macOS `.app`. They must:
 
 - Be executable.
 - Match their declared target architecture.
@@ -106,8 +118,9 @@ Development builds use the same resolution logic:
 - If none exists, the Voice UI explains that the current development build has
   no usable Whisper CLI; this is a setup state, not a panic.
 
-The app must not silently build whisper.cpp at runtime. Building from source is
-not part of this feature.
+The app must not silently build whisper.cpp at runtime. Building from source
+happens only in the pinned macOS CI packaging workflow, never on the user's
+machine.
 
 ## Model/download behavior
 

@@ -2,17 +2,12 @@ name: Build Whisper CLI
 
 on:
   workflow_dispatch:
-  push:
-    branches: [master]
-    paths:
-      - '.github/workflows/whisper-cli.yml'
-      - 'apps/native/src-tauri/scripts/build-whisper-cli.sh'
-      - 'apps/native/src-tauri/scripts/check-task-2-packaging.sh'
-      - 'apps/native/src-tauri/scripts/verify-release-app.sh'
-      - 'apps/native/src-tauri/tauri.conf.json'
-      - 'apps/native/src-tauri/src/**'
-      - 'apps/native/package.json'
-      - 'bun.lock'
+    inputs:
+      package_app:
+        description: 'Build release app bundles (requires a pre-provisioned signing certificate)'
+        type: boolean
+        required: true
+        default: false
 
 permissions:
   contents: read
@@ -70,19 +65,24 @@ jobs:
           if-no-files-found: error
 
   package-arm64:
-    name: Package signed Marvis (arm64)
+    name: Package Marvis release candidate (arm64)
+    if: ${{ inputs.package_app == true }}
     needs: build-arm64
     runs-on: macos-14
     env:
       APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
     steps:
       - uses: actions/checkout@v4
-      - name: Require release signing identity
+      - name: Require pre-provisioned release signing certificate
         run: |
           if [[ -z "${APPLE_SIGNING_IDENTITY:-}" ]]; then
-            echo "Release prerequisite missing: configure the APPLE_SIGNING_IDENTITY secret before producing a signed app." >&2
+            echo "Release prerequisite missing: configure APPLE_SIGNING_IDENTITY and provision its certificate in the runner keychain." >&2
             exit 1
           fi
+          security find-identity -v -p codesigning | grep -Fq "${APPLE_SIGNING_IDENTITY}" || {
+            echo "Release prerequisite missing: signing identity is not available in the runner keychain." >&2
+            exit 1
+          }
       - uses: actions/download-artifact@v4
         with:
           name: whisper-cli-aarch64-apple-darwin
@@ -103,19 +103,24 @@ jobs:
         run: bash scripts/verify-release-app.sh target/aarch64-apple-darwin/release/bundle/macos/Marvis.app aarch64-apple-darwin
 
   package-x86-64:
-    name: Package signed Marvis (x86_64)
+    name: Package Marvis release candidate (x86_64)
+    if: ${{ inputs.package_app == true }}
     needs: build-x86-64
     runs-on: macos-15-intel
     env:
       APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
     steps:
       - uses: actions/checkout@v4
-      - name: Require release signing identity
+      - name: Require pre-provisioned release signing certificate
         run: |
           if [[ -z "${APPLE_SIGNING_IDENTITY:-}" ]]; then
-            echo "Release prerequisite missing: configure the APPLE_SIGNING_IDENTITY secret before producing a signed app." >&2
+            echo "Release prerequisite missing: configure APPLE_SIGNING_IDENTITY and provision its certificate in the runner keychain." >&2
             exit 1
           fi
+          security find-identity -v -p codesigning | grep -Fq "${APPLE_SIGNING_IDENTITY}" || {
+            echo "Release prerequisite missing: signing identity is not available in the runner keychain." >&2
+            exit 1
+          }
       - uses: actions/download-artifact@v4
         with:
           name: whisper-cli-x86_64-apple-darwin

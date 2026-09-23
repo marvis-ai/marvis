@@ -381,7 +381,7 @@ fn resolve_fallback(
     if let Some(path) = path {
         for directory in std::env::split_paths(path) {
             let candidate = directory.join("whisper-cli");
-            if is_executable_file(&candidate) {
+            if is_usable_candidate(&candidate) {
                 return Some((candidate, WhisperBinarySource::Path));
             }
         }
@@ -390,12 +390,12 @@ fn resolve_fallback(
         Path::new("/opt/homebrew/bin/whisper-cli"),
         Path::new("/usr/local/bin/whisper-cli"),
     ] {
-        if is_executable_file(homebrew) {
+        if is_usable_candidate(homebrew) {
             return Some((homebrew.to_path_buf(), WhisperBinarySource::Homebrew));
         }
     }
     let candidate = user_dir.join("whisper-cli");
-    is_executable_file(&candidate).then_some((candidate, WhisperBinarySource::User))
+    is_usable_candidate(&candidate).then_some((candidate, WhisperBinarySource::User))
 }
 
 #[cfg(unix)]
@@ -410,15 +410,18 @@ fn is_executable_file(path: &Path) -> bool {
     path.is_file()
 }
 
-/// Bundled files are release inputs, so on macOS reject a valid executable
-/// whose Mach-O slices cannot run in this process. Fallback binaries retain
-/// the historical metadata-only behavior for development and non-macOS tests.
+/// Every candidate must be executable and, on macOS, contain a Mach-O slice
+/// that can run in this process. Discovery never launches the candidate.
+fn is_usable_candidate(path: &Path) -> bool {
+    is_executable_file(path) && architecture_matches(path)
+}
+
 fn is_bundled_candidate(path: &Path) -> bool {
-    is_executable_file(path) && bundled_architecture_matches(path)
+    is_usable_candidate(path)
 }
 
 #[cfg(target_os = "macos")]
-fn bundled_architecture_matches(path: &Path) -> bool {
+fn architecture_matches(path: &Path) -> bool {
     let expected = if cfg!(target_arch = "aarch64") {
         "arm64"
     } else if cfg!(target_arch = "x86_64") {
@@ -437,7 +440,7 @@ fn bundled_architecture_matches(path: &Path) -> bool {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn bundled_architecture_matches(_path: &Path) -> bool {
+fn architecture_matches(_path: &Path) -> bool {
     true
 }
 
@@ -628,7 +631,7 @@ mod tests {
         let root = tempfile_dir();
         let candidate = root.join("whisper-cli");
         make_executable(&candidate);
-        assert!(!bundled_architecture_matches(&candidate));
+        assert!(!architecture_matches(&candidate));
         assert!(!is_bundled_candidate(&candidate));
     }
 
@@ -645,12 +648,21 @@ mod tests {
             resolve_fallback(Some(std::ffi::OsStr::new("/missing")), &user_dir),
             None
         );
-        make_executable(&user_dir.join("whisper-cli"));
+        make_test_executable(&user_dir.join("whisper-cli"));
         assert_eq!(
             resolve_fallback(None, &user_dir),
             Some((user_dir.join("whisper-cli"), WhisperBinarySource::User))
         );
         assert!(!is_executable_file(&path_binary));
+        assert!(!is_usable_candidate(&path_binary));
+        #[cfg(target_os = "macos")]
+        {
+            make_executable(&path_binary);
+            assert_eq!(
+                resolve_fallback(Some(path_dir.as_os_str()), &user_dir),
+                Some((user_dir.join("whisper-cli"), WhisperBinarySource::User))
+            );
+        }
         fs::create_dir(path_dir.join("not-a-file")).unwrap();
         assert!(!is_executable_file(&path_dir.join("not-a-file")));
     }

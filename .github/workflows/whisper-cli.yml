@@ -5,8 +5,8 @@ on:
   push:
     branches: [master]
     paths:
-      - ".github/workflows/whisper-cli.yml"
-      - "apps/native/src-tauri/scripts/build-whisper-cli.sh"
+      - '.github/workflows/whisper-cli.yml'
+      - 'apps/native/src-tauri/scripts/build-whisper-cli.sh'
 
 permissions:
   contents: read
@@ -41,7 +41,8 @@ jobs:
 
   build-x86-64:
     name: Build whisper-cli (x86_64)
-    runs-on: macos-13
+    # macos-15-intel is the final supported Intel runner path.
+    runs-on: macos-15-intel
     steps:
       - uses: actions/checkout@v4
 

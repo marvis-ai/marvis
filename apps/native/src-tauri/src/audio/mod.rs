@@ -3,7 +3,9 @@
 use std::sync::mpsc::Sender;
 
 mod mic;
+mod system;
 pub use mic::MicSource;
+pub use system::SystemAudioSource;
 
 const TARGET_SAMPLE_RATE: u32 = 16_000;
 
@@ -74,7 +76,10 @@ mod tests {
 
     #[test]
     fn converts_interleaved_stereo_to_mono() {
-        assert_eq!(interleaved_to_mono(&[1.0, 0.0, 0.25, 0.75], 2), vec![0.5, 0.5]);
+        assert_eq!(
+            interleaved_to_mono(&[1.0, 0.0, 0.25, 0.75], 2),
+            vec![0.5, 0.5]
+        );
     }
 
     #[test]

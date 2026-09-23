@@ -72,6 +72,7 @@ signed macOS `.app`. They must:
 
 - Be executable.
 - Match their declared target architecture.
+- Link whisper.cpp/ggml statically or otherwise remain self-contained inside the signed app; a build-tree `libwhisper`/`libggml` dynamic library dependency is invalid.
 - Be code-signed as part of the Marvis app signing flow.
 - Never be downloaded by the running application.
 - Never be copied into `~/.marvis/models/whisper/bin/`.

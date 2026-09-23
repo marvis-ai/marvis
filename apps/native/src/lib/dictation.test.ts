@@ -133,6 +133,18 @@ describe('reconcileDictationEdit', () => {
 describe('selectionAfterDictationDraft', () => {
   const range = { start: 6, length: 15 };
 
+  test('moves a caret at an empty insertion anchor with the draft', () => {
+    // The standard dictation start is `{start: caret, length: 0}` — the
+    // caret must land after the inserted draft, not stay pinned before it.
+    expect(
+      selectionAfterDictationDraft(
+        { start: 6, end: 6 },
+        { start: 6, length: 0 },
+        3,
+      ),
+    ).toEqual({ start: 9, end: 9 });
+  });
+
   test('follows a caret at the end of the dictated slice', () => {
     expect(
       selectionAfterDictationDraft({ start: 21, end: 21 }, range, 18),

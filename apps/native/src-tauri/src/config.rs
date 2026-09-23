@@ -4,6 +4,7 @@ use std::path::Path;
 
 use crate::llm::ProviderKind;
 use crate::paths;
+use crate::voice_models::entry_for_value;
 
 /// Non-secret preferences, persisted as `~/.marvis/config.toml` (0644).
 ///
@@ -81,6 +82,16 @@ pub(crate) fn validate_stt_model(value: &str) -> Result<String, String> {
     }
 }
 
+pub(crate) fn validate_whisper_model(value: &str) -> Result<String, String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Err("STT model must not be empty".to_string());
+    }
+    entry_for_value(value)
+        .map(|entry| entry.id.as_str().to_string())
+        .ok_or_else(|| format!("unknown Whisper model {value:?}"))
+}
+
 /// Apply the two STT config command keys. Returns `true` when `key` is an STT
 /// key, allowing the command layer to keep its other writable keys separate.
 pub(crate) fn apply_stt_config(
@@ -98,7 +109,11 @@ pub(crate) fn apply_stt_config(
         }
         "models.stt_model" => {
             let value = value.as_str().ok_or("models.stt_model must be a string")?;
-            models.stt_model = validate_stt_model(value)?;
+            models.stt_model = if models.stt_provider == "whisper" {
+                validate_whisper_model(value)?
+            } else {
+                validate_stt_model(value)?
+            };
             Ok(true)
         }
         _ => Ok(false),
@@ -416,10 +431,10 @@ mod tests {
         assert!(apply_stt_config(
             &mut models,
             "models.stt_model",
-            &serde_json::json!("  base.en  "),
+            &serde_json::json!("  base  "),
         )
         .unwrap());
-        assert_eq!(models.stt_model, "base.en");
+        assert_eq!(models.stt_model, "base");
         assert_eq!(
             apply_stt_config(
                 &mut models,
@@ -429,6 +444,32 @@ mod tests {
             .unwrap_err(),
             "unknown STT provider \"unknown\""
         );
+        models.stt_provider = "whisper".into();
+        assert_eq!(
+            apply_stt_config(
+                &mut models,
+                "models.stt_model",
+                &serde_json::json!("https://example.com/model.bin"),
+            )
+            .unwrap_err(),
+            "unknown Whisper model \"https://example.com/model.bin\""
+        );
+        assert_eq!(
+            apply_stt_config(
+                &mut models,
+                "models.stt_model",
+                &serde_json::json!(" GGML-SMALL.BIN "),
+            )
+            .unwrap_err(),
+            "unknown Whisper model \"GGML-SMALL.BIN\""
+        );
+        assert!(apply_stt_config(
+            &mut models,
+            "models.stt_model",
+            &serde_json::json!(" small "),
+        )
+        .unwrap());
+        assert_eq!(models.stt_model, "small");
         assert_eq!(
             apply_stt_config(&mut models, "models.stt_model", &serde_json::json!("  "),)
                 .unwrap_err(),

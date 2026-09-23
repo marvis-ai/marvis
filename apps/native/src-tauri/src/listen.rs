@@ -358,7 +358,9 @@ impl ListenService {
         }
         if provider_name == "whisper" {
             let whisper = WhisperProvider::status();
-            let model_available = whisper.models.iter().any(|name| name == &model);
+            let model_available = WhisperProvider::model_filename(&model)
+                .ok()
+                .is_some_and(|filename| whisper.models.iter().any(|name| name == filename));
             if whisper.binary.is_none() || !model_available {
                 let message = if whisper.binary.is_none() {
                     "whisper-cli was not found; install it and try again"

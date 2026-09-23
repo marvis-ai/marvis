@@ -189,6 +189,17 @@ const Bar = () => {
    *  until then the slice still holds the user's own (e.g. selected)
    *  text, so an empty final draft must leave it untouched. */
   const dictationDraftLanded = useRef(false);
+  /** Invalidation counter for in-flight `dictation_stop` invokes —
+   *  bumped by wholesale clear/replace paths (Escape, type-to-wake)
+   *  that reconcile can't classify: a zero-length boundary anchor
+   *  never intersects a wipe ending/starting exactly at the caret,
+   *  so a pending applyFinal stop snapshots the token and discards
+   *  its returned draft when it moved. */
+  const dictationStopToken = useRef(0);
+  /** The in-flight `dictation_stop` promise — a second Enter while
+   *  `dictationState` still reads `listening` queues its submit
+   *  behind the final-draft application instead of re-stopping. */
+  const dictationStopPending = useRef<Promise<void> | null>(null);
 
   // Icon-row ⇄ input-row swap: the gate card and boot errors count as
   // expanded; `main` rests as the icon row until the iris opens it or
@@ -251,22 +262,34 @@ const Bar = () => {
    *  the text can drift while the invoke is in flight; the base text
    *  is snapshotted alongside the range and the drift is reconciled
    *  on resolve: edits outside the dictated slice just shift where
-   *  the final draft lands, edits inside it discard the draft. And
-   *  if no live draft ever landed (e.g. Enter during an in-flight
-   *  start), the slice still holds the user's selected text — an
-   *  empty final must not delete it. Resolves when the stop settles
-   *  so the mic button can hold `speechBusy` across it. */
+   *  the final draft lands, edits inside it discard the draft. A
+   *  wholesale clear/replace is caught separately — a zero-length
+   *  boundary anchor can never intersect a wipe that ends or starts
+   *  exactly at the caret — via the stop token (Escape, type-to-wake)
+   *  and the every-edge-changed check (select-all+type). And if no
+   *  live draft ever landed (e.g. Enter during an in-flight start),
+   *  the slice still holds the user's selected text — an empty final
+   *  must not delete it. Resolves when the stop settles so the mic
+   *  button can hold `speechBusy` across it and a queued Enter can
+   *  submit behind the final draft. */
   const stopDictation = (applyFinal: boolean) => {
     const range = dictationRange.current;
     const baseText = textRef.current;
     const draftLanded = dictationDraftLanded.current;
+    const stopToken = dictationStopToken.current;
     dictationRange.current = null;
     if (range === null && dictationState !== 'listening') {
       return Promise.resolve();
     }
-    return dictationStop()
+    const pending = dictationStop()
       .then((draft) => {
-        if (!applyFinal || range === null) {
+        if (
+          !applyFinal ||
+          range === null ||
+          stopToken !== dictationStopToken.current
+        ) {
+          // A wholesale clear/replace bumped the token — discard the
+          // returned draft, the user's version stands.
           return;
         }
         const current = textRef.current;
@@ -281,6 +304,16 @@ const Bar = () => {
           // was settling — their version wins, the draft is dropped.
           return;
         }
+        if (
+          baseText !== '' &&
+          current[0] !== baseText[0] &&
+          current[current.length - 1] !== baseText[baseText.length - 1]
+        ) {
+          // Every edge of the base text changed — a select-all+type /
+          // full wipe reconcile reads as "before/after" a boundary
+          // caret anchor rather than an intersection. Discard.
+          return;
+        }
         if (draft.text === '' && !draftLanded) {
           return;
         }
@@ -292,6 +325,13 @@ const Bar = () => {
         }
       })
       .catch(() => raise('Stop failed'));
+    dictationStopPending.current = pending;
+    void pending.finally(() => {
+      if (dictationStopPending.current === pending) {
+        dictationStopPending.current = null;
+      }
+    });
+    return pending;
   };
 
   const bootstrap = useCallback(async () => {
@@ -530,7 +570,10 @@ const Bar = () => {
           return;
         }
         // Esc discards the field — stop without applying the final
-        // draft so the cleared text stays cleared.
+        // draft so the cleared text stays cleared. Bumping the stop
+        // token also invalidates a stop already in flight: its
+        // returned draft must not land in the cleared field.
+        dictationStopToken.current += 1;
         if (dictationRange.current !== null) {
           void stopDictation(false);
         }
@@ -551,7 +594,10 @@ const Bar = () => {
       }
       if (e.key.length === 1) {
         // Type-to-wake replaces the input — drop any tracked anchor so
-        // the wake character isn't treated as an edit inside it.
+        // the wake character isn't treated as an edit inside it, and
+        // bump the stop token so an in-flight stop's draft can't be
+        // spliced into the replacement text either.
+        dictationStopToken.current += 1;
         if (dictationRange.current !== null) {
           void stopDictation(false);
         }
@@ -583,22 +629,42 @@ const Bar = () => {
     }
   };
 
+  /** Send the field's current text — read off `textRef` so the Enter
+   *  queued behind a settling stop sees the applied final draft, not
+   *  the render-time `text`. */
+  const sendAsk = () => {
+    const t = textRef.current.trim();
+    if (!t) {
+      return;
+    }
+    setText('');
+    void askSend(t).catch(() => raise('Send failed'));
+  };
+
   // Submit = ask (a follow-up while the card is open). The backend
   // expands the window itself — no local collapse needed either way.
   const submitAsk = (e: SubmitEvent<HTMLFormElement>) => {
     e.preventDefault();
+    const pendingStop = dictationStopPending.current;
+    if (pendingStop !== null) {
+      // A stop is already settling — Enter's contract is "submit the
+      // final text", so queue it behind the draft application rather
+      // than re-stop (the still-`listening` state would swallow it).
+      // A new session anchored meanwhile vetoes the send.
+      void pendingStop.then(() => {
+        if (dictationRange.current === null) {
+          sendAsk();
+        }
+      });
+      return;
+    }
     // Enter ends dictation for review but never sends — the next Enter
     // submits the reviewed text.
     if (dictationState === 'listening' || dictationRange.current !== null) {
       void stopDictation(true);
       return;
     }
-    const t = text.trim();
-    if (!t) {
-      return;
-    }
-    setText('');
-    void askSend(t).catch(() => raise('Send failed'));
+    sendAsk();
   };
 
   const rowCls = cn(

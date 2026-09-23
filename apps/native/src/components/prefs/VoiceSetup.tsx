@@ -62,6 +62,7 @@ export interface VoiceSetupProps {
   showSkip?: boolean;
   onSkip?: () => void;
   onContinue?: () => void;
+  onBack?: () => void;
   /** Settings keeps downloads alive across navigation; onboarding can opt in to cancellation. */
   cancelOnUnmount?: boolean;
 }
@@ -71,6 +72,7 @@ export const VoiceSetup = ({
   showSkip = false,
   onSkip,
   onContinue,
+  onBack,
   cancelOnUnmount = false,
 }: VoiceSetupProps) => {
   const [catalog, setCatalog] = useState<VoiceModelCatalogEntry[]>([]);
@@ -450,6 +452,12 @@ export const VoiceSetup = ({
       </div>
       {showSkip && (
         <div className='mt-3 flex justify-end gap-2'>
+          <button
+            type='button'
+            className={cn(BTN_LG, BTN_OUTLINE)}
+            onClick={onBack}>
+            Back
+          </button>
           <button
             type='button'
             className={cn(BTN_LINK_LG, BTN_OUTLINE)}

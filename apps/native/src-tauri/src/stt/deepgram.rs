@@ -20,6 +20,12 @@ const KEEPALIVE: Duration = Duration::from_secs(10);
 const RENEW_AFTER: Duration = Duration::from_secs(20 * 60);
 const MAX_RECONNECTS: usize = 3;
 
+#[derive(Debug)]
+enum SessionFailure {
+    Terminal(String),
+    Transport,
+}
+
 /// A Deepgram streaming provider. The key is retained only for the lifetime of
 /// this provider and is never written to disk or included in diagnostics.
 pub struct DeepgramProvider {
@@ -143,18 +149,37 @@ async fn run_worker(
         .await
         {
             Ok(()) => reconnects = 0,
-            Err(_) if stop.load(Ordering::Acquire) => break,
-            Err(_) if reconnects < MAX_RECONNECTS => {
+            Err(SessionFailure::Terminal(message)) => {
+                if !stop.load(Ordering::Acquire) {
+                    error_callback(message);
+                }
+                break;
+            }
+            Err(SessionFailure::Transport) if stop.load(Ordering::Acquire) => break,
+            Err(SessionFailure::Transport) if reconnects < MAX_RECONNECTS => {
                 let delay = Duration::from_millis(100 * 2_u64.pow(reconnects as u32));
                 reconnects += 1;
                 tokio::time::sleep(delay).await;
             }
-            Err(_) => {
-                error_callback("Deepgram provider failed after reconnect retries".to_string());
+            Err(SessionFailure::Transport) => {
+                error_callback("Deepgram connection failed after reconnect retries".to_string());
                 break;
             }
         }
     }
+}
+
+fn classify_connect_error(error: tokio_tungstenite::tungstenite::Error) -> SessionFailure {
+    if let tokio_tungstenite::tungstenite::Error::Http(response) = &error {
+        let status = response.status();
+        if status.is_client_error() {
+            return SessionFailure::Terminal(format!(
+                "Deepgram authentication or protocol error (HTTP {})",
+                status.as_u16()
+            ));
+        }
+    }
+    SessionFailure::Transport
 }
 
 async fn run_session(
@@ -165,17 +190,23 @@ async fn run_session(
     receiver: &mut mpsc::Receiver<PcmChunk>,
     callback: &(dyn Fn(TranscriptEvent) + Send + Sync),
     stop: &AtomicBool,
-) -> anyhow::Result<()> {
+) -> Result<(), SessionFailure> {
     let url = format!(
         "{endpoint}?model={}&encoding=linear16&sample_rate=16000&channels=1&interim_results=true&punctuate=true&smart_format=true",
         encode_query_component(model)
     );
-    let mut request = url.into_client_request()?;
+    let mut request = url.into_client_request().map_err(|_| {
+        SessionFailure::Terminal("Deepgram request configuration is invalid".to_string())
+    })?;
     request.headers_mut().insert(
         "Authorization",
-        HeaderValue::from_str(&format!("Token {key}"))?,
+        HeaderValue::from_str(&format!("Token {key}")).map_err(|_| {
+            SessionFailure::Terminal("Deepgram authentication configuration is invalid".to_string())
+        })?,
     );
-    let (mut socket, _) = tokio_tungstenite::connect_async(request).await?;
+    let (mut socket, _) = tokio_tungstenite::connect_async(request)
+        .await
+        .map_err(classify_connect_error)?;
     let started = Instant::now();
     let mut idle = tokio::time::interval(KEEPALIVE);
     idle.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -187,21 +218,31 @@ async fn run_session(
         }
         tokio::select! {
             chunk = receiver.recv() => match chunk {
-                Some(chunk) => socket.send(Message::Binary(pcm_bytes(&chunk).into())).await?,
+                Some(chunk) => socket
+                    .send(Message::Binary(pcm_bytes(&chunk).into()))
+                    .await
+                    .map_err(|_| SessionFailure::Transport)?,
                 None => return Ok(()),
             },
             message = socket.next() => match message {
                 Some(Ok(Message::Text(text))) => {
-                    if let Some((transcript, finality)) = parse_transcript(text.as_ref())? {
+                    if let Some((transcript, finality)) = parse_transcript(text.as_ref())
+                        .map_err(|error| SessionFailure::Terminal(error.to_string()))?
+                    {
                         callback(TranscriptEvent { channel, text: transcript, finality });
                     }
                 }
-                Some(Ok(Message::Close(_))) | None => anyhow::bail!("deepgram connection closed"),
+                Some(Ok(Message::Close(_))) | None => {
+                    return Err(SessionFailure::Transport)
+                }
                 Some(Ok(_)) => {}
-                Some(Err(_)) => anyhow::bail!("deepgram connection failed"),
+                Some(Err(_)) => return Err(SessionFailure::Transport),
             },
             _ = idle.tick() => {
-                socket.send(Message::Text(r#"{"type":"KeepAlive"}"#.to_string().into())).await?;
+                socket
+                    .send(Message::Text(r#"{"type":"KeepAlive"}"#.to_string().into()))
+                    .await
+                    .map_err(|_| SessionFailure::Transport)?;
             }
         }
     }
@@ -376,6 +417,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn reports_provider_protocol_error_without_reconnecting() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("ws://{}/v1/listen", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = accept_async(stream).await.unwrap();
+            socket
+                .send(Message::Text(
+                    format!(r#"{{"type":"Error","error":"{KEY}"}}"#).into(),
+                ))
+                .await
+                .unwrap();
+        });
+        let (_sender, receiver) = mpsc::channel(1);
+        let errors = Arc::new(Mutex::new(Vec::new()));
+        let errors_for_callback = Arc::clone(&errors);
+        run_worker(
+            KEY.to_string(),
+            "nova-2".to_string(),
+            SpeakerChannel::Me,
+            endpoint,
+            receiver,
+            Box::new(|_| {}),
+            Box::new(move |error| errors_for_callback.lock().unwrap().push(error)),
+            Arc::new(AtomicBool::new(false)),
+        )
+        .await;
+        assert_eq!(
+            errors.lock().unwrap().as_slice(),
+            &["Deepgram provider error"]
+        );
+        assert!(!errors.lock().unwrap()[0].contains(KEY));
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
     async fn reports_terminal_error_after_reconnect_exhaustion() {
         let (_sender, receiver) = mpsc::channel(1);
         let errors = Arc::new(Mutex::new(Vec::new()));
@@ -394,7 +471,7 @@ mod tests {
         .await;
         assert_eq!(
             errors.lock().unwrap().as_slice(),
-            &["Deepgram provider failed after reconnect retries"]
+            &["Deepgram connection failed after reconnect retries"]
         );
     }
 

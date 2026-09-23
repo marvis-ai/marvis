@@ -1332,9 +1332,13 @@ fn surface_material(app: AppHandle) -> &'static str {
     }
 }
 
+fn stop_listen(app: &AppHandle) {
+    app.state::<AppState>().listen.stop();
+}
+
 #[tauri::command]
 fn quit_application(app: AppHandle) {
-    app.state::<AppState>().listen.stop();
+    stop_listen(&app);
     app.exit(0);
 }
 
@@ -1458,8 +1462,19 @@ pub fn run() {
             surface_material,
             quit_application,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            // Keep Listen teardown centralized at the application boundary:
+            // this covers tray/menu quit, window-manager quit, and other
+            // native exit paths in addition to the explicit command above.
+            if matches!(
+                event,
+                tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
+            ) {
+                stop_listen(app);
+            }
+        });
 }
 
 #[cfg(test)]
@@ -1488,6 +1503,14 @@ mod tests {
         assert!(source.contains("listen_stop,"));
         assert!(source.contains("listen_status,"));
         assert!(source.contains("whisper_status,"));
+    }
+
+    #[test]
+    fn app_exit_registration_covers_requested_and_completed_tauri_exit() {
+        let source = include_str!("lib.rs");
+        assert!(source.contains("tauri::RunEvent::ExitRequested { .. }"));
+        assert!(source.contains("| tauri::RunEvent::Exit"));
+        assert!(source.contains("stop_listen(app);"));
     }
 
     /// Brief smoke test: `config_get` against a temp `AppState` returns

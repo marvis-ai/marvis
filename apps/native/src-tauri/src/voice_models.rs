@@ -163,6 +163,7 @@ pub struct WhisperInstalledModel {
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct WhisperDownloadStatus {
     pub binary: Option<String>,
+    pub binary_status: stt::WhisperBinaryStatus,
     pub models: Vec<WhisperInstalledModel>,
     pub download: Option<WhisperDownloadProgress>,
 }
@@ -296,8 +297,13 @@ impl VoiceModelManager {
             .active
             .as_ref()
             .map(|a| a.progress.lock().clone());
+        let binary = stt::WhisperProvider::discover_with_bundled(None);
         WhisperDownloadStatus {
-            binary: stt::WhisperProvider::discover().map(|path| path.display().to_string()),
+            binary: binary.as_ref().map(|(path, _)| path.display().to_string()),
+            binary_status: stt::WhisperBinaryStatus {
+                available: binary.is_some(),
+                source: binary.as_ref().map(|(_, source)| *source),
+            },
             models: catalog()
                 .iter()
                 .map(|e| WhisperInstalledModel {
@@ -634,6 +640,10 @@ mod tests {
 
         let status = serde_json::to_value(WhisperDownloadStatus {
             binary: Some("/usr/local/bin/whisper-cli".into()),
+            binary_status: stt::WhisperBinaryStatus {
+                available: true,
+                source: Some(stt::WhisperBinarySource::Homebrew),
+            },
             models: vec![WhisperInstalledModel {
                 id: "tiny",
                 filename: "ggml-tiny.bin",
@@ -647,6 +657,7 @@ mod tests {
             status,
             serde_json::json!({
                 "binary": "/usr/local/bin/whisper-cli",
+                "binary_status": {"available": true, "source": "Homebrew"},
                 "models": [{"id": "tiny", "filename": "ggml-tiny.bin", "installed": true, "bytes": 75}],
                 "download": null
             })

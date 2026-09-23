@@ -6,7 +6,7 @@ mod deepgram;
 mod whisper;
 
 pub use deepgram::DeepgramProvider;
-pub use whisper::{WhisperProvider, WhisperStatus};
+pub use whisper::{WhisperBinarySource, WhisperBinaryStatus, WhisperProvider, WhisperStatus};
 
 /// The source channel represented by a transcript event.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -412,10 +412,7 @@ export const VoiceSetup = ({
             onChange={(e) => {
               save('models.stt_provider', e.target.value);
               if (e.target.value === 'whisper') void refreshWhisper();
-              if (e.target.value === 'sherpa') {
-                void refreshSherpa();
-                save('models.stt_model', 'sense-voice');
-              }
+              if (e.target.value === 'sherpa') void refreshSherpa();
             }}
             aria-label='Speech-to-text provider'>
             <option value='deepgram'>Deepgram</option>

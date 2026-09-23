@@ -48,6 +48,71 @@ pub fn whisper_bin_dir() -> PathBuf {
     whisper_dir().join("bin")
 }
 
+/// Return the architecture-specific Whisper CLI bundled under a resolved
+/// application resource directory. Resource lookup itself belongs to Tauri;
+/// this helper remains platform-neutral and does not inspect the filesystem.
+#[allow(dead_code)] // Used by Task 4 when Tauri resolves the resource directory.
+pub fn bundled_whisper_cli(resource_dir: &std::path::Path) -> PathBuf {
+    resource_dir.join(format!("whisper-cli-{}", whisper_target_triple()))
+}
+
+#[cfg(target_os = "macos")]
+#[allow(dead_code)]
+const fn whisper_target_triple() -> &'static str {
+    #[cfg(target_arch = "aarch64")]
+    {
+        "aarch64-apple-darwin"
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        "x86_64-apple-darwin"
+    }
+    #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+    {
+        "unknown-apple-darwin"
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[allow(dead_code)]
+const fn whisper_target_triple() -> &'static str {
+    #[cfg(target_arch = "aarch64")]
+    {
+        "aarch64-unknown-linux-gnu"
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        "x86_64-unknown-linux-gnu"
+    }
+    #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+    {
+        "unknown-unknown-linux-gnu"
+    }
+}
+
+#[cfg(target_os = "windows")]
+#[allow(dead_code)]
+const fn whisper_target_triple() -> &'static str {
+    #[cfg(target_arch = "aarch64")]
+    {
+        "aarch64-pc-windows-msvc"
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        "x86_64-pc-windows-msvc"
+    }
+    #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+    {
+        "unknown-pc-windows-msvc"
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+#[allow(dead_code)]
+const fn whisper_target_triple() -> &'static str {
+    "unknown-unknown-unknown"
+}
+
 /// `~/.marvis/models/whisper/models` — path only; callers create it when needed.
 #[allow(dead_code)]
 pub fn whisper_models_dir() -> PathBuf {
@@ -99,6 +164,18 @@ mod tests {
             ],
             existed
         );
+    }
+
+    #[test]
+    fn bundled_whisper_cli_is_relative_to_resources_and_target_specific() {
+        let resource_dir = PathBuf::from("/app/Resources");
+        let candidate = bundled_whisper_cli(&resource_dir);
+        assert_eq!(candidate.parent(), Some(resource_dir.as_path()));
+        assert!(candidate
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("whisper-cli-"));
     }
 
     #[cfg(unix)]

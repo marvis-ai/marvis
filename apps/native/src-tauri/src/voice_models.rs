@@ -604,7 +604,10 @@ mod tests {
             message: "download failed",
         })
         .unwrap();
-        assert_eq!(value, serde_json::json!({"model": "tiny", "message": "download failed"}));
+        assert_eq!(
+            value,
+            serde_json::json!({"model": "tiny", "message": "download failed"})
+        );
     }
 
     fn fixture(body: Vec<u8>, delay: Duration) -> (String, TestSource) {

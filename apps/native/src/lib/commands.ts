@@ -137,6 +137,24 @@ export interface AiMessage {
   ts: number;
 }
 
+export interface Transcript {
+  id: number;
+  session_id: number;
+  speaker: 'me' | 'them';
+  text: string;
+  ts: number;
+}
+
+export interface ListenSummary {
+  id: number;
+  session_id: number;
+  tldr: string;
+  bullets: string[];
+  follow_ups: string[];
+  topic: string | null;
+  ts: number;
+}
+
 // ---------------------------------------------------------------------------
 // keystore
 // ---------------------------------------------------------------------------
@@ -326,6 +344,12 @@ export const sessionList = () => invoke<Session[]>('session_list');
 
 export const sessionGet = (id: number) =>
   invoke<AiMessage[]>('session_get', { id });
+
+export const transcriptsFor = (id: number, limit?: number) =>
+  invoke<Transcript[]>('transcripts_for', { id, limit });
+
+export const summaryLatest = (id: number) =>
+  invoke<ListenSummary | null>('summary_latest', { id });
 
 export const sessionDelete = (id: number) =>
   invoke<void>('session_delete', { id });

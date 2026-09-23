@@ -64,7 +64,7 @@ use hotkey::RegisteredHotkeys;
 use keystore::Keystore;
 use listen::{ListenEvent, ListenService};
 use llm::{make_provider, ProviderKind};
-use storage::{AiMessage, Db, Session};
+use storage::{AiMessage, Db, Session, Summary, Transcript};
 use windows::WindowPool;
 
 /// Frame ring caps from the spec: 120 frames / 64 MB (~60 s horizon).
@@ -858,6 +858,7 @@ fn emit_listen_state(app: &AppHandle, state: &listen::ListenStatus) {
         json!({
             "state": state.state,
             "provider": state.provider,
+            "session_id": state.session_id,
             "mic": state.mic,
         }),
     );
@@ -887,6 +888,7 @@ fn emit_listen_event(app: &AppHandle, event: ListenEvent) {
                 json!({
                     "state": "error",
                     "provider": status.provider,
+                    "session_id": status.session_id,
                     "mic": status.mic,
                 }),
             );
@@ -922,7 +924,7 @@ async fn listen_start(app: AppHandle) -> Result<listen::ListenStatus, String> {
         let _ = app.emit_to(
             windows::BAR_LABEL,
             EV_LISTEN_STATE,
-            json!({ "state": "error", "provider": status.provider, "mic": status.mic }),
+            json!({ "state": "error", "provider": status.provider, "session_id": status.session_id, "mic": status.mic }),
         );
         return Err(error.to_string());
     }
@@ -1150,6 +1152,20 @@ fn session_list(state: State<'_, AppState>) -> Result<Vec<Session>, String> {
 #[tauri::command]
 fn session_get(state: State<'_, AppState>, id: i64) -> Result<Vec<AiMessage>, String> {
     state.db.ai_messages_for(id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn transcripts_for(
+    state: State<'_, AppState>,
+    id: i64,
+    limit: Option<usize>,
+) -> Result<Vec<Transcript>, String> {
+    state.db.transcripts_for(id, limit).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn summary_latest(state: State<'_, AppState>, id: i64) -> Result<Option<Summary>, String> {
+    state.db.summary_latest(id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1455,6 +1471,8 @@ pub fn run() {
             capture_status,
             session_list,
             session_get,
+            transcripts_for,
+            summary_latest,
             session_delete,
             session_end_active,
             config_get,

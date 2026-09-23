@@ -1,10 +1,10 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   listenStatus,
   listenStop,
   whisperStatus,
-  sessionGet,
-  sessionList,
+  transcriptsFor,
+  summaryLatest,
   type ListenStatus,
 } from '../lib/commands';
 import {
@@ -22,8 +22,6 @@ import { BTN_OUTLINE, BTN_SM, CHIP, EMPTY, cn } from '../lib/classes';
 
 type Turn = ListenTurnPayload & {
   interim?: boolean;
-  final?: boolean;
-  is_final?: boolean;
 };
 
 type Summary = ListenSummaryPayload;
@@ -39,6 +37,7 @@ export const ListenSection = () => {
     mic: false,
   });
   const [turns, setTurns] = useState<Turn[]>([]);
+  const sessionRef = useRef<number | null>(null);
   const [summary, setSummary] = useState<Summary | null>(null);
   const [error, setError] = useState<ListenErrorPayload | null>(null);
   const [model, setModel] = useState<string | null>(null);
@@ -48,25 +47,28 @@ export const ListenSection = () => {
     void (async () => {
       try {
         const current = await listenStatus();
-        if (!cancelled) setStatus(current);
-        const sessions = await sessionList();
-        const active = sessions.find(
-          (s) => s.kind === 'listen' && s.ended_at === null,
-        );
-        if (active) {
-          const rows = await sessionGet(active.id);
-          if (!cancelled) {
-            setTurns(
-              rows
-                .filter((row) => row.role === 'me' || row.role === 'them')
-                .map((row) => ({
-                  speaker: row.role as 'me' | 'them',
-                  text: row.content,
-                  ts: row.ts,
-                })),
-            );
-          }
-        }
+        if (cancelled) return;
+        setStatus(current);
+        sessionRef.current = current.session_id;
+        if (current.session_id === null) return;
+        const [rows, latest] = await Promise.all([
+          transcriptsFor(current.session_id),
+          summaryLatest(current.session_id),
+        ]);
+        if (cancelled || sessionRef.current !== current.session_id) return;
+        setTurns((live) => {
+          const persisted = rows.map((row) => ({ ...row, final: true }));
+          const keys = new Set(
+            live.map((turn) => `${turn.speaker}:${turn.ts}:${turn.text}`),
+          );
+          return [
+            ...persisted.filter(
+              (row) => !keys.has(`${row.speaker}:${row.ts}:${row.text}`),
+            ),
+            ...live,
+          ];
+        });
+        if (latest) setSummary(latest);
       } catch {
         // Live events remain authoritative when persistence is unavailable.
       }
@@ -82,22 +84,35 @@ export const ListenSection = () => {
       .catch(() => {});
   }, []);
 
-  useTauriEvent<ListenStatePayload>(EV_LISTEN_STATE, (next) =>
-    setStatus((previous) => ({ ...previous, ...next })),
-  );
+  useTauriEvent<ListenStatePayload>(EV_LISTEN_STATE, (next) => {
+    if (next.state === 'listening' && next.session_id !== sessionRef.current) {
+      sessionRef.current = next.session_id;
+      setTurns([]);
+      setSummary(null);
+      setError(null);
+    } else if (next.state === 'listening') {
+      setError(null);
+    }
+    setStatus((previous) => ({ ...previous, ...next }));
+  });
   useTauriEvent<Turn>(EV_LISTEN_TURN, (turn) => {
+    if (sessionRef.current !== null && turn.session_id !== sessionRef.current) {
+      return;
+    }
+    setError(null);
     setTurns((previous) => {
-      const isFinal =
-        turn.final === true || turn.is_final === true || turn.interim !== true;
       const withoutInterim = previous.filter(
         (item) => !(item.interim && item.speaker === turn.speaker),
       );
-      return isFinal
+      return turn.final
         ? [...withoutInterim, { ...turn, interim: false }]
         : [...withoutInterim, { ...turn, interim: true }];
     });
   });
-  useTauriEvent<ListenSummaryPayload>(EV_LISTEN_SUMMARY, setSummary);
+  useTauriEvent<ListenSummaryPayload>(EV_LISTEN_SUMMARY, (next) => {
+    setSummary(next);
+    setError(null);
+  });
   useTauriEvent<ListenErrorPayload>(EV_LISTEN_ERROR, setError);
 
   const stop = () => {

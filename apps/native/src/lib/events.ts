@@ -23,12 +23,15 @@ export const EV_LISTEN_ERROR = 'listen:error';
 export interface ListenStatePayload {
   state: 'idle' | 'listening' | 'error';
   provider: string | null;
+  session_id: number | null;
   mic: boolean;
 }
 export interface ListenTurnPayload {
   speaker: 'me' | 'them';
   text: string;
   ts: number;
+  session_id: number;
+  final: boolean;
 }
 export interface ListenSummaryPayload {
   tldr: string;

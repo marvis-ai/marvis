@@ -49,6 +49,7 @@ import {
   permissionsStatus,
   listenStart,
   listenStop,
+  listenStatus,
   windowAdjustHeight,
   windowSetBarExpanded,
   windowSetChatOpen,
@@ -130,6 +131,7 @@ const Bar = () => {
   /** Last collapsed-mode outer y — the baseline the expand direction
    *  is detected against. */
   const collapsedY = useRef<number | null>(null);
+  const listenBusy = useRef(false);
 
   // Icon-row ⇄ input-row swap: the gate card and boot errors count as
   // expanded; `main` rests as the icon row until the iris opens it or
@@ -160,6 +162,14 @@ const Bar = () => {
 
   useEffect(() => {
     void bootstrap();
+    void listenStatus()
+      .then((next) => {
+        setListenState(next.state);
+        if (next.state === 'listening' || next.state === 'error') {
+          setListenWanted(true);
+        }
+      })
+      .catch(() => {});
   }, [bootstrap]);
 
   useTauriEvent<AppStatePayload>(EV_APP_STATE, (p) => setGate(p.gate));
@@ -433,7 +443,11 @@ const Bar = () => {
         {grip}
         <button
           type='button'
-          className={cn(BAR_BTN, 'relative')}
+          className={cn(
+            BAR_BTN,
+            'relative',
+            listenState === 'listening' && 'listen-active',
+          )}
           aria-label={
             cardOpen ? 'Close chat' : open ? 'Back to capsule' : 'Ask Marvis'
           }
@@ -477,23 +491,29 @@ const Bar = () => {
         </button>
         <button
           type='button'
-          className={cn(
-            BAR_BTN,
-            listenState === 'listening' && 'listen-active',
-          )}
+          className={BAR_BTN}
           aria-label={listenState === 'listening' ? 'Stop listening' : 'Listen'}
           title={listenState === 'listening' ? 'Stop listening' : 'Listen'}
           disabled={gate !== 'main'}
           onClick={() => {
+            if (listenBusy.current) return;
+            listenBusy.current = true;
             if (listenState === 'listening') {
-              void listenStop().catch(() => raise('Stop failed'));
+              void listenStop()
+                .catch(() => raise('Stop failed'))
+                .finally(() => {
+                  listenBusy.current = false;
+                });
               return;
             }
             setListenWanted(true);
             void windowSetChatOpen(true).catch(() => {});
             void listenStart()
               .then((next) => setListenState(next.state))
-              .catch(() => raise('Listen failed'));
+              .catch(() => raise('Listen failed'))
+              .finally(() => {
+                listenBusy.current = false;
+              });
           }}>
           <MicIcon className='size-5' />
         </button>

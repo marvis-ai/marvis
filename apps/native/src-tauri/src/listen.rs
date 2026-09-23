@@ -48,23 +48,12 @@ struct Pending {
 }
 
 /// Deterministic state machine for provisional and final STT results.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct TurnAssembler {
     me: Pending,
     them: Pending,
     active: Option<SpeakerChannel>,
     closed: usize,
-}
-
-impl Default for TurnAssembler {
-    fn default() -> Self {
-        Self {
-            me: Pending::default(),
-            them: Pending::default(),
-            active: None,
-            closed: 0,
-        }
-    }
 }
 
 impl TurnAssembler {
@@ -167,9 +156,11 @@ impl TurnAssembler {
             SpeakerChannel::Them => &mut self.them,
         }
     }
+    #[allow(dead_code)]
     pub fn summary_boundary(&self) -> bool {
-        self.closed > 0 && self.closed % SUMMARY_EVERY == 0
+        self.closed > 0 && self.closed.is_multiple_of(SUMMARY_EVERY)
     }
+    #[allow(dead_code)]
     pub fn closed_count(&self) -> usize {
         self.closed
     }
@@ -317,6 +308,7 @@ impl ListenService {
     pub fn status(&self) -> ListenStatus {
         self.state.lock().clone()
     }
+    #[allow(dead_code)]
     pub fn current_history(&self) -> Vec<Transcript> {
         self.history.lock().clone()
     }
@@ -440,7 +432,7 @@ impl ListenService {
             };
         let mut mic_started = false;
         if mic_allowed {
-            if add(SpeakerChannel::Me, Box::new(MicSource::new())).is_ok() {
+            if add(SpeakerChannel::Me, Box::<MicSource>::default()).is_ok() {
                 mic_started = true;
             } else {
                 log::warn!("listen microphone unavailable");
@@ -650,7 +642,12 @@ mod tests {
         };
         let payload = serde_json::to_value(status).unwrap();
         assert_eq!(
-            payload.as_object().unwrap().keys().cloned().collect::<Vec<_>>(),
+            payload
+                .as_object()
+                .unwrap()
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>(),
             vec!["mic", "provider", "session_id", "state", "turns"]
         );
         assert_eq!(payload["session_id"], 42);

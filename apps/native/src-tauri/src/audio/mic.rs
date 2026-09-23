@@ -60,13 +60,13 @@ impl MicSource {
 
         let stream = match sample_format {
             SampleFormat::F32 => device.build_input_stream(
-                config.clone(),
+                config,
                 move |data: &[f32], _| enqueue(data, sample_rate, channels, &callback_tx),
                 error_callback,
                 None,
             ),
             SampleFormat::I16 => device.build_input_stream(
-                config.clone(),
+                config,
                 move |data: &[i16], _| {
                     let converted: Vec<f32> = data
                         .iter()

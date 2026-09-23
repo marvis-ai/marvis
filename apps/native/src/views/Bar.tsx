@@ -177,6 +177,8 @@ const Bar = () => {
     setListenState(p.state);
     if (p.state === 'listening' || p.state === 'error') {
       setListenWanted(true);
+    } else if (p.state === 'idle') {
+      setListenWanted(false);
     }
   });
   // Mid-session screen-permission revocation (ask.rs detects it when a
@@ -234,12 +236,8 @@ const Bar = () => {
     };
   }, []);
 
-  // Collapsing resets the section pick — the next open is chat.
-  useEffect(() => {
-    if (!cardOpen) {
-      setListenWanted(false);
-    }
-  }, [cardOpen]);
+  // Listen is an independent session: collapsing the card must not change
+  // which active section is shown when it is reopened.
 
   // The capsule IS the window under liquid glass — the pill⇄input morph
   // resizes it (idle 136 ⇄ 480). While the card is open the morph is

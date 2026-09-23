@@ -11,10 +11,10 @@ use serde::{Deserialize, Serialize};
 use crate::audio::{AudioSource, MicSource, PcmChunk, SystemAudioSource};
 use crate::config::Config;
 use crate::keystore::Keystore;
-use crate::llm::{ChatMessage, ContentPart, Role};
-use crate::prompts::listen_summary_prompt;
+use crate::llm::{ChatMessage, Role};
+use crate::prompts::{summary_user_prompt, system_prompt};
 use crate::storage::{Db, Transcript};
-use crate::stt::{make_stt_provider, Finality, SpeakerChannel, TranscriptEvent};
+use crate::stt::{make_stt_provider, Finality, SpeakerChannel, TranscriptEvent, WhisperProvider};
 
 const SILENCE: Duration = Duration::from_millis(1500);
 const SUMMARY_EVERY: usize = 5;
@@ -267,6 +267,7 @@ struct SessionContext {
     history: Arc<Mutex<Vec<Transcript>>>,
     status: Arc<Mutex<ListenStatus>>,
     emit: Arc<dyn Fn(ListenEvent) + Send + Sync>,
+    cancel: Arc<AtomicBool>,
     session_id: i64,
     config: Config,
     keystore: Keystore,
@@ -275,7 +276,6 @@ struct SessionContext {
 }
 struct Running {
     cancel: Arc<AtomicBool>,
-    sources: Vec<Box<dyn AudioSource>>,
     workers: Vec<JoinHandle<()>>,
     assembler: Arc<Mutex<TurnAssembler>>,
     context: Arc<SessionContext>,
@@ -322,8 +322,6 @@ impl ListenService {
         emit: Arc<dyn Fn(ListenEvent) + Send + Sync>,
     ) -> anyhow::Result<()> {
         self.stop();
-        self.history.lock().clear();
-        let session_id = db.session_get_or_create_active("listen")?;
         let provider_name = config.models.stt_provider.clone();
         let model = config.models.stt_model.clone();
         let key = if provider_name == "deepgram" {
@@ -332,12 +330,51 @@ impl ListenService {
             None
         };
         if provider_name == "deepgram" && key.is_none() {
-            let _ = db.session_end(session_id);
+            let message = "Speech-to-text provider is not configured".to_string();
+            *self.state.lock() = ListenStatus {
+                state: "error".into(),
+                provider: Some(provider_name),
+                session_id: None,
+                turns: 0,
+                mic: false,
+            };
             emit(ListenEvent::Error {
-                message: "Speech-to-text provider is not configured".into(),
+                message,
                 needs_setup: true,
             });
-            return Ok(());
+            anyhow::bail!("Speech-to-text provider is not configured")
+        }
+        if provider_name == "whisper" {
+            let whisper = WhisperProvider::status();
+            let model_available = whisper.models.iter().any(|name| name == &model);
+            if whisper.binary.is_none() || !model_available {
+                let message = if whisper.binary.is_none() {
+                    "whisper-cli was not found; install it and try again"
+                } else {
+                    "configured Whisper model was not found; choose an installed model in Settings"
+                };
+                *self.state.lock() = ListenStatus {
+                    state: "error".into(),
+                    provider: Some(provider_name),
+                    session_id: None,
+                    turns: 0,
+                    mic: false,
+                };
+                emit(ListenEvent::Error {
+                    message: message.into(),
+                    needs_setup: true,
+                });
+                anyhow::bail!(message)
+            }
+        }
+        let session_id = db.session_get_or_create_active("listen")?;
+        let existing = db.transcripts_for(session_id, None)?;
+        {
+            let mut history = self.history.lock();
+            history.clear();
+            for transcript in existing.iter().rev().take(HISTORY_LIMIT).rev() {
+                history.push(transcript.clone());
+            }
         }
         let cancel = Arc::new(AtomicBool::new(false));
         let assembler = Arc::new(Mutex::new(TurnAssembler::new()));
@@ -346,13 +383,13 @@ impl ListenService {
             history: self.history.clone(),
             status: self.state.clone(),
             emit: emit.clone(),
+            cancel: cancel.clone(),
             session_id,
             config: config.clone(),
             keystore: keystore.clone(),
-            persisted_turns: Arc::new(AtomicUsize::new(0)),
+            persisted_turns: Arc::new(AtomicUsize::new(existing.len())),
             summary_workers: Arc::new(Mutex::new(Vec::new())),
         });
-        let mut sources = Vec::new();
         let mut workers = Vec::new();
         let mut add =
             |channel: SpeakerChannel, mut source: Box<dyn AudioSource>| -> anyhow::Result<()> {
@@ -394,12 +431,16 @@ impl ListenService {
                         }
                     }),
                     Box::new({
-                        let emit = emit.clone();
+                        let callback_context = context.clone();
                         move |message| {
-                            emit(ListenEvent::Error {
-                                message,
+                            callback_context.cancel.store(true, Ordering::Release);
+                            let mut status = callback_context.status.lock();
+                            status.state = "error".into();
+                            drop(status);
+                            (callback_context.emit)(ListenEvent::Error {
+                                message: sanitize_provider_error(&message),
                                 needs_setup: false,
-                            })
+                            });
                         }
                     }),
                 ) {
@@ -410,24 +451,30 @@ impl ListenService {
                 let worker_assembler = assembler.clone();
                 let worker_context = context.clone();
                 workers.push(std::thread::spawn(move || {
+                    let mut dropped_chunks = 0usize;
                     while !cancel_rx.load(Ordering::Acquire) {
                         match rx.recv_timeout(WORKER_TICK) {
                             Ok(chunk) => {
-                                let _ = stt.enqueue(chunk);
+                                if !stt.enqueue(chunk) {
+                                    dropped_chunks += 1;
+                                    if dropped_chunks.is_multiple_of(100) {
+                                        log::warn!(
+                                            "listen audio enqueue dropped {dropped_chunks} chunks"
+                                        );
+                                    }
+                                }
                             }
                             Err(mpsc::RecvTimeoutError::Timeout) => {}
                             Err(mpsc::RecvTimeoutError::Disconnected) => break,
                         }
-                        // Check wall-clock silence after every receive result. This
-                        // preserves the bounded tick even when chunks are continuous.
                         let turns = worker_assembler.lock().flush_at(Instant::now());
                         for turn in turns {
                             persist_turn(&worker_context, turn);
                         }
                     }
                     stt.stop();
+                    source.stop();
                 }));
-                sources.push(source);
                 Ok(())
             };
         let mut mic_started = false;
@@ -447,12 +494,22 @@ impl ListenService {
         }
         if workers.is_empty() {
             let _ = db.session_end(session_id);
+            *self.state.lock() = ListenStatus {
+                state: "error".into(),
+                provider: Some(provider_name),
+                session_id: None,
+                turns: 0,
+                mic: false,
+            };
+            emit(ListenEvent::Error {
+                message: "no audio source available".into(),
+                needs_setup: false,
+            });
             anyhow::bail!("no audio source available");
         }
         *self.db.lock() = Some(db);
         *self.running.lock() = Some(Running {
             cancel,
-            sources,
             workers,
             assembler,
             context,
@@ -462,18 +519,23 @@ impl ListenService {
         status.state = "listening".into();
         status.provider = Some(provider_name);
         status.session_id = Some(session_id);
+        status.turns = existing.len();
         status.mic = mic_started;
         Ok(())
     }
 
     pub fn stop(&self) {
-        let Some(mut running) = self.running.lock().take() else {
+        let Some(running) = self.running.lock().take() else {
+            *self.state.lock() = ListenStatus {
+                state: "idle".into(),
+                provider: None,
+                session_id: None,
+                turns: 0,
+                mic: false,
+            };
             return;
         };
         running.cancel.store(true, Ordering::Release);
-        for source in &mut running.sources {
-            source.stop();
-        }
         for worker in running.workers {
             let _ = worker.join();
         }
@@ -506,19 +568,23 @@ fn persist_turn(context: &Arc<SessionContext>, turn: ClosedTurn) {
         context
             .db
             .transcript_add(context.session_id, speaker_name(turn.speaker), &turn.text);
-    let history_snapshot = if let Ok(id) = inserted {
-        let transcript = Transcript {
-            id,
-            session_id: context.session_id,
-            speaker: speaker_name(turn.speaker).into(),
-            text: turn.text.clone(),
-            ts: turn.ts,
-        };
-        let mut history = context.history.lock();
-        append_history(&mut history, transcript);
-        Some(history.clone())
-    } else {
-        None
+    let history_snapshot = match inserted {
+        Ok(id) => {
+            let transcript = Transcript {
+                id,
+                session_id: context.session_id,
+                speaker: speaker_name(turn.speaker).into(),
+                text: turn.text.clone(),
+                ts: turn.ts,
+            };
+            let mut history = context.history.lock();
+            append_history(&mut history, transcript);
+            Some(history.clone())
+        }
+        Err(error) => {
+            log::warn!("listen transcript persistence failed: {error}");
+            None
+        }
     };
 
     let count = if history_snapshot.is_some() {
@@ -581,6 +647,31 @@ fn persist_turn(context: &Arc<SessionContext>, turn: ClosedTurn) {
     }
 }
 
+fn preserve_previous_summary(
+    result: anyhow::Result<ListenSummary>,
+    previous: Option<ListenSummary>,
+) -> anyhow::Result<ListenSummary> {
+    result.or_else(|error| previous.ok_or(error))
+}
+
+fn format_previous_summary(summary: &ListenSummary) -> String {
+    format!(
+        "TLDR: {}\nTopic: {}\nBullets: {}\nSuggested questions: {}",
+        summary.tldr,
+        summary.topic.as_deref().unwrap_or("none"),
+        summary.bullets.join("; "),
+        summary.follow_ups.join("; ")
+    )
+}
+
+fn sanitize_provider_error(message: &str) -> String {
+    let mut sanitized = message.replace(['\n', '\r'], " ");
+    if sanitized.len() > 240 {
+        sanitized.truncate(240);
+    }
+    sanitized
+}
+
 /// Generate and persist a bounded structured summary. Provider failures are deliberately non-fatal.
 pub async fn generate_summary(
     db: &Db,
@@ -595,22 +686,37 @@ pub async fn generate_summary(
         .map(|t| format!("{}: {}", t.speaker, t.text))
         .collect::<Vec<_>>()
         .join("\n");
-    let messages = [ChatMessage {
-        role: Role::User,
-        content: vec![ContentPart::Text(listen_summary_prompt(&history))],
-    }];
+    let previous = match db.summary_latest(session_id) {
+        Ok(summary) => summary.map(|summary| ListenSummary {
+            tldr: summary.tldr,
+            bullets: summary.bullets,
+            follow_ups: summary.follow_ups,
+            topic: summary.topic,
+        }),
+        Err(error) => {
+            log::warn!("listen summary history lookup failed: {error}");
+            None
+        }
+    };
+    let previous_text = previous.as_ref().map(format_previous_summary);
+    let messages = [
+        ChatMessage::text(Role::System, system_prompt(&history)),
+        ChatMessage::text(Role::User, summary_user_prompt(previous_text.as_deref())),
+    ];
     for candidate in candidates {
         let mut sink = |_token: &str| {};
         match candidate.provider.stream_chat(&messages, &mut sink).await {
             Ok(raw) => match parse_summary(&raw) {
                 Ok(summary) => {
-                    db.summary_add(
+                    if let Err(error) = db.summary_add(
                         session_id,
                         &summary.tldr,
                         &summary.bullets,
                         &summary.follow_ups,
                         summary.topic.as_deref(),
-                    )?;
+                    ) {
+                        log::warn!("listen summary persistence failed: {error}");
+                    }
                     return Ok(summary);
                 }
                 Err(error) => log::warn!("listen summary parse failed: {error}"),
@@ -618,7 +724,10 @@ pub async fn generate_summary(
             Err(error) => log::warn!("listen summary provider failed: {error}"),
         }
     }
-    anyhow::bail!("no provider produced a valid summary")
+    preserve_previous_summary(
+        Err(anyhow::anyhow!("no provider produced a valid summary")),
+        previous,
+    )
 }
 
 #[cfg(test)]
@@ -746,5 +855,21 @@ mod tests {
         let unchanged = s.clone();
         assert!(parse_summary(r#"{"bullets":["mutate"]}"#).is_err());
         assert_eq!(s, unchanged);
+    }
+
+    #[test]
+    fn failed_summary_keeps_previous_insights_for_reemission() {
+        let previous = ListenSummary {
+            tldr: "prior insight".into(),
+            bullets: vec!["prior detail".into()],
+            follow_ups: vec![],
+            topic: Some("prior topic".into()),
+        };
+        let restored = preserve_previous_summary(
+            Err(anyhow::anyhow!("provider failed")),
+            Some(previous.clone()),
+        )
+        .unwrap();
+        assert_eq!(restored, previous);
     }
 }

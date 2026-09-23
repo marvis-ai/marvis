@@ -289,7 +289,7 @@ impl VoiceModelManager {
             self.state.lock().active = None;
         }
     }
-    pub fn status(&self) -> WhisperDownloadStatus {
+    pub fn status(&self, bundled_whisper: Option<&Path>) -> WhisperDownloadStatus {
         self.reap();
         let download = self
             .state
@@ -297,7 +297,7 @@ impl VoiceModelManager {
             .active
             .as_ref()
             .map(|a| a.progress.lock().clone());
-        let binary = stt::WhisperProvider::discover_with_bundled(None);
+        let binary = stt::WhisperProvider::discover_with_bundled(bundled_whisper);
         WhisperDownloadStatus {
             binary: binary.as_ref().map(|(path, _)| path.display().to_string()),
             binary_status: stt::WhisperBinaryStatus {
@@ -775,7 +775,7 @@ mod tests {
         );
         fs::write(root.join("ggml-tiny.bin"), b"keep me").unwrap();
         bad.start_download(ModelId::Tiny).unwrap();
-        while bad.status().download.is_some() {
+        while bad.status(None).download.is_some() {
             tokio::task::yield_now().await;
         }
         assert_eq!(fs::read(root.join("ggml-tiny.bin")).unwrap(), b"keep me");
@@ -790,7 +790,7 @@ mod tests {
             },
         );
         bad_size.start_download(ModelId::Tiny).unwrap();
-        while bad_size.status().download.is_some() {
+        while bad_size.status(None).download.is_some() {
             tokio::task::yield_now().await;
         }
         assert!(!root.join("ggml-tiny.bin.tmp").exists());
@@ -798,7 +798,7 @@ mod tests {
         let (_, success_source) = fixture(body.clone(), Duration::ZERO);
         let success = VoiceModelManager::with_test_source(root.clone(), success_source);
         success.start_download(ModelId::Tiny).unwrap();
-        while success.status().download.is_some() {
+        while success.status(None).download.is_some() {
             tokio::task::yield_now().await;
         }
         assert_eq!(fs::read(root.join("ggml-tiny.bin")).unwrap(), body);
@@ -864,7 +864,7 @@ mod tests {
         if root.join("ggml-tiny.bin").exists() {
             assert_eq!(fs::read(root.join("ggml-tiny.bin")).unwrap(), body);
         }
-        assert!(manager.status().download.is_none());
+        assert!(manager.status(None).download.is_none());
         let _ = fs::remove_dir_all(root);
     }
 

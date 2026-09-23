@@ -85,6 +85,36 @@ bun test             # frontend tests (bun test)
 cd src-tauri && cargo test   # Rust unit tests
 ```
 
+### Release Whisper packaging
+
+Release packaging consumes the exact artifacts from `.github/workflows/whisper-cli.yml`; do not build or commit binaries locally. On a macOS runner with the target toolchain, download the artifacts for the exact workflow run, stage and validate one target, then build and verify the signed app:
+
+```bash
+RUN_ID=123456789
+TARGET=aarch64-apple-darwin # use x86_64-apple-darwin on an Intel runner
+mkdir -p /tmp/whisper-artifact
+ gh run download "$RUN_ID" --repo MarvisLLC/marvis \
+  --name "whisper-cli-$TARGET" --dir /tmp/whisper-artifact
+cd apps/native/src-tauri
+bash scripts/build-whisper-cli.sh --stage \
+  "/tmp/whisper-artifact/whisper-cli-$TARGET" \
+  "/tmp/whisper-artifact/whisper-cli-$TARGET.sha256" --target "$TARGET"
+bash scripts/check-task-2-packaging.sh --target "$TARGET"
+cd ..
+bun install --frozen-lockfile
+bun run tauri build --target "$TARGET"
+cd src-tauri
+bash scripts/verify-release-app.sh \
+  "target/$TARGET/release/bundle/macos/Marvis.app" "$TARGET"
+```
+
+`APPLE_SIGNING_IDENTITY` must be configured in the release runner/keychain before
+this produces a release app. The checked-in workflow fails explicitly when that
+identity is absent, and `verify-release-app.sh` always runs strict recursive
+`codesign --verify --deep --strict` verification; an unsigned or invalid app is
+not reported as a release artifact. `/tmp` and `binaries/` are staging/build
+locations and remain ignored by Git.
+
 ## Architecture
 
 One webview bundle serves every window: each `WebviewWindow` loads

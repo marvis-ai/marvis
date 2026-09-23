@@ -83,7 +83,7 @@ impl WhisperProvider {
     /// This only inspects filesystem metadata and never starts the executable.
     pub fn discover_with_bundled(bundled: Option<&Path>) -> Option<(PathBuf, WhisperBinarySource)> {
         bundled
-            .filter(|path| is_executable_file(path))
+            .filter(|path| is_bundled_candidate(path))
             .map(|path| (path.to_path_buf(), WhisperBinarySource::Bundled))
             .or_else(|| {
                 resolve_fallback(
@@ -410,6 +410,37 @@ fn is_executable_file(path: &Path) -> bool {
     path.is_file()
 }
 
+/// Bundled files are release inputs, so on macOS reject a valid executable
+/// whose Mach-O slices cannot run in this process. Fallback binaries retain
+/// the historical metadata-only behavior for development and non-macOS tests.
+fn is_bundled_candidate(path: &Path) -> bool {
+    is_executable_file(path) && bundled_architecture_matches(path)
+}
+
+#[cfg(target_os = "macos")]
+fn bundled_architecture_matches(path: &Path) -> bool {
+    let expected = if cfg!(target_arch = "aarch64") {
+        "arm64"
+    } else if cfg!(target_arch = "x86_64") {
+        "x86_64"
+    } else {
+        return false;
+    };
+    std::process::Command::new("file")
+        .arg("-b")
+        .arg(path)
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .is_some_and(|description| description.contains(expected))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn bundled_architecture_matches(_path: &Path) -> bool {
+    true
+}
+
 fn list_models(directory: &Path) -> Vec<String> {
     let mut models = fs::read_dir(directory)
         .ok()
@@ -571,8 +602,8 @@ mod tests {
         fs::create_dir_all(&path_dir).unwrap();
         fs::create_dir_all(bundled.parent().unwrap()).unwrap();
         let path_binary = path_dir.join("whisper-cli");
-        make_executable(&path_binary);
-        make_executable(&bundled);
+        make_test_executable(&path_binary);
+        make_test_executable(&bundled);
         let path = std::ffi::OsString::from(path_dir);
         assert_eq!(
             WhisperProvider::discover_with_bundled(Some(&bundled)),
@@ -589,6 +620,16 @@ mod tests {
             resolve_fallback(Some(&path), &root.join("user")),
             Some((path_binary, WhisperBinarySource::Path))
         );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn rejects_bundled_executable_with_wrong_macho_architecture() {
+        let root = tempfile_dir();
+        let candidate = root.join("whisper-cli");
+        make_executable(&candidate);
+        assert!(!bundled_architecture_matches(&candidate));
+        assert!(!is_bundled_candidate(&candidate));
     }
 
     #[test]
@@ -619,6 +660,16 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         fs::write(path, b"").unwrap();
         fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    fn make_test_executable(path: &Path) {
+        fs::copy(std::env::current_exe().unwrap(), path).unwrap();
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn make_test_executable(path: &Path) {
+        make_executable(path);
     }
 
     #[cfg(not(unix))]

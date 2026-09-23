@@ -3,9 +3,11 @@
 use crate::audio::PcmChunk;
 
 mod deepgram;
+mod sherpa;
 mod whisper;
 
 pub use deepgram::DeepgramProvider;
+pub use sherpa::SherpaProvider;
 pub use whisper::{WhisperBinarySource, WhisperBinaryStatus, WhisperProvider, WhisperStatus};
 
 /// The source channel represented by a transcript event.
@@ -51,6 +53,7 @@ pub fn make_stt_provider(
             channel,
             bundled_whisper,
         ))),
+        "sherpa" => Ok(Box::new(SherpaProvider::new(&model, channel))),
         _ => anyhow::bail!("unsupported STT provider: {provider}"),
     }
 }
@@ -82,6 +85,24 @@ pub(crate) fn whisper_setup_error(status: &WhisperStatus, model: &str) -> Option
         .is_some_and(|filename| status.models.iter().any(|name| name == filename));
     (!model_available)
         .then_some("configured Whisper model was not found; choose an installed model in Settings")
+}
+
+/// Sherpa setup validation shared by Listen and Dictation — a missing or
+/// partially downloaded model is a user-fixable setup error. Messages are
+/// curated; they never include paths or engine details.
+#[allow(dead_code)] // Consumed by the Listen/Dictation wiring in Task 5.
+pub(crate) fn sherpa_setup_error(model: &str) -> Option<&'static str> {
+    sherpa_setup_error_at(&crate::paths::sherpa_models_dir(), model)
+}
+
+fn sherpa_setup_error_at(root: &std::path::Path, model: &str) -> Option<&'static str> {
+    let Some(entry) = crate::sherpa_models::entry_for_value(model) else {
+        return Some(
+            "configured Sherpa model was not found; choose an installed model in Settings",
+        );
+    };
+    (!crate::sherpa_models::entry_installed_at(root, entry))
+        .then_some("the SenseVoice model is not downloaded; download it in Settings")
 }
 
 /// Provider-error text safe for `*:error` webview events: flattened to one
@@ -120,6 +141,43 @@ mod tests {
     fn provider_interface_accepts_normalized_pcm_only() {
         fn assert_provider<T: SttProvider>() {}
         assert_provider::<WhisperProvider>();
+    }
+
+    #[test]
+    fn sherpa_provider_satisfies_the_stt_contract() {
+        fn assert_provider<T: SttProvider>() {}
+        assert_provider::<SherpaProvider>();
+    }
+
+    /// Setup errors are curated messages: an unknown catalog value reports
+    /// "not found", a known-but-absent file set reports "not downloaded",
+    /// and a complete set in a temp root clears the check.
+    #[test]
+    fn sherpa_setup_error_distinguishes_unknown_missing_and_installed() {
+        let root = stt_test_dir("setup");
+        let unknown = sherpa_setup_error_at(&root, "no-such-model").unwrap();
+        assert!(unknown.contains("not found"));
+
+        let missing = sherpa_setup_error_at(&root, "sense-voice").unwrap();
+        assert!(missing.contains("not downloaded"));
+
+        let entry = crate::sherpa_models::entry_for_value("sense-voice").unwrap();
+        let dir = crate::sherpa_models::entry_dir(&root, entry);
+        std::fs::create_dir_all(&dir).unwrap();
+        for file in entry.files {
+            std::fs::write(dir.join(file.filename), b"").unwrap();
+        }
+        assert_eq!(sherpa_setup_error_at(&root, "sense-voice"), None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    fn stt_test_dir(tag: &str) -> std::path::PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_nanos());
+        let path = std::env::temp_dir().join(format!("marvis-stt-{tag}-{nanos}"));
+        std::fs::create_dir_all(&path).unwrap();
+        path
     }
 
     #[test]

@@ -98,7 +98,12 @@ export const VoiceSetup = ({
     try {
       status = await whisperStatus();
     } catch {
-      status = { binary: null, models: [], download: null };
+      status = {
+        binary: null,
+        binary_status: { available: false, source: null },
+        models: [],
+        download: null,
+      };
     }
     setWhisper(status);
     setProgress((current) => {

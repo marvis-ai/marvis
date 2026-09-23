@@ -1,4 +1,4 @@
-//! `whisper-cli` STT adapter. Binaries and models are always user-installed.
+//! `whisper-cli` STT adapter. Models are user-installed; the executable may be bundled.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
@@ -58,11 +58,11 @@ pub struct WhisperProvider {
 }
 
 impl WhisperProvider {
-    pub fn new(model: impl Into<String>, channel: SpeakerChannel) -> Self {
+    pub fn new(model: impl Into<String>, channel: SpeakerChannel, bundled: Option<&Path>) -> Self {
         Self {
             model: model.into(),
             channel,
-            binary: Self::discover(),
+            binary: Self::discover_with_bundled(bundled).map(|(path, _)| path),
             input: None,
             stop: Arc::new(AtomicBool::new(false)),
             child: Arc::new(Mutex::new(None)),
@@ -103,8 +103,13 @@ impl WhisperProvider {
 
     /// Report paths and model names only; this never reads credentials or runs a process.
     pub fn status() -> WhisperStatus {
+        Self::status_with_bundled(None)
+    }
+
+    pub fn status_with_bundled(bundled: Option<&Path>) -> WhisperStatus {
         WhisperStatus {
-            binary: Self::discover().map(|path| path.display().to_string()),
+            binary: Self::discover_with_bundled(bundled)
+                .map(|(path, _)| path.display().to_string()),
             models: list_models(&paths::whisper_models_dir()),
         }
     }
@@ -571,7 +576,14 @@ mod tests {
         let path = std::ffi::OsString::from(path_dir);
         assert_eq!(
             WhisperProvider::discover_with_bundled(Some(&bundled)),
-            Some((bundled, WhisperBinarySource::Bundled))
+            Some((bundled.clone(), WhisperBinarySource::Bundled))
+        );
+        assert_eq!(
+            WhisperProvider::binary_status(Some(&bundled)),
+            WhisperBinaryStatus {
+                available: true,
+                source: Some(WhisperBinarySource::Bundled),
+            }
         );
         assert_eq!(
             resolve_fallback(Some(&path), &root.join("user")),

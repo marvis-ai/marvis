@@ -49,8 +49,10 @@ pub fn whisper_bin_dir() -> PathBuf {
 }
 
 /// Return the architecture-specific Whisper CLI bundled under a resolved
-/// application resource directory. Resource lookup itself belongs to Tauri;
-/// this helper remains platform-neutral and does not inspect the filesystem.
+/// application resource directory. Packaging stages exactly this target-triple
+/// name, so discovery cannot select a neighboring architecture's binary.
+/// Resource lookup itself belongs to Tauri; this helper remains platform-neutral
+/// and does not inspect the filesystem.
 #[allow(dead_code)] // Used by Task 4 when Tauri resolves the resource directory.
 pub fn bundled_whisper_cli(resource_dir: &std::path::Path) -> PathBuf {
     resource_dir.join(format!("whisper-cli-{}", whisper_target_triple()))
@@ -171,11 +173,10 @@ mod tests {
         let resource_dir = PathBuf::from("/app/Resources");
         let candidate = bundled_whisper_cli(&resource_dir);
         assert_eq!(candidate.parent(), Some(resource_dir.as_path()));
-        assert!(candidate
-            .file_name()
-            .unwrap()
-            .to_string_lossy()
-            .starts_with("whisper-cli-"));
+        assert_eq!(
+            candidate.file_name().unwrap().to_string_lossy(),
+            format!("whisper-cli-{}", whisper_target_triple())
+        );
     }
 
     #[cfg(unix)]

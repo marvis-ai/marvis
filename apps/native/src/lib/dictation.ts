@@ -73,7 +73,7 @@ export const selectionAfterDictationDraft = (
 ): DictationSelection => {
   const rangeEnd = range.start + range.length;
   const map = (position: number) => {
-    if (position <= range.start) {
+    if (position < range.start) {
       return position;
     }
     if (position >= rangeEnd) {

@@ -48,8 +48,8 @@ mod prompts;
 mod storage;
 pub mod stt;
 mod tray;
-mod windows;
 pub mod voice_models;
+mod windows;
 
 use std::sync::Arc;
 
@@ -127,6 +127,7 @@ pub struct AppState {
     /// via `alert_current` — an `alert:show` emit that races the
     /// webview's listener would otherwise be lost.
     alert: Mutex<Option<serde_json::Value>>,
+    voice_models: voice_models::VoiceModelManager,
 }
 
 impl AppState {
@@ -185,6 +186,9 @@ impl AppState {
             gate: Mutex::new(Gate::NeedsPermission),
             gate_transition: Mutex::new(()),
             alert: Mutex::new(None),
+            voice_models: voice_models::VoiceModelManager::at(
+                root.join("models").join("whisper").join("models"),
+            ),
         }
     }
 }
@@ -979,8 +983,46 @@ fn listen_status(state: State<'_, AppState>) -> listen::ListenStatus {
 }
 
 #[tauri::command]
-fn whisper_status() -> stt::WhisperStatus {
-    stt::WhisperProvider::status()
+fn voice_models_catalog(state: State<'_, AppState>) -> Vec<voice_models::VoiceModelCatalogPayload> {
+    state.voice_models.catalog_payload()
+}
+
+#[tauri::command]
+fn whisper_status(state: State<'_, AppState>) -> voice_models::WhisperDownloadStatus {
+    state.voice_models.status()
+}
+
+#[tauri::command]
+fn whisper_download(state: State<'_, AppState>, model: String) -> Result<(), String> {
+    let entry = voice_models::entry_for_id(&model)
+        .ok_or_else(|| format!("unknown Whisper model {model:?}"))?;
+    state
+        .voice_models
+        .start_download(entry.id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn whisper_cancel_download(state: State<'_, AppState>) -> Result<(), String> {
+    state
+        .voice_models
+        .cancel_download()
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn whisper_remove_model(state: State<'_, AppState>, model: String) -> Result<(), String> {
+    let entry = voice_models::entry_for_id(&model)
+        .ok_or_else(|| format!("unknown Whisper model {model:?}"))?;
+    let selected = state.config.lock().models.stt_model.clone();
+    state
+        .voice_models
+        .set_selected_model(voice_models::entry_for_id(&selected).map(|entry| entry.id));
+    state
+        .voice_models
+        .remove_model(entry.id)
+        .map_err(|e| e.to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -1426,6 +1468,8 @@ pub fn run() {
             // Bar only — it hosts the chat/listen card modes itself; the
             // bar stays hidden until onboarding is done.
             let pool = WindowPool::create_bar_only(handle, onboarding_done)?;
+            let voice_models = voice_models::VoiceModelManager::new();
+            voice_models.attach_app(handle.clone());
             app.manage(AppState {
                 keystore: Mutex::new(keystore),
                 config: Mutex::new(cfg),
@@ -1439,6 +1483,7 @@ pub fn run() {
                 gate: Mutex::new(Gate::NeedsPermission),
                 gate_transition: Mutex::new(()),
                 alert: Mutex::new(None),
+                voice_models,
             });
             deeplink::init(handle, deeplink_dispatch(handle))?;
             // Warn-and-continue like hotkeys: a missing tray must never
@@ -1489,7 +1534,11 @@ pub fn run() {
             listen_start,
             listen_stop,
             listen_status,
+            voice_models_catalog,
             whisper_status,
+            whisper_download,
+            whisper_cancel_download,
+            whisper_remove_model,
             alert_show,
             alert_current,
             alert_dismiss,

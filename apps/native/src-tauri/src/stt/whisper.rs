@@ -14,7 +14,7 @@ use serde::Serialize;
 use crate::audio::PcmChunk;
 use crate::paths;
 
-use super::{Finality, SttProvider, TranscriptEvent};
+use super::{Finality, SpeakerChannel, SttProvider, TranscriptEvent};
 
 const SAMPLE_RATE: u32 = 16_000;
 const WINDOW_SAMPLES: usize = SAMPLE_RATE as usize * 3;
@@ -31,6 +31,7 @@ pub struct WhisperStatus {
 /// A chunked, final-only whisper-cli provider.
 pub struct WhisperProvider {
     model: String,
+    channel: SpeakerChannel,
     binary: Option<PathBuf>,
     input: Option<mpsc::SyncSender<PcmChunk>>,
     stop: Arc<AtomicBool>,
@@ -39,9 +40,10 @@ pub struct WhisperProvider {
 }
 
 impl WhisperProvider {
-    pub fn new(model: impl Into<String>) -> Self {
+    pub fn new(model: impl Into<String>, channel: SpeakerChannel) -> Self {
         Self {
             model: model.into(),
+            channel,
             binary: Self::discover(),
             input: None,
             stop: Arc::new(AtomicBool::new(false)),
@@ -66,8 +68,11 @@ impl WhisperProvider {
         }
     }
 
-    fn model_path(&self) -> PathBuf {
-        paths::whisper_models_dir().join(&self.model)
+    fn model_path(&self) -> anyhow::Result<PathBuf> {
+        if !is_model_file_name(&self.model) {
+            anyhow::bail!("invalid whisper model name: {}", self.model);
+        }
+        Ok(paths::whisper_models_dir().join(&self.model))
     }
 }
 
@@ -82,7 +87,7 @@ impl SttProvider for WhisperProvider {
         let binary = self.binary.clone().ok_or_else(|| {
             anyhow::anyhow!("whisper-cli was not found; install it and try again")
         })?;
-        let model = self.model_path();
+        let model = self.model_path()?;
         if !model.is_file() {
             anyhow::bail!("whisper model was not found: {}", model.display());
         }
@@ -92,8 +97,9 @@ impl SttProvider for WhisperProvider {
         self.stop.store(false, Ordering::Release);
         let stop = Arc::clone(&self.stop);
         let child = Arc::clone(&self.child);
+        let channel = self.channel;
         self.worker = Some(thread::spawn(move || {
-            run_chunks(receiver, callback, binary, model, stop, child)
+            run_chunks(receiver, callback, binary, model, channel, stop, child)
         }));
         Ok(())
     }
@@ -132,6 +138,7 @@ fn run_chunks(
     callback: Box<dyn Fn(TranscriptEvent) + Send + Sync>,
     binary: PathBuf,
     model: PathBuf,
+    channel: SpeakerChannel,
     stop: Arc<AtomicBool>,
     child_slot: Arc<Mutex<Option<Child>>>,
 ) {
@@ -148,9 +155,16 @@ fn run_chunks(
             if rms(&window) < SILENCE_RMS || stop.load(Ordering::Acquire) {
                 continue;
             }
-            if let Ok(Some(text)) = transcribe_window(&window, &binary, &model, &stop, &child_slot)
-            {
+            if let Ok(Some(text)) = transcribe_window(
+                &window,
+                &binary,
+                &model,
+                channel,
+                &stop,
+                Arc::clone(&child_slot),
+            ) {
                 callback(TranscriptEvent {
+                    channel,
                     text,
                     finality: Finality::Final,
                 });
@@ -163,10 +177,11 @@ fn transcribe_window(
     samples: &[i16],
     binary: &Path,
     model: &Path,
+    channel: SpeakerChannel,
     stop: &AtomicBool,
-    child_slot: &Mutex<Option<Child>>,
+    child_slot: Arc<Mutex<Option<Child>>>,
 ) -> anyhow::Result<Option<String>> {
-    let wav = WavGuard::create(samples)?;
+    let wav = WavGuard::create(samples, channel)?;
     let mut child = Command::new(binary)
         .args([
             "-m",
@@ -186,7 +201,18 @@ fn transcribe_window(
     *child_slot
         .lock()
         .map_err(|_| anyhow::anyhow!("whisper child lock poisoned"))? = Some(child);
-    let reader = thread::spawn(move || read_bounded(stdout));
+    let reader_slot = Arc::clone(&child_slot);
+    let reader = thread::spawn(move || {
+        let result = read_bounded(stdout);
+        if result.is_err() {
+            if let Ok(mut slot) = reader_slot.lock() {
+                if let Some(child) = slot.as_mut() {
+                    let _ = child.kill();
+                }
+            }
+        }
+        result
+    });
 
     let status = loop {
         if stop.load(Ordering::Acquire) {
@@ -257,6 +283,15 @@ fn rms(samples: &[i16]) -> f64 {
         .sqrt()
 }
 
+fn is_model_file_name(model: &str) -> bool {
+    let path = Path::new(model);
+    !model.is_empty()
+        && !model.contains(['/', '\\'])
+        && path.file_name().is_some_and(|name| name == model)
+        && model != "."
+        && model != ".."
+}
+
 fn resolve_binary(path: Option<&std::ffi::OsStr>, bundled_dir: &Path) -> Option<PathBuf> {
     if let Some(path) = path {
         for directory in std::env::split_paths(path) {
@@ -297,11 +332,12 @@ struct WavGuard {
     path: PathBuf,
 }
 impl WavGuard {
-    fn create(samples: &[i16]) -> anyhow::Result<Self> {
+    fn create(samples: &[i16], channel: SpeakerChannel) -> anyhow::Result<Self> {
         let directory = paths::audio_tmp_dir();
         fs::create_dir_all(&directory)?;
         let path = directory.join(format!(
-            "listen-{}-{}.wav",
+            "listen-{}-{}-{}.wav",
+            channel_name(channel),
             std::process::id(),
             unique_suffix()
         ));
@@ -313,10 +349,21 @@ impl WavGuard {
             options.mode(0o600);
         }
         let mut file = options.open(&path)?;
-        write_wav(&mut file, samples)?;
+        if let Err(error) = write_wav(&mut file, samples) {
+            let _ = fs::remove_file(&path);
+            return Err(error.into());
+        }
         Ok(Self { path })
     }
 }
+
+fn channel_name(channel: SpeakerChannel) -> &'static str {
+    match channel {
+        SpeakerChannel::Me => "me",
+        SpeakerChannel::Them => "them",
+    }
+}
+
 impl Drop for WavGuard {
     fn drop(&mut self) {
         let _ = fs::remove_file(&self.path);
@@ -379,6 +426,29 @@ mod tests {
     }
 
     #[test]
+    fn rejects_stdout_over_limit() {
+        let output = std::io::Cursor::new(vec![b'x'; MAX_OUTPUT_BYTES + 1]);
+        assert!(read_bounded(output).is_err());
+    }
+
+    #[test]
+    fn rejects_model_paths_before_joining_models_directory() {
+        for model in [
+            "../outside.bin",
+            "nested/model.bin",
+            r"nested\\model.bin",
+            ".",
+            "..",
+        ] {
+            assert!(
+                !is_model_file_name(model),
+                "accepted invalid model {model:?}"
+            );
+        }
+        assert!(is_model_file_name("ggml-base.bin"));
+    }
+
+    #[test]
     fn lists_only_regular_ggml_bin_models() {
         let root = tempfile_dir();
         fs::create_dir_all(&root).unwrap();
@@ -391,21 +461,23 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn wav_is_private_and_removed_by_guard() {
+    fn wav_guard_sets_private_mode_and_removes_file_on_drop() {
         use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
         let root = tempfile_dir();
-        fs::create_dir_all(&root).unwrap();
         let path = root.join("private.wav");
         let mut options = OpenOptions::new();
         options.write(true).create_new(true).mode(0o600);
         let mut file = options.open(&path).unwrap();
         write_wav(&mut file, &[1, -1]).unwrap();
+        drop(file);
+
         assert_eq!(
             fs::metadata(&path).unwrap().permissions().mode() & 0o777,
             0o600
         );
-        drop(file);
-        fs::remove_file(path).unwrap();
+        let guard = WavGuard { path: path.clone() };
+        drop(guard);
+        assert!(!path.exists());
     }
 
     fn tempfile_dir() -> PathBuf {

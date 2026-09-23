@@ -1,0 +1,53 @@
+//! Speech-to-text provider interfaces.
+
+use crate::audio::PcmChunk;
+
+mod whisper;
+pub use whisper::{WhisperProvider, WhisperStatus};
+
+/// Whether a transcript may be displayed as a provisional result or is complete.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Finality {
+    Interim,
+    Final,
+}
+
+/// A normalized transcript emitted by an STT provider.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TranscriptEvent {
+    pub text: String,
+    pub finality: Finality,
+}
+
+/// Platform-independent speech-to-text provider.
+pub trait SttProvider: Send {
+    /// Start processing chunks and call `callback` from the provider worker.
+    fn start(&mut self, callback: Box<dyn Fn(TranscriptEvent) + Send + Sync>)
+        -> anyhow::Result<()>;
+
+    /// Enqueue a chunk without waiting for transcription.
+    fn enqueue(&self, chunk: PcmChunk) -> bool;
+
+    /// Stop processing and release the provider worker.
+    fn stop(&mut self);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn transcript_events_have_explicit_finality() {
+        let event = TranscriptEvent {
+            text: "hello".to_string(),
+            finality: Finality::Final,
+        };
+        assert_eq!(event.finality, Finality::Final);
+    }
+
+    #[test]
+    fn provider_interface_accepts_normalized_pcm_only() {
+        fn assert_provider<T: SttProvider>() {}
+        assert_provider::<WhisperProvider>();
+    }
+}

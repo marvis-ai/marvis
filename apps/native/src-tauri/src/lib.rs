@@ -45,6 +45,7 @@ mod paths;
 mod permissions;
 mod prompts;
 mod storage;
+pub mod stt;
 mod tray;
 mod windows;
 

@@ -48,6 +48,81 @@ pub fn whisper_bin_dir() -> PathBuf {
     whisper_dir().join("bin")
 }
 
+/// Return the architecture-specific Whisper CLI staged beside the application
+/// executable by Tauri's `externalBin` bundle layout (`Contents/MacOS` on macOS).
+/// Packaging stages exactly this target-triple name, so discovery cannot select a
+/// neighboring architecture's binary. This helper remains platform-neutral and
+/// does not inspect the filesystem.
+#[allow(dead_code)] // Used by Task 4 after resolving the executable directory.
+pub fn bundled_whisper_cli(executable_dir: &std::path::Path) -> PathBuf {
+    executable_dir.join(format!("whisper-cli-{}", whisper_target_triple()))
+}
+
+/// Return the sidecar name emitted by Tauri inside a packaged macOS app.
+/// Tauri consumes the target-suffixed staging file and strips that suffix when
+/// it copies the external binary beside the application executable.
+#[allow(dead_code)]
+pub fn packaged_whisper_cli(executable_dir: &std::path::Path) -> PathBuf {
+    executable_dir.join("whisper-cli")
+}
+
+#[cfg(target_os = "macos")]
+#[allow(dead_code)]
+const fn whisper_target_triple() -> &'static str {
+    #[cfg(target_arch = "aarch64")]
+    {
+        "aarch64-apple-darwin"
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        "x86_64-apple-darwin"
+    }
+    #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+    {
+        "unknown-apple-darwin"
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[allow(dead_code)]
+const fn whisper_target_triple() -> &'static str {
+    #[cfg(target_arch = "aarch64")]
+    {
+        "aarch64-unknown-linux-gnu"
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        "x86_64-unknown-linux-gnu"
+    }
+    #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+    {
+        "unknown-unknown-linux-gnu"
+    }
+}
+
+#[cfg(target_os = "windows")]
+#[allow(dead_code)]
+const fn whisper_target_triple() -> &'static str {
+    #[cfg(target_arch = "aarch64")]
+    {
+        "aarch64-pc-windows-msvc"
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        "x86_64-pc-windows-msvc"
+    }
+    #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+    {
+        "unknown-pc-windows-msvc"
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+#[allow(dead_code)]
+const fn whisper_target_triple() -> &'static str {
+    "unknown-unknown-unknown"
+}
+
 /// `~/.marvis/models/whisper/models` — path only; callers create it when needed.
 #[allow(dead_code)]
 pub fn whisper_models_dir() -> PathBuf {
@@ -98,6 +173,21 @@ mod tests {
                 tmp.exists()
             ],
             existed
+        );
+    }
+
+    #[test]
+    fn bundled_whisper_cli_is_relative_to_external_bin_dir_and_target_specific() {
+        let executable_dir = PathBuf::from("/app/Contents/MacOS");
+        let candidate = bundled_whisper_cli(&executable_dir);
+        assert_eq!(candidate.parent(), Some(executable_dir.as_path()));
+        assert_eq!(
+            candidate.file_name().unwrap().to_string_lossy(),
+            format!("whisper-cli-{}", whisper_target_triple())
+        );
+        assert_eq!(
+            packaged_whisper_cli(&executable_dir),
+            executable_dir.join("whisper-cli")
         );
     }
 

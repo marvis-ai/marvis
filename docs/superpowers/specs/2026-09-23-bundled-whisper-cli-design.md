@@ -92,8 +92,10 @@ The bundled binary is preferred in production so the app is deterministic. The
 fallbacks remain for development, custom builds, and advanced users who need a
 custom whisper.cpp binary.
 
-Resolution must reject a missing, non-regular, or non-executable file. It must
-not launch a binary during discovery.
+Resolution must reject a missing, non-regular, non-executable, or wrong-architecture
+file for every candidate source (bundled, PATH, Homebrew, and user-local). On
+macOS, each candidate must contain a Mach-O slice matching the running
+architecture before it can be selected; discovery must not launch a binary.
 
 The resolver should return source-aware internal status:
 

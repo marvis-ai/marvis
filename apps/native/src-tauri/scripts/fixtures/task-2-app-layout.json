@@ -1,0 +1,14 @@
+{
+  "targets": {
+    "aarch64-apple-darwin": {
+      "bundle_relative_path": "Contents/MacOS/whisper-cli",
+      "architecture": "arm64",
+      "executable": true
+    },
+    "x86_64-apple-darwin": {
+      "bundle_relative_path": "Contents/MacOS/whisper-cli",
+      "architecture": "x86_64",
+      "executable": true
+    }
+  }
+}

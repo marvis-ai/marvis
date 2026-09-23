@@ -17,6 +17,7 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "externalBin": ["binaries/whisper-cli"],
     "icon": [],
     "macOS": {
       "entitlements": null,

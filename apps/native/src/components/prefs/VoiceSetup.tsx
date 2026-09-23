@@ -10,6 +10,7 @@ import {
   whisperRemoveModel,
   whisperStatus,
   type VoiceModelCatalogEntry,
+  type WhisperBinarySource,
   type WhisperStatus,
 } from '../../lib/commands';
 import {
@@ -59,6 +60,12 @@ const formatBytes = (bytes: number) => {
 
 const safeVoiceError = (fallback: string) => fallback;
 
+export const whisperSourceLabel = (source: WhisperBinarySource | null) => {
+  if (source === 'Bundled') return 'Bundled with Marvis';
+  if (source) return 'Custom whisper-cli detected';
+  return 'Whisper CLI unavailable';
+};
+
 export interface VoiceSetupProps {
   data: PrefsData;
   showSkip?: boolean;
@@ -98,7 +105,12 @@ export const VoiceSetup = ({
     try {
       status = await whisperStatus();
     } catch {
-      status = { binary: null, models: [], download: null };
+      status = {
+        binary: null,
+        binary_status: { available: false, source: null },
+        models: [],
+        download: null,
+      };
     }
     setWhisper(status);
     setProgress((current) => {
@@ -470,15 +482,16 @@ export const VoiceSetup = ({
                 );
               })}
             </div>
-            {(!whisper?.binary || installedModels.length === 0) && (
+            {whisper && (
               <p className={PROV_NOTE}>
-                You must install <span className={NUM}>whisper-cli</span>{' '}
-                separately to use local transcription. Marvis does not download
-                binaries; install a compatible binary and restart the app.
+                {whisperSourceLabel(whisper.binary_status.source)}
               </p>
             )}
-            {whisper?.binary && (
-              <p className={PROV_NOTE}>whisper-cli detected.</p>
+            {whisper && !whisper.binary_status.source && (
+              <p className={PROV_NOTE}>
+                For local transcription during development, install a compatible{' '}
+                <span className={NUM}>whisper-cli</span> and restart the app.
+              </p>
             )}
           </>
         )}

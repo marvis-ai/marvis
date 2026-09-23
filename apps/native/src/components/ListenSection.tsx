@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import {
+  configGet,
   listenStatus,
   listenStop,
-  whisperStatus,
   transcriptsFor,
   summaryLatest,
   type ListenStatus,
@@ -43,6 +43,12 @@ export const ListenSection = () => {
   const [model, setModel] = useState<string | null>(null);
 
   useEffect(() => {
+    void configGet()
+      .then((config) => setModel(config.models.stt_model || null))
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
     let cancelled = false;
     void (async () => {
       try {
@@ -76,12 +82,6 @@ export const ListenSection = () => {
     return () => {
       cancelled = true;
     };
-  }, []);
-
-  useEffect(() => {
-    void whisperStatus()
-      .then((next) => setModel(next.models[0] ?? null))
-      .catch(() => {});
   }, []);
 
   useTauriEvent<ListenStatePayload>(EV_LISTEN_STATE, (next) => {

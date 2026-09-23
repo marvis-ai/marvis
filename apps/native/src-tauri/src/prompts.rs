@@ -200,18 +200,18 @@ pub fn system_prompt(conversation_history: &str) -> String {
     SYSTEM_PROMPT_TEMPLATE.replace("{{CONVERSATION_HISTORY}}", history)
 }
 
-/// Prompt for the structured summaries shown while Listen is active.
-pub fn listen_summary_prompt(transcript: &str) -> String {
-    format!(
-        r#"Summarize this live conversation as JSON only.
+/// Structured user request for the summary model. Conversation history belongs
+/// in the system message so the provider sees one stable analysis context.
+pub const SUMMARY_USER_PROMPT: &str = r#"Summarize the live conversation as JSON only.
 Use exactly these keys: tldr (string), bullets (array of at most 5 short strings), follow_ups (array of at most 3 useful questions), topic (string or null).
 The tldr is a concise Summary Overview. The topic is the Key Topic. Bullets support an Extended Explanation. Follow-ups are Suggested Questions.
-Do not include markdown, commentary, or any other keys.
+Do not include markdown, commentary, or any other keys."#;
 
-Transcript:
-{}"#,
-        transcript.trim()
-    )
+pub fn summary_user_prompt(previous: Option<&str>) -> String {
+    match previous {
+        Some(previous) => format!("{SUMMARY_USER_PROMPT}\n\nPrevious analysis (preserve it when the new response is unusable):\n{previous}"),
+        None => SUMMARY_USER_PROMPT.to_string(),
+    }
 }
 
 #[cfg(test)]
@@ -258,5 +258,16 @@ mod tests {
         );
         assert!(SYSTEM_PROMPT_TEMPLATE.contains("You are Marvis, developed and created by Marvis"));
         assert!(!SYSTEM_PROMPT_TEMPLATE.contains("Pickle"));
+    }
+
+    #[test]
+    fn summary_request_keeps_history_in_system_and_prior_analysis_in_user_request() {
+        let system = system_prompt("me: budget\nthem: timeline");
+        let user = summary_user_prompt(Some("TLDR: prior\nTopic: planning"));
+        assert!(system.contains("me: budget\nthem: timeline"));
+        assert!(!system.contains("Summary Overview"));
+        assert!(user.contains(SUMMARY_USER_PROMPT));
+        assert!(user.contains("Previous analysis"));
+        assert!(user.contains("TLDR: prior"));
     }
 }

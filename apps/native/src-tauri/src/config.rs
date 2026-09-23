@@ -63,6 +63,24 @@ pub struct AppPrefs {
 /// The spec's slate accent — `#3a7294` (DESIGN.md §2).
 pub const DEFAULT_ACCENT: &str = "#3a7294";
 
+pub(crate) fn validate_stt_provider(value: &str) -> Result<String, String> {
+    let value = value.trim();
+    if matches!(value, "deepgram" | "whisper") {
+        Ok(value.to_string())
+    } else {
+        Err(format!("unknown STT provider {value:?}"))
+    }
+}
+
+pub(crate) fn validate_stt_model(value: &str) -> Result<String, String> {
+    let value = value.trim();
+    if value.is_empty() {
+        Err("STT model must not be empty".to_string())
+    } else {
+        Ok(value.to_string())
+    }
+}
+
 impl Default for AppPrefs {
     fn default() -> Self {
         Self {
@@ -602,5 +620,22 @@ mod tests {
         for (action, accel) in expected {
             assert_eq!(hk[action], accel, "hotkey {action}");
         }
+    }
+
+    #[test]
+    fn stt_provider_validation_accepts_supported_values_only() {
+        assert!(validate_stt_provider("deepgram").is_ok());
+        assert!(validate_stt_provider("whisper").is_ok());
+        assert!(validate_stt_provider("assemblyai").is_err());
+    }
+
+    #[test]
+    fn stt_model_validation_trims_and_rejects_blank_values() {
+        assert_eq!(validate_stt_model(" nova-2 ").unwrap(), "nova-2");
+        assert_eq!(
+            validate_stt_model(" ggml-base.bin ").unwrap(),
+            "ggml-base.bin"
+        );
+        assert!(validate_stt_model("   ").is_err());
     }
 }

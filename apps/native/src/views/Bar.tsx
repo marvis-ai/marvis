@@ -60,6 +60,7 @@ import {
 import {
   EV_ASK_STATE,
   EV_APP_STATE,
+  EV_LISTEN_ERROR,
   EV_LISTEN_STATE,
   type ListenStatePayload,
   EV_CAPTURE_PERMISSION_NEEDED,
@@ -180,6 +181,13 @@ const Bar = () => {
     } else if (p.state === 'idle') {
       setListenWanted(false);
     }
+  });
+  // Setup failures are emitted separately before the durable state snapshot;
+  // switch to Listen immediately and let the snapshot/cold-open status resync
+  // preserve the error after this webview mounts or reopens.
+  useTauriEvent(EV_LISTEN_ERROR, () => {
+    setListenState('error');
+    setListenWanted(true);
   });
   // Mid-session screen-permission revocation (ask.rs detects it when a
   // stale frame would have shipped): collapse the card — NOT `askClose`,

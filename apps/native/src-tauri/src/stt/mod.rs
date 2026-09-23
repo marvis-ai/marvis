@@ -5,6 +5,13 @@ use crate::audio::PcmChunk;
 mod whisper;
 pub use whisper::{WhisperProvider, WhisperStatus};
 
+/// The source channel represented by a transcript event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpeakerChannel {
+    Me,
+    Them,
+}
+
 /// Whether a transcript may be displayed as a provisional result or is complete.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Finality {
@@ -15,6 +22,7 @@ pub enum Finality {
 /// A normalized transcript emitted by an STT provider.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TranscriptEvent {
+    pub channel: SpeakerChannel,
     pub text: String,
     pub finality: Finality,
 }
@@ -39,9 +47,11 @@ mod tests {
     #[test]
     fn transcript_events_have_explicit_finality() {
         let event = TranscriptEvent {
+            channel: SpeakerChannel::Me,
             text: "hello".to_string(),
             finality: Finality::Final,
         };
+        assert_eq!(event.channel, SpeakerChannel::Me);
         assert_eq!(event.finality, Finality::Final);
     }
 

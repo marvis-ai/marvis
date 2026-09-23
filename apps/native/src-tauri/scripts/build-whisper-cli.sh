@@ -63,7 +63,7 @@ validate_binary() {
   local artifact="$1"
   local target="$2"
   local checksum="$3"
-  local architecture file_output expected_checksum actual_checksum
+  local architecture file_output linked_libraries expected_checksum actual_checksum
   architecture="$(architecture_for_target "$target")"
 
   [[ -f "$artifact" ]] || fail "missing artifact: ${artifact}"
@@ -72,6 +72,10 @@ validate_binary() {
   file_output="$(file -b "$artifact")"
   [[ "$file_output" == *"${architecture}"* ]] \
     || fail "artifact architecture mismatch for ${target}: ${file_output}"
+  command -v otool >/dev/null 2>&1 || fail "otool is required to validate ${artifact}"
+  linked_libraries="$(otool -L "$artifact")"
+  [[ "$linked_libraries" != *libwhisper* && "$linked_libraries" != *libggml* ]] \
+    || fail "artifact is not self-contained; static whisper/ggml linkage required"
   [[ -f "$checksum" ]] || fail "missing checksum: ${checksum}"
   expected_checksum="$(awk 'NF { print $1; exit }' "$checksum")"
   actual_checksum="$(shasum -a 256 "$artifact" | awk '{ print $1 }')"
@@ -246,6 +250,7 @@ actual_rev="$(git -C "$source_dir" describe --tags --exact-match 2>/dev/null || 
 cmake -S "$source_dir" -B "$build_dir" \
   -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_OSX_ARCHITECTURES="$cmake_arch" \
+  -DBUILD_SHARED_LIBS=OFF \
   -DWHISPER_BUILD_EXAMPLES=ON \
   -DWHISPER_BUILD_TESTS=OFF \
   -DGGML_METAL=ON

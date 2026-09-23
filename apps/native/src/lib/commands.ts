@@ -52,8 +52,12 @@ export interface ModelSelection {
   model: string;
 }
 
-/** `model_validate_key` return — validation failures are data, not errors. */
-export type ModelValidation = { ok: true } | { ok: false; error: string };
+/** `model_validate_key` return — validation failures are data, not errors.
+ * Deepgram success includes an explicit no-live-probe message; normal LLM
+ * keys are live-validated. */
+export type ModelValidation =
+  | { ok: true; message?: string }
+  | { ok: false; error: string };
 
 /** `[providers]` section — the failover chain + enable switches + the
  * per-provider model memory that replaced `[models] llm_*`. */
@@ -161,7 +165,9 @@ export interface ListenSummary {
 
 export const keystoreStatus = () => invoke<KeystoreStatus>('keystore_status');
 
-/** Validates the key against the provider BEFORE storing it. */
+/** Stores the key after validation: normal LLM keys are live-probed;
+ * Deepgram keys are trimmed and accepted after non-empty shape validation
+ * without a live provider probe. */
 export const keystoreSetKey = (provider: string, key: string) =>
   invoke<KeystoreStatus>('keystore_set_key', { provider, key });
 

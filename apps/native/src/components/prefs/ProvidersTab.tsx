@@ -244,8 +244,8 @@ const SttSection = ({
           <p className={PROV_NOTE}>
             {deepgramKey ? (
               <>
-                Saved securely in the app keystore · {deepgramKey} · masked
-                only.{' '}
+                Stored after non-empty shape validation (no live provider probe)
+                · {deepgramKey} · masked only.{' '}
                 <button
                   type='button'
                   className='underline underline-offset-2'

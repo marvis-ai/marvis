@@ -402,6 +402,25 @@ fn is_key_management_provider(provider: &str) -> bool {
     provider == "deepgram" || ProviderKind::from_str(provider).is_some()
 }
 
+const DEEPGRAM_UNVERIFIED_MESSAGE: &str =
+    "Deepgram key accepted after non-empty shape validation; no live provider probe was performed";
+
+fn normalize_deepgram_key(key: &str) -> Result<String, String> {
+    let trimmed = key.trim();
+    if trimmed.is_empty() {
+        Err("Deepgram API key must not be empty after trimming".to_string())
+    } else {
+        Ok(trimmed.to_string())
+    }
+}
+
+fn deepgram_validation_payload(key: &str) -> serde_json::Value {
+    match normalize_deepgram_key(key) {
+        Ok(_) => json!({ "ok": true, "message": DEEPGRAM_UNVERIFIED_MESSAGE }),
+        Err(error) => json!({ "ok": false, "error": error }),
+    }
+}
+
 /// Raise the alert toast with `message`.
 ///
 /// The toast is a window of its own because the bar is a fixed-height
@@ -591,9 +610,9 @@ fn keystore_status(state: State<'_, AppState>) -> serde_json::Value {
     keystore_status_payload(&state.keystore.lock())
 }
 
-/// Validate the key against the provider FIRST — a bad key never reaches
-/// `keys.json` — then store and broadcast `keystore:changed`. Async
-/// because validation is a provider HTTP call.
+/// Store a key and broadcast `keystore:changed`. Normal LLM provider keys
+/// are live-validated before storage; Deepgram keys are trimmed and stored
+/// after non-empty shape validation only, without a live provider probe.
 #[tauri::command]
 async fn keystore_set_key(
     app: AppHandle,
@@ -603,10 +622,8 @@ async fn keystore_set_key(
     if !is_key_management_provider(&provider) {
         return Err(format!("unknown provider {provider:?}"));
     }
-    if provider == "deepgram" {
-        if key.trim().is_empty() {
-            return Err("Deepgram API key must not be empty".to_string());
-        }
+    let key = if provider == "deepgram" {
+        normalize_deepgram_key(&key)?
     } else {
         let kind = ProviderKind::from_str(&provider).expect("validated provider id");
         let (model, base_url) = {
@@ -617,7 +634,8 @@ async fn keystore_set_key(
             .validate()
             .await
             .map_err(|e| e.to_string())?;
-    }
+        key
+    };
     let state = app.state::<AppState>();
     let payload = {
         let mut ks = state.keystore.lock();
@@ -650,18 +668,13 @@ fn keystore_remove_key(app: AppHandle, provider: String) -> Result<serde_json::V
 
 /// Test a candidate key WITHOUT storing it: `{"ok": true}` or
 /// `{"ok": false, "error": "..."}` — validation failures are data, not
-/// command errors, so the UI can render them inline.
+/// command errors, so the UI can render them inline. Normal LLM keys are
+/// live-probed; Deepgram only gets non-empty shape validation and reports
+/// that no live provider probe was performed.
 #[tauri::command]
 async fn model_validate_key(app: AppHandle, provider: String, key: String) -> serde_json::Value {
     if provider == "deepgram" {
-        return if key.trim().is_empty() {
-            json!({ "ok": false, "error": "Deepgram API key must not be empty" })
-        } else {
-            // Deepgram is STT-only and has no LLM Provider implementation.
-            // Keep the existing validation result contract while avoiding any
-            // attempt to construct or catalog it as a chat provider.
-            json!({ "ok": true })
-        };
+        return deepgram_validation_payload(&key);
     }
     let Some(kind) = ProviderKind::from_str(&provider) else {
         return json!({ "ok": false, "error": format!("unknown provider {provider:?}") });
@@ -1580,6 +1593,28 @@ mod tests {
 
     /// The failover chain honours `providers.order`, skips disabled ids,
     /// and drops providers with no key (where required) or no model.
+    #[test]
+    fn deepgram_keys_are_trimmed_and_unverified() {
+        assert_eq!(
+            normalize_deepgram_key("  dg-test-key \n").unwrap(),
+            "dg-test-key"
+        );
+
+        let accepted = deepgram_validation_payload("  dg-test-key \t");
+        assert_eq!(accepted["ok"], true);
+        assert!(accepted["message"]
+            .as_str()
+            .unwrap()
+            .contains("no live provider probe"));
+
+        let rejected = deepgram_validation_payload(" \t\n");
+        assert_eq!(rejected["ok"], false);
+        assert!(rejected["error"]
+            .as_str()
+            .unwrap()
+            .contains("after trimming"));
+    }
+
     #[test]
     fn deepgram_is_key_only_and_never_enters_llm_chain() {
         assert!(is_key_management_provider("deepgram"));

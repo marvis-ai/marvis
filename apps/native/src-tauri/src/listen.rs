@@ -297,6 +297,17 @@ pub struct ListenService {
     history: Arc<Mutex<Vec<Transcript>>>,
 }
 
+fn whisper_setup_error(status: &crate::stt::WhisperStatus, model: &str) -> Option<&'static str> {
+    if status.binary.is_none() {
+        return Some("whisper-cli was not found; install it and try again");
+    }
+    let model_available = WhisperProvider::model_filename(model)
+        .ok()
+        .is_some_and(|filename| status.models.iter().any(|name| name == filename));
+    (!model_available)
+        .then_some("configured Whisper model was not found; choose an installed model in Settings")
+}
+
 impl ListenService {
     pub fn new() -> Self {
         Self {
@@ -357,16 +368,7 @@ impl ListenService {
             anyhow::bail!("Speech-to-text provider is not configured")
         }
         if provider_name == "whisper" {
-            let whisper = WhisperProvider::status();
-            let model_available = WhisperProvider::model_filename(&model)
-                .ok()
-                .is_some_and(|filename| whisper.models.iter().any(|name| name == filename));
-            if whisper.binary.is_none() || !model_available {
-                let message = if whisper.binary.is_none() {
-                    "whisper-cli was not found; install it and try again"
-                } else {
-                    "configured Whisper model was not found; choose an installed model in Settings"
-                };
+            if let Some(message) = whisper_setup_error(&WhisperProvider::status(), &model) {
                 *self.state.lock() = ListenStatus {
                     state: "error".into(),
                     provider: Some(provider_name),
@@ -379,7 +381,7 @@ impl ListenService {
                     }),
                 };
                 emit(ListenEvent::Error {
-                    message: message.into(),
+                    message: message.to_string(),
                     needs_setup: true,
                 });
                 anyhow::bail!(message)
@@ -913,6 +915,38 @@ mod tests {
         let unchanged = s.clone();
         assert!(parse_summary(r#"{"bullets":["mutate"]}"#).is_err());
         assert_eq!(s, unchanged);
+    }
+
+    #[test]
+    fn whisper_setup_reports_each_installation_state_without_leaking_details() {
+        let missing = crate::stt::WhisperStatus {
+            binary: None,
+            models: Vec::new(),
+        };
+        assert_eq!(
+            whisper_setup_error(&missing, "base"),
+            Some("whisper-cli was not found; install it and try again")
+        );
+
+        let no_model = crate::stt::WhisperStatus {
+            binary: Some("/usr/local/bin/whisper-cli".into()),
+            models: Vec::new(),
+        };
+        assert_eq!(
+            whisper_setup_error(&no_model, "base"),
+            Some("configured Whisper model was not found; choose an installed model in Settings")
+        );
+        assert_eq!(
+            whisper_setup_error(&no_model, "unknown"),
+            Some("configured Whisper model was not found; choose an installed model in Settings")
+        );
+
+        let ready = crate::stt::WhisperStatus {
+            binary: Some("/usr/local/bin/whisper-cli".into()),
+            models: vec!["ggml-base.bin".into()],
+        };
+        assert_eq!(whisper_setup_error(&ready, "base"), None);
+        assert_eq!(whisper_setup_error(&ready, "ggml-base.bin"), None);
     }
 
     #[test]

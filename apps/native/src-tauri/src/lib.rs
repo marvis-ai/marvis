@@ -927,17 +927,10 @@ fn emit_listen_event(app: &AppHandle, event: ListenEvent) {
                 json!({ "message": message, "needs_setup": needs_setup }),
             );
             let status = app.state::<AppState>().listen.status();
-            let _ = app.emit_to(
-                windows::BAR_LABEL,
-                EV_LISTEN_STATE,
-                json!({
-                    "state": "error",
-                    "provider": status.provider,
-                    "session_id": status.session_id,
-                    "mic": status.mic,
-                    "error": status.error,
-                }),
-            );
+            // Re-emit the durable status snapshot so a bar opened after the
+            // setup failure can resynchronize through the same payload as a
+            // normal listen state update.
+            emit_listen_state(app, &status);
         }
     }
 }

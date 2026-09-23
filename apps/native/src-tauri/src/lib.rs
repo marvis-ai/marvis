@@ -112,7 +112,7 @@ pub struct AppState {
     capture: Mutex<Option<MacosCapture>>,
     ask: Arc<AskService>,
     listen: Arc<ListenService>,
-    /// Target-specific bundled whisper-cli candidate resolved from Tauri resources.
+    /// Target-specific whisper-cli staged beside the executable by `externalBin`.
     bundled_whisper: Option<std::path::PathBuf>,
     pool: Mutex<WindowPool>,
     /// Currently live set — delta-swapped in place by [`swap_hotkeys`]
@@ -1492,11 +1492,11 @@ pub fn run() {
             let pool = WindowPool::create_bar_only(handle, onboarding_done)?;
             let voice_models = voice_models::VoiceModelManager::new();
             voice_models.attach_app(handle.clone());
-            let bundled_whisper = handle
-                .path()
-                .resource_dir()
+            // Tauri externalBin sidecars are staged beside the executable
+            // (`Contents/MacOS` in a macOS app), not under `Contents/Resources`.
+            let bundled_whisper = std::env::current_exe()
                 .ok()
-                .map(|resource_dir| paths::bundled_whisper_cli(&resource_dir));
+                .and_then(|executable| executable.parent().map(paths::bundled_whisper_cli));
             app.manage(AppState {
                 keystore: Mutex::new(keystore),
                 config: Mutex::new(cfg),

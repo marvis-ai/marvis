@@ -15,6 +15,48 @@ export const EV_ASK_STATE = 'ask:state'; // { state: 'loading'|'streaming'|'idle
 export const EV_ASK_CHUNK = 'ask:chunk'; // { text: string }
 export const EV_ASK_DONE = 'ask:done'; // { full, provider, model } — who answered
 export const EV_ASK_ERROR = 'ask:error'; // { message: string, needs_setup?: bool }
+/** Listen lifecycle, transcript, summary, and terminal error events. */
+export const EV_LISTEN_STATE = 'listen:state';
+export const EV_LISTEN_TURN = 'listen:turn';
+export const EV_LISTEN_SUMMARY = 'listen:summary';
+export const EV_LISTEN_ERROR = 'listen:error';
+/** Whisper model download byte progress; contains no URL or local path. */
+export const EV_WHISPER_DOWNLOAD_PROGRESS = 'whisper:download-progress';
+/** Whisper model download failure; contains only the model and safe error text. */
+export const EV_WHISPER_DOWNLOAD_ERROR = 'whisper:download-error';
+export interface WhisperDownloadProgressPayload {
+  model: string;
+  received: number;
+  total: number;
+}
+export interface WhisperDownloadErrorPayload {
+  model: string;
+  message: string;
+}
+export interface ListenStatePayload {
+  state: 'idle' | 'listening' | 'error';
+  provider: string | null;
+  session_id: number | null;
+  mic: boolean;
+  error: ListenErrorPayload | null;
+}
+export interface ListenTurnPayload {
+  speaker: 'me' | 'them';
+  text: string;
+  ts: number;
+  session_id: number;
+  final: boolean;
+}
+export interface ListenSummaryPayload {
+  tldr: string;
+  bullets: string[];
+  follow_ups: string[];
+  topic: string | null;
+}
+export interface ListenErrorPayload {
+  message: string;
+  needs_setup: boolean;
+}
 /** Emitted to the `alert` window only — the toast payload (lib.rs
  * `show_alert`); `{ message }`. */
 export const EV_ALERT_SHOW = 'alert:show';

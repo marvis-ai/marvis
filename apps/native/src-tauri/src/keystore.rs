@@ -31,6 +31,7 @@ pub enum KeystoreError {
 
 /// The one secret store. Plaintext keys never leave this type except
 /// through `key()`, which callers must not log, persist, or `Debug`.
+#[derive(Clone)]
 pub struct Keystore {
     path: PathBuf,
     keys: HashMap<String, String>,
@@ -179,6 +180,19 @@ mod tests {
         assert_eq!(ks.key("openai").unwrap(), "sk-new");
         ks.remove_key("ollama-side").unwrap();
         assert_eq!(ks.key("ollama-side"), None);
+
+        // STT-only keys use the same masked status and remove contract.
+        ks.set_key("deepgram", "dg-test-key").unwrap();
+        assert_eq!(
+            ks.masked_status()
+                .into_iter()
+                .find(|(provider, _)| provider == "deepgram")
+                .unwrap()
+                .1,
+            Some("…-key".into())
+        );
+        ks.remove_key("deepgram").unwrap();
+        assert_eq!(ks.key("deepgram"), None);
         let _ = std::fs::remove_dir_all(p.parent().unwrap());
     }
 

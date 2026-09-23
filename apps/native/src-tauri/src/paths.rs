@@ -36,6 +36,30 @@ pub fn models_dir() -> PathBuf {
     root().join("models")
 }
 
+/// `~/.marvis/models/whisper` — path only; callers create it when needed.
+#[allow(dead_code)]
+pub fn whisper_dir() -> PathBuf {
+    models_dir().join("whisper")
+}
+
+/// `~/.marvis/models/whisper/bin` — path only; callers create it when needed.
+#[allow(dead_code)]
+pub fn whisper_bin_dir() -> PathBuf {
+    whisper_dir().join("bin")
+}
+
+/// `~/.marvis/models/whisper/models` — path only; callers create it when needed.
+#[allow(dead_code)]
+pub fn whisper_models_dir() -> PathBuf {
+    whisper_dir().join("models")
+}
+
+/// `~/.marvis/tmp` — callers create it when they need it.
+#[allow(dead_code)]
+pub fn audio_tmp_dir() -> PathBuf {
+    root().join("tmp")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -51,6 +75,30 @@ mod tests {
         let existed = root.join("models").exists();
         assert_eq!(models_dir(), root.join("models"));
         assert_eq!(root.join("models").exists(), existed);
+
+        let whisper = root.join("models").join("whisper");
+        let bin = whisper.join("bin");
+        let models = whisper.join("models");
+        let tmp = root.join("tmp");
+        let existed = [
+            whisper.exists(),
+            bin.exists(),
+            models.exists(),
+            tmp.exists(),
+        ];
+        assert_eq!(whisper_dir(), whisper);
+        assert_eq!(whisper_bin_dir(), bin);
+        assert_eq!(whisper_models_dir(), models);
+        assert_eq!(audio_tmp_dir(), tmp);
+        assert_eq!(
+            [
+                whisper.exists(),
+                bin.exists(),
+                models.exists(),
+                tmp.exists()
+            ],
+            existed
+        );
     }
 
     #[cfg(unix)]

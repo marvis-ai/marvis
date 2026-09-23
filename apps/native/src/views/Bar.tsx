@@ -47,6 +47,9 @@ import {
   permissionsOpenPrefs,
   permissionsRequestScreen,
   permissionsStatus,
+  listenStart,
+  listenStop,
+  listenStatus,
   windowAdjustHeight,
   windowSetBarExpanded,
   windowSetChatOpen,
@@ -57,6 +60,9 @@ import {
 import {
   EV_ASK_STATE,
   EV_APP_STATE,
+  EV_LISTEN_ERROR,
+  EV_LISTEN_STATE,
+  type ListenStatePayload,
   EV_CAPTURE_PERMISSION_NEEDED,
   useTauriEvent,
 } from '../lib/events';
@@ -118,12 +124,15 @@ const Bar = () => {
   );
   const [growDir, setGrowDir] = useState<'up' | 'down'>('down');
   const [listenWanted, setListenWanted] = useState(false);
+  const [listenState, setListenState] =
+    useState<ListenStatePayload['state']>('idle');
   const inputRef = useRef<HTMLInputElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
   const cardRef = useRef<HTMLDivElement>(null);
   /** Last collapsed-mode outer y — the baseline the expand direction
    *  is detected against. */
   const collapsedY = useRef<number | null>(null);
+  const listenBusy = useRef(false);
 
   // Icon-row ⇄ input-row swap: the gate card and boot errors count as
   // expanded; `main` rests as the icon row until the iris opens it or
@@ -154,9 +163,32 @@ const Bar = () => {
 
   useEffect(() => {
     void bootstrap();
+    void listenStatus()
+      .then((next) => {
+        setListenState(next.state);
+        if (next.state === 'listening' || next.state === 'error') {
+          setListenWanted(true);
+        }
+      })
+      .catch(() => {});
   }, [bootstrap]);
 
   useTauriEvent<AppStatePayload>(EV_APP_STATE, (p) => setGate(p.gate));
+  useTauriEvent<ListenStatePayload>(EV_LISTEN_STATE, (p) => {
+    setListenState(p.state);
+    if (p.state === 'listening' || p.state === 'error') {
+      setListenWanted(true);
+    } else if (p.state === 'idle') {
+      setListenWanted(false);
+    }
+  });
+  // Setup failures are emitted separately before the durable state snapshot;
+  // switch to Listen immediately and let the snapshot/cold-open status resync
+  // preserve the error after this webview mounts or reopens.
+  useTauriEvent(EV_LISTEN_ERROR, () => {
+    setListenState('error');
+    setListenWanted(true);
+  });
   // Mid-session screen-permission revocation (ask.rs detects it when a
   // stale frame would have shipped): collapse the card — NOT `askClose`,
   // which would cancel the text-only fallback — and show the
@@ -212,12 +244,8 @@ const Bar = () => {
     };
   }, []);
 
-  // Collapsing resets the section pick — the next open is chat.
-  useEffect(() => {
-    if (!cardOpen) {
-      setListenWanted(false);
-    }
-  }, [cardOpen]);
+  // Listen is an independent session: collapsing the card must not change
+  // which active section is shown when it is reopened.
 
   // The capsule IS the window under liquid glass — the pill⇄input morph
   // resizes it (idle 136 ⇄ 480). While the card is open the morph is
@@ -421,7 +449,11 @@ const Bar = () => {
         {grip}
         <button
           type='button'
-          className={cn(BAR_BTN, 'relative')}
+          className={cn(
+            BAR_BTN,
+            'relative',
+            listenState === 'listening' && 'listen-active',
+          )}
           aria-label={
             cardOpen ? 'Close chat' : open ? 'Back to capsule' : 'Ask Marvis'
           }
@@ -466,12 +498,28 @@ const Bar = () => {
         <button
           type='button'
           className={BAR_BTN}
-          aria-label='Listen'
-          title='Listen'
+          aria-label={listenState === 'listening' ? 'Stop listening' : 'Listen'}
+          title={listenState === 'listening' ? 'Stop listening' : 'Listen'}
           disabled={gate !== 'main'}
           onClick={() => {
+            if (listenBusy.current) return;
+            listenBusy.current = true;
+            if (listenState === 'listening') {
+              void listenStop()
+                .catch(() => raise('Stop failed'))
+                .finally(() => {
+                  listenBusy.current = false;
+                });
+              return;
+            }
             setListenWanted(true);
             void windowSetChatOpen(true).catch(() => {});
+            void listenStart()
+              .then((next) => setListenState(next.state))
+              .catch(() => raise('Listen failed'))
+              .finally(() => {
+                listenBusy.current = false;
+              });
           }}>
           <MicIcon className='size-5' />
         </button>

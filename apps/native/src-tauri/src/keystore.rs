@@ -31,6 +31,7 @@ pub enum KeystoreError {
 
 /// The one secret store. Plaintext keys never leave this type except
 /// through `key()`, which callers must not log, persist, or `Debug`.
+#[derive(Clone)]
 pub struct Keystore {
     path: PathBuf,
     keys: HashMap<String, String>,

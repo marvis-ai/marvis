@@ -23,7 +23,8 @@ use image::imageops::{self, FilterType};
 use image::{GenericImageView, Rgba};
 use parking_lot::Mutex;
 use screencapturekit::cm::{CMSampleBuffer, CMSampleBufferExt, CMTime};
-use screencapturekit::shareable_content::{SCShareableContent, SCWindow};
+use screencapturekit::shareable_content::SCShareableContent;
+use screencapturekit::shareable_content::SCWindow;
 use screencapturekit::stream::configuration::{PixelFormat, SCStreamConfiguration};
 use screencapturekit::stream::content_filter::SCContentFilter;
 use screencapturekit::stream::output_type::SCStreamOutputType;
@@ -103,6 +104,32 @@ struct Running {
     stop: Arc<AtomicBool>,
 }
 
+/// Build the primary-display filter shared by screen and system-audio streams.
+pub(crate) fn primary_display_filter() -> anyhow::Result<(SCContentFilter, u32, u32)> {
+    let content = SCShareableContent::get()?;
+    let display = content
+        .displays()
+        .into_iter()
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("no shareable display"))?;
+    let (width, height) = (display.width(), display.height());
+    let own_pid = std::process::id() as i32;
+    let windows = content.windows();
+    let own: Vec<&SCWindow> = windows
+        .iter()
+        .filter(|window| {
+            window
+                .owning_application()
+                .is_some_and(|app| app.process_id() == own_pid)
+        })
+        .collect();
+    let filter = SCContentFilter::create()
+        .with_display(&display)
+        .with_excluding_windows(&own)
+        .build();
+    Ok((filter, width, height))
+}
+
 impl MacosCapture {
     /// Build the filter (primary display, our own windows excluded) and
     /// stream configuration. Does not start capturing.
@@ -112,33 +139,7 @@ impl MacosCapture {
     /// Fails if screen-recording permission is missing or no display is
     /// shareable.
     pub fn new() -> anyhow::Result<Self> {
-        let content = SCShareableContent::get()?;
-        let display = content
-            .displays()
-            .into_iter()
-            .next()
-            .ok_or_else(|| anyhow::anyhow!("no shareable display"))?;
-        let (width, height) = (display.width(), display.height());
-
-        // Self-exclusion: keep this process's windows (overlay panel, HUD)
-        // out of the capture so the app doesn't see itself. The crate has no
-        // dedicated exclude-own-process filter, so we enumerate our windows.
-        // `with_excluding_windows` only applies to display filters, so it
-        // must follow `with_display`.
-        let windows = content.windows();
-        let own_pid = std::process::id() as i32;
-        let own: Vec<&SCWindow> = windows
-            .iter()
-            .filter(|w| {
-                w.owning_application()
-                    .is_some_and(|app| app.process_id() == own_pid)
-            })
-            .collect();
-        let filter = SCContentFilter::create()
-            .with_display(&display)
-            .with_excluding_windows(&own)
-            .build();
-
+        let (filter, width, height) = primary_display_filter()?;
         let config = SCStreamConfiguration::new()
             .with_width(width)
             .with_height(height)

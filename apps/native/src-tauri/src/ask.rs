@@ -55,7 +55,7 @@ use crate::config::Config;
 use crate::keystore::Keystore;
 use crate::llm::{ChatMessage, LlmError, Provider, Role};
 use crate::prompts::system_prompt;
-use crate::storage::Db;
+use crate::storage::{Db, Transcript};
 use crate::windows::{BAR_LABEL, WindowPool};
 use crate::ProviderCandidate;
 
@@ -384,6 +384,7 @@ pub(crate) async fn send_chain(
     // the new turn is appended separately so it can carry the frame.
     let session_id = open_ask_session(db);
     let history = load_history(db, session_id);
+    let listen_history = load_listen_context(db);
     persist_user_message(db, session_id, text);
     emit(EV_STATE, json!({"state": "loading", "question": text}));
 
@@ -429,6 +430,7 @@ pub(crate) async fn send_chain(
             &*cand.provider,
             emit,
             &history,
+            &listen_history,
             text,
             frame,
             screen.as_deref(),
@@ -471,17 +473,19 @@ pub(crate) async fn send_chain(
 /// `MultimodalUnsupported` rejection retry ONCE text-only. Emits
 /// `ask:chunk`/`ask:state{streaming}` but never `done`/`error`/`idle` —
 /// the chain owns the run's protocol; this owns one provider's messages.
+#[allow(clippy::too_many_arguments)]
 async fn stream_candidate(
     provider: &dyn Provider,
     emit: &(dyn Fn(&str, serde_json::Value) + Send + Sync),
     history: &[ChatMessage],
+    listen_history: &str,
     text: &str,
     frame: Option<&Frame>,
     screen: Option<&str>,
     cancel: &CancellationToken,
 ) -> CandidateOutcome {
     let mut streaming = false;
-    let mut msgs = build_messages(history, text, frame, screen);
+    let mut msgs = build_messages(history, listen_history, text, frame, screen);
     let mut retried = false;
     loop {
         match stream_once(provider, &msgs, emit, cancel, &mut streaming).await {
@@ -491,7 +495,7 @@ async fn stream_candidate(
                 // Vision-incapable model gets ONE retry without the frame.
                 if !retried && frame.is_some() && e.is_multimodal() {
                     retried = true;
-                    msgs = build_messages(history, text, None, screen);
+                    msgs = build_messages(history, listen_history, text, None, screen);
                     continue;
                 }
                 return CandidateOutcome::Failed(e);
@@ -577,12 +581,16 @@ async fn stream_once(
 /// the description, when present, survives it).
 fn build_messages(
     history: &[ChatMessage],
+    listen_history: &str,
     text: &str,
     frame: Option<&Frame>,
     screen: Option<&str>,
 ) -> Vec<ChatMessage> {
     let mut msgs = Vec::with_capacity(history.len() + 2);
-    msgs.push(ChatMessage::text(Role::System, system_prompt("")));
+    msgs.push(ChatMessage::text(
+        Role::System,
+        system_prompt(listen_history),
+    ));
     msgs.extend(history.iter().cloned());
     msgs.push(match (frame, screen) {
         (Some(f), _) => ChatMessage::user_with_image(text, f.jpeg.clone()),
@@ -592,6 +600,24 @@ fn build_messages(
         (None, None) => ChatMessage::text(Role::User, text),
     });
     msgs
+}
+
+/// The active listen transcript tail, formatted for the system prompt.
+fn load_listen_context(db: &Db) -> String {
+    let Some(session_id) = db.session_active_id("listen").ok().flatten() else {
+        return String::new();
+    };
+    match db.transcripts_for(session_id, Some(HISTORY_TAIL)) {
+        Ok(rows) => rows
+            .iter()
+            .map(|row: &Transcript| format!("{}: {}", row.speaker, row.text))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        Err(error) => {
+            log::warn!("ask: listen history load failed: {error}");
+            String::new()
+        }
+    }
 }
 
 /// The active `ask` session id, or `None` when the lookup itself fails —
@@ -764,6 +790,18 @@ mod tests {
             std::process::id(),
             N.fetch_add(1, Ordering::Relaxed)
         ))
+    }
+
+    #[test]
+    fn build_messages_includes_listen_transcript_tail_in_system_prompt() {
+        let messages = build_messages(&[], "me: hello\nthem: reply", "question", None, None);
+        let system = match &messages[0].content[0] {
+            ContentPart::Text(text) => text,
+            _ => panic!("system prompt must be text"),
+        };
+        assert!(system.contains("me: hello"));
+        assert!(system.contains("them: reply"));
+        assert!(!system.contains("{{CONVERSATION_HISTORY}}"));
     }
 
     fn fake_frame() -> Frame {

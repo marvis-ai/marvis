@@ -205,6 +205,28 @@ export interface AskCurrent {
 export const askCurrent = () => invoke<AskCurrent>('ask_current');
 
 // ---------------------------------------------------------------------------
+// listen
+// ---------------------------------------------------------------------------
+
+export interface ListenStatus {
+  state: 'idle' | 'listening' | 'error';
+  provider: string | null;
+  session_id: number | null;
+  turns: number;
+  mic: boolean;
+}
+
+export interface WhisperStatus {
+  binary: string | null;
+  models: string[];
+}
+
+export const listenStart = () => invoke<ListenStatus>('listen_start');
+export const listenStop = () => invoke<void>('listen_stop');
+export const listenStatus = () => invoke<ListenStatus>('listen_status');
+export const whisperStatus = () => invoke<WhisperStatus>('whisper_status');
+
+// ---------------------------------------------------------------------------
 // windows
 // ---------------------------------------------------------------------------
 

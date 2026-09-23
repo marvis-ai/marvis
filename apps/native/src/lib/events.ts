@@ -15,6 +15,31 @@ export const EV_ASK_STATE = 'ask:state'; // { state: 'loading'|'streaming'|'idle
 export const EV_ASK_CHUNK = 'ask:chunk'; // { text: string }
 export const EV_ASK_DONE = 'ask:done'; // { full, provider, model } — who answered
 export const EV_ASK_ERROR = 'ask:error'; // { message: string, needs_setup?: bool }
+/** Listen lifecycle, transcript, summary, and terminal error events. */
+export const EV_LISTEN_STATE = 'listen:state';
+export const EV_LISTEN_TURN = 'listen:turn';
+export const EV_LISTEN_SUMMARY = 'listen:summary';
+export const EV_LISTEN_ERROR = 'listen:error';
+export interface ListenStatePayload {
+  state: 'idle' | 'listening' | 'error';
+  provider: string | null;
+  mic: boolean;
+}
+export interface ListenTurnPayload {
+  speaker: 'me' | 'them';
+  text: string;
+  ts: number;
+}
+export interface ListenSummaryPayload {
+  tldr: string;
+  bullets: string[];
+  follow_ups: string[];
+  topic: string | null;
+}
+export interface ListenErrorPayload {
+  message: string;
+  needs_setup?: boolean;
+}
 /** Emitted to the `alert` window only — the toast payload (lib.rs
  * `show_alert`); `{ message }`. */
 export const EV_ALERT_SHOW = 'alert:show';

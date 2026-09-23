@@ -62,6 +62,7 @@ use capture::{FrameSource, MacosCapture, RingBuffer};
 use config::Config;
 use hotkey::RegisteredHotkeys;
 use keystore::Keystore;
+use listen::{ListenEvent, ListenService};
 use llm::{make_provider, ProviderKind};
 use storage::{AiMessage, Db, Session};
 use windows::WindowPool;
@@ -109,6 +110,7 @@ pub struct AppState {
     ring: Arc<Mutex<RingBuffer>>,
     capture: Mutex<Option<MacosCapture>>,
     ask: Arc<AskService>,
+    listen: Arc<ListenService>,
     pool: Mutex<WindowPool>,
     /// Currently live set — delta-swapped in place by [`swap_hotkeys`]
     /// (shared pairs are never re-registered; macOS refuses duplicates).
@@ -176,6 +178,7 @@ impl AppState {
             ring: Arc::new(Mutex::new(RingBuffer::new(RING_MAX_FRAMES, RING_MAX_BYTES))),
             capture: Mutex::new(None),
             ask: Arc::new(AskService::new()),
+            listen: Arc::new(ListenService::new()),
             pool: Mutex::new(WindowPool::new_empty()),
             hotkeys: Mutex::new(None),
             gate: Mutex::new(Gate::NeedsPermission),
@@ -257,6 +260,7 @@ fn leave_main(app: &AppHandle) {
     // Cancel any in-flight ask — an unbounded stream left running would
     // hold `AskState::Streaming` past a leave/re-enter and wedge every
     // future send on the busy-check until it resolves on its own.
+    // Listen is independent of card visibility; only `listen_stop` stops it.
     state.ask.close(app, &state.pool);
     // Take the capture out and release the lock BEFORE `stop()` — it
     // joins the capture worker, which must not hold `state.capture`
@@ -842,11 +846,106 @@ fn ask_current(state: State<'_, AppState>) -> serde_json::Value {
     state.ask.current_payload()
 }
 
-/// Phase-2 placeholder on the command surface — the listen pipeline
-/// (dual STT + live summary) isn't implemented yet.
+const EV_LISTEN_STATE: &str = "listen:state";
+const EV_LISTEN_TURN: &str = "listen:turn";
+const EV_LISTEN_SUMMARY: &str = "listen:summary";
+const EV_LISTEN_ERROR: &str = "listen:error";
+
+fn emit_listen_state(app: &AppHandle, state: &listen::ListenStatus) {
+    let _ = app.emit_to(
+        windows::BAR_LABEL,
+        EV_LISTEN_STATE,
+        json!({
+            "state": state.state,
+            "provider": state.provider,
+            "mic": state.mic,
+        }),
+    );
+}
+
+fn emit_listen_event(app: &AppHandle, event: ListenEvent) {
+    match event {
+        ListenEvent::Turn(turn) => {
+            let _ = app.emit_to(windows::BAR_LABEL, EV_LISTEN_TURN, turn);
+        }
+        ListenEvent::Summary(summary) => {
+            let _ = app.emit_to(windows::BAR_LABEL, EV_LISTEN_SUMMARY, summary);
+        }
+        ListenEvent::Error {
+            message,
+            needs_setup,
+        } => {
+            let _ = app.emit_to(
+                windows::BAR_LABEL,
+                EV_LISTEN_ERROR,
+                json!({ "message": message, "needs_setup": needs_setup }),
+            );
+            let status = app.state::<AppState>().listen.status();
+            let _ = app.emit_to(
+                windows::BAR_LABEL,
+                EV_LISTEN_STATE,
+                json!({
+                    "state": "error",
+                    "provider": status.provider,
+                    "mic": status.mic,
+                }),
+            );
+        }
+    }
+}
+
 #[tauri::command]
-fn listen_stub() -> &'static str {
-    "listen arrives in Phase 2"
+async fn listen_start(app: AppHandle) -> Result<listen::ListenStatus, String> {
+    let state = app.state::<AppState>();
+    if *state.gate.lock() != Gate::Main {
+        return Err("Listen is unavailable until setup is complete".into());
+    }
+    let mic_allowed = tauri::async_runtime::spawn_blocking(permissions::mic_request)
+        .await
+        .unwrap_or(false);
+    let config = state.config.lock().clone();
+    let keystore = state.keystore.lock().clone();
+    let app_for_emit = app.clone();
+    let emit = Arc::new(move |event| emit_listen_event(&app_for_emit, event));
+    if let Err(error) =
+        state
+            .listen
+            .start(Arc::clone(&state.db), &keystore, &config, mic_allowed, emit)
+    {
+        let message = error.to_string();
+        let _ = app.emit_to(
+            windows::BAR_LABEL,
+            EV_LISTEN_ERROR,
+            json!({ "message": message, "needs_setup": false }),
+        );
+        let status = state.listen.status();
+        let _ = app.emit_to(
+            windows::BAR_LABEL,
+            EV_LISTEN_STATE,
+            json!({ "state": "error", "provider": status.provider, "mic": status.mic }),
+        );
+        return Err(error.to_string());
+    }
+    let status = state.listen.status();
+    emit_listen_state(&app, &status);
+    Ok(status)
+}
+
+#[tauri::command]
+fn listen_stop(app: AppHandle) {
+    let state = app.state::<AppState>();
+    state.listen.stop();
+    emit_listen_state(&app, &state.listen.status());
+}
+
+#[tauri::command]
+fn listen_status(state: State<'_, AppState>) -> listen::ListenStatus {
+    state.listen.status()
+}
+
+#[tauri::command]
+fn whisper_status() -> stt::WhisperStatus {
+    stt::WhisperProvider::status()
 }
 
 // ---------------------------------------------------------------------------
@@ -1246,6 +1345,7 @@ fn surface_material(app: AppHandle) -> &'static str {
 
 #[tauri::command]
 fn quit_application(app: AppHandle) {
+    app.state::<AppState>().listen.stop();
     app.exit(0);
 }
 
@@ -1284,6 +1384,7 @@ pub fn run() {
                 ring: Arc::new(Mutex::new(RingBuffer::new(RING_MAX_FRAMES, RING_MAX_BYTES))),
                 capture: Mutex::new(None),
                 ask: Arc::new(AskService::new()),
+                listen: Arc::new(ListenService::new()),
                 pool: Mutex::new(pool),
                 hotkeys: Mutex::new(None),
                 gate: Mutex::new(Gate::NeedsPermission),
@@ -1336,7 +1437,10 @@ pub fn run() {
             ask_close,
             ask_send_screen_only,
             ask_current,
-            listen_stub,
+            listen_start,
+            listen_stop,
+            listen_status,
+            whisper_status,
             alert_show,
             alert_current,
             alert_dismiss,

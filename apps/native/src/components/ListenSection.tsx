@@ -36,6 +36,7 @@ export const ListenSection = () => {
     session_id: null,
     turns: 0,
     mic: false,
+    error: null,
   });
   const [turns, setTurns] = useState<Turn[]>([]);
   const sessionRef = useRef<number | null>(null);
@@ -56,6 +57,7 @@ export const ListenSection = () => {
         const current = await listenStatus();
         if (cancelled) return;
         setStatus(current);
+        setError(current.error);
         sessionRef.current = current.session_id;
         if (current.session_id === null) return;
         const [rows, latest] = await Promise.all([
@@ -91,9 +93,8 @@ export const ListenSection = () => {
       setTurns([]);
       setSummary(null);
       setError(null);
-    } else if (next.state === 'listening') {
-      setError(null);
     }
+    setError(next.error);
     setStatus((previous) => ({ ...previous, ...next }));
   });
   useTauriEvent<Turn>(EV_LISTEN_TURN, (turn) => {

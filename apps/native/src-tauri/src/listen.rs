@@ -246,12 +246,19 @@ pub fn parse_summary(raw: &str) -> anyhow::Result<ListenSummary> {
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct ListenError {
+    pub message: String,
+    pub needs_setup: bool,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct ListenStatus {
     pub state: String,
     pub provider: Option<String>,
     pub session_id: Option<i64>,
     pub turns: usize,
     pub mic: bool,
+    pub error: Option<ListenError>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -299,6 +306,7 @@ impl ListenService {
                 session_id: None,
                 turns: 0,
                 mic: false,
+                error: None,
             })),
             running: Mutex::new(None),
             db: Mutex::new(None),
@@ -337,6 +345,10 @@ impl ListenService {
                 session_id: None,
                 turns: 0,
                 mic: false,
+                error: Some(ListenError {
+                    message: message.clone(),
+                    needs_setup: true,
+                }),
             };
             emit(ListenEvent::Error {
                 message,
@@ -359,6 +371,10 @@ impl ListenService {
                     session_id: None,
                     turns: 0,
                     mic: false,
+                    error: Some(ListenError {
+                        message: message.to_string(),
+                        needs_setup: true,
+                    }),
                 };
                 emit(ListenEvent::Error {
                     message: message.into(),
@@ -436,10 +452,15 @@ impl ListenService {
                             callback_context.cancel.store(true, Ordering::Release);
                             let mut status = callback_context.status.lock();
                             status.state = "error".into();
-                            drop(status);
-                            (callback_context.emit)(ListenEvent::Error {
+                            status.error = Some(ListenError {
                                 message: sanitize_provider_error(&message),
                                 needs_setup: false,
+                            });
+                            let error = status.error.clone().expect("just stored");
+                            drop(status);
+                            (callback_context.emit)(ListenEvent::Error {
+                                message: error.message,
+                                needs_setup: error.needs_setup,
                             });
                         }
                     }),
@@ -500,6 +521,10 @@ impl ListenService {
                 session_id: None,
                 turns: 0,
                 mic: false,
+                error: Some(ListenError {
+                    message: "no audio source available".into(),
+                    needs_setup: false,
+                }),
             };
             emit(ListenEvent::Error {
                 message: "no audio source available".into(),
@@ -521,6 +546,7 @@ impl ListenService {
         status.session_id = Some(session_id);
         status.turns = existing.len();
         status.mic = mic_started;
+        status.error = None;
         Ok(())
     }
 
@@ -532,6 +558,7 @@ impl ListenService {
                 session_id: None,
                 turns: 0,
                 mic: false,
+                error: None,
             };
             return;
         };
@@ -552,6 +579,7 @@ impl ListenService {
             session_id: None,
             turns: 0,
             mic: false,
+            error: None,
         };
     }
 }
@@ -748,6 +776,7 @@ mod tests {
             session_id: Some(42),
             turns: 3,
             mic: true,
+            error: None,
         };
         let payload = serde_json::to_value(status).unwrap();
         assert_eq!(
@@ -757,7 +786,7 @@ mod tests {
                 .keys()
                 .cloned()
                 .collect::<Vec<_>>(),
-            vec!["mic", "provider", "session_id", "state", "turns"]
+            vec!["error", "mic", "provider", "session_id", "state", "turns"]
         );
         assert_eq!(payload["session_id"], 42);
     }
@@ -886,7 +915,24 @@ mod tests {
                 ..
             }
         ));
-        assert_eq!(service.status().state, "error");
+        let status = service.status();
+        assert_eq!(status.state, "error");
+        assert_eq!(status.provider.as_deref(), Some("deepgram"));
+        assert_eq!(
+            status.error,
+            Some(ListenError {
+                message: "Speech-to-text provider is not configured".into(),
+                needs_setup: true,
+            })
+        );
+        let payload = serde_json::to_value(status).unwrap();
+        assert_eq!(
+            payload["error"],
+            serde_json::json!({
+                "message": "Speech-to-text provider is not configured",
+                "needs_setup": true,
+            })
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 

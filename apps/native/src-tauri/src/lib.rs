@@ -899,6 +899,7 @@ fn emit_listen_state(app: &AppHandle, state: &listen::ListenStatus) {
             "provider": state.provider,
             "session_id": state.session_id,
             "mic": state.mic,
+            "error": state.error,
         }),
     );
 }
@@ -929,6 +930,7 @@ fn emit_listen_event(app: &AppHandle, event: ListenEvent) {
                     "provider": status.provider,
                     "session_id": status.session_id,
                     "mic": status.mic,
+                    "error": status.error,
                 }),
             );
         }

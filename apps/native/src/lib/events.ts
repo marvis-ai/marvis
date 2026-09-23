@@ -25,6 +25,7 @@ export interface ListenStatePayload {
   provider: string | null;
   session_id: number | null;
   mic: boolean;
+  error: ListenErrorPayload | null;
 }
 export interface ListenTurnPayload {
   speaker: 'me' | 'them';
@@ -41,7 +42,7 @@ export interface ListenSummaryPayload {
 }
 export interface ListenErrorPayload {
   message: string;
-  needs_setup?: boolean;
+  needs_setup: boolean;
 }
 /** Emitted to the `alert` window only — the toast payload (lib.rs
  * `show_alert`); `{ message }`. */

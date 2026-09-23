@@ -232,12 +232,18 @@ export const askCurrent = () => invoke<AskCurrent>('ask_current');
 // listen
 // ---------------------------------------------------------------------------
 
+export interface ListenErrorPayload {
+  message: string;
+  needs_setup: boolean;
+}
+
 export interface ListenStatus {
   state: 'idle' | 'listening' | 'error';
   provider: string | null;
   session_id: number | null;
   turns: number;
   mic: boolean;
+  error: ListenErrorPayload | null;
 }
 
 export interface WhisperStatus {

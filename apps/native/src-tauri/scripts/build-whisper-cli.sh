@@ -15,6 +15,7 @@ usage() {
   cat <<'EOF'
 Usage: build-whisper-cli.sh [--check-only] [--require-staged] [--target TARGET]
        build-whisper-cli.sh --stage ARTIFACT --target TARGET [--checksum CHECKSUM]
+       build-whisper-cli.sh --dev-stage --target TARGET
 
 Build the pinned whisper.cpp whisper-cli executable for a macOS target, or
 stage a CI artifact using Tauri's target-triple external-binary convention.
@@ -101,10 +102,37 @@ stage_artifact() {
   echo "Staged ${staged}"
 }
 
+stage_dev_artifact() {
+  local target="$1"
+  local destination_dir
+  local destination
+  local artifact
+
+  destination_dir="${SCRIPT_DIR}/../target/debug"
+  destination="${destination_dir}/whisper-cli-${target}"
+  artifact="$(artifact_for_target "$target")"
+
+  if [[ ! -e "$artifact" && ! -e "${artifact}.sha256" ]]; then
+    echo "No pinned ${target} Whisper CLI artifact found; using PATH/Homebrew/user fallback."
+    exit 0
+  fi
+
+  validate_artifact "$target"
+
+  mkdir -p "$destination_dir"
+  DEV_STAGE_TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/marvis-whisper-dev.XXXXXX")"
+  trap 'rm -rf "${DEV_STAGE_TMP_DIR:-}"' EXIT
+  cp "$artifact" "${DEV_STAGE_TMP_DIR}/whisper-cli-${target}"
+  chmod 755 "${DEV_STAGE_TMP_DIR}/whisper-cli-${target}"
+  mv "${DEV_STAGE_TMP_DIR}/whisper-cli-${target}" "$destination"
+  echo "Staged development Whisper CLI at ${destination}"
+}
+
 validate_metadata
 
 CHECK_ONLY=false
 REQUIRE_STAGED=false
+DEV_STAGE=false
 stage_path=""
 stage_checksum=""
 target=""
@@ -115,6 +143,9 @@ while (($#)); do
       ;;
     --require-staged)
       REQUIRE_STAGED=true
+      ;;
+    --dev-stage)
+      DEV_STAGE=true
       ;;
     --stage)
       (($# >= 2)) || fail "--stage requires a value"
@@ -142,6 +173,14 @@ while (($#)); do
   shift
 done
 
+if [[ -z "$target" ]]; then
+  case "$(uname -m)" in
+    arm64) target="aarch64-apple-darwin" ;;
+    x86_64) target="x86_64-apple-darwin" ;;
+    *) fail "cannot infer a supported target from $(uname -m); use --target" ;;
+  esac
+fi
+
 if [[ -n "$target" ]] && ! is_expected_target "$target"; then
   fail "unsupported target: ${target}"
 fi
@@ -152,13 +191,18 @@ fi
 
 if [[ -n "$stage_path" ]]; then
   [[ "$CHECK_ONLY" == false ]] || fail "--stage cannot be combined with --check-only"
-  [[ -n "$target" ]] || fail "--stage requires --target"
   [[ -n "$stage_checksum" ]] || stage_checksum="${stage_path}.sha256"
   stage_artifact "$stage_path" "$target" "$stage_checksum"
   exit 0
 fi
 
 [[ -z "$stage_checksum" ]] || fail "--checksum requires --stage"
+
+if [[ "$DEV_STAGE" == true ]]; then
+  [[ "$CHECK_ONLY" == false ]] || fail "--dev-stage cannot be combined with --check-only"
+  stage_dev_artifact "$target"
+  exit 0
+fi
 
 if "$CHECK_ONLY"; then
   if [[ -n "$target" ]]; then
@@ -182,14 +226,6 @@ fi
 command -v git >/dev/null 2>&1 || fail "git is required"
 command -v cmake >/dev/null 2>&1 || fail "cmake is required"
 command -v shasum >/dev/null 2>&1 || fail "shasum is required"
-
-if [[ -z "$target" ]]; then
-  case "$(uname -m)" in
-    arm64) target="aarch64-apple-darwin" ;;
-    x86_64) target="x86_64-apple-darwin" ;;
-    *) fail "cannot infer a supported target from $(uname -m); use --target" ;;
-  esac
-fi
 
 case "$target" in
   aarch64-apple-darwin) cmake_arch="arm64" ;;

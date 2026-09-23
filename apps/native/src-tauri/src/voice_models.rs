@@ -4,8 +4,11 @@ use serde::Serialize;
 use sha1::{Digest, Sha1};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -172,7 +175,7 @@ pub enum VoiceDownloadError {
 
 struct ActiveDownload {
     cancel: CancellationToken,
-    task: JoinHandle<Result<(), VoiceDownloadError>>,
+    task: Option<JoinHandle<Result<(), VoiceDownloadError>>>,
     progress: Arc<Mutex<WhisperDownloadProgress>>,
 }
 struct ManagerState {
@@ -184,6 +187,17 @@ pub struct VoiceModelManager {
     client: reqwest::Client,
     state: Mutex<ManagerState>,
     app: Mutex<Option<AppHandle>>,
+    cancel_gate: tokio::sync::Mutex<()>,
+    #[cfg(test)]
+    test_source: Option<TestSource>,
+}
+
+#[cfg(test)]
+#[derive(Clone)]
+struct TestSource {
+    url: String,
+    bytes: u64,
+    sha1: String,
 }
 impl Default for VoiceModelManager {
     fn default() -> Self {
@@ -204,7 +218,16 @@ impl VoiceModelManager {
                 selected: None,
             }),
             app: Mutex::new(None),
+            cancel_gate: tokio::sync::Mutex::new(()),
+            #[cfg(test)]
+            test_source: None,
         }
+    }
+    #[cfg(test)]
+    fn with_test_source(root: PathBuf, source: TestSource) -> Self {
+        let mut manager = Self::at(root);
+        manager.test_source = Some(source);
+        manager
     }
     pub fn attach_app(&self, app: AppHandle) {
         *self.app.lock() = Some(app);
@@ -221,7 +244,8 @@ impl VoiceModelManager {
             .lock()
             .active
             .as_ref()
-            .is_some_and(|a| a.task.is_finished())
+            .and_then(|a| a.task.as_ref())
+            .is_some_and(JoinHandle::is_finished)
         {
             self.state.lock().active = None;
         }
@@ -259,6 +283,8 @@ impl VoiceModelManager {
         let root = self.root.clone();
         let client = self.client.clone();
         let app = self.app.lock().clone();
+        #[cfg(test)]
+        let test_source = self.test_source.clone();
         let entry = *entry;
         let progress = Arc::new(Mutex::new(WhisperDownloadProgress {
             model: entry.id.as_str(),
@@ -267,21 +293,39 @@ impl VoiceModelManager {
         }));
         let task_progress = Arc::clone(&progress);
         let task = tokio::spawn(async move {
-            download(entry, root, client, task_cancel, app, task_progress).await
+            download(
+                entry,
+                root,
+                client,
+                task_cancel,
+                app,
+                task_progress,
+                #[cfg(test)]
+                test_source,
+            )
+            .await
         });
         state.active = Some(ActiveDownload {
             cancel,
-            task,
+            task: Some(task),
             progress,
         });
         Ok(())
     }
     pub async fn cancel_download(&self) -> Result<(), VoiceDownloadError> {
-        let active = self.state.lock().active.take();
-        if let Some(active) = active {
+        let _gate = self.cancel_gate.lock().await;
+        let task = {
+            let mut state = self.state.lock();
+            let Some(active) = state.active.as_mut() else {
+                return Ok(());
+            };
             active.cancel.cancel();
-            let _ = active.task.await;
+            active.task.take()
+        };
+        if let Some(task) = task {
+            let _ = task.await;
         }
+        self.state.lock().active = None;
         Ok(())
     }
     pub fn set_selected_model(&self, model: Option<ModelId>) {
@@ -290,6 +334,9 @@ impl VoiceModelManager {
     pub fn remove_model(&self, model: ModelId) -> Result<(), VoiceDownloadError> {
         self.reap();
         let state = self.state.lock();
+        if state.active.is_some() {
+            return Err(VoiceDownloadError::Busy);
+        }
         if state.selected == Some(model) {
             return Err(VoiceDownloadError::ActiveModel);
         }
@@ -313,25 +360,37 @@ async fn download(
     cancel: CancellationToken,
     app: Option<AppHandle>,
     progress: Arc<Mutex<WhisperDownloadProgress>>,
+    #[cfg(test)] test_source: Option<TestSource>,
 ) -> Result<(), VoiceDownloadError> {
     fs::create_dir_all(&root).map_err(|e| VoiceDownloadError::Download(e.to_string()))?;
     let final_path = root.join(entry.filename);
     let tmp_path = root.join(format!("{}.tmp", entry.filename));
-    let result = download_inner(
+    download_inner(
         entry,
         &final_path,
         &tmp_path,
         client,
-        cancel.clone(),
+        cancel,
         app,
         progress,
+        #[cfg(test)]
+        test_source,
     )
-    .await;
-    if result.is_err() {
-        let _ = fs::remove_file(&tmp_path);
-    }
-    result
+    .await
 }
+struct TempFileGuard<'a> {
+    path: &'a Path,
+    owned: bool,
+}
+impl Drop for TempFileGuard<'_> {
+    fn drop(&mut self) {
+        if self.owned {
+            let _ = fs::remove_file(self.path);
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn download_inner(
     entry: ModelCatalogEntry,
     final_path: &Path,
@@ -340,61 +399,91 @@ async fn download_inner(
     cancel: CancellationToken,
     app: Option<AppHandle>,
     progress: Arc<Mutex<WhisperDownloadProgress>>,
+    #[cfg(test)] test_source: Option<TestSource>,
 ) -> Result<(), VoiceDownloadError> {
-    let response = tokio::select! { _ = cancel.cancelled() => return Err(VoiceDownloadError::Cancelled), r = client.get(entry.url).send() => r.map_err(|e| VoiceDownloadError::Download(e.to_string()))? };
+    let (url, expected_bytes, expected_sha1) = {
+        #[cfg(test)]
+        if let Some(source) = test_source {
+            (source.url, source.bytes, source.sha1)
+        } else {
+            (entry.url.to_string(), entry.bytes, entry.sha1.to_string())
+        }
+        #[cfg(not(test))]
+        (entry.url.to_string(), entry.bytes, entry.sha1.to_string())
+    };
+    let response = tokio::select! {
+        _ = cancel.cancelled() => return Err(VoiceDownloadError::Cancelled),
+        r = client.get(url).send() => r.map_err(|e| VoiceDownloadError::Download(e.to_string()))?
+    };
     if !response.status().is_success() {
         return Err(VoiceDownloadError::Download(format!(
             "HTTP {}",
             response.status()
         )));
     }
-    let mut file = OpenOptions::new()
-        .create_new(true)
-        .write(true)
+    let mut file_options = OpenOptions::new();
+    file_options.create_new(true).write(true);
+    #[cfg(unix)]
+    file_options.mode(0o600);
+    let mut file = file_options
         .open(tmp_path)
         .map_err(|e| VoiceDownloadError::Download(e.to_string()))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(tmp_path, fs::Permissions::from_mode(0o600))
-            .map_err(|e| VoiceDownloadError::Download(e.to_string()))?;
-    }
+    let mut guard = TempFileGuard {
+        path: tmp_path,
+        owned: true,
+    };
     let mut stream = response.bytes_stream();
     let mut received = 0u64;
     let mut hash = Sha1::new();
-    while let Some(chunk) = tokio::select! { _ = cancel.cancelled() => return Err(VoiceDownloadError::Cancelled), chunk = stream.next() => chunk }
-    {
+    let mut last_progress = Instant::now() - Duration::from_millis(150);
+    while let Some(chunk) = tokio::select! {
+        _ = cancel.cancelled() => return Err(VoiceDownloadError::Cancelled),
+        chunk = stream.next() => chunk
+    } {
         let chunk = chunk.map_err(|e| VoiceDownloadError::Download(e.to_string()))?;
         received = received.saturating_add(chunk.len() as u64);
-        if received > entry.bytes {
+        if received > expected_bytes {
             return Err(VoiceDownloadError::Verification);
         }
         file.write_all(&chunk)
             .map_err(|e| VoiceDownloadError::Download(e.to_string()))?;
         hash.update(&chunk);
         progress.lock().received = received;
-        if let Some(app) = &app {
-            let _ = app.emit(
-                "whisper:download-progress",
-                WhisperDownloadProgress {
-                    model: entry.id.as_str(),
-                    received,
-                    total: entry.bytes,
-                },
-            );
+        if last_progress.elapsed() >= Duration::from_millis(150) {
+            emit_progress(&app, entry.id.as_str(), received, expected_bytes);
+            last_progress = Instant::now();
         }
     }
     file.sync_all()
         .map_err(|e| VoiceDownloadError::Download(e.to_string()))?;
-    let digest = format!("{:x}", hash.finalize());
-    if received != entry.bytes || digest != entry.sha1 {
+    let digest = hash
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    if received != expected_bytes || digest != expected_sha1 {
         return Err(VoiceDownloadError::Verification);
     }
     if cancel.is_cancelled() {
         return Err(VoiceDownloadError::Cancelled);
     }
+    emit_progress(&app, entry.id.as_str(), received, expected_bytes);
     fs::rename(tmp_path, final_path).map_err(|e| VoiceDownloadError::Download(e.to_string()))?;
+    guard.owned = false;
     Ok(())
+}
+
+fn emit_progress(app: &Option<AppHandle>, model: &'static str, received: u64, total: u64) {
+    if let Some(app) = app {
+        let _ = app.emit(
+            "whisper:download-progress",
+            WhisperDownloadProgress {
+                model,
+                received,
+                total,
+            },
+        );
+    }
 }
 
 #[cfg(test)]
@@ -426,5 +515,161 @@ mod tests {
         ] {
             assert!(entry_for_value(value).is_none());
         }
+    }
+
+    #[test]
+    fn progress_dto_has_only_the_public_fields() {
+        let value = serde_json::to_value(WhisperDownloadProgress {
+            model: "tiny",
+            received: 1,
+            total: 2,
+        })
+        .unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({"model": "tiny", "received": 1, "total": 2})
+        );
+    }
+
+    fn fixture(body: Vec<u8>, delay: Duration) -> (String, TestSource) {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let expected = body.clone();
+        std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut request = [0; 1024];
+                let _ = stream.read(&mut request);
+                let header = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    expected.len()
+                );
+                let _ = stream.write_all(header.as_bytes());
+                for chunk in expected.chunks(2) {
+                    let _ = stream.write_all(chunk);
+                    let _ = stream.flush();
+                    std::thread::sleep(delay);
+                }
+            }
+        });
+        let mut sha = Sha1::new();
+        sha.update(&body);
+        let digest = sha
+            .finalize()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        (
+            format!("http://{address}/model"),
+            TestSource {
+                url: format!("http://{address}/model"),
+                bytes: body.len() as u64,
+                sha1: digest,
+            },
+        )
+    }
+
+    fn temp_root() -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "marvis-voice-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    #[tokio::test]
+    async fn lifecycle_verifies_cleans_preserves_and_serializes_downloads() {
+        let body = b"voice model fixture".to_vec();
+        let (url, source) = fixture(body.clone(), Duration::from_millis(10));
+        assert!(url.starts_with("http://127.0.0.1:"));
+        let root = temp_root();
+        let manager = VoiceModelManager::with_test_source(root.clone(), source.clone());
+        manager.start_download(ModelId::Tiny).unwrap();
+        assert!(matches!(
+            manager.start_download(ModelId::Base),
+            Err(VoiceDownloadError::Busy)
+        ));
+        manager.cancel_download().await.unwrap();
+        assert!(!root.join("ggml-tiny.bin.tmp").exists());
+
+        let (_, bad_source) = fixture(body.clone(), Duration::ZERO);
+        let bad = VoiceModelManager::with_test_source(
+            root.clone(),
+            TestSource {
+                sha1: "00".repeat(20),
+                ..bad_source
+            },
+        );
+        fs::write(root.join("ggml-tiny.bin"), b"keep me").unwrap();
+        bad.start_download(ModelId::Tiny).unwrap();
+        while bad.status().download.is_some() {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(fs::read(root.join("ggml-tiny.bin")).unwrap(), b"keep me");
+        assert!(!root.join("ggml-tiny.bin.tmp").exists());
+
+        let (_, success_source) = fixture(body.clone(), Duration::ZERO);
+        let success = VoiceModelManager::with_test_source(root.clone(), success_source);
+        success.start_download(ModelId::Tiny).unwrap();
+        while success.status().download.is_some() {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(fs::read(root.join("ggml-tiny.bin")).unwrap(), body);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(root.join("ggml-tiny.bin"))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn active_model_removal_is_rejected() {
+        let manager = VoiceModelManager::at(temp_root());
+        manager.set_selected_model(Some(ModelId::Tiny));
+        assert!(matches!(
+            manager.remove_model(ModelId::Tiny),
+            Err(VoiceDownloadError::ActiveModel)
+        ));
+        manager.set_selected_model(None);
+        let _ = fs::remove_dir_all(manager.root);
+    }
+
+    #[tokio::test]
+    async fn removal_is_rejected_while_download_is_active() {
+        let root = temp_root();
+        let (_, source) = fixture(b"fixture".to_vec(), Duration::from_millis(100));
+        let manager = VoiceModelManager::with_test_source(root.clone(), source);
+        manager.start_download(ModelId::Tiny).unwrap();
+        assert!(matches!(
+            manager.remove_model(ModelId::Tiny),
+            Err(VoiceDownloadError::Busy)
+        ));
+        manager.cancel_download().await.unwrap();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn cancellation_does_not_remove_preexisting_temp_file() {
+        let root = temp_root();
+        let tmp = root.join("ggml-tiny.bin.tmp");
+        fs::write(&tmp, b"owned by someone else").unwrap();
+        let (_, source) = fixture(b"fixture".to_vec(), Duration::ZERO);
+        let manager = VoiceModelManager::with_test_source(root.clone(), source);
+        manager.start_download(ModelId::Tiny).unwrap();
+        manager.cancel_download().await.unwrap();
+        assert_eq!(fs::read(tmp).unwrap(), b"owned by someone else");
+        let _ = fs::remove_dir_all(root);
     }
 }

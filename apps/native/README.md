@@ -98,7 +98,8 @@ mkdir -p /tmp/whisper-artifact
 cd apps/native/src-tauri
 bash scripts/build-whisper-cli.sh --stage \
   "/tmp/whisper-artifact/whisper-cli-$TARGET" \
-  "/tmp/whisper-artifact/whisper-cli-$TARGET.sha256" --target "$TARGET"
+  --checksum "/tmp/whisper-artifact/whisper-cli-$TARGET.sha256" \
+  --target "$TARGET"
 bash scripts/check-task-2-packaging.sh --target "$TARGET"
 cd ..
 bun install --frozen-lockfile

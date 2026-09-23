@@ -90,7 +90,6 @@ pub(crate) fn whisper_setup_error(status: &WhisperStatus, model: &str) -> Option
 /// Sherpa setup validation shared by Listen and Dictation — a missing or
 /// partially downloaded model is a user-fixable setup error. Messages are
 /// curated; they never include paths or engine details.
-#[allow(dead_code)] // Consumed by the Listen/Dictation wiring in Task 5.
 pub(crate) fn sherpa_setup_error(model: &str) -> Option<&'static str> {
     sherpa_setup_error_at(&crate::paths::sherpa_models_dir(), model)
 }

@@ -130,13 +130,11 @@ pub fn whisper_models_dir() -> PathBuf {
 }
 
 /// `~/.marvis/models/sherpa` — path only; callers create it when needed.
-#[allow(dead_code)]
 pub fn sherpa_dir() -> PathBuf {
     models_dir().join("sherpa")
 }
 
 /// `~/.marvis/models/sherpa/models` — path only; callers create it when needed.
-#[allow(dead_code)]
 pub fn sherpa_models_dir() -> PathBuf {
     sherpa_dir().join("models")
 }

@@ -1,7 +1,3 @@
-// The module is private (`mod sherpa_models;`) and commands/state wiring land
-// in Task 5 — until then nothing outside this file can reach it.
-#![allow(dead_code)]
-
 use futures_util::StreamExt;
 use parking_lot::Mutex;
 use serde::Serialize;

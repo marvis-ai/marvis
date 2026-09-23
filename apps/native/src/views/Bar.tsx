@@ -86,6 +86,7 @@ import {
 import {
   applyDictationDraft,
   reconcileDictationEdit,
+  type ApplyDictationDraftResult,
   type DictationRange,
 } from '../lib/dictation';
 import { ChatSection } from '../components/ChatSection';
@@ -184,6 +185,10 @@ const Bar = () => {
    *  invoke rejects with the same message after the event, so the
    *  alert dedupes on it. */
   const lastDictationError = useRef<string | null>(null);
+  /** Whether a live draft has already rewritten the tracked slice —
+   *  until then the slice still holds the user's own (e.g. selected)
+   *  text, so an empty final draft must leave it untouched. */
+  const dictationDraftLanded = useRef(false);
 
   // Icon-row ⇄ input-row swap: the gate card and boot errors count as
   // expanded; `main` rests as the icon row until the iris opens it or
@@ -196,6 +201,13 @@ const Bar = () => {
   /** The row shows the input row in card modes regardless of `open` —
    *  it's the card header and the follow-up field. */
   const showInputRow = expanded || cardOpen;
+  /** Whether the Ask `<input>` is actually mounted: the permission
+   *  card and the boot-error retry replace the whole row while
+   *  `showInputRow` stays true, so dictation visibility keys off
+   *  this — an input that isn't rendered can't receive drafts and
+   *  must not keep the mic held. */
+  const inputRendered =
+    showInputRow && !bootError && gate !== 'needs_permission';
   const section: 'chat' | 'listen' | null = !cardOpen
     ? null
     : listenWanted
@@ -210,18 +222,44 @@ const Bar = () => {
     const start = input?.selectionStart ?? textRef.current.length;
     const end = input?.selectionEnd ?? start;
     dictationRange.current = { start, length: Math.max(0, end - start) };
+    dictationDraftLanded.current = false;
+  };
+
+  /** Commit a draft application to the input. When the value actually
+   *  changes the caret is queued for the `[text]`-keyed restore
+   *  effect; when it doesn't, React skips the commit and a queued
+   *  caret would go stale — restore the selection immediately
+   *  instead. */
+  const commitDictationText = (applied: ApplyDictationDraftResult) => {
+    if (applied.value === textRef.current) {
+      pendingCaret.current = null;
+      inputRef.current?.setSelectionRange(applied.caret, applied.caret);
+      return;
+    }
+    pendingCaret.current = applied.caret;
+    setText(applied.value);
   };
 
   /** Stop the live dictation session. The tracked range is cleared up
    *  front so a late live draft (or a second stop) can never rewrite
    *  the input again — then `applyFinal` decides whether the
-   *  authoritative draft the invoke returns lands in the range (mic
-   *  toggle, Enter, row hiding) or is discarded (the user edited
-   *  inside the dictated slice, or the text was cleared — their
-   *  version wins). Resolves when the stop settles so the mic button
-   *  can hold `speechBusy` across it. */
+   *  authoritative draft the invoke returns lands at all (mic toggle,
+   *  Enter, row hiding) or is discarded (Escape, a slice edit,
+   *  type-to-wake — the user's version wins).
+   *
+   *  `dictation_stop` blocks server-side across the worker join, so
+   *  the text can drift while the invoke is in flight; the base text
+   *  is snapshotted alongside the range and the drift is reconciled
+   *  on resolve: edits outside the dictated slice just shift where
+   *  the final draft lands, edits inside it discard the draft. And
+   *  if no live draft ever landed (e.g. Enter during an in-flight
+   *  start), the slice still holds the user's selected text — an
+   *  empty final must not delete it. Resolves when the stop settles
+   *  so the mic button can hold `speechBusy` across it. */
   const stopDictation = (applyFinal: boolean) => {
     const range = dictationRange.current;
+    const baseText = textRef.current;
+    const draftLanded = dictationDraftLanded.current;
     dictationRange.current = null;
     if (range === null && dictationState !== 'listening') {
       return Promise.resolve();
@@ -231,10 +269,25 @@ const Bar = () => {
         if (!applyFinal || range === null) {
           return;
         }
-        const applied = applyDictationDraft(textRef.current, range, draft.text);
-        pendingCaret.current = applied.caret;
-        setText(applied.value);
-        if (showInputRow) {
+        const current = textRef.current;
+        const edit = reconcileDictationEdit(
+          baseText,
+          current,
+          inputRef.current?.selectionEnd ?? current.length,
+          range,
+        );
+        if (edit.intersects) {
+          // The user edited inside the dictated slice while the stop
+          // was settling — their version wins, the draft is dropped.
+          return;
+        }
+        if (draft.text === '' && !draftLanded) {
+          return;
+        }
+        commitDictationText(
+          applyDictationDraft(current, edit.range, draft.text),
+        );
+        if (inputRendered) {
           inputRef.current?.focus();
         }
       })
@@ -309,8 +362,8 @@ const Bar = () => {
     }
     const applied = applyDictationDraft(textRef.current, range, p.text);
     dictationRange.current = applied.range;
-    pendingCaret.current = applied.caret;
-    setText(applied.value);
+    dictationDraftLanded.current = true;
+    commitDictationText(applied);
   });
   // `dictation:error` doubles as the `dictation_start` rejection
   // message — `lastDictationError` dedupes the alert.
@@ -456,14 +509,16 @@ const Bar = () => {
     inputRef.current?.setSelectionRange(caret, caret);
   }, [text]);
 
-  // Dictation is bound to the visible Ask input — when the row hides
-  // (collapse, `ask_close`, gate change) stop the session and keep the
-  // final draft for review.
+  // Dictation is bound to the visible Ask input — when the input leaves
+  // the DOM (collapse, `ask_close`, permission/boot-error cards) stop
+  // the session and keep the final draft for review. `dictationState`
+  // is a dep so a session resynced while the input is hidden is
+  // stopped too instead of holding the mic invisibly.
   useEffect(() => {
-    if (!showInputRow) {
+    if (!inputRendered) {
       void stopDictation(true);
     }
-  }, [showInputRow]);
+  }, [inputRendered, dictationState]);
 
   // Type-to-wake on the collapsed pill; Esc collapses input → capsule,
   // and collapses the card via `ask_close` (cancel + `set_chat_open`).
@@ -739,12 +794,18 @@ const Bar = () => {
                 })
                 .catch((e: unknown) => {
                   // A deliberate stop landing mid-start rejects the
-                  // invoke without failing; backend `fail()` already
-                  // emitted `dictation:error`, so dedupe on it.
-                  const abandoned = dictationRange.current === null;
-                  dictationRange.current = null;
+                  // invoke without failing: the anchor is already gone,
+                  // or the backend aborted the commit with its internal
+                  // 'dictation start was interrupted' marker — both are
+                  // expected abandon/gate transitions, not alerts. Real
+                  // failures already emitted `dictation:error`, so
+                  // dedupe on it.
                   const message =
                     typeof e === 'string' ? e : 'Dictation failed';
+                  const abandoned =
+                    dictationRange.current === null ||
+                    message === 'dictation start was interrupted';
+                  dictationRange.current = null;
                   if (!abandoned && message !== lastDictationError.current) {
                     raise(message);
                   }

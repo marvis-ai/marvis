@@ -415,7 +415,10 @@ fn transcript_callback(
 /// always lands (it also makes `commit` abort a start whose provider
 /// died mid-build), but the status write and emit are skipped once the
 /// epoch moved on — a late error from a session a `stop()` already tore
-/// down must not clobber the winner's status.
+/// down must not clobber the winner's status. The epoch check runs
+/// while holding `state` (same pattern as `fail()`): `stop()` bumps the
+/// epoch before its own `idle` write, so checking under the lock keeps
+/// that write from slipping between the check and the `error` write.
 fn provider_error_callback(
     state: &Arc<Mutex<DictationStatus>>,
     cancel: &Arc<AtomicBool>,
@@ -429,15 +432,15 @@ fn provider_error_callback(
     let emit = emit.clone();
     Box::new(move |message| {
         cancel.store(true, Ordering::Release);
-        if epoch.load(Ordering::Acquire) != start_epoch {
-            return;
-        }
         let error = DictationError {
             message: sanitize_provider_error(&message),
             needs_setup: false,
         };
         {
             let mut status = state.lock();
+            if epoch.load(Ordering::Acquire) != start_epoch {
+                return;
+            }
             status.state = "error".into();
             status.error = Some(error.clone());
         }

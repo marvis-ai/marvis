@@ -24,6 +24,14 @@
  * stage-level region would intercept text selection in the scrollable
  * conversation. In pill mode it stays on the capsule chrome as before.
  *
+ * The mic button routes by surface: with the Ask input visible it
+ * dictates into the field (`dictation:*` — transient, nothing
+ * persists); collapsed it opens the card into meeting Listen. While a
+ * dictation runs, `dictationRange` marks the dictated slice so live
+ * drafts rewrite only their own text — a user edit inside it stops the
+ * session and keeps the edit, and Enter stops for review instead of
+ * sending (dictation never auto-submits).
+ *
  * Errors go to the `alert` window (`alertShow`) — the pill has no room.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -44,6 +52,9 @@ import {
   askClose,
   askSend,
   askSendScreenOnly,
+  dictationStart,
+  dictationStatus,
+  dictationStop,
   permissionsOpenPrefs,
   permissionsRequestScreen,
   permissionsStatus,
@@ -60,12 +71,23 @@ import {
 import {
   EV_ASK_STATE,
   EV_APP_STATE,
+  EV_DICTATION_DRAFT,
+  EV_DICTATION_ERROR,
+  EV_DICTATION_STATE,
   EV_LISTEN_ERROR,
   EV_LISTEN_STATE,
+  type DictationDraftPayload,
+  type DictationErrorPayload,
+  type DictationStatePayload,
   type ListenStatePayload,
   EV_CAPTURE_PERMISSION_NEEDED,
   useTauriEvent,
 } from '../lib/events';
+import {
+  applyDictationDraft,
+  reconcileDictationEdit,
+  type DictationRange,
+} from '../lib/dictation';
 import { ChatSection } from '../components/ChatSection';
 import { Iris } from '../components/Iris';
 import { ListenSection } from '../components/ListenSection';
@@ -117,7 +139,16 @@ const Bar = () => {
   const [gate, setGate] = useState<Gate | null>(null);
   const [bootError, setBootError] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [text, setText] = useState('');
+  const [text, setTextState] = useState('');
+  /** Live mirror of `text` for Tauri event handlers — they fire outside
+   *  React's batching, so the state variable (and the DOM) can lag a
+   *  queued `setText`; the ref is written with every update and always
+   *  reads back the latest value. */
+  const textRef = useRef('');
+  const setText = (value: string) => {
+    textRef.current = value;
+    setTextState(value);
+  };
   const [open, setOpen] = useState(false);
   const [cardOpen, setCardOpen] = useState(
     () => window.innerHeight > BAR_H + OPEN_EPS,
@@ -126,13 +157,33 @@ const Bar = () => {
   const [listenWanted, setListenWanted] = useState(false);
   const [listenState, setListenState] =
     useState<ListenStatePayload['state']>('idle');
+  const [dictationState, setDictationState] =
+    useState<DictationStatePayload['state']>('idle');
   const inputRef = useRef<HTMLInputElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
   const cardRef = useRef<HTMLDivElement>(null);
   /** Last collapsed-mode outer y — the baseline the expand direction
    *  is detected against. */
   const collapsedY = useRef<number | null>(null);
-  const listenBusy = useRef(false);
+  /** Serializes mic-button start/stop across both speech modes — a new
+   *  start must never race an in-flight stop (dictation and Listen are
+   *  mutually exclusive server-side). */
+  const speechBusy = useRef(false);
+  /** The `[start, start + length)` slice of `text` owned by the live
+   *  dictation session — `null` when no session is tracked. Cleared the
+   *  moment a stop begins so a late live draft or another stop can
+   *  never touch the input again. */
+  const dictationRange = useRef<DictationRange | null>(null);
+  /** Caret to restore after the next `text` commit — dictation keeps
+   *  it right after the dictated slice. */
+  const pendingCaret = useRef<number | null>(null);
+  /** A `dictation_start` in flight: a stale `dictation:state` snapshot
+   *  emitted before it must not drop the freshly captured anchor. */
+  const dictationStarting = useRef(false);
+  /** Last `dictation:error` already surfaced — the `dictation_start`
+   *  invoke rejects with the same message after the event, so the
+   *  alert dedupes on it. */
+  const lastDictationError = useRef<string | null>(null);
 
   // Icon-row ⇄ input-row swap: the gate card and boot errors count as
   // expanded; `main` rests as the icon row until the iris opens it or
@@ -150,6 +201,45 @@ const Bar = () => {
     : listenWanted
       ? 'listen'
       : 'chat';
+
+  /** Snapshot the input's caret/selection as the dictation anchor — a
+   *  selected range is replaced by the draft, a bare caret inserts.
+   *  Falls back to the end of the text when the field isn't mounted. */
+  const captureDictationAnchor = () => {
+    const input = inputRef.current;
+    const start = input?.selectionStart ?? textRef.current.length;
+    const end = input?.selectionEnd ?? start;
+    dictationRange.current = { start, length: Math.max(0, end - start) };
+  };
+
+  /** Stop the live dictation session. The tracked range is cleared up
+   *  front so a late live draft (or a second stop) can never rewrite
+   *  the input again — then `applyFinal` decides whether the
+   *  authoritative draft the invoke returns lands in the range (mic
+   *  toggle, Enter, row hiding) or is discarded (the user edited
+   *  inside the dictated slice, or the text was cleared — their
+   *  version wins). Resolves when the stop settles so the mic button
+   *  can hold `speechBusy` across it. */
+  const stopDictation = (applyFinal: boolean) => {
+    const range = dictationRange.current;
+    dictationRange.current = null;
+    if (range === null && dictationState !== 'listening') {
+      return Promise.resolve();
+    }
+    return dictationStop()
+      .then((draft) => {
+        if (!applyFinal || range === null) {
+          return;
+        }
+        const applied = applyDictationDraft(textRef.current, range, draft.text);
+        pendingCaret.current = applied.caret;
+        setText(applied.value);
+        if (showInputRow) {
+          inputRef.current?.focus();
+        }
+      })
+      .catch(() => raise('Stop failed'));
+  };
 
   const bootstrap = useCallback(async () => {
     try {
@@ -171,6 +261,17 @@ const Bar = () => {
         }
       })
       .catch(() => {});
+    void dictationStatus()
+      .then((next) => {
+        setDictationState(next.state);
+        if (next.state === 'listening') {
+          // The session outlived this webview, so no anchor was
+          // captured at start — attach at the caret/end: later drafts
+          // extend the text instead of rewriting unknown characters.
+          captureDictationAnchor();
+        }
+      })
+      .catch(() => {});
   }, [bootstrap]);
 
   useTauriEvent<AppStatePayload>(EV_APP_STATE, (p) => setGate(p.gate));
@@ -188,6 +289,34 @@ const Bar = () => {
   useTauriEvent(EV_LISTEN_ERROR, () => {
     setListenState('error');
     setListenWanted(true);
+  });
+  useTauriEvent<DictationStatePayload>(EV_DICTATION_STATE, (p) => {
+    setDictationState(p.state);
+    if (p.state !== 'listening' && !dictationStarting.current) {
+      // Unsolicited idle (e.g. `leave_main`) or error: the session is
+      // gone and no final draft is coming — drop the anchor and keep
+      // the text as it stands.
+      dictationRange.current = null;
+    }
+  });
+  useTauriEvent<DictationDraftPayload>(EV_DICTATION_DRAFT, (p) => {
+    const range = dictationRange.current;
+    // Only live snapshots apply: the authoritative draft arrives as the
+    // `dictation_stop` return value, and once a stop begins the range
+    // is already gone — a late event must not clobber the final text.
+    if (p.final || range === null) {
+      return;
+    }
+    const applied = applyDictationDraft(textRef.current, range, p.text);
+    dictationRange.current = applied.range;
+    pendingCaret.current = applied.caret;
+    setText(applied.value);
+  });
+  // `dictation:error` doubles as the `dictation_start` rejection
+  // message — `lastDictationError` dedupes the alert.
+  useTauriEvent<DictationErrorPayload>(EV_DICTATION_ERROR, (p) => {
+    lastDictationError.current = p.message;
+    raise(p.message);
   });
   // Mid-session screen-permission revocation (ask.rs detects it when a
   // stale frame would have shipped): collapse the card — NOT `askClose`,
@@ -316,6 +445,26 @@ const Bar = () => {
     }
   }, [showInputRow, gate]);
 
+  // Dictation writes go through `setText` like any edit; once the value
+  // commits, restore the caret to just after the dictated slice.
+  useEffect(() => {
+    if (pendingCaret.current === null) {
+      return;
+    }
+    const caret = pendingCaret.current;
+    pendingCaret.current = null;
+    inputRef.current?.setSelectionRange(caret, caret);
+  }, [text]);
+
+  // Dictation is bound to the visible Ask input — when the row hides
+  // (collapse, `ask_close`, gate change) stop the session and keep the
+  // final draft for review.
+  useEffect(() => {
+    if (!showInputRow) {
+      void stopDictation(true);
+    }
+  }, [showInputRow]);
+
   // Type-to-wake on the collapsed pill; Esc collapses input → capsule,
   // and collapses the card via `ask_close` (cancel + `set_chat_open`).
   useEffect(() => {
@@ -324,6 +473,11 @@ const Bar = () => {
         if (cardOpen) {
           void askClose().catch(() => {});
           return;
+        }
+        // Esc discards the field — stop without applying the final
+        // draft so the cleared text stays cleared.
+        if (dictationRange.current !== null) {
+          void stopDictation(false);
         }
         setText('');
         setOpen(false);
@@ -341,6 +495,11 @@ const Bar = () => {
         return;
       }
       if (e.key.length === 1) {
+        // Type-to-wake replaces the input — drop any tracked anchor so
+        // the wake character isn't treated as an edit inside it.
+        if (dictationRange.current !== null) {
+          void stopDictation(false);
+        }
         setText(e.key);
         setOpen(true);
       }
@@ -373,6 +532,12 @@ const Bar = () => {
   // expands the window itself — no local collapse needed either way.
   const submitAsk = (e: SubmitEvent<HTMLFormElement>) => {
     e.preventDefault();
+    // Enter ends dictation for review but never sends — the next Enter
+    // submits the reviewed text.
+    if (dictationState === 'listening' || dictationRange.current !== null) {
+      void stopDictation(true);
+      return;
+    }
     const t = text.trim();
     if (!t) {
       return;
@@ -395,6 +560,18 @@ const Bar = () => {
         ? 'px-2.75'
         : 'justify-center px-1.75',
   );
+
+  /** The mic button's next action: stop the live mode first, dictate
+   *  into the visible Ask input, or start meeting Listen from the
+   *  collapsed capsule. */
+  const micLabel =
+    dictationState === 'listening'
+      ? 'Stop dictation'
+      : listenState === 'listening'
+        ? 'Stop listening'
+        : showInputRow
+          ? 'Dictate'
+          : 'Listen';
 
   const row = () => {
     if (bootError) {
@@ -452,7 +629,8 @@ const Bar = () => {
           className={cn(
             BAR_BTN,
             'relative',
-            listenState === 'listening' && 'listen-active',
+            (listenState === 'listening' || dictationState === 'listening') &&
+              'listen-active',
           )}
           aria-label={
             cardOpen ? 'Close chat' : open ? 'Back to capsule' : 'Ask Marvis'
@@ -473,7 +651,29 @@ const Bar = () => {
         <input
           ref={inputRef}
           value={text}
-          onChange={(e) => setText(e.target.value)}
+          onChange={(e) => {
+            // A keystroke commits its own caret — don't let a queued
+            // dictation-caret restore jump it to the dictated slice.
+            pendingCaret.current = null;
+            const range = dictationRange.current;
+            if (range !== null) {
+              const edit = reconcileDictationEdit(
+                textRef.current,
+                e.target.value,
+                e.target.selectionEnd ?? e.target.value.length,
+                range,
+              );
+              if (edit.intersects) {
+                // The edit touches dictated text — stop the session and
+                // keep the user's version; the returning final draft is
+                // discarded.
+                void stopDictation(false);
+              } else {
+                dictationRange.current = edit.range;
+              }
+            }
+            setText(e.target.value);
+          }}
           onFocus={() => gate === 'main' && setOpen(true)}
           placeholder='Ask Marvis…'
           aria-label='Ask Marvis'
@@ -498,17 +698,60 @@ const Bar = () => {
         <button
           type='button'
           className={BAR_BTN}
-          aria-label={listenState === 'listening' ? 'Stop listening' : 'Listen'}
-          title={listenState === 'listening' ? 'Stop listening' : 'Listen'}
+          aria-label={micLabel}
+          title={micLabel}
           disabled={gate !== 'main'}
           onClick={() => {
-            if (listenBusy.current) return;
-            listenBusy.current = true;
+            if (speechBusy.current) return;
+            speechBusy.current = true;
+            // An active session stops first — `speechBusy` stays held
+            // until it settles so a follow-up press can't start the
+            // other mode mid-teardown.
+            if (dictationState === 'listening') {
+              void stopDictation(true).finally(() => {
+                speechBusy.current = false;
+              });
+              return;
+            }
             if (listenState === 'listening') {
               void listenStop()
                 .catch(() => raise('Stop failed'))
                 .finally(() => {
-                  listenBusy.current = false;
+                  speechBusy.current = false;
+                });
+              return;
+            }
+            if (showInputRow) {
+              // The anchor is captured before the invoke so a draft
+              // can never race ahead of it.
+              captureDictationAnchor();
+              dictationStarting.current = true;
+              void dictationStart()
+                .then((next) => {
+                  setDictationState(next.state);
+                  if (next.state !== 'listening') {
+                    dictationRange.current = null;
+                  } else if (dictationRange.current === null) {
+                    // A stop landed while the start was in flight —
+                    // leave no live session behind.
+                    void dictationStop().catch(() => {});
+                  }
+                })
+                .catch((e: unknown) => {
+                  // A deliberate stop landing mid-start rejects the
+                  // invoke without failing; backend `fail()` already
+                  // emitted `dictation:error`, so dedupe on it.
+                  const abandoned = dictationRange.current === null;
+                  dictationRange.current = null;
+                  const message =
+                    typeof e === 'string' ? e : 'Dictation failed';
+                  if (!abandoned && message !== lastDictationError.current) {
+                    raise(message);
+                  }
+                })
+                .finally(() => {
+                  dictationStarting.current = false;
+                  speechBusy.current = false;
                 });
               return;
             }
@@ -518,7 +761,7 @@ const Bar = () => {
               .then((next) => setListenState(next.state))
               .catch(() => raise('Listen failed'))
               .finally(() => {
-                listenBusy.current = false;
+                speechBusy.current = false;
               });
           }}>
           <MicIcon className='size-5' />

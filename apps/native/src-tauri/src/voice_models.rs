@@ -814,6 +814,28 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
+    #[tokio::test]
+    async fn downloaded_model_is_never_executed() {
+        let marker = temp_root().join("must-not-exist");
+        let body = format!("#!/bin/sh\nprintf executed > {}\n", marker.display()).into_bytes();
+        let root = temp_root();
+        let (_, source) = fixture(body.clone(), Duration::ZERO);
+        let manager = VoiceModelManager::with_test_source(root.clone(), source);
+
+        manager.start_download(ModelId::Tiny).unwrap();
+        while manager.status(None).download.is_some() {
+            tokio::task::yield_now().await;
+        }
+
+        assert_eq!(fs::read(root.join("ggml-tiny.bin")).unwrap(), body);
+        assert!(
+            !marker.exists(),
+            "model payload was executed during download"
+        );
+        let _ = fs::remove_dir_all(root);
+        let _ = fs::remove_dir_all(marker.parent().unwrap());
+    }
+
     #[test]
     fn startup_reclaims_only_catalog_temps() {
         let root = temp_root();

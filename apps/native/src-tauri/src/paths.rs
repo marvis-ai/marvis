@@ -58,6 +58,14 @@ pub fn bundled_whisper_cli(executable_dir: &std::path::Path) -> PathBuf {
     executable_dir.join(format!("whisper-cli-{}", whisper_target_triple()))
 }
 
+/// Return the sidecar name emitted by Tauri inside a packaged macOS app.
+/// Tauri consumes the target-suffixed staging file and strips that suffix when
+/// it copies the external binary beside the application executable.
+#[allow(dead_code)]
+pub fn packaged_whisper_cli(executable_dir: &std::path::Path) -> PathBuf {
+    executable_dir.join("whisper-cli")
+}
+
 #[cfg(target_os = "macos")]
 #[allow(dead_code)]
 const fn whisper_target_triple() -> &'static str {
@@ -176,6 +184,10 @@ mod tests {
         assert_eq!(
             candidate.file_name().unwrap().to_string_lossy(),
             format!("whisper-cli-{}", whisper_target_triple())
+        );
+        assert_eq!(
+            packaged_whisper_cli(&executable_dir),
+            executable_dir.join("whisper-cli")
         );
     }
 

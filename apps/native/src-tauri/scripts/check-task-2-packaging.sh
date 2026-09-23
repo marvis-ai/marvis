@@ -66,14 +66,25 @@ from pathlib import Path
 
 fixture = json.loads(Path(sys.argv[1]).read_text())
 expected = {
-    "bundle_relative_path": "Contents/MacOS/whisper-cli-aarch64-apple-darwin",
-    "architecture": "arm64",
-    "executable": True,
+    "targets": {
+        "aarch64-apple-darwin": {
+            "bundle_relative_path": "Contents/MacOS/whisper-cli-aarch64-apple-darwin",
+            "architecture": "arm64",
+            "executable": True,
+        },
+        "x86_64-apple-darwin": {
+            "bundle_relative_path": "Contents/MacOS/whisper-cli-x86_64-apple-darwin",
+            "architecture": "x86_64",
+            "executable": True,
+        },
+    }
 }
-if fixture != expected:
+if fixture != expected or set(fixture["targets"]) != {
+    "aarch64-apple-darwin", "x86_64-apple-darwin"
+}:
     raise SystemExit(
-        "check-task-2-packaging.sh: app-layout fixture does not describe the "
-        "expected executable, architecture, and executable mode"
+        "check-task-2-packaging.sh: app-layout fixture must validate both "
+        "arm64 and x86_64 target executables"
     )
 PY
 

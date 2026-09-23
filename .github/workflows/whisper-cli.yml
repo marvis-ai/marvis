@@ -7,6 +7,12 @@ on:
     paths:
       - '.github/workflows/whisper-cli.yml'
       - 'apps/native/src-tauri/scripts/build-whisper-cli.sh'
+      - 'apps/native/src-tauri/scripts/check-task-2-packaging.sh'
+      - 'apps/native/src-tauri/scripts/verify-release-app.sh'
+      - 'apps/native/src-tauri/tauri.conf.json'
+      - 'apps/native/src-tauri/src/**'
+      - 'apps/native/package.json'
+      - 'bun.lock'
 
 permissions:
   contents: read
@@ -62,3 +68,69 @@ jobs:
             apps/native/src-tauri/binaries/whisper-cli-x86_64-apple-darwin
             apps/native/src-tauri/binaries/whisper-cli-x86_64-apple-darwin.sha256
           if-no-files-found: error
+
+  package-arm64:
+    name: Package signed Marvis (arm64)
+    needs: build-arm64
+    runs-on: macos-14
+    env:
+      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require release signing identity
+        run: |
+          if [[ -z "${APPLE_SIGNING_IDENTITY:-}" ]]; then
+            echo "Release prerequisite missing: configure the APPLE_SIGNING_IDENTITY secret before producing a signed app." >&2
+            exit 1
+          fi
+      - uses: actions/download-artifact@v4
+        with:
+          name: whisper-cli-aarch64-apple-darwin
+          path: /tmp/whisper-cli-aarch64-apple-darwin
+      - name: Stage and validate exact arm64 artifact
+        working-directory: apps/native/src-tauri
+        run: |
+          bash scripts/build-whisper-cli.sh --stage \
+            /tmp/whisper-cli-aarch64-apple-darwin/whisper-cli-aarch64-apple-darwin \
+            --checksum /tmp/whisper-cli-aarch64-apple-darwin/whisper-cli-aarch64-apple-darwin.sha256 \
+            --target aarch64-apple-darwin
+          bash scripts/check-task-2-packaging.sh --target aarch64-apple-darwin
+      - name: Build signed arm64 release app
+        working-directory: apps/native
+        run: bun install --frozen-lockfile && bun run tauri build --target aarch64-apple-darwin
+      - name: Verify strict signature and bundled architecture
+        working-directory: apps/native/src-tauri
+        run: bash scripts/verify-release-app.sh target/aarch64-apple-darwin/release/bundle/macos/Marvis.app aarch64-apple-darwin
+
+  package-x86-64:
+    name: Package signed Marvis (x86_64)
+    needs: build-x86-64
+    runs-on: macos-15-intel
+    env:
+      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require release signing identity
+        run: |
+          if [[ -z "${APPLE_SIGNING_IDENTITY:-}" ]]; then
+            echo "Release prerequisite missing: configure the APPLE_SIGNING_IDENTITY secret before producing a signed app." >&2
+            exit 1
+          fi
+      - uses: actions/download-artifact@v4
+        with:
+          name: whisper-cli-x86_64-apple-darwin
+          path: /tmp/whisper-cli-x86_64-apple-darwin
+      - name: Stage and validate exact x86_64 artifact
+        working-directory: apps/native/src-tauri
+        run: |
+          bash scripts/build-whisper-cli.sh --stage \
+            /tmp/whisper-cli-x86_64-apple-darwin/whisper-cli-x86_64-apple-darwin \
+            --checksum /tmp/whisper-cli-x86_64-apple-darwin/whisper-cli-x86_64-apple-darwin.sha256 \
+            --target x86_64-apple-darwin
+          bash scripts/check-task-2-packaging.sh --target x86_64-apple-darwin
+      - name: Build signed x86_64 release app
+        working-directory: apps/native
+        run: bun install --frozen-lockfile && bun run tauri build --target x86_64-apple-darwin
+      - name: Verify strict signature and bundled architecture
+        working-directory: apps/native/src-tauri
+        run: bash scripts/verify-release-app.sh target/x86_64-apple-darwin/release/bundle/macos/Marvis.app x86_64-apple-darwin

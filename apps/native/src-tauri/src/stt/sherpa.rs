@@ -20,6 +20,7 @@ use super::{Finality, SpeakerChannel, SttProvider, TranscriptEvent};
 const SAMPLE_RATE: i32 = 16_000;
 const WORKER_TICK: Duration = Duration::from_millis(100);
 const VAD_BUFFER_SECONDS: f32 = 30.0;
+const INIT_TIMEOUT: Duration = Duration::from_secs(30);
 const DECODE_TIMEOUT: Duration = Duration::from_secs(30);
 const QUEUE_DEPTH: usize = 8;
 
@@ -71,14 +72,19 @@ impl SherpaEngine {
                 let stream = recognizer.create_stream();
                 stream.accept_waveform(SAMPLE_RATE, &job.samples);
                 recognizer.decode(&stream);
+                // A null/unparseable result means the engine is broken —
+                // surface it as a decode error rather than silent text loss.
                 let text = stream
                     .get_result()
                     .map(|result| result.text)
-                    .unwrap_or_default();
-                let _ = job.reply.send(Ok(text));
+                    .ok_or_else(|| "the speech engine returned no result".to_string());
+                let _ = job.reply.send(text);
             }
         });
-        match ready.recv() {
+        // Bounded wait: `engine_for` holds the ENGINE lock across spawn, so a
+        // hung native load must not wedge every later start. On timeout the
+        // thread exits on its own once creation returns (jobs sender dropped).
+        match ready.recv_timeout(INIT_TIMEOUT) {
             Ok(result) => result.map(|()| Self { jobs }),
             Err(_) => Err("the speech model could not be loaded".to_string()),
         }
@@ -360,7 +366,10 @@ mod tests {
 
     #[test]
     fn start_fails_when_the_model_is_missing() {
-        let mut p = SherpaProvider::new("sense-voice", SpeakerChannel::Me);
+        // A non-catalog name resolves to a models-dir child that can never
+        // exist, so this stays deterministic on hosts where the real
+        // sense-voice model is installed.
+        let mut p = SherpaProvider::new("no-such-model", SpeakerChannel::Me);
         // No model files on disk → engine init fails synchronously.
         assert!(p.start(Box::new(|_| {}), Box::new(|_| {})).is_err());
     }

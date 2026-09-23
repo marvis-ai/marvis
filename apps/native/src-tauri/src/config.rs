@@ -92,6 +92,17 @@ pub(crate) fn validate_whisper_model(value: &str) -> Result<String, String> {
         .ok_or_else(|| format!("unknown Whisper model {value:?}"))
 }
 
+pub(crate) fn validate_stt_model_for_provider(
+    provider: &str,
+    value: &str,
+) -> Result<String, String> {
+    if provider == "whisper" {
+        validate_whisper_model(value)
+    } else {
+        validate_stt_model(value)
+    }
+}
+
 /// Apply the two STT config command keys. Returns `true` when `key` is an STT
 /// key, allowing the command layer to keep its other writable keys separate.
 pub(crate) fn apply_stt_config(
@@ -109,11 +120,7 @@ pub(crate) fn apply_stt_config(
         }
         "models.stt_model" => {
             let value = value.as_str().ok_or("models.stt_model must be a string")?;
-            models.stt_model = if models.stt_provider == "whisper" {
-                validate_whisper_model(value)?
-            } else {
-                validate_stt_model(value)?
-            };
+            models.stt_model = validate_stt_model_for_provider(&models.stt_provider, value)?;
             Ok(true)
         }
         _ => Ok(false),
@@ -470,6 +477,21 @@ mod tests {
         )
         .unwrap());
         assert_eq!(models.stt_model, "small");
+        assert!(apply_stt_config(
+            &mut models,
+            "models.stt_model",
+            &serde_json::json!(" ggml-small.bin "),
+        )
+        .is_ok());
+        assert_eq!(models.stt_model, "small");
+        models.stt_provider = "deepgram".into();
+        assert!(apply_stt_config(
+            &mut models,
+            "models.stt_model",
+            &serde_json::json!("nova-3"),
+        )
+        .is_ok());
+        assert_eq!(models.stt_model, "nova-3");
         assert_eq!(
             apply_stt_config(&mut models, "models.stt_model", &serde_json::json!("  "),)
                 .unwrap_err(),

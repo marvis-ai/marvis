@@ -13,7 +13,7 @@ EXPECTED_TARGETS=(
 
 usage() {
   cat <<'EOF'
-Usage: build-whisper-cli.sh [--check-only] [--target TARGET]
+Usage: build-whisper-cli.sh [--check-only] [--require-staged] [--target TARGET]
        build-whisper-cli.sh --stage ARTIFACT --target TARGET [--checksum CHECKSUM]
 
 Build the pinned whisper.cpp whisper-cli executable for a macOS target, or
@@ -104,6 +104,7 @@ stage_artifact() {
 validate_metadata
 
 CHECK_ONLY=false
+REQUIRE_STAGED=false
 stage_path=""
 stage_checksum=""
 target=""
@@ -111,6 +112,9 @@ while (($#)); do
   case "$1" in
     --check-only)
       CHECK_ONLY=true
+      ;;
+    --require-staged)
+      REQUIRE_STAGED=true
       ;;
     --stage)
       (($# >= 2)) || fail "--stage requires a value"
@@ -142,6 +146,10 @@ if [[ -n "$target" ]] && ! is_expected_target "$target"; then
   fail "unsupported target: ${target}"
 fi
 
+if [[ "$REQUIRE_STAGED" == true && "$CHECK_ONLY" == false ]]; then
+  fail "--require-staged requires --check-only"
+fi
+
 if [[ -n "$stage_path" ]]; then
   [[ "$CHECK_ONLY" == false ]] || fail "--stage cannot be combined with --check-only"
   [[ -n "$target" ]] || fail "--stage requires --target"
@@ -155,13 +163,13 @@ fi
 if "$CHECK_ONLY"; then
   if [[ -n "$target" ]]; then
     artifact="$(artifact_for_target "$target")"
-    if [[ -e "$artifact" || -e "${artifact}.sha256" ]]; then
+    if [[ "$REQUIRE_STAGED" == true || -e "$artifact" || -e "${artifact}.sha256" ]]; then
       validate_artifact "$target"
     fi
   else
     for target in "${EXPECTED_TARGETS[@]}"; do
       artifact="$(artifact_for_target "$target")"
-      if [[ -e "$artifact" || -e "${artifact}.sha256" ]]; then
+      if [[ "$REQUIRE_STAGED" == true || -e "$artifact" || -e "${artifact}.sha256" ]]; then
         validate_artifact "$target"
       fi
     done

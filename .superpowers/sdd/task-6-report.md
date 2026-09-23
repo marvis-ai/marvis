@@ -78,3 +78,22 @@ No workflow or packaging configuration was changed. The existing source/build va
 
 - `6fee9d1 fix(native): resolve packaged Whisper sidecar name`
 - The report is a separate verification document and should be committed separately after review.
+
+## Remaining Important review findings
+
+The remaining packaging review findings were corrected:
+
+- `apps/native/README.md` now passes the downloaded checksum with the explicit `--checksum` flag, matching `build-whisper-cli.sh`'s option parser.
+- `apps/native/src-tauri/scripts/fixtures/task-2-app-layout.json` and the expectations in `check-task-2-packaging.sh` now describe Tauri's packaged `Contents/MacOS/whisper-cli` path for both targets. The target entries and architecture values remain separate, and target-aware staged artifact validation remains enforced by `build-whisper-cli.sh --check-only --require-staged --target`.
+
+## Follow-up verification
+
+Passed:
+
+- `bash -n scripts/build-whisper-cli.sh scripts/check-task-2-packaging.sh scripts/verify-release-app.sh`.
+- `bash scripts/check-task-2-packaging.sh --fixture`.
+- Direct JSON assertions confirmed both target entries retain `arm64`/`x86_64` architecture metadata while sharing the packaged `Contents/MacOS/whisper-cli` path.
+- Direct README assertion confirmed the release staging example uses the explicit `--checksum` flag.
+- `git diff --check`.
+
+No Rust or frontend source changed in this follow-up, so the existing Rust/frontend results above remain applicable.

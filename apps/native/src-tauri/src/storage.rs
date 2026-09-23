@@ -26,6 +26,8 @@ use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::paths;
 
+type SummaryRow = (i64, i64, String, String, String, Option<String>, i64);
+
 const SCHEMA: &str = "
     PRAGMA journal_mode = WAL;
     PRAGMA foreign_keys = ON;
@@ -373,7 +375,7 @@ impl Db {
     /// The newest summary for a session, if one exists.
     pub fn summary_latest(&self, session_id: i64) -> anyhow::Result<Option<Summary>> {
         let conn = self.conn.lock();
-        let row: Option<(i64, i64, String, String, String, Option<String>, i64)> = conn
+        let row: Option<SummaryRow> = conn
             .query_row(
                 "SELECT id, session_id, tldr, bullets, follow_ups, topic, ts
                  FROM summaries WHERE session_id = ?1

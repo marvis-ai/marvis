@@ -1,6 +1,10 @@
 /// <reference types="bun-types" />
 import { describe, expect, test } from 'bun:test';
-import { applyDictationDraft, reconcileDictationEdit } from './dictation';
+import {
+  applyDictationDraft,
+  reconcileDictationEdit,
+  selectionAfterDictationDraft,
+} from './dictation';
 
 describe('applyDictationDraft', () => {
   // The tracked range marks the dictated slice; each live draft replaces it
@@ -122,6 +126,49 @@ describe('reconcileDictationEdit', () => {
     ).toEqual({
       range: { start: 1, length: 2 },
       intersects: false,
+    });
+  });
+});
+
+describe('selectionAfterDictationDraft', () => {
+  const range = { start: 6, length: 15 };
+
+  test('follows a caret at the end of the dictated slice', () => {
+    expect(
+      selectionAfterDictationDraft({ start: 21, end: 21 }, range, 18),
+    ).toEqual({ start: 24, end: 24 });
+  });
+
+  test('keeps a caret before the dictated slice', () => {
+    expect(
+      selectionAfterDictationDraft({ start: 2, end: 2 }, range, 18),
+    ).toEqual({ start: 2, end: 2 });
+  });
+
+  test('shifts a caret after the dictated slice by the draft delta', () => {
+    // A user character typed just after 'brown' must remain after it when
+    // the next draft grows — restoring to the draft end would reorder it.
+    expect(
+      selectionAfterDictationDraft({ start: 22, end: 22 }, range, 18),
+    ).toEqual({ start: 25, end: 25 });
+  });
+
+  test('clamps a caret inside the dictated slice into its replacement', () => {
+    expect(
+      selectionAfterDictationDraft({ start: 20, end: 20 }, range, 4),
+    ).toEqual({ start: 10, end: 10 });
+  });
+
+  test('maps a selection across the replaced slice', () => {
+    expect(
+      selectionAfterDictationDraft({ start: 4, end: 22 }, range, 18),
+    ).toEqual({ start: 4, end: 25 });
+  });
+
+  test('uses the dictated caret when no selection was observed', () => {
+    expect(selectionAfterDictationDraft(null, range, 18)).toEqual({
+      start: 24,
+      end: 24,
     });
   });
 });

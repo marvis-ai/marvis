@@ -225,6 +225,15 @@ impl SherpaModelManager {
     }
     #[cfg(test)]
     fn with_test_files(root: PathBuf, files: Vec<TestSource>) -> Self {
+        // `download()` consumes the override positionally, one `TestSource`
+        // per entry file — a short vec would silently fall back to the pinned
+        // production URLs, so require a complete set at construction.
+        assert!(
+            catalog()
+                .iter()
+                .all(|entry| files.len() == entry.files.len()),
+            "test override must supply one TestSource per file of the catalog entry"
+        );
         let mut manager = Self::at(root);
         manager.test_files = Some(files);
         manager
@@ -553,6 +562,9 @@ fn emit_error(app: &Option<AppHandle>, model: &'static str, error: &VoiceDownloa
         VoiceDownloadError::Cancelled => "download cancelled",
         VoiceDownloadError::Verification => "download verification failed",
         VoiceDownloadError::Download(_) => "download failed",
+        // The remaining arms are unreachable from `download()` (it only
+        // produces `Cancelled` — filtered above — `Verification`, and
+        // `Download`) and exist for match exhaustiveness.
         VoiceDownloadError::Busy => "download is already active",
         VoiceDownloadError::UnknownModel(_) => "unknown voice model",
         VoiceDownloadError::ActiveModel => "cannot remove the selected voice model",
@@ -636,7 +648,7 @@ mod tests {
         assert!(status["models"][0].get("sha256").is_none());
     }
 
-    fn fixture(body: Vec<u8>, delay: Duration) -> (String, TestSource) {
+    fn fixture(body: Vec<u8>, delay: Duration) -> TestSource {
         use std::io::{Read, Write};
         use std::net::TcpListener;
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -665,23 +677,21 @@ mod tests {
             .iter()
             .map(|byte| format!("{byte:02x}"))
             .collect();
-        (
-            format!("http://{address}/model"),
-            TestSource {
-                url: format!("http://{address}/model"),
-                bytes: body.len() as u64,
-                sha256: digest,
-            },
-        )
+        TestSource {
+            url: format!("http://{address}/model"),
+            bytes: body.len() as u64,
+            sha256: digest,
+        }
     }
 
     /// One one-shot server per file — files download sequentially, so each
     /// entry file needs its own listener. The returned vec overrides the
-    /// catalog specs by index via `with_test_files`.
+    /// catalog specs by index via `with_test_files`, which requires one
+    /// source per entry file.
     fn fixture_set(bodies: &[Vec<u8>], delay: Duration) -> Vec<TestSource> {
         bodies
             .iter()
-            .map(|body| fixture(body.clone(), delay).1)
+            .map(|body| fixture(body.clone(), delay))
             .collect()
     }
 
@@ -709,7 +719,13 @@ mod tests {
     #[test]
     fn sync_start_download_uses_the_tauri_runtime() {
         let root = temp_root();
-        let sources = fixture_set(&[b"sync start fixture".to_vec()], Duration::ZERO);
+        // File 1 lands quickly; files 2/3 stream slowly so the download is
+        // still in flight when the synchronous cancel below arrives.
+        let sources = vec![
+            fixture(b"sync start fixture".to_vec(), Duration::ZERO),
+            fixture(b"sync start tokens".to_vec(), Duration::from_millis(100)),
+            fixture(b"sync start vad".to_vec(), Duration::from_millis(100)),
+        ];
         let manager = SherpaModelManager::with_test_files(root.clone(), sources);
 
         manager.start_download(SherpaModelId::SenseVoice).unwrap();
@@ -747,14 +763,9 @@ mod tests {
         // A failed sha256 must not clobber an already-installed file.
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join("model.int8.onnx"), b"keep me").unwrap();
-        let (_, bad_source) = fixture(bodies[0].clone(), Duration::ZERO);
-        let bad = SherpaModelManager::with_test_files(
-            root.clone(),
-            vec![TestSource {
-                sha256: "00".repeat(32),
-                ..bad_source
-            }],
-        );
+        let mut bad_sources = fixture_set(&bodies, Duration::ZERO);
+        bad_sources[0].sha256 = "00".repeat(32);
+        let bad = SherpaModelManager::with_test_files(root.clone(), bad_sources);
         bad.start_download(SherpaModelId::SenseVoice).unwrap();
         while bad.status().download.is_some() {
             tokio::task::yield_now().await;
@@ -763,14 +774,9 @@ mod tests {
         assert!(!dir.join("model.int8.onnx.tmp").exists());
 
         // A size far outside the ±10% band aborts the install as well.
-        let (_, bad_size_source) = fixture(bodies[0].clone(), Duration::ZERO);
-        let bad_size = SherpaModelManager::with_test_files(
-            root.clone(),
-            vec![TestSource {
-                bytes: u64::MAX / 2,
-                ..bad_size_source
-            }],
-        );
+        let mut bad_size_sources = fixture_set(&bodies, Duration::ZERO);
+        bad_size_sources[0].bytes = u64::MAX / 2;
+        let bad_size = SherpaModelManager::with_test_files(root.clone(), bad_size_sources);
         bad_size.start_download(SherpaModelId::SenseVoice).unwrap();
         while bad_size.status().download.is_some() {
             tokio::task::yield_now().await;
@@ -835,7 +841,12 @@ mod tests {
     #[tokio::test]
     async fn removal_is_rejected_while_download_is_active() {
         let root = temp_root();
-        let sources = fixture_set(&[b"fixture".to_vec()], Duration::from_millis(100));
+        let bodies = [
+            b"fixture a".to_vec(),
+            b"fixture b".to_vec(),
+            b"fixture c".to_vec(),
+        ];
+        let sources = fixture_set(&bodies, Duration::from_millis(100));
         let manager = SherpaModelManager::with_test_files(root.clone(), sources);
         manager.start_download(SherpaModelId::SenseVoice).unwrap();
         assert!(matches!(
@@ -875,7 +886,14 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         let tmp = dir.join("foreign.tmp");
         fs::write(&tmp, b"owned by someone else").unwrap();
-        let sources = fixture_set(&[b"fixture".to_vec()], Duration::ZERO);
+        // Slow fixtures keep the download in flight so the cancel below
+        // deterministically lands mid-stream.
+        let bodies = [
+            b"fixture a".to_vec(),
+            b"fixture b".to_vec(),
+            b"fixture c".to_vec(),
+        ];
+        let sources = fixture_set(&bodies, Duration::from_millis(100));
         let manager = SherpaModelManager::with_test_files(root.clone(), sources);
         manager.start_download(SherpaModelId::SenseVoice).unwrap();
         manager.cancel_download().await.unwrap();

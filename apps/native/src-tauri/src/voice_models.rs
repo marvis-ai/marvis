@@ -503,7 +503,14 @@ async fn download_inner(
         hash.update(&chunk);
         progress.lock().received = received;
         if last_progress.elapsed() >= Duration::from_millis(150) {
-            emit_progress(&app, entry.id.as_str(), received, entry.bytes);
+            emit_progress(
+                &app,
+                WhisperDownloadProgress {
+                    model: entry.id.as_str(),
+                    received,
+                    total: entry.bytes,
+                },
+            );
             last_progress = Instant::now();
         }
     }
@@ -525,22 +532,25 @@ async fn download_inner(
     if cancel.is_cancelled() {
         return Err(VoiceDownloadError::Cancelled);
     }
-    emit_progress(&app, entry.id.as_str(), received, entry.bytes);
+    // Completion is authoritative: the catalog size is display metadata and may
+    // differ from the bytes actually returned by Hugging Face.
+    emit_progress(&app, terminal_progress(entry.id.as_str(), received));
     fs::rename(tmp_path, final_path).map_err(|e| VoiceDownloadError::Download(e.to_string()))?;
     guard.owned = false;
     Ok(())
 }
 
-fn emit_progress(app: &Option<AppHandle>, model: &'static str, received: u64, total: u64) {
+fn terminal_progress(model: &'static str, received: u64) -> WhisperDownloadProgress {
+    WhisperDownloadProgress {
+        model,
+        received,
+        total: received,
+    }
+}
+
+fn emit_progress(app: &Option<AppHandle>, progress: WhisperDownloadProgress) {
     if let Some(app) = app {
-        let _ = app.emit(
-            "whisper:download-progress",
-            WhisperDownloadProgress {
-                model,
-                received,
-                total,
-            },
-        );
+        let _ = app.emit("whisper:download-progress", progress);
     }
 }
 
@@ -607,6 +617,13 @@ mod tests {
             value,
             serde_json::json!({"model": "tiny", "received": 1, "total": 2})
         );
+    }
+
+    #[test]
+    fn terminal_progress_uses_authoritative_received_bytes() {
+        let progress = terminal_progress("tiny", 123_456_789);
+        assert_eq!(progress.received, 123_456_789);
+        assert_eq!(progress.total, progress.received);
     }
 
     #[test]

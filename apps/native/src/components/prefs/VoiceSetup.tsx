@@ -93,11 +93,26 @@ export const VoiceSetup = ({
     data.status?.keys.find(([id]) => id === 'deepgram')?.[1] ?? null;
 
   const refreshWhisper = useCallback(async () => {
+    let status: WhisperStatus;
     try {
-      setWhisper(await whisperStatus());
+      status = await whisperStatus();
     } catch {
-      setWhisper({ binary: null, models: [], download: null });
+      status = { binary: null, models: [], download: null };
     }
+    setWhisper(status);
+    setProgress((current) => {
+      // Status is authoritative. A completed/failed/cancelled task has no
+      // download, and an installed model cannot still be downloading.
+      if (!status.download) return {};
+      const installed = new Set(
+        status.models
+          .filter((entry) => entry.installed)
+          .map((entry) => entry.id),
+      );
+      const next = { ...current };
+      for (const model of installed) delete next[model];
+      return next;
+    });
   }, []);
 
   useEffect(() => {

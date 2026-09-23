@@ -270,11 +270,8 @@ export interface WhisperDownload {
 
 export interface WhisperStatus {
   binary: string | null;
-  /** Legacy model ids retained for existing settings consumers. */
-  models: string[];
-  /** Extended installed-model metadata for the voice setup flow. */
-  installedModels?: WhisperInstalledModel[];
-  download?: WhisperDownload | null;
+  models: WhisperInstalledModel[];
+  download: WhisperDownload | null;
 }
 
 export const listenStart = () => invoke<ListenStatus>('listen_start');

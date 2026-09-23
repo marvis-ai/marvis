@@ -1005,7 +1005,10 @@ async fn whisper_cancel_download(state: State<'_, AppState>) -> Result<(), Strin
 }
 
 #[tauri::command]
-fn whisper_remove_model(state: State<'_, AppState>, model: String) -> Result<(), String> {
+fn whisper_remove_model(
+    state: State<'_, AppState>,
+    model: String,
+) -> Result<voice_models::WhisperDownloadStatus, String> {
     let entry = voice_models::entry_for_id(&model)
         .ok_or_else(|| format!("unknown Whisper model {model:?}"))?;
     let config = state.config.lock();
@@ -1018,7 +1021,8 @@ fn whisper_remove_model(state: State<'_, AppState>, model: String) -> Result<(),
     state
         .voice_models
         .remove_model(entry.id)
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    Ok(state.voice_models.status())
 }
 
 // ---------------------------------------------------------------------------

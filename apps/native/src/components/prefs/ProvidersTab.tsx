@@ -82,6 +82,9 @@ const DEEPGRAM_MODELS = [
 
 type WhisperView = Awaited<ReturnType<typeof whisperStatus>>;
 
+const installedWhisperModels = (whisper: WhisperView | null) =>
+  whisper?.models.filter((model) => model.installed) ?? [];
+
 const SttSection = ({
   data,
   whisper,
@@ -98,6 +101,10 @@ const SttSection = ({
   const config = data.config!;
   const provider = config.models.stt_provider;
   const model = config.models.stt_model;
+  const installedModels = installedWhisperModels(whisper);
+  const selectedWhisperModel = installedModels.find(
+    (entry) => entry.id === model || entry.filename === model,
+  );
   const deepgramKey =
     data.status?.keys.find(([id]) => id === 'deepgram')?.[1] ?? null;
   const [deepgramKeyInput, setDeepgramKeyInput] = useState('');
@@ -170,7 +177,7 @@ const SttSection = ({
               ? deepgramKey
                 ? 'bg-accent'
                 : 'bg-[color-mix(in_oklch,var(--fg)_20%,transparent)]'
-              : whisper?.binary && whisper.models.length > 0
+              : whisper?.binary && installedModels.length > 0
                 ? 'bg-accent'
                 : 'bg-[color-mix(in_oklch,var(--fg)_20%,transparent)]',
           )}
@@ -265,22 +272,22 @@ const SttSection = ({
             <span className={LBL}>Model</span>
             <select
               className={MODEL_SEL}
-              value={whisper?.models.includes(model) ? model : ''}
-              disabled={!whisper || whisper.models.length === 0}
+              value={selectedWhisperModel?.id ?? ''}
+              disabled={!whisper || installedModels.length === 0}
               onChange={(e) => save('models.stt_model', e.target.value)}
               aria-label='Whisper speech-to-text model'>
               <option value=''>
                 {whisper === null
                   ? 'Checking local models…'
-                  : whisper.models.length === 0
+                  : installedModels.length === 0
                     ? 'No ggml models detected'
                     : 'Select model'}
               </option>
-              {whisper?.models.map((name) => (
+              {installedModels.map((entry) => (
                 <option
-                  key={name}
-                  value={name}>
-                  {name}
+                  key={entry.id}
+                  value={entry.id}>
+                  {entry.filename}
                 </option>
               ))}
             </select>
@@ -289,7 +296,7 @@ const SttSection = ({
             Binary:{' '}
             <span className={NUM}>{whisper?.binary ?? 'not detected'}</span>
           </p>
-          {whisper && (!whisper.binary || whisper.models.length === 0) && (
+          {whisper && (!whisper.binary || installedModels.length === 0) && (
             <p className={PROV_NOTE}>
               Users must install <span className={NUM}>whisper-cli</span> and
               place a <span className={NUM}>ggml-*.bin</span> model under{' '}
@@ -317,7 +324,7 @@ export const ProvidersTab = ({ data }: { data: PrefsData }) => {
   useEffect(() => {
     void whisperStatus()
       .then(setWhisper)
-      .catch(() => setWhisper({ binary: null, models: [] }));
+      .catch(() => setWhisper({ binary: null, models: [], download: null }));
   }, []);
 
   if (data.status === null || config === null) {

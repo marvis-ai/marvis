@@ -51,7 +51,7 @@ pub struct VoiceModelInfo {
     pub label: &'static str,
     pub description: &'static str,
     pub bytes: u64,
-    pub sha1: &'static str,
+    pub source: &'static str,
 }
 #[derive(Debug, Clone, Serialize)]
 pub struct VoiceModelsCatalog {
@@ -111,7 +111,7 @@ impl From<&ModelCatalogEntry> for VoiceModelInfo {
             label: e.label,
             description: e.description,
             bytes: e.bytes,
-            sha1: e.sha1,
+            source: "Hugging Face",
         }
     }
 }
@@ -130,7 +130,7 @@ pub struct VoiceModelCatalogPayload {
     pub label: &'static str,
     pub description: &'static str,
     pub bytes: u64,
-    pub sha1: &'static str,
+    pub source: &'static str,
 }
 impl From<&ModelCatalogEntry> for VoiceModelCatalogPayload {
     fn from(e: &ModelCatalogEntry) -> Self {
@@ -140,7 +140,7 @@ impl From<&ModelCatalogEntry> for VoiceModelCatalogPayload {
             label: e.label,
             description: e.description,
             bytes: e.bytes,
-            sha1: e.sha1,
+            source: "Hugging Face",
         }
     }
 }
@@ -152,10 +152,24 @@ pub struct WhisperDownloadProgress {
     pub total: u64,
 }
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct WhisperInstalledModel {
+    pub id: &'static str,
+    pub filename: &'static str,
+    pub installed: bool,
+    pub bytes: u64,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct WhisperDownloadStatus {
-    pub binary: bool,
-    pub models: Vec<String>,
+    pub binary: Option<String>,
+    pub models: Vec<WhisperInstalledModel>,
     pub download: Option<WhisperDownloadProgress>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct WhisperDownloadError {
+    pub model: &'static str,
+    pub message: &'static str,
 }
 #[derive(Debug, thiserror::Error)]
 pub enum VoiceDownloadError {
@@ -175,7 +189,7 @@ pub enum VoiceDownloadError {
 
 struct ActiveDownload {
     cancel: CancellationToken,
-    task: Option<JoinHandle<Result<(), VoiceDownloadError>>>,
+    task: Option<JoinHandle<()>>,
     progress: Arc<Mutex<WhisperDownloadProgress>>,
 }
 struct ManagerState {
@@ -259,11 +273,15 @@ impl VoiceModelManager {
             .as_ref()
             .map(|a| a.progress.lock().clone());
         WhisperDownloadStatus {
-            binary: stt::WhisperProvider::discover().is_some(),
+            binary: stt::WhisperProvider::discover().map(|path| path.display().to_string()),
             models: catalog()
                 .iter()
-                .filter(|e| self.root.join(e.filename).is_file())
-                .map(|e| e.id.as_str().to_string())
+                .map(|e| WhisperInstalledModel {
+                    id: e.id.as_str(),
+                    filename: e.filename,
+                    installed: self.root.join(e.filename).is_file(),
+                    bytes: e.bytes,
+                })
                 .collect(),
             download,
         }
@@ -293,17 +311,20 @@ impl VoiceModelManager {
         }));
         let task_progress = Arc::clone(&progress);
         let task = tokio::spawn(async move {
-            download(
+            let result = download(
                 entry,
                 root,
                 client,
                 task_cancel,
-                app,
+                app.clone(),
                 task_progress,
                 #[cfg(test)]
                 test_source,
             )
-            .await
+            .await;
+            if let Err(error) = result {
+                emit_error(&app, entry.id.as_str(), &error);
+            }
         });
         state.active = Some(ActiveDownload {
             cancel,
@@ -486,6 +507,23 @@ fn emit_progress(app: &Option<AppHandle>, model: &'static str, received: u64, to
     }
 }
 
+fn emit_error(app: &Option<AppHandle>, model: &'static str, error: &VoiceDownloadError) {
+    let message = match error {
+        VoiceDownloadError::Cancelled => "download cancelled",
+        VoiceDownloadError::Verification => "download verification failed",
+        VoiceDownloadError::Download(_) => "download failed",
+        VoiceDownloadError::Busy => "download is already active",
+        VoiceDownloadError::UnknownModel(_) => "unknown voice model",
+        VoiceDownloadError::ActiveModel => "cannot remove the selected voice model",
+    };
+    if let Some(app) = app {
+        let _ = app.emit(
+            "whisper:download-error",
+            WhisperDownloadError { model, message },
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -529,6 +567,44 @@ mod tests {
             value,
             serde_json::json!({"model": "tiny", "received": 1, "total": 2})
         );
+    }
+
+    #[test]
+    fn catalog_and_status_dtos_have_safe_documented_shapes() {
+        let catalog = serde_json::to_value(VoiceModelCatalogPayload::from(&catalog()[0])).unwrap();
+        assert_eq!(catalog["source"], "Hugging Face");
+        assert!(catalog.get("url").is_none());
+        assert!(catalog.get("sha1").is_none());
+
+        let status = serde_json::to_value(WhisperDownloadStatus {
+            binary: Some("/usr/local/bin/whisper-cli".into()),
+            models: vec![WhisperInstalledModel {
+                id: "tiny",
+                filename: "ggml-tiny.bin",
+                installed: true,
+                bytes: 75,
+            }],
+            download: None,
+        })
+        .unwrap();
+        assert_eq!(
+            status,
+            serde_json::json!({
+                "binary": "/usr/local/bin/whisper-cli",
+                "models": [{"id": "tiny", "filename": "ggml-tiny.bin", "installed": true, "bytes": 75}],
+                "download": null
+            })
+        );
+    }
+
+    #[test]
+    fn download_error_dto_has_only_safe_fields() {
+        let value = serde_json::to_value(WhisperDownloadError {
+            model: "tiny",
+            message: "download failed",
+        })
+        .unwrap();
+        assert_eq!(value, serde_json::json!({"model": "tiny", "message": "download failed"}));
     }
 
     fn fixture(body: Vec<u8>, delay: Duration) -> (String, TestSource) {

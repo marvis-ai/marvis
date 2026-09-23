@@ -45,6 +45,7 @@ log = "0.4"
 env_logger = "0.11"
 tauri-plugin-liquid-glass = "0.1.6"
 cpal = "0.18.2"
+tokio-tungstenite = { version = "0.30.0", features = ["rustls-tls-native-roots"] }
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration

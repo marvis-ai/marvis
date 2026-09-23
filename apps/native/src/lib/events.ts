@@ -20,6 +20,19 @@ export const EV_LISTEN_STATE = 'listen:state';
 export const EV_LISTEN_TURN = 'listen:turn';
 export const EV_LISTEN_SUMMARY = 'listen:summary';
 export const EV_LISTEN_ERROR = 'listen:error';
+/** Whisper model download byte progress; contains no URL or local path. */
+export const EV_WHISPER_DOWNLOAD_PROGRESS = 'whisper:download-progress';
+/** Whisper model download failure; contains only the model and safe error text. */
+export const EV_WHISPER_DOWNLOAD_ERROR = 'whisper:download-error';
+export interface WhisperDownloadProgressPayload {
+  model: string;
+  received: number;
+  total: number;
+}
+export interface WhisperDownloadErrorPayload {
+  model: string;
+  error: string;
+}
 export interface ListenStatePayload {
   state: 'idle' | 'listening' | 'error';
   provider: string | null;

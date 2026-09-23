@@ -246,15 +246,49 @@ export interface ListenStatus {
   error: ListenErrorPayload | null;
 }
 
+export interface VoiceModelCatalogEntry {
+  id: 'tiny' | 'base' | 'small';
+  filename: string;
+  label: string;
+  description: string;
+  bytes: number;
+  source: string;
+}
+
+export interface WhisperInstalledModel {
+  id: string;
+  filename: string;
+  installed: boolean;
+  bytes: number;
+}
+
+export interface WhisperDownload {
+  model: string;
+  received: number;
+  total: number;
+}
+
 export interface WhisperStatus {
   binary: string | null;
+  /** Legacy model ids retained for existing settings consumers. */
   models: string[];
+  /** Extended installed-model metadata for the voice setup flow. */
+  installedModels?: WhisperInstalledModel[];
+  download?: WhisperDownload | null;
 }
 
 export const listenStart = () => invoke<ListenStatus>('listen_start');
 export const listenStop = () => invoke<void>('listen_stop');
 export const listenStatus = () => invoke<ListenStatus>('listen_status');
+export const voiceModelsCatalog = () =>
+  invoke<VoiceModelCatalogEntry[]>('voice_models_catalog');
 export const whisperStatus = () => invoke<WhisperStatus>('whisper_status');
+export const whisperDownload = (model: string) =>
+  invoke<void>('whisper_download', { model });
+export const whisperCancelDownload = () =>
+  invoke<void>('whisper_cancel_download');
+export const whisperRemoveModel = (model: string) =>
+  invoke<WhisperStatus>('whisper_remove_model', { model });
 
 // ---------------------------------------------------------------------------
 // windows

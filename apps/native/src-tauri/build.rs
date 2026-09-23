@@ -1,6 +1,13 @@
 use std::process::Command;
 
 fn main() {
+    // Local Rust builds and tests do not bundle the release-only external binary.
+    // Keep the checked-in Tauri config strict for `tauri build`, while omitting
+    // externalBin from debug cargo builds until CI stages a real artifact.
+    if std::env::var_os("PROFILE").as_deref() == Some(std::ffi::OsStr::new("debug")) {
+        std::env::set_var("TAURI_CONFIG", r#"{"bundle":{"externalBin":[]}}"#);
+    }
+
     // Mirror screencapturekit's rpath args into OUR binaries: the crate's
     // `cargo:rustc-link-arg` only reaches its own build units, not the
     // top-level bin/test targets (documented Cargo limitation). Without

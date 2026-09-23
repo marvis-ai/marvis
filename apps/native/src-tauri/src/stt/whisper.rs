@@ -23,6 +23,22 @@ const SILENCE_RMS: f64 = 0.01;
 const MAX_OUTPUT_BYTES: usize = 1024 * 1024;
 const MAX_CONSECUTIVE_FAILURES: usize = 3;
 
+/// Where the selected Whisper executable was found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum WhisperBinarySource {
+    Bundled,
+    Path,
+    Homebrew,
+    User,
+}
+
+/// Source-safe binary availability for local Settings status.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct WhisperBinaryStatus {
+    pub available: bool,
+    pub source: Option<WhisperBinarySource>,
+}
+
 /// The locally available whisper executable and models.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct WhisperStatus {
@@ -54,12 +70,35 @@ impl WhisperProvider {
         }
     }
 
-    /// Find `whisper-cli` without starting it or creating installation files.
+    /// Find `whisper-cli` through the non-bundled fallback chain.
     pub fn discover() -> Option<PathBuf> {
-        resolve_binary(
+        resolve_fallback(
             std::env::var_os("PATH").as_deref(),
             &paths::whisper_bin_dir(),
         )
+        .map(|(path, _)| path)
+    }
+
+    /// Resolve a bundled candidate before PATH, Homebrew, and user-local paths.
+    /// This only inspects filesystem metadata and never starts the executable.
+    pub fn discover_with_bundled(bundled: Option<&Path>) -> Option<(PathBuf, WhisperBinarySource)> {
+        bundled
+            .filter(|path| is_executable_file(path))
+            .map(|path| (path.to_path_buf(), WhisperBinarySource::Bundled))
+            .or_else(|| {
+                resolve_fallback(
+                    std::env::var_os("PATH").as_deref(),
+                    &paths::whisper_bin_dir(),
+                )
+            })
+    }
+
+    pub fn binary_status(bundled: Option<&Path>) -> WhisperBinaryStatus {
+        let resolved = Self::discover_with_bundled(bundled);
+        WhisperBinaryStatus {
+            available: resolved.is_some(),
+            source: resolved.map(|(_, source)| source),
+        }
     }
 
     /// Report paths and model names only; this never reads credentials or runs a process.
@@ -330,21 +369,40 @@ fn is_model_file_name(model: &str) -> bool {
         && model != ".."
 }
 
-fn resolve_binary(path: Option<&std::ffi::OsStr>, bundled_dir: &Path) -> Option<PathBuf> {
+fn resolve_fallback(
+    path: Option<&std::ffi::OsStr>,
+    user_dir: &Path,
+) -> Option<(PathBuf, WhisperBinarySource)> {
     if let Some(path) = path {
         for directory in std::env::split_paths(path) {
             let candidate = directory.join("whisper-cli");
-            if candidate.is_file() {
-                return Some(candidate);
+            if is_executable_file(&candidate) {
+                return Some((candidate, WhisperBinarySource::Path));
             }
         }
     }
-    let homebrew = Path::new("/opt/homebrew/bin/whisper-cli");
-    if homebrew.is_file() {
-        return Some(homebrew.to_path_buf());
+    for homebrew in [
+        Path::new("/opt/homebrew/bin/whisper-cli"),
+        Path::new("/usr/local/bin/whisper-cli"),
+    ] {
+        if is_executable_file(homebrew) {
+            return Some((homebrew.to_path_buf(), WhisperBinarySource::Homebrew));
+        }
     }
-    let candidate = bundled_dir.join("whisper-cli");
-    candidate.is_file().then_some(candidate)
+    let candidate = user_dir.join("whisper-cli");
+    is_executable_file(&candidate).then_some((candidate, WhisperBinarySource::User))
+}
+
+#[cfg(unix)]
+fn is_executable_file(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    path.metadata()
+        .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+}
+
+#[cfg(not(unix))]
+fn is_executable_file(path: &Path) -> bool {
+    path.is_file()
 }
 
 fn list_models(directory: &Path) -> Vec<String> {
@@ -501,19 +559,59 @@ mod tests {
     }
 
     #[test]
-    fn resolves_binary_in_documented_order() {
+    fn bundled_binary_wins_and_reports_source() {
         let root = tempfile_dir();
         let path_dir = root.join("path");
-        let bundled = root.join("bundled");
+        let bundled = root.join("bundled").join("whisper-cli");
         fs::create_dir_all(&path_dir).unwrap();
-        fs::create_dir_all(&bundled).unwrap();
-        fs::write(path_dir.join("whisper-cli"), b"").unwrap();
-        fs::write(bundled.join("whisper-cli"), b"").unwrap();
-        let path = std::ffi::OsString::from(path_dir.clone());
+        fs::create_dir_all(bundled.parent().unwrap()).unwrap();
+        let path_binary = path_dir.join("whisper-cli");
+        make_executable(&path_binary);
+        make_executable(&bundled);
+        let path = std::ffi::OsString::from(path_dir);
         assert_eq!(
-            resolve_binary(Some(&path), &bundled),
-            Some(path_dir.join("whisper-cli"))
+            WhisperProvider::discover_with_bundled(Some(&bundled)),
+            Some((bundled, WhisperBinarySource::Bundled))
         );
+        assert_eq!(
+            resolve_fallback(Some(&path), &root.join("user")),
+            Some((path_binary, WhisperBinarySource::Path))
+        );
+    }
+
+    #[test]
+    fn fallback_order_and_invalid_candidates_are_source_safe() {
+        let root = tempfile_dir();
+        let path_dir = root.join("path");
+        let user_dir = root.join("user");
+        fs::create_dir_all(&path_dir).unwrap();
+        fs::create_dir_all(&user_dir).unwrap();
+        let path_binary = path_dir.join("whisper-cli");
+        fs::write(&path_binary, b"").unwrap();
+        assert_eq!(
+            resolve_fallback(Some(std::ffi::OsStr::new("/missing")), &user_dir),
+            None
+        );
+        make_executable(&user_dir.join("whisper-cli"));
+        assert_eq!(
+            resolve_fallback(None, &user_dir),
+            Some((user_dir.join("whisper-cli"), WhisperBinarySource::User))
+        );
+        assert!(!is_executable_file(&path_binary));
+        fs::create_dir(path_dir.join("not-a-file")).unwrap();
+        assert!(!is_executable_file(&path_dir.join("not-a-file")));
+    }
+
+    #[cfg(unix)]
+    fn make_executable(path: &Path) {
+        use std::os::unix::fs::PermissionsExt;
+        fs::write(path, b"").unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[cfg(not(unix))]
+    fn make_executable(path: &Path) {
+        fs::write(path, b"").unwrap();
     }
 
     #[test]

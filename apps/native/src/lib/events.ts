@@ -31,7 +31,7 @@ export interface WhisperDownloadProgressPayload {
 }
 export interface WhisperDownloadErrorPayload {
   model: string;
-  error: string;
+  message: string;
 }
 export interface ListenStatePayload {
   state: 'idle' | 'listening' | 'error';

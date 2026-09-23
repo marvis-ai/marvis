@@ -9,8 +9,7 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tauri::{AppHandle, Emitter};
-use tokio::task::JoinHandle;
+use tauri::{async_runtime::JoinHandle, AppHandle, Emitter};
 use tokio_util::sync::CancellationToken;
 
 use crate::{paths, stt};
@@ -284,7 +283,7 @@ impl VoiceModelManager {
             .active
             .as_ref()
             .and_then(|a| a.task.as_ref())
-            .is_some_and(JoinHandle::is_finished)
+            .is_some_and(|task| task.inner().is_finished())
         {
             self.state.lock().active = None;
         }
@@ -336,7 +335,7 @@ impl VoiceModelManager {
             total: entry.bytes,
         }));
         let task_progress = Arc::clone(&progress);
-        let task = tokio::spawn(async move {
+        let task = tauri::async_runtime::spawn(async move {
             let result = download(
                 entry,
                 root,
@@ -725,6 +724,19 @@ mod tests {
                 return root;
             }
         }
+    }
+
+    #[test]
+    fn sync_start_download_uses_the_tauri_runtime() {
+        let root = temp_root();
+        let (_, source) = fixture(b"sync start fixture".to_vec(), Duration::ZERO);
+        let manager = VoiceModelManager::with_test_source(root.clone(), source);
+
+        manager.start_download(ModelId::Tiny).unwrap();
+        tauri::async_runtime::block_on(manager.cancel_download()).unwrap();
+
+        assert!(!root.join("ggml-tiny.bin.tmp").exists());
+        let _ = fs::remove_dir_all(root);
     }
 
     #[tokio::test]

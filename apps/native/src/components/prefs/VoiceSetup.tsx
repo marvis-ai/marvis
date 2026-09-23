@@ -208,8 +208,15 @@ export const VoiceSetup = ({
     }
   };
   const cancelDownload = async () => {
+    const canceledModel = activeDownload?.model;
     try {
       await whisperCancelDownload();
+      setProgress((current) => {
+        if (!canceledModel || !(canceledModel in current)) return current;
+        const next = { ...current };
+        delete next[canceledModel];
+        return next;
+      });
       await refreshWhisper();
     } catch (e) {
       setDownloadError(safeVoiceError('Could not cancel download'));

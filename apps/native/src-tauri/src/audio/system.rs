@@ -5,13 +5,17 @@ use screencapturekit::stream::configuration::SCStreamConfiguration;
 use screencapturekit::stream::content_filter::SCContentFilter;
 use screencapturekit::stream::output_type::SCStreamOutputType;
 use screencapturekit::stream::sc_stream::SCStream;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
+use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 
 const AUDIO_QUEUE_CAPACITY: usize = 8;
 const FLAG_FLOAT: u32 = 1;
 const FLAG_BIG_ENDIAN: u32 = 2;
 const FLAG_NON_INTERLEAVED: u32 = 0x20;
+
+type RawChunk = (Vec<f32>, u32, u16);
 
 #[derive(Debug, Clone, Copy)]
 struct AudioBufferBytes<'a> {
@@ -24,7 +28,7 @@ struct AudioBufferBytes<'a> {
 pub struct SystemAudioSource {
     filter: Option<SCContentFilter>,
     stream: Option<SCStream>,
-    input_tx: Option<SyncSender<PcmChunk>>,
+    input_tx: Option<SyncSender<RawChunk>>,
     worker: Option<JoinHandle<()>>,
     running: bool,
 }
@@ -41,24 +45,30 @@ impl SystemAudioSource {
         })
     }
 
-    fn enqueue_sample(sample: &CMSampleBuffer, tx: &SyncSender<PcmChunk>) {
+    fn enqueue_sample(sample: &CMSampleBuffer, tx: &SyncSender<RawChunk>, warned: &AtomicBool) {
         let Some(format) = sample.format_description() else {
+            warn_unsupported(warned, "missing format description");
             return;
         };
         let Some(sample_rate) = format.audio_sample_rate() else {
+            warn_unsupported(warned, "missing sample rate");
             return;
         };
         let Some(bits) = format.audio_bits_per_channel() else {
+            warn_unsupported(warned, "missing bits-per-channel metadata");
             return;
         };
         let Some(flags) = format.audio_format_flags() else {
+            warn_unsupported(warned, "missing audio format flags");
             return;
         };
         if flags & FLAG_BIG_ENDIAN != 0 || !matches!(bits, 16 | 32) {
+            warn_unsupported(warned, "unsupported byte order or sample width");
             return;
         }
         let channels = format.audio_channel_count().unwrap_or(1) as usize;
         let Some(list) = sample.audio_buffer_list() else {
+            warn_unsupported(warned, "missing audio buffer list");
             return;
         };
         let buffers: Vec<_> = list
@@ -75,13 +85,10 @@ impl SystemAudioSource {
             flags & FLAG_NON_INTERLEAVED != 0,
             channels,
         ) else {
+            warn_unsupported(warned, "audio buffer layout or PCM data was rejected");
             return;
         };
-        let chunk = normalize_pcm(&samples, sample_rate.round() as u32, channels as u16);
-        if chunk.samples.is_empty() {
-            return;
-        }
-        match tx.try_send(chunk) {
+        match tx.try_send((samples, sample_rate.round() as u32, channels as u16)) {
             Ok(()) | Err(TrySendError::Disconnected(_)) => {}
             Err(TrySendError::Full(_)) => log::debug!("dropping stale system-audio chunk"),
         }
@@ -101,10 +108,14 @@ impl AudioSource for SystemAudioSource {
         let (tx, rx) = mpsc::sync_channel(AUDIO_QUEUE_CAPACITY);
         let worker = thread::spawn(move || forward_chunks(rx, output));
         let callback_tx = tx.clone();
+        let warned = Arc::new(AtomicBool::new(false));
+        let callback_warned = warned.clone();
         let mut stream = SCStream::new(filter, &config);
         if stream
             .add_output_handler(
-                move |sample: CMSampleBuffer, _| Self::enqueue_sample(&sample, &callback_tx),
+                move |sample: CMSampleBuffer, _| {
+                    Self::enqueue_sample(&sample, &callback_tx, &callback_warned)
+                },
                 SCStreamOutputType::Audio,
             )
             .is_none()
@@ -154,9 +165,18 @@ impl Drop for SystemAudioSource {
     }
 }
 
-fn forward_chunks(rx: Receiver<PcmChunk>, output: mpsc::Sender<PcmChunk>) {
-    while let Ok(chunk) = rx.recv() {
-        if output.send(chunk).is_err() {
+fn warn_unsupported(warned: &AtomicBool, reason: &str) {
+    if !warned.swap(true, Ordering::Relaxed) {
+        log::warn!("dropping system-audio samples: unsupported or rejected format ({reason})");
+    }
+}
+
+fn forward_chunks(rx: Receiver<RawChunk>, output: mpsc::Sender<PcmChunk>) {
+    while let Ok((samples, sample_rate, channels)) = rx.recv() {
+        if output
+            .send(normalize_pcm(&samples, sample_rate, channels))
+            .is_err()
+        {
             break;
         }
     }

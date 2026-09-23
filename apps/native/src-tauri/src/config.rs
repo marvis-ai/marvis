@@ -4,6 +4,7 @@ use std::path::Path;
 
 use crate::llm::ProviderKind;
 use crate::paths;
+use crate::voice_models::entry_for_value;
 
 /// Non-secret preferences, persisted as `~/.marvis/config.toml` (0644).
 ///
@@ -62,6 +63,77 @@ pub struct AppPrefs {
 
 /// The spec's slate accent — `#3a7294` (DESIGN.md §2).
 pub const DEFAULT_ACCENT: &str = "#3a7294";
+
+pub(crate) fn validate_stt_provider(value: &str) -> Result<String, String> {
+    let value = value.trim();
+    if matches!(value, "deepgram" | "whisper") {
+        Ok(value.to_string())
+    } else {
+        Err(format!("unknown STT provider {value:?}"))
+    }
+}
+
+pub(crate) fn validate_stt_model(value: &str) -> Result<String, String> {
+    let value = value.trim();
+    if value.is_empty() {
+        Err("STT model must not be empty".to_string())
+    } else {
+        Ok(value.to_string())
+    }
+}
+
+pub(crate) fn validate_whisper_model(value: &str) -> Result<String, String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Err("STT model must not be empty".to_string());
+    }
+    entry_for_value(value)
+        .map(|entry| entry.id.as_str().to_string())
+        .ok_or_else(|| format!("unknown Whisper model {value:?}"))
+}
+
+pub(crate) fn validate_stt_model_for_provider(
+    provider: &str,
+    value: &str,
+) -> Result<String, String> {
+    if provider == "whisper" {
+        validate_whisper_model(value)
+    } else {
+        validate_stt_model(value)
+    }
+}
+
+/// Apply the two STT config command keys. Returns `true` when `key` is an STT
+/// key, allowing the command layer to keep its other writable keys separate.
+pub(crate) fn apply_stt_config(
+    models: &mut ModelPrefs,
+    key: &str,
+    value: &serde_json::Value,
+) -> Result<bool, String> {
+    match key {
+        "models.stt_provider" => {
+            let value = value
+                .as_str()
+                .ok_or("models.stt_provider must be a string")?;
+            let provider = validate_stt_provider(value)?;
+            // Provider and model are one transactional preference: never leave
+            // a Whisper catalog name paired with Deepgram (or vice versa).
+            if provider == "whisper" && entry_for_value(&models.stt_model).is_none() {
+                models.stt_model = "tiny".to_string();
+            } else if provider == "deepgram" && entry_for_value(&models.stt_model).is_some() {
+                models.stt_model = "nova-2".to_string();
+            }
+            models.stt_provider = provider;
+            Ok(true)
+        }
+        "models.stt_model" => {
+            let value = value.as_str().ok_or("models.stt_model must be a string")?;
+            models.stt_model = validate_stt_model_for_provider(&models.stt_provider, value)?;
+            Ok(true)
+        }
+        _ => Ok(false),
+    }
+}
 
 impl Default for AppPrefs {
     fn default() -> Self {
@@ -362,6 +434,97 @@ mod tests {
     }
 
     #[test]
+    fn stt_command_keys_apply_and_validate_values() {
+        let mut models = ModelPrefs::default();
+        assert!(apply_stt_config(
+            &mut models,
+            "models.stt_provider",
+            &serde_json::json!(" whisper "),
+        )
+        .unwrap());
+        assert_eq!(models.stt_provider, "whisper");
+        assert!(apply_stt_config(
+            &mut models,
+            "models.stt_model",
+            &serde_json::json!("  base  "),
+        )
+        .unwrap());
+        assert_eq!(models.stt_model, "base");
+        assert_eq!(
+            apply_stt_config(
+                &mut models,
+                "models.stt_provider",
+                &serde_json::json!("unknown"),
+            )
+            .unwrap_err(),
+            "unknown STT provider \"unknown\""
+        );
+        models.stt_provider = "whisper".into();
+        assert_eq!(
+            apply_stt_config(
+                &mut models,
+                "models.stt_model",
+                &serde_json::json!("https://example.com/model.bin"),
+            )
+            .unwrap_err(),
+            "unknown Whisper model \"https://example.com/model.bin\""
+        );
+        assert_eq!(
+            apply_stt_config(
+                &mut models,
+                "models.stt_model",
+                &serde_json::json!(" GGML-SMALL.BIN "),
+            )
+            .unwrap_err(),
+            "unknown Whisper model \"GGML-SMALL.BIN\""
+        );
+        assert!(apply_stt_config(
+            &mut models,
+            "models.stt_model",
+            &serde_json::json!(" small "),
+        )
+        .unwrap());
+        assert_eq!(models.stt_model, "small");
+        assert!(apply_stt_config(
+            &mut models,
+            "models.stt_model",
+            &serde_json::json!(" ggml-small.bin "),
+        )
+        .is_ok());
+        assert_eq!(models.stt_model, "small");
+        models.stt_provider = "deepgram".into();
+        assert!(apply_stt_config(
+            &mut models,
+            "models.stt_model",
+            &serde_json::json!("nova-3"),
+        )
+        .is_ok());
+        assert_eq!(models.stt_model, "nova-3");
+        assert!(apply_stt_config(
+            &mut models,
+            "models.stt_provider",
+            &serde_json::json!("whisper"),
+        )
+        .is_ok());
+        assert_eq!(models.stt_model, "tiny");
+        assert!(apply_stt_config(
+            &mut models,
+            "models.stt_provider",
+            &serde_json::json!("deepgram"),
+        )
+        .is_ok());
+        assert_eq!(models.stt_model, "nova-2");
+        assert_eq!(
+            apply_stt_config(&mut models, "models.stt_model", &serde_json::json!("  "),)
+                .unwrap_err(),
+            "STT model must not be empty"
+        );
+        assert!(
+            !apply_stt_config(&mut models, "models.other", &serde_json::json!("value"),).unwrap()
+        );
+    }
+
+    #[test]
     fn load_returns_defaults_when_file_missing() {
         let tmp = tempfile_dir();
         let cfg = Config::load_from(tmp.join("config.toml")).unwrap();
@@ -602,5 +765,22 @@ mod tests {
         for (action, accel) in expected {
             assert_eq!(hk[action], accel, "hotkey {action}");
         }
+    }
+
+    #[test]
+    fn stt_provider_validation_accepts_supported_values_only() {
+        assert!(validate_stt_provider("deepgram").is_ok());
+        assert!(validate_stt_provider("whisper").is_ok());
+        assert!(validate_stt_provider("assemblyai").is_err());
+    }
+
+    #[test]
+    fn stt_model_validation_trims_and_rejects_blank_values() {
+        assert_eq!(validate_stt_model(" nova-2 ").unwrap(), "nova-2");
+        assert_eq!(
+            validate_stt_model(" ggml-base.bin ").unwrap(),
+            "ggml-base.bin"
+        );
+        assert!(validate_stt_model("   ").is_err());
     }
 }

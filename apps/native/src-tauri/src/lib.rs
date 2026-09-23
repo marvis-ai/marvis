@@ -34,17 +34,21 @@
 //!   (`alert_current` re-reads it, `alert_dismiss` clears it).
 
 mod ask;
+pub mod audio;
 mod capture;
 mod config;
 mod deeplink;
 mod hotkey;
 mod keystore;
+mod listen;
 mod llm;
 mod paths;
 mod permissions;
 mod prompts;
 mod storage;
+pub mod stt;
 mod tray;
+pub mod voice_models;
 mod windows;
 
 use std::sync::Arc;
@@ -59,8 +63,9 @@ use capture::{FrameSource, MacosCapture, RingBuffer};
 use config::Config;
 use hotkey::RegisteredHotkeys;
 use keystore::Keystore;
+use listen::{ListenEvent, ListenService};
 use llm::{make_provider, ProviderKind};
-use storage::{AiMessage, Db, Session};
+use storage::{AiMessage, Db, Session, Summary, Transcript};
 use windows::WindowPool;
 
 /// Frame ring caps from the spec: 120 frames / 64 MB (~60 s horizon).
@@ -106,6 +111,7 @@ pub struct AppState {
     ring: Arc<Mutex<RingBuffer>>,
     capture: Mutex<Option<MacosCapture>>,
     ask: Arc<AskService>,
+    listen: Arc<ListenService>,
     pool: Mutex<WindowPool>,
     /// Currently live set — delta-swapped in place by [`swap_hotkeys`]
     /// (shared pairs are never re-registered; macOS refuses duplicates).
@@ -121,6 +127,7 @@ pub struct AppState {
     /// via `alert_current` — an `alert:show` emit that races the
     /// webview's listener would otherwise be lost.
     alert: Mutex<Option<serde_json::Value>>,
+    voice_models: voice_models::VoiceModelManager,
 }
 
 impl AppState {
@@ -173,11 +180,15 @@ impl AppState {
             ring: Arc::new(Mutex::new(RingBuffer::new(RING_MAX_FRAMES, RING_MAX_BYTES))),
             capture: Mutex::new(None),
             ask: Arc::new(AskService::new()),
+            listen: Arc::new(ListenService::new()),
             pool: Mutex::new(WindowPool::new_empty()),
             hotkeys: Mutex::new(None),
             gate: Mutex::new(Gate::NeedsPermission),
             gate_transition: Mutex::new(()),
             alert: Mutex::new(None),
+            voice_models: voice_models::VoiceModelManager::at(
+                root.join("models").join("whisper").join("models"),
+            ),
         }
     }
 }
@@ -254,6 +265,7 @@ fn leave_main(app: &AppHandle) {
     // Cancel any in-flight ask — an unbounded stream left running would
     // hold `AskState::Streaming` past a leave/re-enter and wedge every
     // future send on the busy-check until it resolves on its own.
+    // Listen is independent of card visibility; only `listen_stop` stops it.
     state.ask.close(app, &state.pool);
     // Take the capture out and release the lock BEFORE `stop()` — it
     // joins the capture worker, which must not hold `state.capture`
@@ -387,6 +399,31 @@ fn tray_menu_dispatch() -> impl Fn(&AppHandle, tauri::menu::MenuEvent) + Send + 
 /// plaintext-on-disk inside the 0700 `~/.marvis` root.)
 fn keystore_status_payload(keystore: &Keystore) -> serde_json::Value {
     json!({ "keys": keystore.masked_status() })
+}
+
+/// Deepgram is an STT-only key and must never enter the LLM provider
+/// catalog. Key commands accept it alongside the LLM provider ids.
+fn is_key_management_provider(provider: &str) -> bool {
+    provider == "deepgram" || ProviderKind::from_str(provider).is_some()
+}
+
+const DEEPGRAM_UNVERIFIED_MESSAGE: &str =
+    "Deepgram key accepted after non-empty shape validation; no live provider probe was performed";
+
+fn normalize_deepgram_key(key: &str) -> Result<String, String> {
+    let trimmed = key.trim();
+    if trimmed.is_empty() {
+        Err("Deepgram API key must not be empty after trimming".to_string())
+    } else {
+        Ok(trimmed.to_string())
+    }
+}
+
+fn deepgram_validation_payload(key: &str) -> serde_json::Value {
+    match normalize_deepgram_key(key) {
+        Ok(_) => json!({ "ok": true, "message": DEEPGRAM_UNVERIFIED_MESSAGE }),
+        Err(error) => json!({ "ok": false, "error": error }),
+    }
 }
 
 /// Raise the alert toast with `message`.
@@ -578,26 +615,32 @@ fn keystore_status(state: State<'_, AppState>) -> serde_json::Value {
     keystore_status_payload(&state.keystore.lock())
 }
 
-/// Validate the key against the provider FIRST — a bad key never reaches
-/// `keys.json` — then store and broadcast `keystore:changed`. Async
-/// because validation is a provider HTTP call.
+/// Store a key and broadcast `keystore:changed`. Normal LLM provider keys
+/// are live-validated before storage; Deepgram keys are trimmed and stored
+/// after non-empty shape validation only, without a live provider probe.
 #[tauri::command]
 async fn keystore_set_key(
     app: AppHandle,
     provider: String,
     key: String,
 ) -> Result<serde_json::Value, String> {
-    let Some(kind) = ProviderKind::from_str(&provider) else {
+    if !is_key_management_provider(&provider) {
         return Err(format!("unknown provider {provider:?}"));
+    }
+    let key = if provider == "deepgram" {
+        normalize_deepgram_key(&key)?
+    } else {
+        let kind = ProviderKind::from_str(&provider).expect("validated provider id");
+        let (model, base_url) = {
+            let state = app.state::<AppState>();
+            provider_args(&state, kind)
+        };
+        make_provider(kind, Some(key.clone()), model, base_url)
+            .validate()
+            .await
+            .map_err(|e| e.to_string())?;
+        key
     };
-    let (model, base_url) = {
-        let state = app.state::<AppState>();
-        provider_args(&state, kind)
-    };
-    make_provider(kind, Some(key.clone()), model, base_url)
-        .validate()
-        .await
-        .map_err(|e| e.to_string())?;
     let state = app.state::<AppState>();
     let payload = {
         let mut ks = state.keystore.lock();
@@ -611,6 +654,9 @@ async fn keystore_set_key(
 /// Remove a provider key and broadcast `keystore:changed`.
 #[tauri::command]
 fn keystore_remove_key(app: AppHandle, provider: String) -> Result<serde_json::Value, String> {
+    if !is_key_management_provider(&provider) {
+        return Err(format!("unknown provider {provider:?}"));
+    }
     let state = app.state::<AppState>();
     let payload = {
         let mut ks = state.keystore.lock();
@@ -627,9 +673,14 @@ fn keystore_remove_key(app: AppHandle, provider: String) -> Result<serde_json::V
 
 /// Test a candidate key WITHOUT storing it: `{"ok": true}` or
 /// `{"ok": false, "error": "..."}` — validation failures are data, not
-/// command errors, so the UI can render them inline.
+/// command errors, so the UI can render them inline. Normal LLM keys are
+/// live-probed; Deepgram only gets non-empty shape validation and reports
+/// that no live provider probe was performed.
 #[tauri::command]
 async fn model_validate_key(app: AppHandle, provider: String, key: String) -> serde_json::Value {
+    if provider == "deepgram" {
+        return deepgram_validation_payload(&key);
+    }
     let Some(kind) = ProviderKind::from_str(&provider) else {
         return json!({ "ok": false, "error": format!("unknown provider {provider:?}") });
     };
@@ -839,11 +890,154 @@ fn ask_current(state: State<'_, AppState>) -> serde_json::Value {
     state.ask.current_payload()
 }
 
-/// Phase-2 placeholder on the command surface — the listen pipeline
-/// (dual STT + live summary) isn't implemented yet.
+const EV_LISTEN_STATE: &str = "listen:state";
+const EV_LISTEN_TURN: &str = "listen:turn";
+const EV_LISTEN_SUMMARY: &str = "listen:summary";
+const EV_LISTEN_ERROR: &str = "listen:error";
+
+fn emit_listen_state(app: &AppHandle, state: &listen::ListenStatus) {
+    let _ = app.emit_to(
+        windows::BAR_LABEL,
+        EV_LISTEN_STATE,
+        json!({
+            "state": state.state,
+            "provider": state.provider,
+            "session_id": state.session_id,
+            "mic": state.mic,
+            "error": state.error,
+        }),
+    );
+}
+
+fn emit_listen_event(app: &AppHandle, event: ListenEvent) {
+    match event {
+        ListenEvent::Turn(turn) => {
+            let _ = app.emit_to(windows::BAR_LABEL, EV_LISTEN_TURN, turn);
+        }
+        ListenEvent::Summary(summary) => {
+            let _ = app.emit_to(windows::BAR_LABEL, EV_LISTEN_SUMMARY, summary);
+        }
+        ListenEvent::Error {
+            message,
+            needs_setup,
+        } => {
+            let _ = app.emit_to(
+                windows::BAR_LABEL,
+                EV_LISTEN_ERROR,
+                json!({ "message": message, "needs_setup": needs_setup }),
+            );
+            let status = app.state::<AppState>().listen.status();
+            // Re-emit the durable status snapshot so a bar opened after the
+            // setup failure can resynchronize through the same payload as a
+            // normal listen state update.
+            emit_listen_state(app, &status);
+        }
+    }
+}
+
 #[tauri::command]
-fn listen_stub() -> &'static str {
-    "listen arrives in Phase 2"
+async fn listen_start(app: AppHandle) -> Result<listen::ListenStatus, String> {
+    let state = app.state::<AppState>();
+    if *state.gate.lock() != Gate::Main {
+        return Err("Listen is unavailable until setup is complete".into());
+    }
+    let mic_allowed = tauri::async_runtime::spawn_blocking(permissions::mic_request)
+        .await
+        .unwrap_or(false);
+    let config = state.config.lock().clone();
+    let keystore = state.keystore.lock().clone();
+    let app_for_emit = app.clone();
+    let emit = Arc::new(move |event| emit_listen_event(&app_for_emit, event));
+    if let Err(error) =
+        state
+            .listen
+            .start(Arc::clone(&state.db), &keystore, &config, mic_allowed, emit)
+    {
+        // ListenService owns the event contract for failures it emits. In
+        // particular, setup failures have already emitted needs_setup:true;
+        // re-emitting here would produce a contradictory second event.
+        return Err(error.to_string());
+    }
+    let status = state.listen.status();
+    emit_listen_state(&app, &status);
+    Ok(status)
+}
+
+#[tauri::command]
+fn listen_stop(app: AppHandle) {
+    let state = app.state::<AppState>();
+    state.listen.stop();
+    emit_listen_state(&app, &state.listen.status());
+}
+
+#[tauri::command]
+fn listen_status(state: State<'_, AppState>) -> listen::ListenStatus {
+    state.listen.status()
+}
+
+#[tauri::command]
+fn voice_models_catalog(state: State<'_, AppState>) -> Vec<voice_models::VoiceModelCatalogPayload> {
+    state.voice_models.catalog_payload()
+}
+
+#[tauri::command]
+fn whisper_status(state: State<'_, AppState>) -> voice_models::WhisperDownloadStatus {
+    state.voice_models.status()
+}
+
+fn safe_voice_error(error: voice_models::VoiceDownloadError) -> String {
+    match error {
+        voice_models::VoiceDownloadError::Busy => "A voice model download is already active".into(),
+        voice_models::VoiceDownloadError::UnknownModel(_) => "Unknown voice model".into(),
+        voice_models::VoiceDownloadError::ActiveModel => {
+            "Cannot remove the selected voice model".into()
+        }
+        voice_models::VoiceDownloadError::Cancelled => "Download cancelled".into(),
+        voice_models::VoiceDownloadError::Verification => {
+            "Downloaded model verification failed".into()
+        }
+        voice_models::VoiceDownloadError::Download(_) => "Voice model download failed".into(),
+    }
+}
+
+#[tauri::command]
+fn whisper_download(state: State<'_, AppState>, model: String) -> Result<(), String> {
+    let entry =
+        voice_models::entry_for_id(&model).ok_or_else(|| "Unknown voice model".to_string())?;
+    state
+        .voice_models
+        .start_download(entry.id)
+        .map_err(safe_voice_error)
+}
+
+#[tauri::command]
+async fn whisper_cancel_download(state: State<'_, AppState>) -> Result<(), String> {
+    state
+        .voice_models
+        .cancel_download()
+        .await
+        .map_err(safe_voice_error)
+}
+
+#[tauri::command]
+fn whisper_remove_model(
+    state: State<'_, AppState>,
+    model: String,
+) -> Result<voice_models::WhisperDownloadStatus, String> {
+    let entry =
+        voice_models::entry_for_id(&model).ok_or_else(|| "Unknown voice model".to_string())?;
+    let config = state.config.lock();
+    let selected = if config.models.stt_provider == "whisper" {
+        voice_models::entry_for_id(&config.models.stt_model).map(|entry| entry.id)
+    } else {
+        None
+    };
+    state.voice_models.set_selected_model(selected);
+    state
+        .voice_models
+        .remove_model(entry.id)
+        .map_err(safe_voice_error)?;
+    Ok(state.voice_models.status())
 }
 
 // ---------------------------------------------------------------------------
@@ -1051,6 +1245,23 @@ fn session_get(state: State<'_, AppState>, id: i64) -> Result<Vec<AiMessage>, St
 }
 
 #[tauri::command]
+fn transcripts_for(
+    state: State<'_, AppState>,
+    id: i64,
+    limit: Option<usize>,
+) -> Result<Vec<Transcript>, String> {
+    state
+        .db
+        .transcripts_for(id, limit)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn summary_latest(state: State<'_, AppState>, id: i64) -> Result<Option<Summary>, String> {
+    state.db.summary_latest(id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn session_delete(state: State<'_, AppState>, id: i64) -> Result<(), String> {
     state.db.session_delete(id).map_err(|e| e.to_string())
 }
@@ -1060,7 +1271,11 @@ fn session_delete(state: State<'_, AppState>, id: i64) -> Result<(), String> {
 /// when none was open (no junk row created).
 #[tauri::command]
 fn session_end_active(state: State<'_, AppState>, kind: String) -> Result<bool, String> {
-    match state.db.session_active_id(&kind).map_err(|e| e.to_string())? {
+    match state
+        .db
+        .session_active_id(&kind)
+        .map_err(|e| e.to_string())?
+    {
         Some(id) => {
             state.db.session_end(id).map_err(|e| e.to_string())?;
             Ok(true)
@@ -1082,8 +1297,10 @@ fn config_get(state: State<'_, AppState>) -> Config {
 /// `window.bar_y` (number sets, null clears), `app.onboarding_done`
 /// (bool), `app.appearance` (`auto|light|dark`), `app.accent`
 /// (`#rrggbb`, `""` resets to the spec slate), `compat.name`,
-/// `compat.base_url` (validated http(s) URL; `""` clears). Provider
-/// order/switches/models have their own commands (`providers_reorder`,
+/// `compat.base_url` (validated http(s) URL; `""` clears),
+/// `models.stt_provider` (`deepgram|whisper`), and `models.stt_model`
+/// (a trimmed non-empty identifier). Provider order/switches/models have
+/// their own commands (`providers_reorder`,
 /// `provider_set_enabled`, `model_set_selected`). Persists `config.toml`
 /// and returns the updated config. A `hotkeys.*` write re-registers the
 /// active set (full or limited, matching the current gate). Every
@@ -1152,6 +1369,7 @@ fn config_set(app: AppHandle, key: String, value: serde_json::Value) -> Result<C
                 }
                 cfg.compat.base_url = v.to_string();
             }
+            key if config::apply_stt_config(&mut cfg.models, key, &value)? => {}
             "vision.provider" => {
                 let v = value
                     .as_str()
@@ -1227,8 +1445,13 @@ fn surface_material(app: AppHandle) -> &'static str {
     }
 }
 
+fn stop_listen(app: &AppHandle) {
+    app.state::<AppState>().listen.stop();
+}
+
 #[tauri::command]
 fn quit_application(app: AppHandle) {
+    stop_listen(&app);
     app.exit(0);
 }
 
@@ -1260,6 +1483,8 @@ pub fn run() {
             // Bar only — it hosts the chat/listen card modes itself; the
             // bar stays hidden until onboarding is done.
             let pool = WindowPool::create_bar_only(handle, onboarding_done)?;
+            let voice_models = voice_models::VoiceModelManager::new();
+            voice_models.attach_app(handle.clone());
             app.manage(AppState {
                 keystore: Mutex::new(keystore),
                 config: Mutex::new(cfg),
@@ -1267,11 +1492,13 @@ pub fn run() {
                 ring: Arc::new(Mutex::new(RingBuffer::new(RING_MAX_FRAMES, RING_MAX_BYTES))),
                 capture: Mutex::new(None),
                 ask: Arc::new(AskService::new()),
+                listen: Arc::new(ListenService::new()),
                 pool: Mutex::new(pool),
                 hotkeys: Mutex::new(None),
                 gate: Mutex::new(Gate::NeedsPermission),
                 gate_transition: Mutex::new(()),
                 alert: Mutex::new(None),
+                voice_models,
             });
             deeplink::init(handle, deeplink_dispatch(handle))?;
             // Warn-and-continue like hotkeys: a missing tray must never
@@ -1319,7 +1546,14 @@ pub fn run() {
             ask_close,
             ask_send_screen_only,
             ask_current,
-            listen_stub,
+            listen_start,
+            listen_stop,
+            listen_status,
+            voice_models_catalog,
+            whisper_status,
+            whisper_download,
+            whisper_cancel_download,
+            whisper_remove_model,
             alert_show,
             alert_current,
             alert_dismiss,
@@ -1341,6 +1575,8 @@ pub fn run() {
             capture_status,
             session_list,
             session_get,
+            transcripts_for,
+            summary_latest,
             session_delete,
             session_end_active,
             config_get,
@@ -1348,8 +1584,19 @@ pub fn run() {
             surface_material,
             quit_application,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            // Keep Listen teardown centralized at the application boundary:
+            // this covers tray/menu quit, window-manager quit, and other
+            // native exit paths in addition to the explicit command above.
+            if matches!(
+                event,
+                tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
+            ) {
+                stop_listen(app);
+            }
+        });
 }
 
 #[cfg(test)]
@@ -1368,6 +1615,26 @@ mod tests {
         ))
     }
 
+    #[test]
+    fn removed_listen_placeholder_is_absent_from_command_contract() {
+        // Keep this tied to the actual registration source rather than a
+        // second hand-maintained list of command names.
+        assert!(!include_str!("lib.rs").contains(concat!("listen_", "stub")));
+        let source = include_str!("lib.rs");
+        assert!(source.contains("listen_start,"));
+        assert!(source.contains("listen_stop,"));
+        assert!(source.contains("listen_status,"));
+        assert!(source.contains("whisper_status,"));
+    }
+
+    #[test]
+    fn app_exit_registration_covers_requested_and_completed_tauri_exit() {
+        let source = include_str!("lib.rs");
+        assert!(source.contains("tauri::RunEvent::ExitRequested { .. }"));
+        assert!(source.contains("| tauri::RunEvent::Exit"));
+        assert!(source.contains("stop_listen(app);"));
+    }
+
     /// Brief smoke test: `config_get` against a temp `AppState` returns
     /// defaults — proves `for_test` builds without a runtime and every
     /// field is wired.
@@ -1384,6 +1651,50 @@ mod tests {
 
     /// The failover chain honours `providers.order`, skips disabled ids,
     /// and drops providers with no key (where required) or no model.
+    #[test]
+    fn deepgram_keys_are_trimmed_and_unverified() {
+        assert_eq!(
+            normalize_deepgram_key("  dg-test-key \n").unwrap(),
+            "dg-test-key"
+        );
+
+        let accepted = deepgram_validation_payload("  dg-test-key \t");
+        assert_eq!(accepted["ok"], true);
+        assert!(accepted["message"]
+            .as_str()
+            .unwrap()
+            .contains("no live provider probe"));
+
+        let rejected = deepgram_validation_payload(" \t\n");
+        assert_eq!(rejected["ok"], false);
+        assert!(rejected["error"]
+            .as_str()
+            .unwrap()
+            .contains("after trimming"));
+    }
+
+    #[test]
+    fn deepgram_is_key_only_and_never_enters_llm_chain() {
+        assert!(is_key_management_provider("deepgram"));
+        assert!(!is_key_management_provider("not-a-provider"));
+
+        let tmp = tmp_dir();
+        let state = AppState::for_test(&tmp);
+        {
+            let mut ks = state.keystore.lock();
+            ks.set_key("deepgram", "dg-test-key").unwrap();
+        }
+        let (cfg, ks) = (state.config.lock(), state.keystore.lock());
+        assert!(provider_candidates(&cfg, &ks)
+            .iter()
+            .all(|c| c.id != "deepgram"));
+        assert_eq!(
+            ks.masked_status(),
+            vec![("deepgram".into(), Some("…-key".into()))]
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
     #[test]
     fn provider_chain_respects_order_enablement_and_usability() {
         let tmp = tmp_dir();

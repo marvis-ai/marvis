@@ -52,8 +52,12 @@ export interface ModelSelection {
   model: string;
 }
 
-/** `model_validate_key` return — validation failures are data, not errors. */
-export type ModelValidation = { ok: true } | { ok: false; error: string };
+/** `model_validate_key` return — validation failures are data, not errors.
+ * Deepgram success includes an explicit no-live-probe message; normal LLM
+ * keys are live-validated. */
+export type ModelValidation =
+  | { ok: true; message?: string }
+  | { ok: false; error: string };
 
 /** `[providers]` section — the failover chain + enable switches + the
  * per-provider model memory that replaced `[models] llm_*`. */
@@ -137,13 +141,33 @@ export interface AiMessage {
   ts: number;
 }
 
+export interface Transcript {
+  id: number;
+  session_id: number;
+  speaker: 'me' | 'them';
+  text: string;
+  ts: number;
+}
+
+export interface ListenSummary {
+  id: number;
+  session_id: number;
+  tldr: string;
+  bullets: string[];
+  follow_ups: string[];
+  topic: string | null;
+  ts: number;
+}
+
 // ---------------------------------------------------------------------------
 // keystore
 // ---------------------------------------------------------------------------
 
 export const keystoreStatus = () => invoke<KeystoreStatus>('keystore_status');
 
-/** Validates the key against the provider BEFORE storing it. */
+/** Stores the key after validation: normal LLM keys are live-probed;
+ * Deepgram keys are trimmed and accepted after non-empty shape validation
+ * without a live provider probe. */
 export const keystoreSetKey = (provider: string, key: string) =>
   invoke<KeystoreStatus>('keystore_set_key', { provider, key });
 
@@ -203,6 +227,65 @@ export interface AskCurrent {
 
 /** The live ask tail — a re-expanded chat resyncs from this. */
 export const askCurrent = () => invoke<AskCurrent>('ask_current');
+
+// ---------------------------------------------------------------------------
+// listen
+// ---------------------------------------------------------------------------
+
+export interface ListenErrorPayload {
+  message: string;
+  needs_setup: boolean;
+}
+
+export interface ListenStatus {
+  state: 'idle' | 'listening' | 'error';
+  provider: string | null;
+  session_id: number | null;
+  turns: number;
+  mic: boolean;
+  error: ListenErrorPayload | null;
+}
+
+export interface VoiceModelCatalogEntry {
+  id: 'tiny' | 'base' | 'small';
+  filename: string;
+  label: string;
+  description: string;
+  bytes: number;
+  source: string;
+}
+
+export interface WhisperInstalledModel {
+  id: string;
+  filename: string;
+  installed: boolean;
+  bytes: number;
+}
+
+export interface WhisperDownload {
+  model: string;
+  received: number;
+  total: number;
+}
+
+export interface WhisperStatus {
+  binary: string | null;
+  models: WhisperInstalledModel[];
+  download: WhisperDownload | null;
+}
+
+export const listenStart = () => invoke<ListenStatus>('listen_start');
+export const listenStop = () => invoke<void>('listen_stop');
+export const listenStatus = () => invoke<ListenStatus>('listen_status');
+export const voiceModelsCatalog = () =>
+  invoke<VoiceModelCatalogEntry[]>('voice_models_catalog');
+export const whisperStatus = () => invoke<WhisperStatus>('whisper_status');
+export const whisperDownload = (model: string) =>
+  invoke<void>('whisper_download', { model });
+export const whisperCancelDownload = () =>
+  invoke<void>('whisper_cancel_download');
+export const whisperRemoveModel = (model: string) =>
+  invoke<WhisperStatus>('whisper_remove_model', { model });
 
 // ---------------------------------------------------------------------------
 // windows
@@ -304,6 +387,12 @@ export const sessionList = () => invoke<Session[]>('session_list');
 
 export const sessionGet = (id: number) =>
   invoke<AiMessage[]>('session_get', { id });
+
+export const transcriptsFor = (id: number, limit?: number) =>
+  invoke<Transcript[]>('transcripts_for', { id, limit });
+
+export const summaryLatest = (id: number) =>
+  invoke<ListenSummary | null>('summary_latest', { id });
 
 export const sessionDelete = (id: number) =>
   invoke<void>('session_delete', { id });

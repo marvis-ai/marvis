@@ -1,0 +1,64 @@
+name: Build Whisper CLI
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [master]
+    paths:
+      - '.github/workflows/whisper-cli.yml'
+      - 'apps/native/src-tauri/scripts/build-whisper-cli.sh'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: whisper-cli-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-arm64:
+    name: Build whisper-cli (arm64)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate build metadata
+        working-directory: apps/native/src-tauri
+        run: bash scripts/build-whisper-cli.sh --check-only --target aarch64-apple-darwin
+
+      - name: Build and validate whisper-cli
+        working-directory: apps/native/src-tauri
+        run: bash scripts/build-whisper-cli.sh --target aarch64-apple-darwin
+
+      - name: Upload arm64 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: whisper-cli-aarch64-apple-darwin
+          path: |
+            apps/native/src-tauri/binaries/whisper-cli-aarch64-apple-darwin
+            apps/native/src-tauri/binaries/whisper-cli-aarch64-apple-darwin.sha256
+          if-no-files-found: error
+
+  build-x86-64:
+    name: Build whisper-cli (x86_64)
+    # macos-15-intel is the final supported Intel runner path.
+    runs-on: macos-15-intel
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate build metadata
+        working-directory: apps/native/src-tauri
+        run: bash scripts/build-whisper-cli.sh --check-only --target x86_64-apple-darwin
+
+      - name: Build and validate whisper-cli
+        working-directory: apps/native/src-tauri
+        run: bash scripts/build-whisper-cli.sh --target x86_64-apple-darwin
+
+      - name: Upload x86_64 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: whisper-cli-x86_64-apple-darwin
+          path: |
+            apps/native/src-tauri/binaries/whisper-cli-x86_64-apple-darwin
+            apps/native/src-tauri/binaries/whisper-cli-x86_64-apple-darwin.sha256
+          if-no-files-found: error

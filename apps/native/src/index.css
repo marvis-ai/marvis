@@ -163,8 +163,20 @@ body {
     opacity: 0;
   }
 }
+/* Listen animation wiring stays stateful: ListenSection adds
+   `animate-waveform` only for `listen:state=listening`; Bar adds
+   `listen-active` to the actual Iris button. */
+.listen-active > span:first-child::before {
+  animation: var(--animate-iris-listen);
+}
+@media (prefers-reduced-motion: reduce) {
+  .listen-active > span:first-child::before,
+  .animate-waveform {
+    animation: none !important;
+  }
+}
 /* listen waveform — Phase 2 applies `--animate-waveform` per bar with
-   staggered delays; the stub renders the bars muted and still */
+   staggered delays; idle/error bars remain still. */
 @keyframes mv-waveform {
   0%,
   100% {

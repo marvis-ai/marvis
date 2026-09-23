@@ -14,8 +14,10 @@ EXPECTED_TARGETS=(
 usage() {
   cat <<'EOF'
 Usage: build-whisper-cli.sh [--check-only] [--target TARGET]
+       build-whisper-cli.sh --stage ARTIFACT --target TARGET [--checksum CHECKSUM]
 
-Build the pinned whisper.cpp whisper-cli executable for a macOS target.
+Build the pinned whisper.cpp whisper-cli executable for a macOS target, or
+stage a CI artifact using Tauri's target-triple external-binary convention.
 TARGET must be aarch64-apple-darwin or x86_64-apple-darwin.
 EOF
 }
@@ -56,11 +58,11 @@ artifact_for_target() {
   printf '%s/%s\n' "$OUTPUT_DIR" "whisper-cli-$1"
 }
 
-validate_artifact() {
-  local target="$1"
-  local artifact checksum architecture file_output
-  artifact="$(artifact_for_target "$target")"
-  checksum="${artifact}.sha256"
+validate_binary() {
+  local artifact="$1"
+  local target="$2"
+  local checksum="$3"
+  local architecture file_output expected_checksum actual_checksum
   architecture="$(architecture_for_target "$target")"
 
   [[ -f "$artifact" ]] || fail "missing artifact: ${artifact}"
@@ -70,18 +72,55 @@ validate_artifact() {
   [[ "$file_output" == *"${architecture}"* ]] \
     || fail "artifact architecture mismatch for ${target}: ${file_output}"
   [[ -f "$checksum" ]] || fail "missing checksum: ${checksum}"
-  shasum -a 256 -c "$checksum" >/dev/null \
+  expected_checksum="$(awk 'NF { print $1; exit }' "$checksum")"
+  actual_checksum="$(shasum -a 256 "$artifact" | awk '{ print $1 }')"
+  [[ -n "$expected_checksum" && "$actual_checksum" == "$expected_checksum" ]] \
     || fail "checksum verification failed: ${checksum}"
+}
+
+validate_artifact() {
+  local target="$1"
+  local artifact
+  artifact="$(artifact_for_target "$target")"
+  validate_binary "$artifact" "$target" "${artifact}.sha256"
+}
+
+stage_artifact() {
+  local source="$1"
+  local target="$2"
+  local source_checksum="${3:-${source}.sha256}"
+  local staged
+
+  validate_binary "$source" "$target" "$source_checksum"
+  mkdir -p "$OUTPUT_DIR"
+  staged="$(artifact_for_target "$target")"
+  cp "$source" "$staged"
+  chmod 755 "$staged"
+  shasum -a 256 "$staged" > "${staged}.sha256"
+  validate_artifact "$target"
+  echo "Staged ${staged}"
 }
 
 validate_metadata
 
 CHECK_ONLY=false
+stage_path=""
+stage_checksum=""
 target=""
 while (($#)); do
   case "$1" in
     --check-only)
       CHECK_ONLY=true
+      ;;
+    --stage)
+      (($# >= 2)) || fail "--stage requires a value"
+      stage_path="$2"
+      shift
+      ;;
+    --checksum)
+      (($# >= 2)) || fail "--checksum requires a value"
+      stage_checksum="$2"
+      shift
       ;;
     --target)
       (($# >= 2)) || fail "--target requires a value"
@@ -102,6 +141,16 @@ done
 if [[ -n "$target" ]] && ! is_expected_target "$target"; then
   fail "unsupported target: ${target}"
 fi
+
+if [[ -n "$stage_path" ]]; then
+  [[ "$CHECK_ONLY" == false ]] || fail "--stage cannot be combined with --check-only"
+  [[ -n "$target" ]] || fail "--stage requires --target"
+  [[ -n "$stage_checksum" ]] || stage_checksum="${stage_path}.sha256"
+  stage_artifact "$stage_path" "$target" "$stage_checksum"
+  exit 0
+fi
+
+[[ -z "$stage_checksum" ]] || fail "--checksum requires --stage"
 
 if "$CHECK_ONLY"; then
   if [[ -n "$target" ]]; then

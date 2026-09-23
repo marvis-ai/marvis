@@ -6,9 +6,11 @@ import {
   transcriptsFor,
   summaryLatest,
   windowShowSettings,
+  type Config,
   type ListenStatus,
 } from '../lib/commands';
 import {
+  EV_CONFIG_CHANGED,
   EV_LISTEN_ERROR,
   EV_LISTEN_STATE,
   EV_LISTEN_SUMMARY,
@@ -42,13 +44,21 @@ export const ListenSection = () => {
   const sessionRef = useRef<number | null>(null);
   const [summary, setSummary] = useState<Summary | null>(null);
   const [error, setError] = useState<ListenErrorPayload | null>(null);
+  const [provider, setProvider] = useState<string | null>(null);
   const [model, setModel] = useState<string | null>(null);
+
+  const applyConfig = (config: Config) => {
+    setProvider(config.models.stt_provider || null);
+    setModel(config.models.stt_model || null);
+  };
 
   useEffect(() => {
     void configGet()
-      .then((config) => setModel(config.models.stt_model || null))
+      .then(applyConfig)
       .catch(() => {});
   }, []);
+
+  useTauriEvent<Config>(EV_CONFIG_CHANGED, applyConfig);
 
   useEffect(() => {
     let cancelled = false;
@@ -121,7 +131,7 @@ export const ListenSection = () => {
     void listenStop().catch(() => {});
   };
   const listening = status.state === 'listening';
-  const provider = status.provider ?? 'stt';
+  const activeProvider = provider ?? status.provider ?? 'stt';
 
   return (
     <div className='flex min-h-0 flex-1 flex-col'>
@@ -235,7 +245,7 @@ export const ListenSection = () => {
         )}
         <div className='mt-2 flex flex-wrap gap-1.5'>
           <span className={CHIP}>
-            {provider}
+            {activeProvider}
             {model ? ` · ${model}` : ' · stt'}
           </span>
         </div>

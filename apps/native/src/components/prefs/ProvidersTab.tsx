@@ -25,6 +25,8 @@ import type { DragEvent, KeyboardEvent } from 'react';
 import { Input, Tabs, TabsContent, TabsList, TabsTrigger } from '@marvis/ui';
 import {
   configSet,
+  keystoreRemoveKey,
+  keystoreSetKey,
   modelGetSelected,
   providersReorder,
   providerSetEnabled,
@@ -98,6 +100,40 @@ const SttSection = ({
   const model = config.models.stt_model;
   const deepgramKey =
     data.status?.keys.find(([id]) => id === 'deepgram')?.[1] ?? null;
+  const [deepgramKeyInput, setDeepgramKeyInput] = useState('');
+  const [deepgramSaving, setDeepgramSaving] = useState(false);
+
+  const saveDeepgramKey = async () => {
+    const key = deepgramKeyInput.trim();
+    if (!key || deepgramSaving) {
+      return;
+    }
+    setDeepgramSaving(true);
+    setError('');
+    try {
+      data.setStatus(await keystoreSetKey('deepgram', key));
+      setDeepgramKeyInput('');
+    } catch (e) {
+      setError(typeof e === 'string' ? e : 'Could not save Deepgram API key');
+    } finally {
+      setDeepgramSaving(false);
+    }
+  };
+
+  const removeDeepgramKey = async () => {
+    if (deepgramSaving) {
+      return;
+    }
+    setDeepgramSaving(true);
+    setError('');
+    try {
+      data.setStatus(await keystoreRemoveKey('deepgram'));
+    } catch (e) {
+      setError(typeof e === 'string' ? e : 'Could not remove Deepgram API key');
+    } finally {
+      setDeepgramSaving(false);
+    }
+  };
 
   const save = (
     key: 'models.stt_provider' | 'models.stt_model',
@@ -177,17 +213,49 @@ const SttSection = ({
               ))}
             </datalist>
           </div>
+          <div className='mt-2.5 flex items-center gap-1.5'>
+            <Input
+              className={FIELD}
+              type='password'
+              value={deepgramKeyInput}
+              onChange={(e) => setDeepgramKeyInput(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && void saveDeepgramKey()}
+              placeholder={
+                deepgramKey ? 'Replace Deepgram API key' : 'Deepgram API key'
+              }
+              autoComplete='off'
+              aria-label='Deepgram API key'
+            />
+            <button
+              type='button'
+              className={cn(
+                'rounded border border-border px-2.5 py-1.5 text-[11px]',
+                'hover:border-accent',
+              )}
+              disabled={deepgramSaving || !deepgramKeyInput.trim()}
+              onClick={() => void saveDeepgramKey()}>
+              {deepgramSaving
+                ? 'Saving…'
+                : deepgramKey
+                  ? 'Replace'
+                  : 'Save key'}
+            </button>
+          </div>
           <p className={PROV_NOTE}>
             {deepgramKey ? (
               <>
-                Uses your Deepgram API key ({deepgramKey}), shown masked. Manage
-                it on the LLM tab.
+                Saved securely in the app keystore · {deepgramKey} · masked
+                only.{' '}
+                <button
+                  type='button'
+                  className='underline underline-offset-2'
+                  disabled={deepgramSaving}
+                  onClick={() => void removeDeepgramKey()}>
+                  Remove key
+                </button>
               </>
             ) : (
-              <>
-                Add a Deepgram API key on the LLM tab to use hosted
-                transcription.
-              </>
+              'Enter a Deepgram API key to use hosted transcription. It is never stored in config.toml.'
             )}
           </p>
         </>

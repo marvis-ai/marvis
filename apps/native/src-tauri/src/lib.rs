@@ -396,6 +396,12 @@ fn keystore_status_payload(keystore: &Keystore) -> serde_json::Value {
     json!({ "keys": keystore.masked_status() })
 }
 
+/// Deepgram is an STT-only key and must never enter the LLM provider
+/// catalog. Key commands accept it alongside the LLM provider ids.
+fn is_key_management_provider(provider: &str) -> bool {
+    provider == "deepgram" || ProviderKind::from_str(provider).is_some()
+}
+
 /// Raise the alert toast with `message`.
 ///
 /// The toast is a window of its own because the bar is a fixed-height
@@ -594,17 +600,24 @@ async fn keystore_set_key(
     provider: String,
     key: String,
 ) -> Result<serde_json::Value, String> {
-    let Some(kind) = ProviderKind::from_str(&provider) else {
+    if !is_key_management_provider(&provider) {
         return Err(format!("unknown provider {provider:?}"));
-    };
-    let (model, base_url) = {
-        let state = app.state::<AppState>();
-        provider_args(&state, kind)
-    };
-    make_provider(kind, Some(key.clone()), model, base_url)
-        .validate()
-        .await
-        .map_err(|e| e.to_string())?;
+    }
+    if provider == "deepgram" {
+        if key.trim().is_empty() {
+            return Err("Deepgram API key must not be empty".to_string());
+        }
+    } else {
+        let kind = ProviderKind::from_str(&provider).expect("validated provider id");
+        let (model, base_url) = {
+            let state = app.state::<AppState>();
+            provider_args(&state, kind)
+        };
+        make_provider(kind, Some(key.clone()), model, base_url)
+            .validate()
+            .await
+            .map_err(|e| e.to_string())?;
+    }
     let state = app.state::<AppState>();
     let payload = {
         let mut ks = state.keystore.lock();
@@ -618,6 +631,9 @@ async fn keystore_set_key(
 /// Remove a provider key and broadcast `keystore:changed`.
 #[tauri::command]
 fn keystore_remove_key(app: AppHandle, provider: String) -> Result<serde_json::Value, String> {
+    if !is_key_management_provider(&provider) {
+        return Err(format!("unknown provider {provider:?}"));
+    }
     let state = app.state::<AppState>();
     let payload = {
         let mut ks = state.keystore.lock();
@@ -637,6 +653,16 @@ fn keystore_remove_key(app: AppHandle, provider: String) -> Result<serde_json::V
 /// command errors, so the UI can render them inline.
 #[tauri::command]
 async fn model_validate_key(app: AppHandle, provider: String, key: String) -> serde_json::Value {
+    if provider == "deepgram" {
+        return if key.trim().is_empty() {
+            json!({ "ok": false, "error": "Deepgram API key must not be empty" })
+        } else {
+            // Deepgram is STT-only and has no LLM Provider implementation.
+            // Keep the existing validation result contract while avoiding any
+            // attempt to construct or catalog it as a chat provider.
+            json!({ "ok": true })
+        };
+    }
     let Some(kind) = ProviderKind::from_str(&provider) else {
         return json!({ "ok": false, "error": format!("unknown provider {provider:?}") });
     };
@@ -1160,7 +1186,10 @@ fn transcripts_for(
     id: i64,
     limit: Option<usize>,
 ) -> Result<Vec<Transcript>, String> {
-    state.db.transcripts_for(id, limit).map_err(|e| e.to_string())
+    state
+        .db
+        .transcripts_for(id, limit)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1178,7 +1207,11 @@ fn session_delete(state: State<'_, AppState>, id: i64) -> Result<(), String> {
 /// when none was open (no junk row created).
 #[tauri::command]
 fn session_end_active(state: State<'_, AppState>, kind: String) -> Result<bool, String> {
-    match state.db.session_active_id(&kind).map_err(|e| e.to_string())? {
+    match state
+        .db
+        .session_active_id(&kind)
+        .map_err(|e| e.to_string())?
+    {
         Some(id) => {
             state.db.session_end(id).map_err(|e| e.to_string())?;
             Ok(true)
@@ -1547,6 +1580,28 @@ mod tests {
 
     /// The failover chain honours `providers.order`, skips disabled ids,
     /// and drops providers with no key (where required) or no model.
+    #[test]
+    fn deepgram_is_key_only_and_never_enters_llm_chain() {
+        assert!(is_key_management_provider("deepgram"));
+        assert!(!is_key_management_provider("not-a-provider"));
+
+        let tmp = tmp_dir();
+        let state = AppState::for_test(&tmp);
+        {
+            let mut ks = state.keystore.lock();
+            ks.set_key("deepgram", "dg-test-key").unwrap();
+        }
+        let (cfg, ks) = (state.config.lock(), state.keystore.lock());
+        assert!(provider_candidates(&cfg, &ks)
+            .iter()
+            .all(|c| c.id != "deepgram"));
+        assert_eq!(
+            ks.masked_status(),
+            vec![("deepgram".into(), Some("…-key".into()))]
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
     #[test]
     fn provider_chain_respects_order_enablement_and_usability() {
         let tmp = tmp_dir();

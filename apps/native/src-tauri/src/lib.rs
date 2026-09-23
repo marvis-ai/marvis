@@ -40,6 +40,7 @@ mod config;
 mod deeplink;
 mod hotkey;
 mod keystore;
+mod listen;
 mod llm;
 mod paths;
 mod permissions;

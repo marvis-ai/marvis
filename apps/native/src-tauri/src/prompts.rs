@@ -200,6 +200,20 @@ pub fn system_prompt(conversation_history: &str) -> String {
     SYSTEM_PROMPT_TEMPLATE.replace("{{CONVERSATION_HISTORY}}", history)
 }
 
+/// Prompt for the structured summaries shown while Listen is active.
+pub fn listen_summary_prompt(transcript: &str) -> String {
+    format!(
+        r#"Summarize this live conversation as JSON only.
+Use exactly these keys: tldr (string), bullets (array of at most 5 short strings), follow_ups (array of at most 3 useful questions), topic (string or null).
+The tldr is a concise Summary Overview. The topic is the Key Topic. Bullets support an Extended Explanation. Follow-ups are Suggested Questions.
+Do not include markdown, commentary, or any other keys.
+
+Transcript:
+{}"#,
+        transcript.trim()
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

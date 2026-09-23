@@ -48,14 +48,14 @@ pub fn whisper_bin_dir() -> PathBuf {
     whisper_dir().join("bin")
 }
 
-/// Return the architecture-specific Whisper CLI bundled under a resolved
-/// application resource directory. Packaging stages exactly this target-triple
-/// name, so discovery cannot select a neighboring architecture's binary.
-/// Resource lookup itself belongs to Tauri; this helper remains platform-neutral
-/// and does not inspect the filesystem.
-#[allow(dead_code)] // Used by Task 4 when Tauri resolves the resource directory.
-pub fn bundled_whisper_cli(resource_dir: &std::path::Path) -> PathBuf {
-    resource_dir.join(format!("whisper-cli-{}", whisper_target_triple()))
+/// Return the architecture-specific Whisper CLI staged beside the application
+/// executable by Tauri's `externalBin` bundle layout (`Contents/MacOS` on macOS).
+/// Packaging stages exactly this target-triple name, so discovery cannot select a
+/// neighboring architecture's binary. This helper remains platform-neutral and
+/// does not inspect the filesystem.
+#[allow(dead_code)] // Used by Task 4 after resolving the executable directory.
+pub fn bundled_whisper_cli(executable_dir: &std::path::Path) -> PathBuf {
+    executable_dir.join(format!("whisper-cli-{}", whisper_target_triple()))
 }
 
 #[cfg(target_os = "macos")]
@@ -169,10 +169,10 @@ mod tests {
     }
 
     #[test]
-    fn bundled_whisper_cli_is_relative_to_resources_and_target_specific() {
-        let resource_dir = PathBuf::from("/app/Resources");
-        let candidate = bundled_whisper_cli(&resource_dir);
-        assert_eq!(candidate.parent(), Some(resource_dir.as_path()));
+    fn bundled_whisper_cli_is_relative_to_external_bin_dir_and_target_specific() {
+        let executable_dir = PathBuf::from("/app/Contents/MacOS");
+        let candidate = bundled_whisper_cli(&executable_dir);
+        assert_eq!(candidate.parent(), Some(executable_dir.as_path()));
         assert_eq!(
             candidate.file_name().unwrap().to_string_lossy(),
             format!("whisper-cli-{}", whisper_target_triple())

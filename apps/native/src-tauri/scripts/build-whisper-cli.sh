@@ -32,12 +32,24 @@ is_expected_target() {
   esac
 }
 
+architecture_for_target() {
+  case "$1" in
+    aarch64-apple-darwin) printf '%s\n' "arm64" ;;
+    x86_64-apple-darwin) printf '%s\n' "x86_64" ;;
+    *) fail "unsupported target: ${1}" ;;
+  esac
+}
+
 validate_metadata() {
   [[ "$SOURCE_REPO" == "https://github.com/ggml-org/whisper.cpp.git" ]] \
     || fail "unexpected source repository: ${SOURCE_REPO}"
   [[ "$SOURCE_REV" == "v1.9.2" ]] || fail "source revision must be v1.9.2"
   [[ "${EXPECTED_TARGETS[*]}" == "aarch64-apple-darwin x86_64-apple-darwin" ]] \
     || fail "unexpected output target names"
+  [[ "$(architecture_for_target "${EXPECTED_TARGETS[0]}")" == "arm64" ]] \
+    || fail "aarch64-apple-darwin must map to arm64 for file validation"
+  [[ "$(architecture_for_target "${EXPECTED_TARGETS[1]}")" == "x86_64" ]] \
+    || fail "x86_64-apple-darwin must map to x86_64 for file validation"
 }
 
 artifact_for_target() {
@@ -49,7 +61,7 @@ validate_artifact() {
   local artifact checksum architecture file_output
   artifact="$(artifact_for_target "$target")"
   checksum="${artifact}.sha256"
-  architecture="${target%-apple-darwin}"
+  architecture="$(architecture_for_target "$target")"
 
   [[ -f "$artifact" ]] || fail "missing artifact: ${artifact}"
   [[ -x "$artifact" ]] || fail "artifact is not executable: ${artifact}"

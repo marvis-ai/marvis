@@ -16,6 +16,8 @@ use tokio_util::sync::CancellationToken;
 use crate::{paths, stt};
 
 pub const HUGGING_FACE_PREFIX: &str = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/";
+const CATALOG_SOURCE: &str = "Hugging Face · ggerganov/whisper.cpp";
+const SIZE_TOLERANCE_PERCENT: u64 = 10;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModelId {
@@ -111,7 +113,7 @@ impl From<&ModelCatalogEntry> for VoiceModelInfo {
             label: e.label,
             description: e.description,
             bytes: e.bytes,
-            source: "Hugging Face",
+            source: CATALOG_SOURCE,
         }
     }
 }
@@ -140,7 +142,7 @@ impl From<&ModelCatalogEntry> for VoiceModelCatalogPayload {
             label: e.label,
             description: e.description,
             bytes: e.bytes,
-            source: "Hugging Face",
+            source: CATALOG_SOURCE,
         }
     }
 }
@@ -202,6 +204,7 @@ pub struct VoiceModelManager {
     state: Mutex<ManagerState>,
     app: Mutex<Option<AppHandle>>,
     cancel_gate: tokio::sync::Mutex<()>,
+    install_gate: Arc<tokio::sync::Mutex<()>>,
     #[cfg(test)]
     test_source: Option<TestSource>,
 }
@@ -219,11 +222,32 @@ impl Default for VoiceModelManager {
     }
 }
 
+fn reclaim_catalog_temps(root: &Path) {
+    for entry in catalog() {
+        let tmp = root.join(format!("{}.tmp", entry.filename));
+        // Only exact catalog-owned names are ever reclaimed; unrelated temp files
+        // remain untouched. A stale catalog temp cannot be resumed safely because
+        // its download identity is not persisted.
+        if tmp.is_file() {
+            let _ = fs::remove_file(tmp);
+        }
+    }
+}
+
+fn expected_size_bounds(display_bytes: u64) -> (u64, u64) {
+    let margin = display_bytes.saturating_mul(SIZE_TOLERANCE_PERCENT) / 100;
+    (
+        display_bytes.saturating_sub(margin),
+        display_bytes.saturating_add(margin),
+    )
+}
+
 impl VoiceModelManager {
     pub fn new() -> Self {
         Self::at(paths::whisper_models_dir())
     }
     pub fn at(root: PathBuf) -> Self {
+        reclaim_catalog_temps(&root);
         Self {
             root,
             client: reqwest::Client::new(),
@@ -233,6 +257,7 @@ impl VoiceModelManager {
             }),
             app: Mutex::new(None),
             cancel_gate: tokio::sync::Mutex::new(()),
+            install_gate: Arc::new(tokio::sync::Mutex::new(())),
             #[cfg(test)]
             test_source: None,
         }
@@ -301,6 +326,7 @@ impl VoiceModelManager {
         let root = self.root.clone();
         let client = self.client.clone();
         let app = self.app.lock().clone();
+        let install_gate = Arc::clone(&self.install_gate);
         #[cfg(test)]
         let test_source = self.test_source.clone();
         let entry = *entry;
@@ -318,6 +344,7 @@ impl VoiceModelManager {
                 task_cancel,
                 app.clone(),
                 task_progress,
+                install_gate,
                 #[cfg(test)]
                 test_source,
             )
@@ -374,6 +401,7 @@ impl VoiceModelManager {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn download(
     entry: ModelCatalogEntry,
     root: PathBuf,
@@ -381,6 +409,7 @@ async fn download(
     cancel: CancellationToken,
     app: Option<AppHandle>,
     progress: Arc<Mutex<WhisperDownloadProgress>>,
+    install_gate: Arc<tokio::sync::Mutex<()>>,
     #[cfg(test)] test_source: Option<TestSource>,
 ) -> Result<(), VoiceDownloadError> {
     fs::create_dir_all(&root).map_err(|e| VoiceDownloadError::Download(e.to_string()))?;
@@ -394,6 +423,7 @@ async fn download(
         cancel,
         app,
         progress,
+        install_gate,
         #[cfg(test)]
         test_source,
     )
@@ -420,9 +450,10 @@ async fn download_inner(
     cancel: CancellationToken,
     app: Option<AppHandle>,
     progress: Arc<Mutex<WhisperDownloadProgress>>,
+    install_gate: Arc<tokio::sync::Mutex<()>>,
     #[cfg(test)] test_source: Option<TestSource>,
 ) -> Result<(), VoiceDownloadError> {
-    let (url, expected_bytes, expected_sha1) = {
+    let (url, expected_size, expected_sha1) = {
         #[cfg(test)]
         if let Some(source) = test_source {
             (source.url, source.bytes, source.sha1)
@@ -463,7 +494,8 @@ async fn download_inner(
     } {
         let chunk = chunk.map_err(|e| VoiceDownloadError::Download(e.to_string()))?;
         received = received.saturating_add(chunk.len() as u64);
-        if received > expected_bytes {
+        let max_size = expected_size_bounds(expected_size).1;
+        if received > max_size {
             return Err(VoiceDownloadError::Verification);
         }
         file.write_all(&chunk)
@@ -471,7 +503,7 @@ async fn download_inner(
         hash.update(&chunk);
         progress.lock().received = received;
         if last_progress.elapsed() >= Duration::from_millis(150) {
-            emit_progress(&app, entry.id.as_str(), received, expected_bytes);
+            emit_progress(&app, entry.id.as_str(), received, entry.bytes);
             last_progress = Instant::now();
         }
     }
@@ -482,13 +514,18 @@ async fn download_inner(
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
-    if received != expected_bytes || digest != expected_sha1 {
+    let (min_size, max_size) = expected_size_bounds(expected_size);
+    if received < min_size || received > max_size || digest != expected_sha1 {
         return Err(VoiceDownloadError::Verification);
     }
+    // Serialize the cancellation decision with the final rename. If cancellation
+    // gets this gate first, no install occurs; if rename gets it first, cancel
+    // waits and returns only after the installed file is authoritative.
+    let _install = install_gate.lock().await;
     if cancel.is_cancelled() {
         return Err(VoiceDownloadError::Cancelled);
     }
-    emit_progress(&app, entry.id.as_str(), received, expected_bytes);
+    emit_progress(&app, entry.id.as_str(), received, entry.bytes);
     fs::rename(tmp_path, final_path).map_err(|e| VoiceDownloadError::Download(e.to_string()))?;
     guard.owned = false;
     Ok(())
@@ -508,6 +545,9 @@ fn emit_progress(app: &Option<AppHandle>, model: &'static str, received: u64, to
 }
 
 fn emit_error(app: &Option<AppHandle>, model: &'static str, error: &VoiceDownloadError) {
+    if matches!(error, VoiceDownloadError::Cancelled) {
+        return;
+    }
     let message = match error {
         VoiceDownloadError::Cancelled => "download cancelled",
         VoiceDownloadError::Verification => "download verification failed",
@@ -572,7 +612,7 @@ mod tests {
     #[test]
     fn catalog_and_status_dtos_have_safe_documented_shapes() {
         let catalog = serde_json::to_value(VoiceModelCatalogPayload::from(&catalog()[0])).unwrap();
-        assert_eq!(catalog["source"], "Hugging Face");
+        assert_eq!(catalog["source"], CATALOG_SOURCE);
         assert!(catalog.get("url").is_none());
         assert!(catalog.get("sha1").is_none());
 
@@ -694,6 +734,20 @@ mod tests {
         assert_eq!(fs::read(root.join("ggml-tiny.bin")).unwrap(), b"keep me");
         assert!(!root.join("ggml-tiny.bin.tmp").exists());
 
+        let (_, bad_size_source) = fixture(body.clone(), Duration::ZERO);
+        let bad_size = VoiceModelManager::with_test_source(
+            root.clone(),
+            TestSource {
+                bytes: u64::MAX / 2,
+                ..bad_size_source
+            },
+        );
+        bad_size.start_download(ModelId::Tiny).unwrap();
+        while bad_size.status().download.is_some() {
+            tokio::task::yield_now().await;
+        }
+        assert!(!root.join("ggml-tiny.bin.tmp").exists());
+
         let (_, success_source) = fixture(body.clone(), Duration::ZERO);
         let success = VoiceModelManager::with_test_source(root.clone(), success_source);
         success.start_download(ModelId::Tiny).unwrap();
@@ -710,6 +764,17 @@ mod tests {
                 .mode();
             assert_eq!(mode & 0o777, 0o600);
         }
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn startup_reclaims_only_catalog_temps() {
+        let root = temp_root();
+        fs::write(root.join("ggml-tiny.bin.tmp"), b"stale").unwrap();
+        fs::write(root.join("foreign.tmp"), b"keep").unwrap();
+        let _manager = VoiceModelManager::at(root.clone());
+        assert!(!root.join("ggml-tiny.bin.tmp").exists());
+        assert!(root.join("foreign.tmp").exists());
         let _ = fs::remove_dir_all(root);
     }
 
@@ -740,9 +805,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cancellation_racing_final_install_has_one_authoritative_outcome() {
+        let root = temp_root();
+        let body = b"race fixture".to_vec();
+        let (_, source) = fixture(body.clone(), Duration::ZERO);
+        let manager = Arc::new(VoiceModelManager::with_test_source(root.clone(), source));
+        manager.start_download(ModelId::Tiny).unwrap();
+        let canceller = Arc::clone(&manager);
+        canceller.cancel_download().await.unwrap();
+        assert!(!root.join("ggml-tiny.bin.tmp").exists());
+        if root.join("ggml-tiny.bin").exists() {
+            assert_eq!(fs::read(root.join("ggml-tiny.bin")).unwrap(), body);
+        }
+        assert!(manager.status().download.is_none());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
     async fn cancellation_does_not_remove_preexisting_temp_file() {
         let root = temp_root();
-        let tmp = root.join("ggml-tiny.bin.tmp");
+        let tmp = root.join("foreign.tmp");
         fs::write(&tmp, b"owned by someone else").unwrap();
         let (_, source) = fixture(b"fixture".to_vec(), Duration::ZERO);
         let manager = VoiceModelManager::with_test_source(root.clone(), source);

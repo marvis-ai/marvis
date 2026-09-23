@@ -985,14 +985,29 @@ fn whisper_status(state: State<'_, AppState>) -> voice_models::WhisperDownloadSt
     state.voice_models.status()
 }
 
+fn safe_voice_error(error: voice_models::VoiceDownloadError) -> String {
+    match error {
+        voice_models::VoiceDownloadError::Busy => "A voice model download is already active".into(),
+        voice_models::VoiceDownloadError::UnknownModel(_) => "Unknown voice model".into(),
+        voice_models::VoiceDownloadError::ActiveModel => {
+            "Cannot remove the selected voice model".into()
+        }
+        voice_models::VoiceDownloadError::Cancelled => "Download cancelled".into(),
+        voice_models::VoiceDownloadError::Verification => {
+            "Downloaded model verification failed".into()
+        }
+        voice_models::VoiceDownloadError::Download(_) => "Voice model download failed".into(),
+    }
+}
+
 #[tauri::command]
 fn whisper_download(state: State<'_, AppState>, model: String) -> Result<(), String> {
-    let entry = voice_models::entry_for_id(&model)
-        .ok_or_else(|| format!("unknown Whisper model {model:?}"))?;
+    let entry =
+        voice_models::entry_for_id(&model).ok_or_else(|| "Unknown voice model".to_string())?;
     state
         .voice_models
         .start_download(entry.id)
-        .map_err(|e| e.to_string())
+        .map_err(safe_voice_error)
 }
 
 #[tauri::command]
@@ -1001,7 +1016,7 @@ async fn whisper_cancel_download(state: State<'_, AppState>) -> Result<(), Strin
         .voice_models
         .cancel_download()
         .await
-        .map_err(|e| e.to_string())
+        .map_err(safe_voice_error)
 }
 
 #[tauri::command]
@@ -1009,8 +1024,8 @@ fn whisper_remove_model(
     state: State<'_, AppState>,
     model: String,
 ) -> Result<voice_models::WhisperDownloadStatus, String> {
-    let entry = voice_models::entry_for_id(&model)
-        .ok_or_else(|| format!("unknown Whisper model {model:?}"))?;
+    let entry =
+        voice_models::entry_for_id(&model).ok_or_else(|| "Unknown voice model".to_string())?;
     let config = state.config.lock();
     let selected = if config.models.stt_provider == "whisper" {
         voice_models::entry_for_id(&config.models.stt_model).map(|entry| entry.id)
@@ -1021,7 +1036,7 @@ fn whisper_remove_model(
     state
         .voice_models
         .remove_model(entry.id)
-        .map_err(|e| e.to_string())?;
+        .map_err(safe_voice_error)?;
     Ok(state.voice_models.status())
 }
 

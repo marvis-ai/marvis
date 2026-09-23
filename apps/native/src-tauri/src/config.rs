@@ -115,7 +115,15 @@ pub(crate) fn apply_stt_config(
             let value = value
                 .as_str()
                 .ok_or("models.stt_provider must be a string")?;
-            models.stt_provider = validate_stt_provider(value)?;
+            let provider = validate_stt_provider(value)?;
+            // Provider and model are one transactional preference: never leave
+            // a Whisper catalog name paired with Deepgram (or vice versa).
+            if provider == "whisper" && entry_for_value(&models.stt_model).is_none() {
+                models.stt_model = "tiny".to_string();
+            } else if provider == "deepgram" && entry_for_value(&models.stt_model).is_some() {
+                models.stt_model = "nova-2".to_string();
+            }
+            models.stt_provider = provider;
             Ok(true)
         }
         "models.stt_model" => {
@@ -492,6 +500,20 @@ mod tests {
         )
         .is_ok());
         assert_eq!(models.stt_model, "nova-3");
+        assert!(apply_stt_config(
+            &mut models,
+            "models.stt_provider",
+            &serde_json::json!("whisper"),
+        )
+        .is_ok());
+        assert_eq!(models.stt_model, "tiny");
+        assert!(apply_stt_config(
+            &mut models,
+            "models.stt_provider",
+            &serde_json::json!("deepgram"),
+        )
+        .is_ok());
+        assert_eq!(models.stt_model, "nova-2");
         assert_eq!(
             apply_stt_config(&mut models, "models.stt_model", &serde_json::json!("  "),)
                 .unwrap_err(),

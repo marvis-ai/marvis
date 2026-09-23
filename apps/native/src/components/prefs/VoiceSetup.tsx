@@ -57,6 +57,8 @@ const formatBytes = (bytes: number) => {
   return `${Math.round(bytes / (1024 * 1024))} MB`;
 };
 
+const safeVoiceError = (fallback: string) => fallback;
+
 export interface VoiceSetupProps {
   data: PrefsData;
   showSkip?: boolean;
@@ -176,7 +178,7 @@ export const VoiceSetup = ({
       data.setStatus(await keystoreSetKey('deepgram', key));
       setDeepgramKeyInput('');
     } catch (e) {
-      setError(typeof e === 'string' ? e : 'Could not save Deepgram API key');
+      setError(safeVoiceError('Could not save Deepgram API key'));
     } finally {
       setDeepgramSaving(false);
     }
@@ -188,7 +190,7 @@ export const VoiceSetup = ({
     try {
       data.setStatus(await keystoreRemoveKey('deepgram'));
     } catch (e) {
-      setError(typeof e === 'string' ? e : 'Could not remove Deepgram API key');
+      setError(safeVoiceError('Could not remove Deepgram API key'));
     } finally {
       setDeepgramSaving(false);
     }
@@ -201,9 +203,7 @@ export const VoiceSetup = ({
       await whisperDownload(id);
       await refreshWhisper();
     } catch (e) {
-      setDownloadError(
-        typeof e === 'string' ? e : 'Could not start model download',
-      );
+      setDownloadError(safeVoiceError('Could not start model download'));
       await refreshWhisper();
     }
   };
@@ -212,7 +212,7 @@ export const VoiceSetup = ({
       await whisperCancelDownload();
       await refreshWhisper();
     } catch (e) {
-      setDownloadError(typeof e === 'string' ? e : 'Could not cancel download');
+      setDownloadError(safeVoiceError('Could not cancel download'));
     }
   };
   const removeModel = async (id: string) => {
@@ -220,7 +220,7 @@ export const VoiceSetup = ({
     try {
       setWhisper(await whisperRemoveModel(id));
     } catch (e) {
-      setError(typeof e === 'string' ? e : 'Could not remove model');
+      setError(safeVoiceError('Could not remove model'));
     }
   };
 
@@ -371,8 +371,7 @@ export const VoiceSetup = ({
                       </span>
                     </div>
                     <p className={PROV_NOTE}>
-                      Source: {entry.source} ·{' '}
-                      {installed ? 'Installed' : 'Not installed'}
+                      {entry.source} {installed ? 'Installed' : 'Not installed'}
                     </p>
                     {currentProgress && (
                       <div className='mt-2'>

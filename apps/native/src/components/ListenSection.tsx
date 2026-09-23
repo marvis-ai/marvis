@@ -163,7 +163,7 @@ export const ListenSection = () => {
           {error.message}
         </div>
       )}
-      {!status.mic && !error && (
+      {listening && !status.mic && !error && (
         <div className='border-b border-border px-3 py-2 text-xs text-muted-foreground'>
           Microphone unavailable; system audio only.
         </div>

@@ -26,6 +26,7 @@ pub struct DeepgramProvider {
     key: String,
     model: String,
     channel: SpeakerChannel,
+    endpoint: String,
     input: Option<mpsc::Sender<PcmChunk>>,
     stop: Arc<AtomicBool>,
     worker: Option<JoinHandle<()>>,
@@ -33,10 +34,20 @@ pub struct DeepgramProvider {
 
 impl DeepgramProvider {
     pub fn new(key: String, model: String, channel: SpeakerChannel) -> Self {
+        Self::with_endpoint(key, model, channel, ENDPOINT.to_string())
+    }
+
+    fn with_endpoint(
+        key: String,
+        model: String,
+        channel: SpeakerChannel,
+        endpoint: String,
+    ) -> Self {
         Self {
             key,
             model,
             channel,
+            endpoint,
             input: None,
             stop: Arc::new(AtomicBool::new(false)),
             worker: None,
@@ -48,6 +59,7 @@ impl SttProvider for DeepgramProvider {
     fn start(
         &mut self,
         callback: Box<dyn Fn(TranscriptEvent) + Send + Sync>,
+        error_callback: Box<dyn Fn(String) + Send + Sync>,
     ) -> anyhow::Result<()> {
         if self.worker.is_some() {
             anyhow::bail!("deepgram provider is already running");
@@ -58,6 +70,7 @@ impl SttProvider for DeepgramProvider {
         let key = self.key.clone();
         let model = self.model.clone();
         let channel = self.channel;
+        let endpoint = self.endpoint.clone();
         let stop = Arc::clone(&self.stop);
         self.worker = Some(thread::spawn(move || {
             let runtime = match tokio::runtime::Builder::new_current_thread()
@@ -65,9 +78,21 @@ impl SttProvider for DeepgramProvider {
                 .build()
             {
                 Ok(runtime) => runtime,
-                Err(_) => return,
+                Err(_) => {
+                    error_callback("Deepgram runtime initialization failed".to_string());
+                    return;
+                }
             };
-            runtime.block_on(run_worker(key, model, channel, receiver, callback, stop));
+            runtime.block_on(run_worker(
+                key,
+                model,
+                channel,
+                endpoint,
+                receiver,
+                callback,
+                error_callback,
+                stop,
+            ));
         }));
         Ok(())
     }
@@ -93,17 +118,30 @@ impl Drop for DeepgramProvider {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_worker(
     key: String,
     model: String,
     channel: SpeakerChannel,
+    endpoint: String,
     mut receiver: mpsc::Receiver<PcmChunk>,
     callback: Box<dyn Fn(TranscriptEvent) + Send + Sync>,
+    error_callback: Box<dyn Fn(String) + Send + Sync>,
     stop: Arc<AtomicBool>,
 ) {
     let mut reconnects = 0;
     while !stop.load(Ordering::Acquire) {
-        match run_session(&key, &model, channel, &mut receiver, &callback, &stop).await {
+        match run_session(
+            &key,
+            &model,
+            channel,
+            &endpoint,
+            &mut receiver,
+            &callback,
+            &stop,
+        )
+        .await
+        {
             Ok(()) => reconnects = 0,
             Err(_) if stop.load(Ordering::Acquire) => break,
             Err(_) if reconnects < MAX_RECONNECTS => {
@@ -111,7 +149,10 @@ async fn run_worker(
                 reconnects += 1;
                 tokio::time::sleep(delay).await;
             }
-            Err(_) => break,
+            Err(_) => {
+                error_callback("Deepgram provider failed after reconnect retries".to_string());
+                break;
+            }
         }
     }
 }
@@ -120,12 +161,13 @@ async fn run_session(
     key: &str,
     model: &str,
     channel: SpeakerChannel,
+    endpoint: &str,
     receiver: &mut mpsc::Receiver<PcmChunk>,
     callback: &(dyn Fn(TranscriptEvent) + Send + Sync),
     stop: &AtomicBool,
 ) -> anyhow::Result<()> {
     let url = format!(
-        "{ENDPOINT}?model={}&encoding=linear16&sample_rate=16000&channels=1&interim_results=true&punctuate=true&smart_format=true",
+        "{endpoint}?model={}&encoding=linear16&sample_rate=16000&channels=1&interim_results=true&punctuate=true&smart_format=true",
         encode_query_component(model)
     );
     let mut request = url.into_client_request()?;
@@ -240,6 +282,9 @@ fn parse_transcript(payload: &str) -> anyhow::Result<Option<(String, Finality)>>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+    use tokio::net::TcpListener;
+    use tokio_tungstenite::accept_async;
 
     const KEY: &str = "super-secret-key";
 
@@ -287,6 +332,70 @@ mod tests {
             .to_string();
         assert_eq!(error, "Deepgram provider error");
         assert!(!error.contains(KEY));
+    }
+
+    #[tokio::test]
+    async fn mocked_session_emits_channel_tagged_transcript_and_reports_close() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("ws://{}/v1/listen", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = accept_async(stream).await.unwrap();
+            socket
+                .send(Message::Text(payload("hello", true).into()))
+                .await
+                .unwrap();
+            socket.send(Message::Close(None)).await.unwrap();
+        });
+
+        let (_sender, mut receiver) = mpsc::channel(1);
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let events_for_callback = Arc::clone(&events);
+        let stop = AtomicBool::new(false);
+        let result = run_session(
+            KEY,
+            "nova-2",
+            SpeakerChannel::Them,
+            &endpoint,
+            &mut receiver,
+            &|event| events_for_callback.lock().unwrap().push(event),
+            &stop,
+        )
+        .await;
+
+        assert!(result.is_err());
+        {
+            let events = events.lock().unwrap();
+            assert_eq!(events.len(), 1);
+            assert_eq!(events[0].channel, SpeakerChannel::Them);
+            assert_eq!(events[0].text, "hello");
+            assert_eq!(events[0].finality, Finality::Final);
+            assert!(!format!("{events:?}").contains(KEY));
+        }
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn reports_terminal_error_after_reconnect_exhaustion() {
+        let (_sender, receiver) = mpsc::channel(1);
+        let errors = Arc::new(Mutex::new(Vec::new()));
+        let errors_for_callback = Arc::clone(&errors);
+        let stop = Arc::new(AtomicBool::new(false));
+        run_worker(
+            KEY.to_string(),
+            "nova-2".to_string(),
+            SpeakerChannel::Me,
+            "ws://127.0.0.1:1/v1/listen".to_string(),
+            receiver,
+            Box::new(|_| {}),
+            Box::new(move |error| errors_for_callback.lock().unwrap().push(error)),
+            stop,
+        )
+        .await;
+        assert_eq!(
+            errors.lock().unwrap().as_slice(),
+            &["Deepgram provider failed after reconnect retries"]
+        );
     }
 
     #[test]

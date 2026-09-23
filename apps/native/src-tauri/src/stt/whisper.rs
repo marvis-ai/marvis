@@ -80,6 +80,7 @@ impl SttProvider for WhisperProvider {
     fn start(
         &mut self,
         callback: Box<dyn Fn(TranscriptEvent) + Send + Sync>,
+        _error_callback: Box<dyn Fn(String) + Send + Sync>,
     ) -> anyhow::Result<()> {
         if self.worker.is_some() {
             anyhow::bail!("whisper provider is already running");

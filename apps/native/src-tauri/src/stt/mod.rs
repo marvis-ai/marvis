@@ -51,9 +51,12 @@ pub fn make_stt_provider(
 }
 
 pub trait SttProvider: Send {
-    /// Start processing chunks and call `callback` from the provider worker.
-    fn start(&mut self, callback: Box<dyn Fn(TranscriptEvent) + Send + Sync>)
-        -> anyhow::Result<()>;
+    /// Start processing chunks, reporting transcripts and terminal provider errors.
+    fn start(
+        &mut self,
+        callback: Box<dyn Fn(TranscriptEvent) + Send + Sync>,
+        error_callback: Box<dyn Fn(String) + Send + Sync>,
+    ) -> anyhow::Result<()>;
 
     /// Enqueue a chunk without waiting for transcription.
     fn enqueue(&self, chunk: PcmChunk) -> bool;

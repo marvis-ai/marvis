@@ -49,6 +49,7 @@ mod storage;
 pub mod stt;
 mod tray;
 mod windows;
+pub mod voice_models;
 
 use std::sync::Arc;
 

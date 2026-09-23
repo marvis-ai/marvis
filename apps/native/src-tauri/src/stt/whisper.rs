@@ -13,6 +13,7 @@ use serde::Serialize;
 
 use crate::audio::PcmChunk;
 use crate::paths;
+use crate::voice_models::entry_for_value;
 
 use super::{Finality, SpeakerChannel, SttProvider, TranscriptEvent};
 
@@ -69,11 +70,15 @@ impl WhisperProvider {
         }
     }
 
+    pub fn model_filename(model: &str) -> anyhow::Result<&'static str> {
+        entry_for_value(model)
+            .map(|entry| entry.filename)
+            .ok_or_else(|| anyhow::anyhow!("invalid whisper model name: {model}"))
+    }
+
     fn model_path(&self) -> anyhow::Result<PathBuf> {
-        if !is_model_file_name(&self.model) {
-            anyhow::bail!("invalid whisper model name: {}", self.model);
-        }
-        Ok(paths::whisper_models_dir().join(&self.model))
+        let filename = Self::model_filename(&self.model)?;
+        Ok(paths::whisper_models_dir().join(filename))
     }
 }
 
@@ -315,6 +320,7 @@ fn rms(samples: &[i16]) -> f64 {
         .sqrt()
 }
 
+#[cfg(test)]
 fn is_model_file_name(model: &str) -> bool {
     let path = Path::new(model);
     !model.is_empty()

@@ -20,6 +20,7 @@ const SILENCE: Duration = Duration::from_millis(1500);
 const SUMMARY_EVERY: usize = 5;
 const HISTORY_LIMIT: usize = 20;
 const WORKER_TICK: Duration = Duration::from_millis(100);
+const SUMMARY_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ClosedTurn {
@@ -31,10 +32,9 @@ pub struct ClosedTurn {
 
 #[derive(Debug, Clone, Default)]
 struct Pending {
-    text: String,
+    committed: String,
+    provisional: Option<String>,
     last_final: Option<Instant>,
-    /// A final replaces this interim result; later finals are new segments.
-    has_interim: bool,
 }
 
 /// Deterministic state machine for provisional and final STT results.
@@ -79,20 +79,10 @@ impl TurnAssembler {
         }
         let pending = self.pending_mut(event.channel);
         match event.finality {
-            Finality::Interim => {
-                pending.text = text;
-                pending.has_interim = true;
-            }
+            Finality::Interim => pending.provisional = Some(text),
             Finality::Final => {
-                if pending.has_interim {
-                    pending.text = text;
-                    pending.has_interim = false;
-                } else if pending.text.is_empty() {
-                    pending.text = text;
-                } else if pending.text != text {
-                    pending.text.push(' ');
-                    pending.text.push_str(&text);
-                }
+                pending.provisional = None;
+                append_segment(&mut pending.committed, &text);
                 pending.last_final = Some(now);
             }
         }
@@ -131,9 +121,11 @@ impl TurnAssembler {
     }
     fn close(&mut self, channel: SpeakerChannel) -> Vec<ClosedTurn> {
         let pending = self.pending_mut(channel);
-        let text = std::mem::take(&mut pending.text);
+        let mut text = std::mem::take(&mut pending.committed);
+        if let Some(provisional) = pending.provisional.take() {
+            append_segment(&mut text, &provisional);
+        }
         pending.last_final = None;
-        pending.has_interim = false;
         if text.trim().is_empty() {
             return Vec::new();
         }
@@ -161,6 +153,15 @@ impl TurnAssembler {
     }
     pub fn closed_count(&self) -> usize {
         self.closed
+    }
+}
+
+fn append_segment(committed: &mut String, segment: &str) {
+    if committed.is_empty() {
+        committed.push_str(segment);
+    } else if committed != segment {
+        committed.push(' ');
+        committed.push_str(segment);
     }
 }
 
@@ -254,6 +255,7 @@ pub enum ListenEvent {
 struct SessionContext {
     db: Arc<Db>,
     history: Arc<Mutex<Vec<Transcript>>>,
+    status: Arc<Mutex<ListenStatus>>,
     emit: Arc<dyn Fn(ListenEvent) + Send + Sync>,
     session_id: i64,
     config: Config,
@@ -272,7 +274,7 @@ struct Running {
 
 /// Thread-safe owner of a Listen session. AppState/commands are intentionally not coupled here.
 pub struct ListenService {
-    state: Mutex<ListenStatus>,
+    state: Arc<Mutex<ListenStatus>>,
     running: Mutex<Option<Running>>,
     db: Mutex<Option<Arc<Db>>>,
     history: Arc<Mutex<Vec<Transcript>>>,
@@ -281,13 +283,13 @@ pub struct ListenService {
 impl ListenService {
     pub fn new() -> Self {
         Self {
-            state: Mutex::new(ListenStatus {
+            state: Arc::new(Mutex::new(ListenStatus {
                 state: "idle".into(),
                 provider: None,
                 session_id: None,
                 turns: 0,
                 mic: false,
-            }),
+            })),
             running: Mutex::new(None),
             db: Mutex::new(None),
             history: Arc::new(Mutex::new(Vec::new())),
@@ -331,6 +333,7 @@ impl ListenService {
         let context = Arc::new(SessionContext {
             db: db.clone(),
             history: self.history.clone(),
+            status: self.state.clone(),
             emit: emit.clone(),
             session_id,
             config: config.clone(),
@@ -340,54 +343,67 @@ impl ListenService {
         });
         let mut sources = Vec::new();
         let mut workers = Vec::new();
-        let mut add = |channel: SpeakerChannel,
-                       mut source: Box<dyn AudioSource>|
-         -> anyhow::Result<()> {
-            let (tx, rx) = mpsc::channel::<PcmChunk>();
-            source.start(tx)?;
-            let mut stt = make_stt_provider(&provider_name, key.clone(), model.clone(), channel)?;
-            let callback_assembler = assembler.clone();
-            let callback_context = context.clone();
-            stt.start(
-                Box::new(move |event| {
-                    let turns = callback_assembler.lock().push(event);
-                    for turn in turns {
-                        persist_turn(&callback_context, turn);
-                    }
-                }),
-                Box::new({
-                    let emit = emit.clone();
-                    move |message| {
-                        emit(ListenEvent::Error {
-                            message,
-                            needs_setup: false,
-                        })
-                    }
-                }),
-            )?;
-            let cancel_rx = cancel.clone();
-            let worker_assembler = assembler.clone();
-            let worker_context = context.clone();
-            workers.push(std::thread::spawn(move || {
-                while !cancel_rx.load(Ordering::Acquire) {
-                    match rx.recv_timeout(WORKER_TICK) {
-                        Ok(chunk) => {
-                            let _ = stt.enqueue(chunk);
-                        }
-                        Err(mpsc::RecvTimeoutError::Timeout) => {
-                            let turns = worker_assembler.lock().flush_at(Instant::now());
-                            for turn in turns {
-                                persist_turn(&worker_context, turn);
-                            }
-                        }
-                        Err(mpsc::RecvTimeoutError::Disconnected) => break,
-                    }
+        let mut add =
+            |channel: SpeakerChannel, mut source: Box<dyn AudioSource>| -> anyhow::Result<()> {
+                let (tx, rx) = mpsc::channel::<PcmChunk>();
+                if let Err(error) = source.start(tx) {
+                    source.stop();
+                    return Err(error);
                 }
-                stt.stop();
-            }));
-            sources.push(source);
-            Ok(())
-        };
+                let mut stt =
+                    match make_stt_provider(&provider_name, key.clone(), model.clone(), channel) {
+                        Ok(stt) => stt,
+                        Err(error) => {
+                            source.stop();
+                            return Err(error);
+                        }
+                    };
+                let callback_assembler = assembler.clone();
+                let callback_context = context.clone();
+                if let Err(error) = stt.start(
+                    Box::new(move |event| {
+                        let turns = callback_assembler.lock().push(event);
+                        for turn in turns {
+                            persist_turn(&callback_context, turn);
+                        }
+                    }),
+                    Box::new({
+                        let emit = emit.clone();
+                        move |message| {
+                            emit(ListenEvent::Error {
+                                message,
+                                needs_setup: false,
+                            })
+                        }
+                    }),
+                ) {
+                    source.stop();
+                    return Err(error);
+                }
+                let cancel_rx = cancel.clone();
+                let worker_assembler = assembler.clone();
+                let worker_context = context.clone();
+                workers.push(std::thread::spawn(move || {
+                    while !cancel_rx.load(Ordering::Acquire) {
+                        match rx.recv_timeout(WORKER_TICK) {
+                            Ok(chunk) => {
+                                let _ = stt.enqueue(chunk);
+                            }
+                            Err(mpsc::RecvTimeoutError::Timeout) => {}
+                            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                        }
+                        // Check wall-clock silence after every receive result. This
+                        // preserves the bounded tick even when chunks are continuous.
+                        let turns = worker_assembler.lock().flush_at(Instant::now());
+                        for turn in turns {
+                            persist_turn(&worker_context, turn);
+                        }
+                    }
+                    stt.stop();
+                }));
+                sources.push(source);
+                Ok(())
+            };
         let mut mic_started = false;
         if mic_allowed {
             if add(SpeakerChannel::Me, Box::new(MicSource::new())).is_ok() {
@@ -416,13 +432,11 @@ impl ListenService {
             context,
             session_id,
         });
-        *self.state.lock() = ListenStatus {
-            state: "listening".into(),
-            provider: Some(provider_name),
-            session_id: Some(session_id),
-            turns: 0,
-            mic: mic_started,
-        };
+        let mut status = self.state.lock();
+        status.state = "listening".into();
+        status.provider = Some(provider_name);
+        status.session_id = Some(session_id);
+        status.mic = mic_started;
         Ok(())
     }
 
@@ -444,7 +458,13 @@ impl ListenService {
             let _ = worker.join();
         }
         let _ = running.context.db.session_end(running.session_id);
-        self.state.lock().state = "idle".into();
+        *self.state.lock() = ListenStatus {
+            state: "idle".into(),
+            provider: None,
+            session_id: None,
+            turns: 0,
+            mic: false,
+        };
     }
 }
 
@@ -460,7 +480,7 @@ fn persist_turn(context: &Arc<SessionContext>, turn: ClosedTurn) {
         context
             .db
             .transcript_add(context.session_id, speaker_name(turn.speaker), &turn.text);
-    if let Ok(id) = inserted {
+    let history_snapshot = if let Ok(id) = inserted {
         let transcript = Transcript {
             id,
             session_id: context.session_id,
@@ -470,38 +490,56 @@ fn persist_turn(context: &Arc<SessionContext>, turn: ClosedTurn) {
         };
         let mut history = context.history.lock();
         append_history(&mut history, transcript);
-        let count = context.persisted_turns.fetch_add(1, Ordering::AcqRel) + 1;
+        Some(history.clone())
+    } else {
+        None
+    };
+
+    let count = if history_snapshot.is_some() {
+        context.persisted_turns.fetch_add(1, Ordering::AcqRel) + 1
+    } else {
+        // A database failure must not hide a valid transcript event.
+        {
+            context.status.lock().turns += 1;
+        }
         (context.emit)(ListenEvent::Turn(turn));
-        if count % SUMMARY_EVERY == 0 {
-            let transcript = history.clone();
-            let summary_context = context.clone();
-            context
-                .summary_workers
-                .lock()
-                .push(std::thread::spawn(move || {
-                    let result = tokio::runtime::Builder::new_current_thread()
-                        .enable_all()
-                        .build()
-                        .ok()
-                        .and_then(|runtime| {
-                            runtime
-                                .block_on(generate_summary(
+        return;
+    };
+    {
+        context.status.lock().turns += 1;
+    }
+    (context.emit)(ListenEvent::Turn(turn));
+
+    if count % SUMMARY_EVERY == 0 {
+        let transcript = history_snapshot.expect("successful insert has history snapshot");
+        let summary_context = context.clone();
+        context
+            .summary_workers
+            .lock()
+            .push(std::thread::spawn(move || {
+                let result = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .ok()
+                    .and_then(|runtime| {
+                        runtime
+                            .block_on(tokio::time::timeout(
+                                SUMMARY_TIMEOUT,
+                                generate_summary(
                                     &summary_context.db,
                                     summary_context.session_id,
                                     &summary_context.config,
                                     &summary_context.keystore,
                                     &transcript,
-                                ))
-                                .ok()
-                        });
-                    if let Some(summary) = result {
-                        (summary_context.emit)(ListenEvent::Summary(summary));
-                    }
-                }));
-        }
-    } else {
-        // A database failure must not hide a valid transcript event.
-        (context.emit)(ListenEvent::Turn(turn));
+                                ),
+                            ))
+                            .ok()
+                            .and_then(Result::ok)
+                    });
+                if let Some(summary) = result {
+                    (summary_context.emit)(ListenEvent::Summary(summary));
+                }
+            }));
     }
 }
 
@@ -556,12 +594,24 @@ mod tests {
         }
     }
     #[test]
-    fn interim_replaces_with_different_final() {
+    fn interim_replaces_with_different_final_without_duplication() {
         let mut a = TurnAssembler::new();
         let t = Instant::now();
         a.push_at(event(SpeakerChannel::Me, "hel", Finality::Interim), t);
         a.push_at(event(SpeakerChannel::Me, "hello", Finality::Final), t);
         assert_eq!(a.flush_at(t + SILENCE).pop().unwrap().text, "hello");
+    }
+    #[test]
+    fn committed_text_survives_later_interim_segment() {
+        let mut a = TurnAssembler::new();
+        let t = Instant::now();
+        a.push_at(event(SpeakerChannel::Me, "Final A", Finality::Final), t);
+        a.push_at(event(SpeakerChannel::Me, "Interim B", Finality::Interim), t);
+        a.push_at(event(SpeakerChannel::Me, "Final B", Finality::Final), t);
+        assert_eq!(
+            a.flush_at(t + SILENCE).pop().unwrap().text,
+            "Final A Final B"
+        );
     }
     #[test]
     fn interim_replaces_and_final_closes_after_silence() {

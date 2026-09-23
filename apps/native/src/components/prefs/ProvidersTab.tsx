@@ -20,16 +20,29 @@
  * `model_get_selected`'s resolved answer, recomputed server-side on
  * every reorder/switch/model write.
  */
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { DragEvent, KeyboardEvent } from 'react';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@marvis/ui';
+import { Input, Tabs, TabsContent, TabsList, TabsTrigger } from '@marvis/ui';
 import {
+  configSet,
   modelGetSelected,
   providersReorder,
   providerSetEnabled,
+  whisperStatus,
 } from '../../lib/commands';
 import { orderedProviders } from '../../lib/providers';
-import { H2, PROV_CARD, SUB, cn } from '../../lib/classes';
+import {
+  FIELD,
+  H2,
+  LBL,
+  MODEL_SEL,
+  NUM,
+  PROV_CARD,
+  PROV_ERR,
+  PROV_NOTE,
+  SUB,
+  cn,
+} from '../../lib/classes';
 import { ProviderCard } from './ProviderCard';
 import { VisionSection } from './VisionSection';
 import type { PrefsData } from './types';
@@ -51,11 +64,193 @@ const SUB_TABS: { id: SubTab; label: string }[] = [
   { id: 'voice', label: 'Voice' },
 ];
 
+const DEEPGRAM_MODELS = [
+  'nova-2',
+  'nova-2-general',
+  'nova-2-meeting',
+  'nova-2-phonecall',
+  'nova-2-finance',
+  'nova-2-conversationalai',
+  'nova-2-voicemail',
+  'nova-2-video',
+  'nova-2-medical',
+  'nova-2-drivethru',
+  'nova-2-automotive',
+];
+
+type WhisperView = Awaited<ReturnType<typeof whisperStatus>>;
+
+const SttSection = ({
+  data,
+  whisper,
+  error,
+  setError,
+  refreshWhisper,
+}: {
+  data: PrefsData;
+  whisper: WhisperView | null;
+  error: string;
+  setError: (value: string) => void;
+  refreshWhisper: () => Promise<void>;
+}) => {
+  const config = data.config!;
+  const provider = config.models.stt_provider;
+  const model = config.models.stt_model;
+  const deepgramKey =
+    data.status?.keys.find(([id]) => id === 'deepgram')?.[1] ?? null;
+
+  const save = (
+    key: 'models.stt_provider' | 'models.stt_model',
+    value: string,
+  ) => {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return;
+    }
+    void configSet(key, trimmed)
+      .then(data.setConfig)
+      .catch(() =>
+        setError(
+          `Could not save ${key.endsWith('provider') ? 'provider' : 'model'}`,
+        ),
+      );
+  };
+
+  const chooseProvider = (value: string) => {
+    setError('');
+    save('models.stt_provider', value);
+    if (value === 'whisper') {
+      void refreshWhisper();
+    }
+  };
+
+  return (
+    <div className={cn(PROV_CARD, 'border-border')}>
+      <div className='flex flex-wrap items-center gap-2'>
+        <span
+          className={cn(
+            'size-1.75 flex-none rounded-full',
+            provider === 'deepgram'
+              ? deepgramKey
+                ? 'bg-accent'
+                : 'bg-[color-mix(in_oklch,var(--fg)_20%,transparent)]'
+              : whisper?.binary && whisper.models.length > 0
+                ? 'bg-accent'
+                : 'bg-[color-mix(in_oklch,var(--fg)_20%,transparent)]',
+          )}
+        />
+        <span className={LBL}>Provider</span>
+        <select
+          className={MODEL_SEL}
+          value={provider}
+          onChange={(e) => chooseProvider(e.target.value)}
+          aria-label='Speech-to-text provider'>
+          <option value='deepgram'>Deepgram</option>
+          <option value='whisper'>Whisper (local)</option>
+        </select>
+      </div>
+
+      {provider === 'deepgram' ? (
+        <>
+          <div className='mt-2.5 flex items-center gap-2'>
+            <span className={LBL}>Model</span>
+            <Input
+              className={FIELD}
+              list='deepgram-stt-models'
+              defaultValue={model}
+              onBlur={(e) => save('models.stt_model', e.target.value)}
+              onKeyDown={(e) =>
+                e.key === 'Enter' &&
+                save('models.stt_model', e.currentTarget.value)
+              }
+              placeholder='model id — e.g. nova-2'
+              autoComplete='off'
+              spellCheck={false}
+              aria-label='Deepgram speech-to-text model'
+            />
+            <datalist id='deepgram-stt-models'>
+              {DEEPGRAM_MODELS.map((name) => (
+                <option
+                  key={name}
+                  value={name}
+                />
+              ))}
+            </datalist>
+          </div>
+          <p className={PROV_NOTE}>
+            {deepgramKey ? (
+              <>
+                Uses your Deepgram API key ({deepgramKey}), shown masked. Manage
+                it on the LLM tab.
+              </>
+            ) : (
+              <>
+                Add a Deepgram API key on the LLM tab to use hosted
+                transcription.
+              </>
+            )}
+          </p>
+        </>
+      ) : (
+        <>
+          <div className='mt-2.5 flex items-center gap-2'>
+            <span className={LBL}>Model</span>
+            <select
+              className={MODEL_SEL}
+              value={whisper?.models.includes(model) ? model : ''}
+              disabled={!whisper || whisper.models.length === 0}
+              onChange={(e) => save('models.stt_model', e.target.value)}
+              aria-label='Whisper speech-to-text model'>
+              <option value=''>
+                {whisper === null
+                  ? 'Checking local models…'
+                  : whisper.models.length === 0
+                    ? 'No ggml models detected'
+                    : 'Select model'}
+              </option>
+              {whisper?.models.map((name) => (
+                <option
+                  key={name}
+                  value={name}>
+                  {name}
+                </option>
+              ))}
+            </select>
+          </div>
+          <p className={PROV_NOTE}>
+            Binary:{' '}
+            <span className={NUM}>{whisper?.binary ?? 'not detected'}</span>
+          </p>
+          {whisper && (!whisper.binary || whisper.models.length === 0) && (
+            <p className={PROV_NOTE}>
+              Users must install <span className={NUM}>whisper-cli</span> and
+              place a <span className={NUM}>ggml-*.bin</span> model under{' '}
+              <span className={NUM}>~/.marvis/models/whisper/models/</span>. The
+              app does not download whisper binaries or models.
+            </p>
+          )}
+        </>
+      )}
+      {error && <p className={PROV_ERR}>{error}</p>}
+    </div>
+  );
+};
+
 export const ProvidersTab = ({ data }: { data: PrefsData }) => {
   const { config } = data;
   const [sub, setSub] = useState<SubTab>('llm');
   const [dragId, setDragId] = useState<string | null>(null);
   const [overId, setOverId] = useState<string | null>(null);
+  const [whisper, setWhisper] = useState<Awaited<
+    ReturnType<typeof whisperStatus>
+  > | null>(null);
+  const [sttError, setSttError] = useState('');
+
+  useEffect(() => {
+    void whisperStatus()
+      .then(setWhisper)
+      .catch(() => setWhisper({ binary: null, models: [] }));
+  }, []);
 
   if (data.status === null || config === null) {
     return (
@@ -223,18 +418,20 @@ export const ProvidersTab = ({ data }: { data: PrefsData }) => {
 
         <TabsContent value='voice'>
           <p className={SUB}>
-            Speech-to-text for listen mode — Deepgram Nova-2 lands with Phase 2.
-            Nothing to configure yet.
+            Choose the speech-to-text provider for listen mode. API keys stay
+            masked, and this app does not download whisper binaries or models.
           </p>
-          <div className={cn(PROV_CARD, 'border-border opacity-55')}>
-            <div className='flex cursor-default items-center gap-2.5'>
-              <span className='size-1.75 flex-none rounded-full bg-[color-mix(in_oklch,var(--fg)_20%,transparent)]' />
-              <span className='text-[13.5px] font-semibold'>Deepgram</span>
-              <span className='ml-auto max-w-65 truncate font-mono text-[10.5px] text-muted-foreground'>
-                stt · nova-2 · Phase 2
-              </span>
-            </div>
-          </div>
+          <SttSection
+            data={data}
+            whisper={whisper}
+            error={sttError}
+            setError={setSttError}
+            refreshWhisper={() =>
+              whisperStatus()
+                .then(setWhisper)
+                .catch(() => {})
+            }
+          />
         </TabsContent>
       </Tabs>
     </>

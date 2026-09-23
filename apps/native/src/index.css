@@ -163,8 +163,14 @@ body {
     opacity: 0;
   }
 }
+/* Listen animation wiring stays stateful: ListenSection adds
+   `animate-waveform` only for `listen:state=listening`; Bar adds
+   `listen-active` only to the live mic control. */
+.listen-active > span::before {
+  animation: iris-listen 1.6s var(--ease) infinite;
+}
 /* listen waveform — Phase 2 applies `--animate-waveform` per bar with
-   staggered delays; the stub renders the bars muted and still */
+   staggered delays; idle/error bars remain still. */
 @keyframes mv-waveform {
   0%,
   100% {

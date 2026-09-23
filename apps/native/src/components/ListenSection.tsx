@@ -5,9 +5,12 @@ import {
   listenStop,
   transcriptsFor,
   summaryLatest,
+  whisperStatus,
   windowShowSettings,
   type Config,
   type ListenStatus,
+  type WhisperBinarySource,
+  type WhisperStatus,
 } from '../lib/commands';
 import {
   EV_CONFIG_CHANGED,
@@ -31,6 +34,12 @@ type Summary = ListenSummaryPayload;
 
 const waveformHeights = ['h-2', 'h-3.5', 'h-4.5', 'h-3', 'h-1.75'];
 
+const whisperSourceLabel = (source: WhisperBinarySource | null) => {
+  if (source === 'Bundled') return 'Bundled with Marvis';
+  if (source) return 'Custom whisper-cli detected';
+  return 'Whisper CLI unavailable';
+};
+
 export const ListenSection = () => {
   const [status, setStatus] = useState<ListenStatus>({
     state: 'idle',
@@ -46,6 +55,7 @@ export const ListenSection = () => {
   const [error, setError] = useState<ListenErrorPayload | null>(null);
   const [provider, setProvider] = useState<string | null>(null);
   const [model, setModel] = useState<string | null>(null);
+  const [whisper, setWhisper] = useState<WhisperStatus | null>(null);
 
   const applyConfig = (config: Config) => {
     setProvider(config.models.stt_provider || null);
@@ -59,6 +69,19 @@ export const ListenSection = () => {
   }, []);
 
   useTauriEvent<Config>(EV_CONFIG_CHANGED, applyConfig);
+
+  useEffect(() => {
+    void whisperStatus()
+      .then(setWhisper)
+      .catch(() =>
+        setWhisper({
+          binary: null,
+          binary_status: { available: false, source: null },
+          models: [],
+          download: null,
+        }),
+      );
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -248,6 +271,11 @@ export const ListenSection = () => {
             {activeProvider}
             {model ? ` · ${model}` : ' · stt'}
           </span>
+          {activeProvider === 'whisper' && whisper && (
+            <span className={CHIP}>
+              {whisperSourceLabel(whisper.binary_status.source)}
+            </span>
+          )}
         </div>
       </div>
     </div>

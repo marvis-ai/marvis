@@ -20,6 +20,7 @@ const SAMPLE_RATE: u32 = 16_000;
 const WINDOW_SAMPLES: usize = SAMPLE_RATE as usize * 3;
 const SILENCE_RMS: f64 = 0.01;
 const MAX_OUTPUT_BYTES: usize = 1024 * 1024;
+const MAX_CONSECUTIVE_FAILURES: usize = 3;
 
 /// The locally available whisper executable and models.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -80,7 +81,7 @@ impl SttProvider for WhisperProvider {
     fn start(
         &mut self,
         callback: Box<dyn Fn(TranscriptEvent) + Send + Sync>,
-        _error_callback: Box<dyn Fn(String) + Send + Sync>,
+        error_callback: Box<dyn Fn(String) + Send + Sync>,
     ) -> anyhow::Result<()> {
         if self.worker.is_some() {
             anyhow::bail!("whisper provider is already running");
@@ -100,7 +101,16 @@ impl SttProvider for WhisperProvider {
         let child = Arc::clone(&self.child);
         let channel = self.channel;
         self.worker = Some(thread::spawn(move || {
-            run_chunks(receiver, callback, binary, model, channel, stop, child)
+            run_chunks(
+                receiver,
+                callback,
+                error_callback,
+                binary,
+                model,
+                channel,
+                stop,
+                child,
+            )
         }));
         Ok(())
     }
@@ -134,9 +144,11 @@ impl Drop for WhisperProvider {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_chunks(
     receiver: mpsc::Receiver<PcmChunk>,
     callback: Box<dyn Fn(TranscriptEvent) + Send + Sync>,
+    error_callback: Box<dyn Fn(String) + Send + Sync>,
     binary: PathBuf,
     model: PathBuf,
     channel: SpeakerChannel,
@@ -144,6 +156,7 @@ fn run_chunks(
     child_slot: Arc<Mutex<Option<Child>>>,
 ) {
     let mut buffer = Vec::with_capacity(WINDOW_SAMPLES);
+    let mut consecutive_failures = 0;
     while !stop.load(Ordering::Acquire) {
         let chunk = match receiver.recv_timeout(Duration::from_millis(100)) {
             Ok(chunk) => chunk,
@@ -156,7 +169,7 @@ fn run_chunks(
             if rms(&window) < SILENCE_RMS || stop.load(Ordering::Acquire) {
                 continue;
             }
-            if let Ok(Some(text)) = transcribe_window(
+            match transcribe_window(
                 &window,
                 &binary,
                 &model,
@@ -164,11 +177,26 @@ fn run_chunks(
                 &stop,
                 Arc::clone(&child_slot),
             ) {
-                callback(TranscriptEvent {
-                    channel,
-                    text,
-                    finality: Finality::Final,
-                });
+                Ok(Some(text)) => {
+                    consecutive_failures = 0;
+                    callback(TranscriptEvent {
+                        channel,
+                        text,
+                        finality: Finality::Final,
+                    });
+                }
+                Ok(None) => consecutive_failures = 0,
+                Err(_error) if stop.load(Ordering::Acquire) => return,
+                Err(_) => {
+                    consecutive_failures += 1;
+                    if consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
+                        error_callback(
+                            "Whisper provider failed repeatedly and is no longer usable"
+                                .to_string(),
+                        );
+                        return;
+                    }
+                }
             }
         }
     }
@@ -240,8 +268,11 @@ fn transcribe_window(
         .map_err(|_| anyhow::anyhow!("whisper child lock poisoned"))?
         .take();
     let output = output?;
-    if stop.load(Ordering::Acquire) || !status.success() {
+    if stop.load(Ordering::Acquire) {
         return Ok(None);
+    }
+    if !status.success() {
+        return Err(anyhow::anyhow!("whisper-cli exited unsuccessfully"));
     }
     Ok(parse_output(&output?))
 }
@@ -401,6 +432,39 @@ fn write_wav(file: &mut File, samples: &[i16]) -> io::Result<()> {
 mod tests {
     use super::*;
     use std::fs;
+    use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn reports_repeated_worker_failures_but_not_silence() {
+        let (sender, receiver) = mpsc::sync_channel(4);
+        let errors = Arc::new(Mutex::new(Vec::new()));
+        let errors_for_callback = Arc::clone(&errors);
+        let samples = vec![1000; WINDOW_SAMPLES];
+        for _ in 0..MAX_CONSECUTIVE_FAILURES {
+            sender
+                .send(PcmChunk {
+                    samples: samples.clone(),
+                    sample_rate: SAMPLE_RATE,
+                    channels: 1,
+                })
+                .unwrap();
+        }
+        drop(sender);
+        run_chunks(
+            receiver,
+            Box::new(|_| {}),
+            Box::new(move |error| errors_for_callback.lock().unwrap().push(error)),
+            PathBuf::from("/missing/whisper-cli"),
+            PathBuf::from("/missing/model.bin"),
+            SpeakerChannel::Me,
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(Mutex::new(None)),
+        );
+        assert_eq!(
+            errors.lock().unwrap().as_slice(),
+            &["Whisper provider failed repeatedly and is no longer usable"]
+        );
+    }
 
     #[test]
     fn cleans_whisper_artifacts() {

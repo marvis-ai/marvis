@@ -1,5 +1,5 @@
 /**
- * Onboarding — the four-step wizard, no sidebar (DESIGN.md §6). One
+ * Onboarding — the five-step wizard, no sidebar (DESIGN.md §6). One
  * mount = one run: the shell remounts this subtree on every mode switch,
  * which is how "re-run setup" lands on step 1.
  *
@@ -120,13 +120,11 @@ export const Onboarding = ({ data }: { data: PrefsData }) => {
             />
           )}
           {step === 3 && (
-            <VoiceSetup
+            <VoiceStep
               data={data}
-              showSkip={true}
               onSkip={() => setStep(4)}
               onContinue={() => setStep(4)}
               onBack={() => setStep(2)}
-              cancelOnUnmount={true}
             />
           )}
           {step === 4 && <DoneStep onDone={() => void finish()} />}
@@ -135,6 +133,33 @@ export const Onboarding = ({ data }: { data: PrefsData }) => {
     </div>
   );
 };
+
+const VoiceStep = ({
+  data,
+  onSkip,
+  onContinue,
+  onBack,
+}: {
+  data: PrefsData;
+  onSkip: () => void;
+  onContinue: () => void;
+  onBack: () => void;
+}) => (
+  <>
+    <h1 className={H1}>Set up voice</h1>
+    <p className={cn(LEDE, 'mb-4')}>
+      Voice is optional. Configure it now, or set it up later in Settings.
+    </p>
+    <VoiceSetup
+      data={data}
+      showSkip={true}
+      onSkip={onSkip}
+      onContinue={onContinue}
+      onBack={onBack}
+      cancelOnUnmount={true}
+    />
+  </>
+);
 
 /* ── step 1 · welcome ─────────────────────────────────────────── */
 

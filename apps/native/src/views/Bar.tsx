@@ -47,6 +47,8 @@ import {
   permissionsOpenPrefs,
   permissionsRequestScreen,
   permissionsStatus,
+  listenStart,
+  listenStop,
   windowAdjustHeight,
   windowSetBarExpanded,
   windowSetChatOpen,
@@ -57,6 +59,8 @@ import {
 import {
   EV_ASK_STATE,
   EV_APP_STATE,
+  EV_LISTEN_STATE,
+  type ListenStatePayload,
   EV_CAPTURE_PERMISSION_NEEDED,
   useTauriEvent,
 } from '../lib/events';
@@ -118,6 +122,8 @@ const Bar = () => {
   );
   const [growDir, setGrowDir] = useState<'up' | 'down'>('down');
   const [listenWanted, setListenWanted] = useState(false);
+  const [listenState, setListenState] =
+    useState<ListenStatePayload['state']>('idle');
   const inputRef = useRef<HTMLInputElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
   const cardRef = useRef<HTMLDivElement>(null);
@@ -157,6 +163,12 @@ const Bar = () => {
   }, [bootstrap]);
 
   useTauriEvent<AppStatePayload>(EV_APP_STATE, (p) => setGate(p.gate));
+  useTauriEvent<ListenStatePayload>(EV_LISTEN_STATE, (p) => {
+    setListenState(p.state);
+    if (p.state === 'listening' || p.state === 'error') {
+      setListenWanted(true);
+    }
+  });
   // Mid-session screen-permission revocation (ask.rs detects it when a
   // stale frame would have shipped): collapse the card — NOT `askClose`,
   // which would cancel the text-only fallback — and show the
@@ -465,13 +477,23 @@ const Bar = () => {
         </button>
         <button
           type='button'
-          className={BAR_BTN}
-          aria-label='Listen'
-          title='Listen'
+          className={cn(
+            BAR_BTN,
+            listenState === 'listening' && 'listen-active',
+          )}
+          aria-label={listenState === 'listening' ? 'Stop listening' : 'Listen'}
+          title={listenState === 'listening' ? 'Stop listening' : 'Listen'}
           disabled={gate !== 'main'}
           onClick={() => {
+            if (listenState === 'listening') {
+              void listenStop().catch(() => raise('Stop failed'));
+              return;
+            }
             setListenWanted(true);
             void windowSetChatOpen(true).catch(() => {});
+            void listenStart()
+              .then((next) => setListenState(next.state))
+              .catch(() => raise('Listen failed'));
           }}>
           <MicIcon className='size-5' />
         </button>

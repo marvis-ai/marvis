@@ -858,6 +858,39 @@ mod tests {
     }
 
     #[test]
+    fn missing_deepgram_key_emits_one_setup_error_before_command_rejection() {
+        let root =
+            std::env::temp_dir().join(format!("marvis-listen-setup-test-{}", std::process::id()));
+        let db = Arc::new(crate::storage::Db::at(root.join("marvis.db")).unwrap());
+        let keystore = Keystore::at(root.join("keys.json"));
+        let config = Config::default();
+        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let captured = events.clone();
+        let service = ListenService::new();
+
+        let result = service.start(
+            db,
+            &keystore,
+            &config,
+            false,
+            Arc::new(move |event| captured.lock().unwrap().push(event)),
+        );
+
+        assert!(result.is_err());
+        let events = events.lock().unwrap();
+        assert_eq!(events.len(), 1);
+        assert!(matches!(
+            &events[0],
+            ListenEvent::Error {
+                needs_setup: true,
+                ..
+            }
+        ));
+        assert_eq!(service.status().state, "error");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn failed_summary_keeps_previous_insights_for_reemission() {
         let previous = ListenSummary {
             tldr: "prior insight".into(),

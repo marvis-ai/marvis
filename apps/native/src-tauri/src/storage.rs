@@ -12,6 +12,8 @@
 //! ```sql
 //! sessions(id PK, type 'ask'|'listen', title?, started_at, ended_at?, last_active_at)
 //! ai_messages(id PK, session_id FK → sessions.id ON DELETE CASCADE, role, content, ts)
+//! transcripts(id PK, session_id FK → sessions.id ON DELETE CASCADE, speaker, text, ts)
+//! summaries(id PK, session_id FK → sessions.id ON DELETE CASCADE, tldr, bullets, follow_ups, topic?, ts)
 //! ```
 //!
 //! All timestamps are unix-epoch seconds (`i64`).
@@ -45,6 +47,26 @@ const SCHEMA: &str = "
         ts         INTEGER NOT NULL,
         FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
     );
+
+    CREATE TABLE IF NOT EXISTS transcripts (
+        id         INTEGER PRIMARY KEY,
+        session_id INTEGER NOT NULL,
+        speaker    TEXT NOT NULL,
+        text       TEXT NOT NULL,
+        ts         INTEGER NOT NULL,
+        FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS summaries (
+        id         INTEGER PRIMARY KEY,
+        session_id INTEGER NOT NULL,
+        tldr       TEXT NOT NULL,
+        bullets    TEXT NOT NULL,
+        follow_ups TEXT NOT NULL,
+        topic      TEXT,
+        ts         INTEGER NOT NULL,
+        FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+    );
 ";
 
 /// A row of `sessions`. `kind` maps to the `type` column (`type` is a Rust
@@ -67,6 +89,28 @@ pub struct AiMessage {
     pub session_id: i64,
     pub role: String,
     pub content: String,
+    pub ts: i64,
+}
+
+/// A persisted speaker turn from a listen session.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct Transcript {
+    pub id: i64,
+    pub session_id: i64,
+    pub speaker: String,
+    pub text: String,
+    pub ts: i64,
+}
+
+/// A persisted structured summary from a listen session.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct Summary {
+    pub id: i64,
+    pub session_id: i64,
+    pub tldr: String,
+    pub bullets: Vec<String>,
+    pub follow_ups: Vec<String>,
+    pub topic: Option<String>,
     pub ts: i64,
 }
 
@@ -175,7 +219,7 @@ impl Db {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
-    /// Delete a session; its `ai_messages` cascade away via the FK.
+    /// Delete a session; its child records cascade away via their FKs.
     pub fn session_delete(&self, id: i64) -> anyhow::Result<()> {
         self.conn
             .lock()
@@ -223,6 +267,115 @@ impl Db {
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// Append a finalized listen turn; returns the new row id.
+    pub fn transcript_add(
+        &self,
+        session_id: i64,
+        speaker: &str,
+        text: &str,
+    ) -> anyhow::Result<i64> {
+        let conn = self.conn.lock();
+        let ts = now();
+        conn.execute(
+            "INSERT INTO transcripts (session_id, speaker, text, ts)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![session_id, speaker, text, ts],
+        )?;
+        conn.execute(
+            "UPDATE sessions SET last_active_at = ?1 WHERE id = ?2",
+            params![ts, session_id],
+        )?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    /// A session's listen turns, oldest first; `id` breaks same-second ties.
+    pub fn transcripts_for(
+        &self,
+        session_id: i64,
+        limit: Option<usize>,
+    ) -> anyhow::Result<Vec<Transcript>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT id, session_id, speaker, text, ts FROM transcripts
+             WHERE session_id = ?1 ORDER BY ts ASC, id ASC LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(
+            params![session_id, limit.map(|value| value as i64).unwrap_or(-1)],
+            |row| {
+                Ok(Transcript {
+                    id: row.get(0)?,
+                    session_id: row.get(1)?,
+                    speaker: row.get(2)?,
+                    text: row.get(3)?,
+                    ts: row.get(4)?,
+                })
+            },
+        )?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// Persist a structured listen summary; returns the new row id.
+    pub fn summary_add(
+        &self,
+        session_id: i64,
+        tldr: &str,
+        bullets: &[String],
+        follow_ups: &[String],
+        topic: Option<&str>,
+    ) -> anyhow::Result<i64> {
+        let bullets = serde_json::to_string(bullets)?;
+        let follow_ups = serde_json::to_string(follow_ups)?;
+        let conn = self.conn.lock();
+        let ts = now();
+        conn.execute(
+            "INSERT INTO summaries (session_id, tldr, bullets, follow_ups, topic, ts)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![session_id, tldr, bullets, follow_ups, topic, ts],
+        )?;
+        conn.execute(
+            "UPDATE sessions SET last_active_at = ?1 WHERE id = ?2",
+            params![ts, session_id],
+        )?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    /// The newest summary for a session, if one exists.
+    pub fn summary_latest(&self, session_id: i64) -> anyhow::Result<Option<Summary>> {
+        let conn = self.conn.lock();
+        let row: Option<(i64, i64, String, String, String, Option<String>, i64)> = conn
+            .query_row(
+                "SELECT id, session_id, tldr, bullets, follow_ups, topic, ts
+                 FROM summaries WHERE session_id = ?1
+                 ORDER BY ts DESC, id DESC LIMIT 1",
+                [session_id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                    ))
+                },
+            )
+            .optional()?;
+
+        row.map(|(id, session_id, tldr, bullets, follow_ups, topic, ts)| {
+            Ok(Summary {
+                id,
+                session_id,
+                tldr,
+                bullets: serde_json::from_str(&bullets)?,
+                follow_ups: serde_json::from_str(&follow_ups)?,
+                topic,
+                ts,
+            })
+        })
+        .transpose()
     }
 }
 
@@ -331,6 +484,94 @@ mod tests {
         db.session_delete(sid).unwrap();
         assert!(db.ai_messages_for(sid).unwrap().is_empty());
         assert!(db.session_list().unwrap().iter().all(|s| s.id != sid));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn transcript_roundtrip_is_oldest_first_with_limit() {
+        let dir = tmp_dir();
+        let db = Db::at(dir.join("marvis.db")).unwrap();
+        let sid = db.session_get_or_create_active("listen").unwrap();
+
+        db.transcript_add(sid, "me", "hello").unwrap();
+        db.transcript_add(sid, "them", "hi there").unwrap();
+        db.transcript_add(sid, "me", "follow-up").unwrap();
+
+        let transcripts = db.transcripts_for(sid, None).unwrap();
+        assert_eq!(transcripts.len(), 3);
+        assert_eq!(transcripts[0].speaker, "me");
+        assert_eq!(transcripts[0].text, "hello");
+        assert_eq!(transcripts[1].speaker, "them");
+        assert_eq!(transcripts[1].text, "hi there");
+        assert_eq!(transcripts[2].text, "follow-up");
+        assert!(transcripts[0].id < transcripts[1].id && transcripts[1].id < transcripts[2].id);
+        assert!(transcripts.iter().all(|transcript| transcript.ts > 0));
+
+        let limited = db.transcripts_for(sid, Some(2)).unwrap();
+        assert_eq!(limited.len(), 2);
+        assert_eq!(limited[0].text, "hello");
+        assert_eq!(limited[1].text, "hi there");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn summary_roundtrip_deserializes_json_fields() {
+        let dir = tmp_dir();
+        let db = Db::at(dir.join("marvis.db")).unwrap();
+        let sid = db.session_get_or_create_active("listen").unwrap();
+
+        db.summary_add(
+            sid,
+            "A useful summary",
+            &["First point".to_owned(), "Second point".to_owned()],
+            &["Follow up".to_owned()],
+            Some("Planning"),
+        )
+        .unwrap();
+
+        let summary = db.summary_latest(sid).unwrap().unwrap();
+        assert_eq!(summary.session_id, sid);
+        assert_eq!(summary.tldr, "A useful summary");
+        assert_eq!(summary.bullets, vec!["First point", "Second point"]);
+        assert_eq!(summary.follow_ups, vec!["Follow up"]);
+        assert_eq!(summary.topic.as_deref(), Some("Planning"));
+        assert!(summary.ts > 0);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn summary_malformed_json_returns_error() {
+        let dir = tmp_dir();
+        let db = Db::at(dir.join("marvis.db")).unwrap();
+        let sid = db.session_get_or_create_active("listen").unwrap();
+        {
+            let conn = db.conn.lock();
+            conn.execute(
+                "INSERT INTO summaries (session_id, tldr, bullets, follow_ups, topic, ts)
+                 VALUES (?1, 'Summary', 'not-json', '[]', NULL, 1)",
+                [sid],
+            )
+            .unwrap();
+        }
+
+        assert!(db.summary_latest(sid).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn listen_session_delete_cascades_transcripts_and_summaries() {
+        let dir = tmp_dir();
+        let db = Db::at(dir.join("marvis.db")).unwrap();
+        let sid = db.session_get_or_create_active("listen").unwrap();
+        db.transcript_add(sid, "me", "hello").unwrap();
+        db.summary_add(sid, "Summary", &[], &[], None).unwrap();
+
+        db.session_delete(sid).unwrap();
+        assert!(db.transcripts_for(sid, None).unwrap().is_empty());
+        assert!(db.summary_latest(sid).unwrap().is_none());
 
         let _ = std::fs::remove_dir_all(&dir);
     }

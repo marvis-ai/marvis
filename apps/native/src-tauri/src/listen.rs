@@ -338,6 +338,7 @@ impl ListenService {
         keystore: &Keystore,
         config: &Config,
         mic_allowed: bool,
+        bundled_whisper: Option<&std::path::Path>,
         emit: Arc<dyn Fn(ListenEvent) + Send + Sync>,
     ) -> anyhow::Result<()> {
         self.stop();
@@ -368,7 +369,10 @@ impl ListenService {
             anyhow::bail!("Speech-to-text provider is not configured")
         }
         if provider_name == "whisper" {
-            if let Some(message) = whisper_setup_error(&WhisperProvider::status(), &model) {
+            if let Some(message) = whisper_setup_error(
+                &WhisperProvider::status_with_bundled(bundled_whisper),
+                &model,
+            ) {
                 *self.state.lock() = ListenStatus {
                     state: "error".into(),
                     provider: Some(provider_name),
@@ -418,14 +422,19 @@ impl ListenService {
                     source.stop();
                     return Err(error);
                 }
-                let mut stt =
-                    match make_stt_provider(&provider_name, key.clone(), model.clone(), channel) {
-                        Ok(stt) => stt,
-                        Err(error) => {
-                            source.stop();
-                            return Err(error);
-                        }
-                    };
+                let mut stt = match make_stt_provider(
+                    &provider_name,
+                    key.clone(),
+                    model.clone(),
+                    channel,
+                    bundled_whisper,
+                ) {
+                    Ok(stt) => stt,
+                    Err(error) => {
+                        source.stop();
+                        return Err(error);
+                    }
+                };
                 let callback_assembler = assembler.clone();
                 let callback_context = context.clone();
                 if let Err(error) = stt.start(
@@ -965,6 +974,7 @@ mod tests {
             &keystore,
             &config,
             false,
+            None,
             Arc::new(move |event| captured.lock().unwrap().push(event)),
         );
 

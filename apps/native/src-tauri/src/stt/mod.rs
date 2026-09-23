@@ -6,7 +6,7 @@ mod deepgram;
 mod whisper;
 
 pub use deepgram::DeepgramProvider;
-pub use whisper::{WhisperProvider, WhisperStatus};
+pub use whisper::{WhisperBinarySource, WhisperBinaryStatus, WhisperProvider, WhisperStatus};
 
 /// The source channel represented by a transcript event.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,6 +38,7 @@ pub fn make_stt_provider(
     key: Option<String>,
     model: String,
     channel: SpeakerChannel,
+    bundled_whisper: Option<&std::path::Path>,
 ) -> anyhow::Result<Box<dyn SttProvider>> {
     match provider {
         "deepgram" => Ok(Box::new(DeepgramProvider::new(
@@ -45,7 +46,11 @@ pub fn make_stt_provider(
             model,
             channel,
         ))),
-        "whisper" => Ok(Box::new(WhisperProvider::new(model, channel))),
+        "whisper" => Ok(Box::new(WhisperProvider::new(
+            model,
+            channel,
+            bundled_whisper,
+        ))),
         _ => anyhow::bail!("unsupported STT provider: {provider}"),
     }
 }

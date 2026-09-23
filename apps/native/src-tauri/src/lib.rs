@@ -112,6 +112,8 @@ pub struct AppState {
     capture: Mutex<Option<MacosCapture>>,
     ask: Arc<AskService>,
     listen: Arc<ListenService>,
+    /// Whisper CLI staged beside the executable by `externalBin`.
+    bundled_whisper: Option<std::path::PathBuf>,
     pool: Mutex<WindowPool>,
     /// Currently live set — delta-swapped in place by [`swap_hotkeys`]
     /// (shared pairs are never re-registered; macOS refuses duplicates).
@@ -181,6 +183,7 @@ impl AppState {
             capture: Mutex::new(None),
             ask: Arc::new(AskService::new()),
             listen: Arc::new(ListenService::new()),
+            bundled_whisper: None,
             pool: Mutex::new(WindowPool::new_empty()),
             hotkeys: Mutex::new(None),
             gate: Mutex::new(Gate::NeedsPermission),
@@ -948,11 +951,14 @@ async fn listen_start(app: AppHandle) -> Result<listen::ListenStatus, String> {
     let keystore = state.keystore.lock().clone();
     let app_for_emit = app.clone();
     let emit = Arc::new(move |event| emit_listen_event(&app_for_emit, event));
-    if let Err(error) =
-        state
-            .listen
-            .start(Arc::clone(&state.db), &keystore, &config, mic_allowed, emit)
-    {
+    if let Err(error) = state.listen.start(
+        Arc::clone(&state.db),
+        &keystore,
+        &config,
+        mic_allowed,
+        state.bundled_whisper.as_deref(),
+        emit,
+    ) {
         // ListenService owns the event contract for failures it emits. In
         // particular, setup failures have already emitted needs_setup:true;
         // re-emitting here would produce a contradictory second event.
@@ -981,8 +987,9 @@ fn voice_models_catalog(state: State<'_, AppState>) -> Vec<voice_models::VoiceMo
 }
 
 #[tauri::command]
-fn whisper_status(state: State<'_, AppState>) -> voice_models::WhisperDownloadStatus {
-    state.voice_models.status()
+fn whisper_status(app: AppHandle) -> voice_models::WhisperDownloadStatus {
+    let state = app.state::<AppState>();
+    state.voice_models.status(state.bundled_whisper.as_deref())
 }
 
 fn safe_voice_error(error: voice_models::VoiceDownloadError) -> String {
@@ -1037,7 +1044,7 @@ fn whisper_remove_model(
         .voice_models
         .remove_model(entry.id)
         .map_err(safe_voice_error)?;
-    Ok(state.voice_models.status())
+    Ok(state.voice_models.status(state.bundled_whisper.as_deref()))
 }
 
 // ---------------------------------------------------------------------------
@@ -1485,6 +1492,20 @@ pub fn run() {
             let pool = WindowPool::create_bar_only(handle, onboarding_done)?;
             let voice_models = voice_models::VoiceModelManager::new();
             voice_models.attach_app(handle.clone());
+            // Tauri externalBin sidecars are staged beside the executable
+            // (`Contents/MacOS` in a macOS app), not under `Contents/Resources`.
+            let bundled_whisper = std::env::current_exe().ok().and_then(|executable| {
+                executable.parent().map(|executable_dir| {
+                    let target_specific = paths::bundled_whisper_cli(executable_dir);
+                    if target_specific.is_file() {
+                        target_specific
+                    } else {
+                        // Tauri strips the target suffix when it copies an
+                        // externalBin into a packaged app.
+                        paths::packaged_whisper_cli(executable_dir)
+                    }
+                })
+            });
             app.manage(AppState {
                 keystore: Mutex::new(keystore),
                 config: Mutex::new(cfg),
@@ -1493,6 +1514,7 @@ pub fn run() {
                 capture: Mutex::new(None),
                 ask: Arc::new(AskService::new()),
                 listen: Arc::new(ListenService::new()),
+                bundled_whisper,
                 pool: Mutex::new(pool),
                 hotkeys: Mutex::new(None),
                 gate: Mutex::new(Gate::NeedsPermission),

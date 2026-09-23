@@ -87,6 +87,7 @@ export const VoiceSetup = ({
   const [deepgramKeyInput, setDeepgramKeyInput] = useState('');
   const [deepgramSaving, setDeepgramSaving] = useState(false);
   const whisperRef = useRef<WhisperStatus | null>(null);
+  const pendingDownloadRef = useRef<string | null>(null);
   whisperRef.current = whisper;
   const config = data.config;
   const deepgramKey =
@@ -156,8 +157,14 @@ export const VoiceSetup = ({
   useEffect(() => {
     if (!cancelOnUnmount) return;
     return () => {
-      if (whisperRef.current?.download)
+      const hasActiveDownload = Boolean(whisperRef.current?.download);
+      const hasPendingDownloadRequest = pendingDownloadRef.current !== null;
+      if (hasActiveDownload || hasPendingDownloadRequest) {
+        // Clear the local marker before awaiting cancellation so a request that
+        // rejects because cancellation won the race cannot surface a failure.
+        pendingDownloadRef.current = null;
         void whisperCancelDownload().catch(() => {});
+      }
     };
   }, [cancelOnUnmount]);
 
@@ -211,15 +218,23 @@ export const VoiceSetup = ({
     }
   };
   const startDownload = async (id: string) => {
-    if (activeDownload) return;
+    if (activeDownload || pendingDownloadRef.current !== null) return;
+    // Mark the request before invoking Tauri. Onboarding can unmount before
+    // whisperDownload resolves and must still cancel this not-yet-authoritative
+    // request.
+    pendingDownloadRef.current = id;
     setDownloadError('');
     setError('');
     try {
       await whisperDownload(id);
       await refreshWhisper();
     } catch (e) {
-      setDownloadError(safeVoiceError('Could not start model download'));
-      await refreshWhisper();
+      if (pendingDownloadRef.current === id) {
+        setDownloadError(safeVoiceError('Could not start model download'));
+        await refreshWhisper();
+      }
+    } finally {
+      if (pendingDownloadRef.current === id) pendingDownloadRef.current = null;
     }
   };
   const cancelDownload = async () => {

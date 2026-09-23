@@ -31,6 +31,7 @@ pub struct DictationDraft {
 /// Unlike `TurnAssembler` there is no turn closing, silence cadence, or
 /// channel switching — `finish()` yields the whole draft once and resets.
 /// Live snapshots are `final: false`; only `finish()` marks `final: true`.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct DraftAssembler {
     committed: String,
@@ -81,6 +82,7 @@ impl DraftAssembler {
     }
 }
 
+#[allow(dead_code)]
 fn append_segment(committed: &mut String, segment: &str) {
     if !committed.is_empty() {
         committed.push(' ');

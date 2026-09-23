@@ -690,17 +690,24 @@ mod tests {
     }
 
     fn temp_root() -> PathBuf {
-        let root = std::env::temp_dir().join(format!(
-            "marvis-voice-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&root).unwrap();
-        root
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        static NEXT_ROOT: AtomicU64 = AtomicU64::new(0);
+        let base = std::env::temp_dir();
+        loop {
+            let root = base.join(format!(
+                "marvis-voice-{}-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos(),
+                NEXT_ROOT.fetch_add(1, Ordering::Relaxed)
+            ));
+            if fs::create_dir(&root).is_ok() {
+                return root;
+            }
+        }
     }
 
     #[tokio::test]

@@ -139,6 +139,7 @@ impl Db {
             std::fs::create_dir_all(parent)?;
         }
         let conn = Connection::open(&path)?;
+        migrate(&conn)?;
         conn.execute_batch(SCHEMA)?;
         // After open so an existing file's mode is corrected too.
         #[cfg(unix)]
@@ -412,6 +413,51 @@ impl Db {
         })
         .transpose()
     }
+}
+
+/// Upgrade databases created before the `ai_messages`/`transcripts.text`
+/// renames. Runs before `SCHEMA`: `CREATE TABLE IF NOT EXISTS messages`
+/// would otherwise create an empty `messages` table that blocks the
+/// rename, and a table that already exists is never re-created — so an
+/// old `transcripts` would keep `text`/no `audio_file` forever and every
+/// query against the new columns would fail.
+fn migrate(conn: &Connection) -> anyhow::Result<()> {
+    let table_exists = |name: &str| -> rusqlite::Result<bool> {
+        conn.query_row(
+            "SELECT COUNT(*) > 0 FROM sqlite_master
+             WHERE type = 'table' AND name = ?1",
+            [name],
+            |row| row.get(0),
+        )
+    };
+    if table_exists("ai_messages")? {
+        if table_exists("messages")? {
+            // A build with the new schema already ran once: `messages`
+            // exists alongside the legacy table — merge rather than
+            // rename, then drop the old one.
+            conn.execute_batch(
+                "INSERT INTO messages (session_id, role, content, ts)
+                 SELECT session_id, role, content, ts FROM ai_messages;
+                 DROP TABLE ai_messages;",
+            )?;
+        } else {
+            conn.execute_batch("ALTER TABLE ai_messages RENAME TO messages")?;
+        }
+    }
+    if table_exists("transcripts")? {
+        let mut stmt = conn.prepare("PRAGMA table_info(transcripts)")?;
+        let columns = stmt
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<rusqlite::Result<Vec<String>>>()?;
+        let has = |name: &str| columns.iter().any(|c| c == name);
+        if has("text") && !has("content") {
+            conn.execute_batch("ALTER TABLE transcripts RENAME COLUMN text TO content")?;
+        }
+        if !has("audio_file") {
+            conn.execute_batch("ALTER TABLE transcripts ADD COLUMN audio_file TEXT")?;
+        }
+    }
+    Ok(())
 }
 
 /// Unix-epoch seconds now.
@@ -709,6 +755,110 @@ mod tests {
         assert_eq!(db.session_active_id("ask").unwrap(), Some(sid));
         db.session_end(sid).unwrap();
         assert_eq!(db.session_active_id("ask").unwrap(), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The schema used before the `ai_messages`/`transcripts.text`
+    /// renames — kept verbatim so the migration test builds a real v1
+    /// file instead of the current `SCHEMA`.
+    const V1_SCHEMA: &str = "
+        CREATE TABLE sessions (
+            id             INTEGER PRIMARY KEY,
+            type           TEXT NOT NULL,
+            title          TEXT,
+            started_at     INTEGER NOT NULL,
+            ended_at       INTEGER,
+            last_active_at INTEGER NOT NULL
+        );
+        CREATE TABLE ai_messages (
+            id         INTEGER PRIMARY KEY,
+            session_id INTEGER NOT NULL,
+            role       TEXT NOT NULL,
+            content    TEXT NOT NULL,
+            ts         INTEGER NOT NULL,
+            FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+        );
+        CREATE TABLE transcripts (
+            id         INTEGER PRIMARY KEY,
+            session_id INTEGER NOT NULL,
+            speaker    TEXT NOT NULL,
+            text       TEXT NOT NULL,
+            ts         INTEGER NOT NULL,
+            FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+        );
+    ";
+
+    #[test]
+    fn migrate_upgrades_pre_rename_database() {
+        let dir = tmp_dir();
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("marvis.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(V1_SCHEMA).unwrap();
+            conn.execute_batch(
+                "INSERT INTO sessions (type, started_at, last_active_at)
+                 VALUES ('ask', 1, 1);
+                 INSERT INTO ai_messages (session_id, role, content, ts)
+                 VALUES (1, 'user', 'old question', 1);
+                 INSERT INTO transcripts (session_id, speaker, text, ts)
+                 VALUES (1, 'me', 'old turn', 1);",
+            )
+            .unwrap();
+        }
+        let db = Db::at(&path).unwrap();
+        // The legacy table is gone, its rows live in `messages`.
+        let messages = db.messages_for(1).unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].content, "old question");
+        // `text` became `content`; `audio_file` was added nullable.
+        let transcripts = db.transcripts_for(1, None).unwrap();
+        assert_eq!(transcripts.len(), 1);
+        assert_eq!(transcripts[0].content, "old turn");
+        assert!(transcripts[0].audio_file.is_none());
+        // New writes hit the upgraded columns.
+        db.transcript_add(1, "them", "new turn", Some("/tmp/seg.wav"))
+            .unwrap();
+        let transcripts = db.transcripts_for(1, None).unwrap();
+        assert_eq!(transcripts[1].audio_file.as_deref(), Some("/tmp/seg.wav"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn migrate_merges_when_messages_table_already_exists() {
+        // A build with the new schema ran before the migration shipped:
+        // `messages` exists (possibly holding new rows) next to the
+        // legacy `ai_messages` — the old rows must be copied in, not
+        // dropped or blocked by the rename.
+        let dir = tmp_dir();
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("marvis.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(V1_SCHEMA).unwrap();
+            conn.execute_batch(
+                "INSERT INTO sessions (type, started_at, last_active_at)
+                 VALUES ('ask', 1, 1);
+                 INSERT INTO ai_messages (session_id, role, content, ts)
+                 VALUES (1, 'user', 'old question', 1);
+                 CREATE TABLE messages (
+                    id         INTEGER PRIMARY KEY,
+                    session_id INTEGER NOT NULL,
+                    role       TEXT NOT NULL,
+                    content    TEXT NOT NULL,
+                    ts         INTEGER NOT NULL,
+                    FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+                 );
+                 INSERT INTO messages (session_id, role, content, ts)
+                 VALUES (1, 'assistant', 'new answer', 2);",
+            )
+            .unwrap();
+        }
+        let db = Db::at(&path).unwrap();
+        let messages = db.messages_for(1).unwrap();
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].content, "old question");
+        assert_eq!(messages[1].content, "new answer");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

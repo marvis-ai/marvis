@@ -374,7 +374,12 @@ const Bar = () => {
     void windowSetChatOpen(true).catch(() => {});
     void listenStart()
       .then((next) => setListenState(next.state))
-      .catch(() => raise('Listen failed'))
+      .catch((e: unknown) =>
+        // The invoke message is already curated ('no audio source
+        // available', a needs_setup reason) — surface it like
+        // useDictation does instead of a bare 'Listen failed'.
+        raise(typeof e === 'string' && e ? e : 'Listen failed'),
+      )
       .finally(() => {
         speechBusy.current = false;
       });

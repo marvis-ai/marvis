@@ -68,8 +68,8 @@ pub enum Dir {
 /// The bar window's two widths: the capsule IS the window under liquid
 /// glass, so idle rests at BAR_IDLE_W (the 3-icon row) and any expanded
 /// content — input row, gate cards — uses BAR_W. Height never changes.
-const BAR_IDLE_W: f64 = 136.0;
-const BAR_W: f64 = 480.0;
+const BAR_IDLE_W: f64 = 140.0;
+const BAR_W: f64 = 600.0;
 const BAR_H: f64 = 64.0;
 /// Bar window label — the ask event target now that the chat card lives
 /// inside the bar window (`emit_to(BAR_LABEL, "ask:*", …)`).
@@ -88,7 +88,7 @@ pub const PREFS_LABEL: &str = "prefs";
 const PREFS_W: f64 = 720.0;
 const PREFS_H: f64 = 520.0;
 /// Transient alert toast — its own window because the bar is a fixed
-/// 480×64 pill with no room for an error row (the old inline row
+/// 600×64 pill with no room for an error row (the old inline row
 /// squeezed the pill's content). Label `alert`, `?view=alert`.
 pub const ALERT_LABEL: &str = "alert";
 const ALERT_W: f64 = 340.0;
@@ -506,7 +506,7 @@ impl WindowPool {
     /// `window_adjust_height(px)`: `px` is the desired TOTAL window
     /// height (the frontend measures the whole card). Expanded-only —
     /// ignored when the card is closed. `expanded_rect` clamps to
-    /// `[BAR_H + 40, min(900, free space)]` keeping the anchored edge
+    /// `[BAR_H + 40, free space]` keeping the anchored edge
     /// fixed; the clamped result is recorded for later expands.
     pub fn adjust_height(&mut self, px: f64) {
         if !px.is_finite() {

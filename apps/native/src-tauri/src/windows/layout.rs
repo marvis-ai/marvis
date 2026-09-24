@@ -11,8 +11,6 @@ pub const EDGE_MARGIN: f64 = 12.0;
 
 /// Expanded-card width (spec §Window model: chat/listen are 600 wide).
 pub const EXPANDED_W: f64 = 600.0;
-/// Total window height ceiling while expanded (spec: ≤ 900).
-pub const MAX_EXPANDED_H: f64 = 900.0;
 /// Minimum chat content height (spec: 40 → window ≥ pill + 40).
 pub const MIN_CHAT_H: f64 = 40.0;
 
@@ -29,9 +27,10 @@ pub fn expand_dir_for(bar: Rect, work: Rect) -> Dir {
 
 /// The live window rect while expanded: `EXPANDED_W` wide, recentred on
 /// the pill's center-x and clamped inside `work`; total height
-/// `bar.h + chat_h` clamped to `[bar.h + MIN_CHAT_H, min(MAX_EXPANDED_H,
-/// free space in `dir`)]`. The anchored edge is fixed — grow-down keeps
-/// `bar.y`, grow-up keeps `bar.bottom()`.
+/// `bar.h + chat_h` clamped to `[bar.h + MIN_CHAT_H, free space in
+/// `dir`]` — no fixed ceiling, the card may fill the work area. The
+/// anchored edge is fixed — grow-down keeps `bar.y`, grow-up keeps
+/// `bar.bottom()`.
 pub fn expanded_rect(bar: Rect, dir: Dir, chat_h: f64, work: Rect) -> Rect {
     let min = bar.h + MIN_CHAT_H;
     let free = if dir == Dir::Up {
@@ -39,7 +38,7 @@ pub fn expanded_rect(bar: Rect, dir: Dir, chat_h: f64, work: Rect) -> Rect {
     } else {
         work.bottom() - bar.y
     };
-    let max = MAX_EXPANDED_H.min(free).max(min);
+    let max = free.max(min);
     let h = (bar.h + chat_h).clamp(min, max);
     let y = if dir == Dir::Up {
         bar.bottom() - h
@@ -123,8 +122,9 @@ mod tests {
         w: 1440.0,
         h: 875.0,
     };
-    /// The input-mode pill (136-capsule expands identically — only
-    /// center-x and the anchored edge matter).
+    /// A pill narrower than the card, so the recenter math stays
+    /// exercised (the 140-capsule expands identically — only center-x
+    /// and the anchored edge matter).
     const PILL: Rect = Rect {
         x: 100.0,
         y: 33.0,
@@ -233,8 +233,8 @@ mod tests {
     }
 
     #[test]
-    fn expanded_rect_clamps_height_to_900_and_free_space() {
-        // The 900 ceiling binds when the grow direction has ≥900 px free.
+    fn expanded_rect_clamps_height_to_free_space() {
+        // No fixed ceiling — the grow direction's free space is the cap.
         let tall = Rect {
             x: 0.0,
             y: 0.0,
@@ -242,12 +242,11 @@ mod tests {
             h: 1200.0,
         };
         let r = expanded_rect(PILL, Dir::Down, 5000.0, tall);
-        assert_eq!(r.h, 900.0);
-        // In WORK the free space below PILL caps under the ceiling:
-        // 900 − 33 = 867.
+        assert_eq!(r.h, tall.bottom() - PILL.y); // 1200 − 33 = 1167
+                                                 // In WORK the free space below PILL caps: 900 − 33 = 867.
         let r = expanded_rect(PILL, Dir::Down, 5000.0, WORK);
         assert_eq!(r.h, WORK.bottom() - PILL.y);
-        // Bar near the work bottom growing down: free space caps below 900.
+        // Bar near the work bottom growing down: 300 px free.
         let low = Rect {
             y: WORK.bottom() - 300.0,
             ..PILL
@@ -295,8 +294,8 @@ mod tests {
             w: 600.0,
             h: 264.0,
         };
-        let pill = derive_pill_rect(dragged, 136.0, 64.0, Dir::Up);
-        assert_eq!(pill.x, dragged.center_x() - 68.0);
+        let pill = derive_pill_rect(dragged, 140.0, 64.0, Dir::Up);
+        assert_eq!(pill.x, dragged.center_x() - 70.0);
         assert_eq!(pill.bottom(), dragged.bottom());
     }
 }

@@ -546,7 +546,7 @@ fn deepgram_validation_payload(key: &str) -> serde_json::Value {
 /// Raise the alert toast with `message`.
 ///
 /// The toast is a window of its own because the bar is a fixed-height
-/// capsule (112⇄480 wide) — the old inline error row squeezed the
+/// capsule (140⇄600 wide) — the old inline error row squeezed the
 /// pill's content. It is purely informational and auto-dismisses.
 fn show_alert(app: &AppHandle, message: &str) {
     let state = app.state::<AppState>();
@@ -702,7 +702,7 @@ fn window_pref_value(value: &serde_json::Value) -> Result<Option<f64>, String> {
 pub(crate) fn persist_bar_position(app: &AppHandle) {
     let state = app.state::<AppState>();
     // The idle capsule rect, not the live one: a drag while the bar is
-    // expanded (480) must persist the capsule's anchor, else relaunch
+    // expanded (600) must persist the capsule's anchor, else relaunch
     // shifts the capsule left by half the expansion.
     let rect = state.pool.lock().idle_bar_rect();
     let updated = {
@@ -1458,8 +1458,8 @@ fn window_adjust_height(state: State<'_, AppState>, height: f64) {
 }
 
 /// The webview's pill⇄input morph signal — under liquid glass the
-/// capsule IS the window, so the window resizes to match (idle 112,
-/// expanded 480, same 64 height and capsule radius).
+/// capsule IS the window, so the window resizes to match (idle 140,
+/// expanded 600, same 64 height and capsule radius).
 #[tauri::command]
 fn window_set_bar_expanded(state: State<'_, AppState>, expanded: bool) {
     state.pool.lock().set_bar_expanded(expanded);

@@ -1,7 +1,7 @@
 /**
  * The always-on-top bar (`?view=bar`) — the UNIFIED window. Two shapes:
  *
- *  - Pill modes (mini | input | permission): the 136⇄480×64 capsule⇄
+ *  - Pill modes (mini | input | permission): the 140⇄600×64 capsule⇄
  *    input morph — the capsule IS the window under liquid glass, so
  *    `expanded` reports to `window_set_bar_expanded` and Rust animates
  *    the width change. Unchanged mechanics.
@@ -60,17 +60,12 @@ import { AskInput } from '@/components/bar/AskInput';
 import { BarButton } from '@/components/bar/BarButton';
 import { BootErrorRow } from '@/components/bar/BootErrorRow';
 import { DictationWaveform } from '@/components/bar/DictationWaveform';
-import { Grip } from '@/components/bar/Grip';
 import { IrisButton } from '@/components/bar/IrisButton';
 import { PermissionRow } from '@/components/bar/PermissionRow';
 import { ChatSection } from '@/components/ChatSection';
 import { LaunchIntro } from '@/components/LaunchIntro';
 import { ListenSection } from '@/components/ListenSection';
 import { PANEL } from '@/lib/classes';
-
-/** Card's max-height so the reported height never exceeds Rust's 900
- *  cap — frost keeps the stage's `p-1` (8 px of chrome). */
-const CARD_MAX = 900 - 8;
 
 const Bar = () => {
   const { gate, bootError, busy, setBusy, bootstrap, grantScreen } = useGate();
@@ -186,7 +181,7 @@ const Bar = () => {
   // which active section is shown when it is reopened.
 
   // The capsule IS the window under liquid glass — the pill⇄input morph
-  // resizes it (idle 136 ⇄ 480). While the card is open the morph is
+  // resizes it (idle 140 ⇄ 600). While the card is open the morph is
   // dormant: the width report is skipped so `bar_rect` (the canonical
   // pill) restores verbatim on collapse.
   useEffect(() => {
@@ -410,7 +405,6 @@ const Bar = () => {
         onSubmit={submitAsk}
         className={rowCls}
         data-tauri-drag-region>
-        <Grip />
         <IrisButton
           active={
             listenState === 'listening' || dictation.state === 'listening'
@@ -522,7 +516,6 @@ const Bar = () => {
           // the reduced-motion query.
           activeWork && !cardOpen && 'animate-pulse',
         )}
-        style={cardOpen ? { maxHeight: CARD_MAX } : undefined}
         data-expanded={showInputRow || undefined}
         data-tauri-drag-region={cardOpen ? undefined : 'deep'}>
         {row()}

@@ -413,7 +413,7 @@ export const windowRecenter = () => invoke<void>('window_recenter');
 export const windowBarEdge = () => invoke<string>('window_bar_edge');
 
 /** Reports the whole card's desired TOTAL window height — expanded
- * mode only; the backend clamps [104, min(900, free space)]. */
+ * mode only; the backend clamps [104, free space]. */
 export const windowAdjustHeight = (height: number) =>
   invoke<void>('window_adjust_height', { height });
 
@@ -429,7 +429,7 @@ export const windowFocusBar = () => invoke<void>('window_focus_bar');
 
 /** The pill⇄input morph resizes the window itself (the capsule IS the
  * window under liquid glass) — report `expanded` so Rust can animate
- * the idle 112 ⇄ expanded 480 width change. */
+ * the idle 140 ⇄ expanded 600 width change. */
 export const windowSetBarExpanded = (expanded: boolean) =>
   invoke<void>('window_set_bar_expanded', { expanded });
 

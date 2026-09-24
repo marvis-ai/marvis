@@ -201,13 +201,17 @@ from the bar.
   (`#rrggbb`, `#3a7294` default); theme.ts applies it to `--accent` and
   every token downstream (`--primary`, soft/text variants, focus ring)
   derives live. The "one hue" rule holds — the user just picks which hue.
-- **Hotkeys are all rebindable** — the four actions
-  (`toggle_visibility` `Cmd+/`, `next_step` `Cmd+Enter`, `screen_only`
-  `Cmd+Shift+S`, `show_settings` `Cmd+,`) live in `[hotkeys]`; clicking a
-  binding captures the next chord (modifier required, Esc cancels) and
-  writes it through `config_set`, which delta-swaps the registered set.
-  No fixed move/scroll/click-through/display shortcuts — the bar moves
-  by drag or the Bar-tab picker.
+- **Hotkeys** — one global, rebindable chord (`toggle_input`
+  `Cmd+Alt+Space`) lives in `[hotkeys]`; it emits `bar:toggle-input` to
+  the webview, which morphs capsule ⇄ input pill only — the card never
+  opens from it. Clicking the binding captures
+  the next chord (modifier required, Esc cancels) and writes it through
+  `config_set`, which delta-swaps the registered set. The rest are fixed
+  keys inside the bar: `Cmd+,` opens settings while the bar is active,
+  `Enter` sends / `Shift+Enter` adds a line / `Cmd+Enter` sends with the
+  current screenshot at the input. No fixed
+  move/scroll/click-through/display shortcuts — the bar moves by drag
+  or the Bar-tab picker.
 - Appearance control (Auto / Light / Dark segmented) lives in General;
   `is-dark` on the stage flips the whole scene.
 

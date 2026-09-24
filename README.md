@@ -33,7 +33,8 @@ your device except the requests you send to the providers you choose.
 - **Your choice of STT** — Deepgram (streaming, interim results) or
   fully-local `whisper-cli` (bundled whisper.cpp sidecar; tiny / base /
   small models downloaded on demand from Hugging Face).
-- **Global hotkeys** — four rebindable actions (see [Hotkeys](#hotkeys)).
+- **Global hotkey** — `Cmd+Alt+Space` shows/hides the bar's input,
+  rebindable (see [Hotkeys](#hotkeys)).
 - **Deep links** — `marvis://ask?text=...` focuses the bar and fires an Ask;
   any other `marvis://` link just surfaces the app.
 - **Onboarding + permission gates** — guided first-run wizard; the app
@@ -86,15 +87,21 @@ cd apps/native/src-tauri && cargo test
 
 ## Hotkeys
 
-Defaults — all rebindable under `[hotkeys]` in `~/.marvis/config.toml` or
-Settings → Hotkeys:
+The one global chord is rebindable under `[hotkeys]` in
+`~/.marvis/config.toml` or Settings → Hotkeys:
 
 | Action | Shortcut |
 | --- | --- |
-| Toggle bar visibility | `Cmd+/` |
-| Ask / next step (screen-only ask) | `Cmd+Enter` |
-| Manual screenshot ask | `Cmd+Shift+S` |
+| Show / hide the input | `Cmd+Alt+Space` |
+
+Fixed keys inside the bar (they fire only while it's focused):
+
+| Action | Shortcut |
+| --- | --- |
 | Open settings | `Cmd+,` |
+| Send | `Enter` |
+| New line | `Shift+Enter` |
+| Send with screenshot | `Cmd+Enter` |
 
 The bar itself moves by pointer drag or the Settings → Bar edge picker —
 there are no fixed move/scroll/click-through shortcuts.

@@ -210,7 +210,8 @@ export const providerSetEnabled = (provider: string, enabled: boolean) =>
 /** Fire-and-forget: returns after pre-flight; tokens stream as `ask:*`. */
 export const askSend = (text: string) => invoke<void>('ask_send', { text });
 
-/** The bar's camera affordance — same screen-only ask as `Cmd+Shift+S`. */
+/** The bar's camera affordance — a screen-only ask (fixed prompt,
+ *  frame required). */
 export const askSendScreenOnly = () => invoke<void>('ask_send_screen_only');
 
 export const askClose = () => invoke<void>('ask_close');
@@ -416,6 +417,10 @@ export const windowAdjustHeight = (height: number) =>
 export const windowSetChatOpen = (open: boolean) =>
   invoke<void>('window_set_chat_open', { open });
 
+/** Focus the bar window — the `toggle_input` hotkey's show path calls
+ * it so a global-hotkey reveal lands typing in the field. */
+export const windowFocusBar = () => invoke<void>('window_focus_bar');
+
 /** The pill⇄input morph resizes the window itself (the capsule IS the
  * window under liquid glass) — report `expanded` so Rust can animate
  * the idle 112 ⇄ expanded 480 width change. */
@@ -476,7 +481,7 @@ export const sessionEndActive = (kind: string) =>
 export const configGet = () => invoke<Config>('config_get');
 
 /**
- * Writable keys only: `hotkeys.<action>`, `window.bar_x`, `window.bar_y`
+ * Writable keys only: `hotkeys.toggle_input`, `window.bar_x`, `window.bar_y`
  * (number sets, null clears), `app.onboarding_done` (bool),
  * `app.appearance` (`'auto'|'light'|'dark'`), `app.accent` (`'#rrggbb'`,
  * `''` resets), `compat.name`, `compat.base_url` (http(s) URL, `''`

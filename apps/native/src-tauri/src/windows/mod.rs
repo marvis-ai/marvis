@@ -346,7 +346,8 @@ impl WindowPool {
         }
     }
 
-    /// `window_set_chat_open` / `Cmd+/` / ask pre-flight: animate the bar
+    /// `window_set_chat_open` / tray Toggle / ask
+    /// pre-flight: animate the bar
     /// window collapsed ⇄ expanded per §Expansion. Emits nothing — the
     /// webview learns the mode from `ask:*` or its own action (window
     /// height). OPEN is a no-op off-`Main` (mirrors panels not existing
@@ -379,7 +380,9 @@ impl WindowPool {
         }
     }
 
-    /// `Cmd+/`/`window_toggle_all`/tray Toggle: open ⇄ close the card.
+    /// `window_toggle_all`/tray Toggle: open ⇄ close the card. (The
+    /// `toggle_input` hotkey is NOT here — it only morphs the bar's
+    /// input pill, webview-side.)
     pub fn toggle_chat(&mut self, app: &AppHandle) {
         self.set_chat_open(app, !self.chat_open);
     }

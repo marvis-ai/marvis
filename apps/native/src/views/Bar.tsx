@@ -1097,11 +1097,11 @@ const Bar = () => {
             onClick={toggleCapture}>
             <MonitorDotIcon className='size-5' />
             {/* Corner badge carries the ping so the glyph stays
-                legible; `.animate-ping` is suppressed under reduced
-                motion in index.css. */}
+                legible; `.animate-capture-ping` is suppressed under
+                reduced motion in index.css. */}
             {captureRunning && (
               <span
-                className='absolute top-1 right-1 size-1.5 animate-ping rounded-full bg-accent'
+                className='animate-capture-ping absolute top-1 right-1 size-1.5 rounded-full bg-accent/50'
                 aria-hidden='true'
               />
             )}

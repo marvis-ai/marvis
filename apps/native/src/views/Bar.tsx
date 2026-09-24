@@ -53,6 +53,7 @@ import {
 import {
   alertShow,
   askClose,
+  askCurrent,
   askSend,
   captureStart,
   captureStatus,
@@ -427,6 +428,11 @@ const Bar = () => {
     void captureStatus()
       .then((next) => setCaptureRunning(next.running))
       .catch(() => {});
+    // Same resync for the ask tail — an `ask:state` emit that raced
+    // this webview's listener would otherwise leave the pulse stale.
+    void askCurrent()
+      .then((next) => setAskState(next.state))
+      .catch(() => {});
   }, [bootstrap]);
 
   useTauriEvent<AppStatePayload>(EV_APP_STATE, (p) => setGate(p.gate));
@@ -481,8 +487,9 @@ const Bar = () => {
     void windowSetChatOpen(false).catch(() => {});
     setGate('needs_permission');
   });
-  // Capture lifecycle (Task 2 emits after every command + automatic
-  // transition) — the MonitorDot toggle tracks it live.
+  // Capture lifecycle snapshots — emitted after every `capture_*`
+  // command and every automatic gate transition, so the MonitorDot
+  // toggle tracks the recorder live.
   useTauriEvent<CaptureStatePayload>(EV_CAPTURE_STATE, (p) => {
     setCaptureRunning(p.running);
   });
@@ -785,16 +792,21 @@ const Bar = () => {
   const toggleCapture = () => {
     if (busy) return;
     setBusy(true);
+    const failure = captureRunning
+      ? 'Screen recording stop failed'
+      : 'Screen recording start failed';
     const transition = captureRunning ? captureStop() : captureStart();
     void transition
-      .then((next) => setCaptureRunning(next.running))
-      .catch(() =>
-        raise(
-          captureRunning
-            ? 'Screen recording stop failed'
-            : 'Screen recording start failed',
-        ),
-      )
+      .then((next) => {
+        // The commands resolve `{ running, frames }` rather than
+        // rejecting, so a failed transition comes back as the
+        // UNCHANGED flag — surface it, then resync as usual.
+        if (next.running === captureRunning) {
+          raise(failure);
+        }
+        setCaptureRunning(next.running);
+      })
+      .catch(() => raise(failure))
       .finally(() => setBusy(false));
   };
 
@@ -825,6 +837,12 @@ const Bar = () => {
         : showInputRow
           ? 'Dictate'
           : 'Listen';
+
+  /** The collapsed screen-capture toggle's label — the control flips
+   *  between starting and stopping the recorder. */
+  const captureLabel = captureRunning
+    ? 'Stop screen recording'
+    : 'Start screen recording';
 
   /** Shared press route for the split mic controls — collapsed Listen
    *  (`MicAudioLinesIcon`) and expanded dictation (`MicIcon`). A live
@@ -1072,16 +1090,8 @@ const Bar = () => {
           <button
             type='button'
             className={cn(BAR_BTN, 'relative', captureRunning && 'text-accent')}
-            aria-label={
-              captureRunning
-                ? 'Stop screen recording'
-                : 'Start screen recording'
-            }
-            title={
-              captureRunning
-                ? 'Stop screen recording'
-                : 'Start screen recording'
-            }
+            aria-label={captureLabel}
+            title={captureLabel}
             aria-pressed={captureRunning}
             disabled={gate !== 'main'}
             onClick={toggleCapture}>

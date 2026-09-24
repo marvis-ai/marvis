@@ -1503,12 +1503,22 @@ fn capture_status(state: State<'_, AppState>) -> serde_json::Value {
 /// Emits `capture:state`, then resolves to `{"running", "frames"}`.
 #[tauri::command]
 fn capture_start(app: AppHandle) -> serde_json::Value {
+    let state = app.state::<AppState>();
+    // Crafted-invoke guard: the shipped UI disables the toggle outside
+    // `Main`, but a crafted invoke during onboarding would otherwise
+    // light the recorder while capture doesn't exist yet. The command
+    // still resolves the (unchanged) status — the toggle resyncs off
+    // `running` either way.
+    if *state.gate.lock() != Gate::Main {
+        log::warn!("capture_start dropped while gate != Main");
+        return capture_snapshot(&state);
+    }
     start_capture(&app)
 }
 
 /// Idempotent capture stop — the same boundary `leave_main` and app
-/// teardown use. Emits `capture:state`, then resolves to
-/// `{"running", "frames"}`.
+/// teardown use. Deliberately ungated: stopping must always be safe.
+/// Emits `capture:state`, then resolves to `{"running", "frames"}`.
 #[tauri::command]
 fn capture_stop(app: AppHandle) -> serde_json::Value {
     stop_capture(&app)
@@ -2008,6 +2018,33 @@ mod tests {
                 "{signature} must hold the speech lifecycle lock across the await"
             );
         }
+    }
+
+    /// `capture_start` keeps the same crafted-invoke guard as
+    /// `ask_send`/`ask_send_screen_only`: it mutates only while the gate
+    /// is `Main`. `capture_stop` deliberately stays ungated — stopping
+    /// must always be safe.
+    #[test]
+    fn capture_start_is_gate_guarded_but_capture_stop_is_not() {
+        let source = include_str!("lib.rs");
+        let start_body = source
+            .split("fn capture_start(app: AppHandle)")
+            .nth(1)
+            .and_then(|rest| rest.split("\n#[tauri::command]").next())
+            .expect("capture_start body not found");
+        assert!(
+            start_body.contains("*state.gate.lock() != Gate::Main"),
+            "capture_start must drop the invoke while gate != Main"
+        );
+        let stop_body = source
+            .split("fn capture_stop(app: AppHandle)")
+            .nth(1)
+            .and_then(|rest| rest.split("\nfn ").next())
+            .expect("capture_stop body not found");
+        assert!(
+            !stop_body.contains("Gate::Main"),
+            "capture_stop must stay callable at any gate"
+        );
     }
 
     /// `leave_main` must stop dictation: the session is bound to the

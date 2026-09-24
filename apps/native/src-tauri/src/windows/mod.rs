@@ -176,19 +176,40 @@ impl WindowPool {
             // `data-tauri-drag-region`, edge snaps, and reclamps alike.
             // `Moved` fires per frame during a drag, so the write is
             // debounced: the last generation wins after 400 ms of quiet.
+            //
+            // `Resized` is different: macOS 26 edge-drags resize
+            // borderless windows even with `resizable(false)`, so any
+            // stray size snaps back to the canonical bounds — fully for
+            // the fixed-size pill, x/width only for the open card (its
+            // dragged height is adopted via `window_adjust_height`).
             let app_moved = app.clone();
+            let app_resized = app.clone();
             bar.on_window_event(move |event| {
-                if !matches!(event, tauri::WindowEvent::Moved(_)) {
-                    return;
-                }
-                let gen = BAR_MOVE_GEN.fetch_add(1, Ordering::Relaxed) + 1;
-                let app = app_moved.clone();
-                std::thread::spawn(move || {
-                    std::thread::sleep(Duration::from_millis(400));
-                    if BAR_MOVE_GEN.load(Ordering::Relaxed) == gen {
-                        crate::persist_bar_position(&app);
+                match event {
+                    tauri::WindowEvent::Moved(_) => {
+                        let gen = BAR_MOVE_GEN.fetch_add(1, Ordering::Relaxed) + 1;
+                        let app = app_moved.clone();
+                        std::thread::spawn(move || {
+                            std::thread::sleep(Duration::from_millis(400));
+                            if BAR_MOVE_GEN.load(Ordering::Relaxed) == gen {
+                                crate::persist_bar_position(&app);
+                            }
+                        });
                     }
-                });
+                    tauri::WindowEvent::Resized(_) => {
+                        // Our animator emits `Resized` per tick — only
+                        // enforce while no animation is in flight.
+                        if movement::is_animating(BAR_LABEL) {
+                            return;
+                        }
+                        app_resized
+                            .state::<crate::AppState>()
+                            .pool
+                            .lock()
+                            .enforce_bar_bounds();
+                    }
+                    _ => {}
+                }
             });
         }
         pool.bar = Some(bar);
@@ -399,6 +420,7 @@ impl WindowPool {
             movement::animate(&bar, self.bar_rect, ANIM_DUR);
             set_glass_radius(app, &bar, BAR_H / 2.0);
         }
+        self.sync_bar_size_limits();
     }
 
     /// Re-apply the bar's glass effect at its CURRENT radius — called
@@ -473,6 +495,7 @@ impl WindowPool {
             w: BAR_IDLE_W,
             h: BAR_H,
         };
+        self.sync_bar_size_limits();
         if let Some(bar) = &self.bar {
             movement::animate(bar, self.target_rect(), ANIM_DUR);
         }
@@ -501,6 +524,7 @@ impl WindowPool {
         if let Some(bar) = &self.bar {
             movement::animate(bar, self.target_rect(), ANIM_DUR);
         }
+        self.sync_bar_size_limits();
     }
 
     /// `window_adjust_height(px)`: `px` is the desired TOTAL window
@@ -556,6 +580,7 @@ impl WindowPool {
         if let Some(bar) = &self.bar {
             set_rect(bar, rect);
         }
+        self.sync_bar_size_limits();
         self.reclamp();
     }
 
@@ -630,6 +655,71 @@ impl WindowPool {
         }
     }
 
+    /// Keep Tahoe's resize affordance honest — macOS 26 edge-drags
+    /// borderless windows even with `resizable(false)`, and the ↔
+    /// cursor still appears on the side edges. Pinning min == max on
+    /// the width axis makes AppKit drop the horizontal affordance and
+    /// clamps the drag itself (`enforce_bar_bounds` stays as the
+    /// backstop). An open card keeps a free height axis within
+    /// `[BAR_H + MIN_CHAT_H, work height]` so the ↕ cursor remains
+    /// honest. Programmatic `set_size` ignores these limits, so the
+    /// morph animations are unaffected.
+    fn sync_bar_size_limits(&self) {
+        let Some(bar) = &self.bar else { return };
+        // `bar_rect` still holds the DEFAULT_WORK sentinel until
+        // `position_bar_at_startup` runs — a real bar is never wider
+        // than EXPANDED_W.
+        if self.bar_rect.w > layout::EXPANDED_W {
+            return;
+        }
+        let (w, min_h, max_h) = if self.chat_open {
+            (
+                layout::EXPANDED_W,
+                BAR_H + layout::MIN_CHAT_H,
+                self.bar_work_area().h,
+            )
+        } else {
+            (self.bar_rect.w, BAR_H, BAR_H)
+        };
+        let _ = bar.set_min_size(Some(LogicalSize::new(w, min_h)));
+        let _ = bar.set_max_size(Some(LogicalSize::new(w, max_h)));
+    }
+
+    /// Snap the bar back to its canonical bounds after a stray user
+    /// resize — macOS 26 edge-drags resize borderless windows even with
+    /// `resizable(false)`. The pill is fixed-size and restores whole;
+    /// the open card restores only x/width (an edge-drag always changes
+    /// `w`), keeping the dragged height the webview adopts through
+    /// `window_adjust_height`. Called on `Resized` when no animation is
+    /// in flight.
+    fn enforce_bar_bounds(&self) {
+        let Some(bar) = &self.bar else { return };
+        // `bar_rect` still holds the DEFAULT_WORK sentinel until
+        // `position_bar_at_startup` runs — a real bar is never wider
+        // than EXPANDED_W.
+        if self.bar_rect.w > layout::EXPANDED_W {
+            return;
+        }
+        let Some(live) = window_rect(bar) else { return };
+        let off = |a: f64, b: f64| (a - b).abs() > 0.5;
+        if self.chat_open {
+            if !off(live.w, layout::EXPANDED_W) {
+                return;
+            }
+            let target = self.target_rect();
+            set_rect(
+                bar,
+                Rect {
+                    x: target.x,
+                    w: target.w,
+                    ..live
+                },
+            );
+        } else if off(live.w, self.bar_rect.w) || off(live.h, self.bar_rect.h) {
+            set_rect(bar, self.bar_rect);
+        }
+    }
+
     /// Pull the live bar rect from the OS so user drags stay
     /// authoritative. While the card is open the live rect IS the card —
     /// derive the canonical pill back via `expand_dir` (keeping the
@@ -685,6 +775,13 @@ fn build_window(
     let url = WebviewUrl::App(format!("index.html?view={label}").into());
     let win = WebviewWindowBuilder::new(app, label, url)
         .inner_size(w, h)
+        // Pin user-resize to the built size: Tahoe edge-drags borderless
+        // windows even with `resizable(false)`, and min == max drops the
+        // affordance/cursor. Programmatic `set_size` is not limited, so
+        // the bar's morphs still animate — `sync_bar_size_limits`
+        // re-pins to each canonical width afterward.
+        .min_inner_size(w, h)
+        .max_inner_size(w, h)
         .decorations(false)
         .transparent(true)
         .always_on_top(true)

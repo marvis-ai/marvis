@@ -28,14 +28,14 @@ import {
   sessionList,
   windowShowSettings,
   type ModelSelection,
-} from '../lib/commands';
+} from '@/lib/commands';
 import {
   EV_ASK_CHUNK,
   EV_ASK_DONE,
   EV_ASK_ERROR,
   EV_ASK_STATE,
   useTauriEvent,
-} from '../lib/events';
+} from '@/lib/events';
 import {
   ASK_MD,
   BTN_OUTLINE,
@@ -47,7 +47,7 @@ import {
   PANEL_HEAD,
   SPIN,
   cn,
-} from '../lib/classes';
+} from '@/lib/classes';
 
 type AskPhase = 'loading' | 'streaming' | 'idle';
 

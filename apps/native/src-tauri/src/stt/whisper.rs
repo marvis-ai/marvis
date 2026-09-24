@@ -51,6 +51,7 @@ pub struct WhisperProvider {
     model: String,
     channel: SpeakerChannel,
     binary: Option<PathBuf>,
+    diarize: bool,
     input: Option<mpsc::SyncSender<PcmChunk>>,
     stop: Arc<AtomicBool>,
     child: Arc<Mutex<Option<Child>>>,
@@ -58,11 +59,17 @@ pub struct WhisperProvider {
 }
 
 impl WhisperProvider {
-    pub fn new(model: impl Into<String>, channel: SpeakerChannel, bundled: Option<&Path>) -> Self {
+    pub fn new(
+        model: impl Into<String>,
+        channel: SpeakerChannel,
+        bundled: Option<&Path>,
+        diarize: bool,
+    ) -> Self {
         Self {
             model: model.into(),
             channel,
             binary: Self::discover_with_bundled(bundled).map(|(path, _)| path),
+            diarize,
             input: None,
             stop: Arc::new(AtomicBool::new(false)),
             child: Arc::new(Mutex::new(None)),
@@ -149,6 +156,7 @@ impl SttProvider for WhisperProvider {
         let stop = Arc::clone(&self.stop);
         let child = Arc::clone(&self.child);
         let channel = self.channel;
+        let diarize = self.diarize;
         self.worker = Some(thread::spawn(move || {
             run_chunks(
                 receiver,
@@ -157,6 +165,7 @@ impl SttProvider for WhisperProvider {
                 binary,
                 model,
                 channel,
+                diarize,
                 stop,
                 child,
             )
@@ -201,9 +210,15 @@ fn run_chunks(
     binary: PathBuf,
     model: PathBuf,
     channel: SpeakerChannel,
+    diarize: bool,
     stop: Arc<AtomicBool>,
     child_slot: Arc<Mutex<Option<Child>>>,
 ) {
+    // Diarization is progressive enhancement: a missing/unloadable
+    // embedding model leaves `speaker_idx` unset rather than failing STT.
+    let mut tracker = diarize
+        .then(crate::stt::speaker::tracker_if_installed)
+        .flatten();
     let mut buffer = Vec::with_capacity(WINDOW_SAMPLES);
     let mut consecutive_failures = 0;
     while !stop.load(Ordering::Acquire) {
@@ -228,10 +243,13 @@ fn run_chunks(
             ) {
                 Ok(Some(text)) => {
                     consecutive_failures = 0;
+                    let f32_samples: Vec<f32> =
+                        window.iter().map(|s| f32::from(*s) / 32_768.0).collect();
                     callback(TranscriptEvent {
                         channel,
                         text,
                         finality: Finality::Final,
+                        speaker_idx: tracker.as_mut().and_then(|t| t.assign(&f32_samples)),
                     });
                 }
                 Ok(None) => consecutive_failures = 0,
@@ -261,14 +279,7 @@ fn transcribe_window(
 ) -> anyhow::Result<Option<String>> {
     let wav = WavGuard::create(samples, channel)?;
     let mut child = Command::new(binary)
-        .args([
-            "-m",
-            &model.to_string_lossy(),
-            "-f",
-            &wav.path.to_string_lossy(),
-            "--no-timestamps",
-            "--output-txt",
-        ])
+        .args(whisper_cli_args(model, &wav.path))
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()?;
@@ -324,6 +335,22 @@ fn transcribe_window(
         return Err(anyhow::anyhow!("whisper-cli exited unsuccessfully"));
     }
     Ok(parse_output(&output?))
+}
+
+/// Per-window whisper-cli arguments. `-l auto` detects the spoken language
+/// and transcribes in it; without `-l` the CLI decodes every window as
+/// English, so non-English speech comes out as English-looking text.
+fn whisper_cli_args(model: &Path, wav: &Path) -> Vec<String> {
+    vec![
+        "-m".into(),
+        model.to_string_lossy().into_owned(),
+        "-f".into(),
+        wav.to_string_lossy().into_owned(),
+        "-l".into(),
+        "auto".into(),
+        "--no-timestamps".into(),
+        "--output-txt".into(),
+    ]
 }
 
 fn read_bounded(reader: impl Read) -> io::Result<Vec<u8>> {
@@ -580,6 +607,7 @@ mod tests {
             PathBuf::from("/missing/whisper-cli"),
             PathBuf::from("/missing/model.bin"),
             SpeakerChannel::Me,
+            false,
             Arc::new(AtomicBool::new(false)),
             Arc::new(Mutex::new(None)),
         );
@@ -587,6 +615,20 @@ mod tests {
             errors.lock().unwrap().as_slice(),
             &["Whisper provider failed repeatedly and is no longer usable"]
         );
+    }
+
+    /// Transcripts must stay in the spoken language: `-l auto` runs
+    /// whisper.cpp's language detection per window, and no translate flag
+    /// may ever reach the CLI.
+    #[test]
+    fn cli_args_detect_language_and_never_translate() {
+        let args = whisper_cli_args(Path::new("/model.bin"), Path::new("/in.wav"));
+        let language = args
+            .windows(2)
+            .find(|pair| pair[0] == "-l" || pair[0] == "--language")
+            .map(|pair| pair[1].as_str());
+        assert_eq!(language, Some("auto"));
+        assert!(!args.iter().any(|arg| arg == "-tr" || arg == "--translate"));
     }
 
     #[test]

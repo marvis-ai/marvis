@@ -30,6 +30,7 @@ import {
   type WhisperDownloadProgressPayload,
 } from '../../lib/events';
 import {
+  BTN_DANGER,
   BTN_LG,
   BTN_SM,
   BTN_LINK_LG,
@@ -62,6 +63,12 @@ const DEEPGRAM_MODELS = [
 ];
 
 const safeVoiceError = (fallback: string) => fallback;
+
+const formatVoiceBytes = (bytes: number) => {
+  if (bytes >= 1024 * 1024 * 1024)
+    return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+  return `${Math.round(bytes / (1024 * 1024))} MB`;
+};
 
 export const whisperSourceLabel = (source: WhisperBinarySource | null) => {
   if (source === 'Bundled') return 'Bundled with Marvis';
@@ -258,6 +265,18 @@ export const VoiceSetup = ({
     whisper?.models.filter((entry) => entry.installed) ?? [];
   const activeDownload = whisper?.download;
   const sherpaActiveDownload = sherpa?.download;
+  // Only `stt`-kind sherpa entries are selectable transcription models; the
+  // speaker-embedding entry drives diarization for both local providers.
+  const sherpaSttModels =
+    sherpa?.models.filter((entry) => entry.kind === 'stt') ?? [];
+  const speakerModel = sherpa?.models.find(
+    (entry) => entry.kind === 'speaker-embedding',
+  );
+  const speakerProgress =
+    speakerModel &&
+    (sherpaActiveDownload?.model === speakerModel.id
+      ? sherpaActiveDownload
+      : (sherpaProgress[speakerModel.id] ?? null));
   const save = (
     key: 'models.stt_provider' | 'models.stt_model',
     value: string,
@@ -400,7 +419,9 @@ export const VoiceSetup = ({
                   ? whisper?.binary && installedModels.length > 0
                     ? 'bg-accent'
                     : 'bg-[color-mix(in_oklch,var(--fg)_20%,transparent)]'
-                  : sherpa?.models.some((entry) => entry.installed)
+                  : sherpa?.models.some(
+                        (entry) => entry.kind === 'stt' && entry.installed,
+                      )
                     ? 'bg-accent'
                     : 'bg-[color-mix(in_oklch,var(--fg)_20%,transparent)]',
             )}
@@ -544,7 +565,7 @@ export const VoiceSetup = ({
               separate binary is needed.
             </p>
             <VoiceModelGrid
-              entries={sherpa?.models ?? []}
+              entries={sherpaSttModels}
               isInstalled={(id) =>
                 sherpa?.models.find((item) => item.id === id)?.installed ??
                 false
@@ -570,6 +591,73 @@ export const VoiceSetup = ({
           <p className={PROV_ERR}>{error || downloadError}</p>
         )}
       </div>
+      {provider !== 'deepgram' && speakerModel && (
+        <div className={cn(PROV_CARD, 'border-border')}>
+          <div className='flex items-center gap-2'>
+            <span
+              className={cn(
+                'size-1.75 flex-none rounded-full',
+                speakerModel.installed
+                  ? 'bg-accent'
+                  : 'bg-[color-mix(in_oklch,var(--fg)_20%,transparent)]',
+              )}
+            />
+            <span className={LBL}>Speaker diarization</span>
+            <span
+              className={cn(
+                NUM,
+                'ml-auto text-[10.5px] text-muted-foreground',
+              )}>
+              {formatVoiceBytes(speakerModel.bytes)}
+            </span>
+          </div>
+          <p className={PROV_NOTE}>
+            {speakerModel.description} Optional — shared by Whisper and Sherpa;
+            the transcript works without it, just without per-voice labels.
+          </p>
+          {speakerProgress && (
+            <div className='mt-2'>
+              <div className='flex justify-between text-[10px] text-muted-foreground'>
+                <span>Downloading…</span>
+                <span className={NUM}>
+                  {formatVoiceBytes(speakerProgress.received)} /{' '}
+                  {formatVoiceBytes(speakerProgress.total)}
+                </span>
+              </div>
+              <progress
+                className='mt-1 h-1.5 w-full accent-accent'
+                value={speakerProgress.received}
+                max={speakerProgress.total}
+              />
+            </div>
+          )}
+          <div className='mt-2 flex gap-1.5'>
+            {sherpaActiveDownload?.model === speakerModel.id ? (
+              <button
+                type='button'
+                className={cn(BTN_LG, BTN_OUTLINE)}
+                onClick={() => void cancelSherpaDownload()}>
+                Cancel
+              </button>
+            ) : !speakerModel.installed ? (
+              <button
+                type='button'
+                className={cn(BTN_LG, BTN_PRIMARY)}
+                disabled={Boolean(sherpaActiveDownload)}
+                onClick={() => void startSherpaDownload(speakerModel.id)}>
+                Download
+              </button>
+            ) : (
+              <button
+                type='button'
+                className={cn(BTN_LINK_LG, BTN_DANGER)}
+                onClick={() => void removeSherpaModel(speakerModel.id)}>
+                Remove
+              </button>
+            )}
+          </div>
+        </div>
+      )}
       {showSkip && (
         <div className='mt-3 flex justify-end gap-2'>
           <button

@@ -18,8 +18,9 @@
  * (`!introDone && !showInputRow`), covering the `gate === null` boot
  * frame too. An interrupt (hotkey expand, gate flip to
  * `needs_permission`, boot error) unmounts it mid-flight; the context
- * revert restores the row and Bar removes the splash node — the intro
- * replays on the next idle frame, completing once per webview.
+ * revert restores the row and Bar removes the splash node — an
+ * interrupted intro never replays (a remount finds no splash and
+ * completes immediately), so it finishes once per webview.
  * Reduced-motion never mounts it (`introDone` initializes true); the
  * splash then shows the static lockup until Bar's effect removes it.
  */
@@ -39,16 +40,22 @@ export const LaunchIntro = ({
     const splash = document.getElementById('boot-splash');
     // The collapsed row's controls — the form only renders in the
     // main/null-gate capsule, so this can't catch gate-card or retry
-    // buttons. icons[0] is the iris button; its inner span is the 24px
-    // iris box the mark merges onto.
+    // buttons. The iris is found structurally (the only `aria-hidden`
+    // span inside a bar control — the icon buttons' children are svgs),
+    // so a reordered or added control can't silently shift the merge
+    // target or hide a button forever.
     const icons = document.querySelectorAll('form button');
-    const iris = icons[0]?.querySelector('span') ?? null;
+    const iris = document.querySelector<HTMLElement>(
+      'form button > span[aria-hidden]',
+    );
+    const irisBtn = iris?.closest('button') ?? null;
     const mark = splash?.querySelector('.boot-mark') ?? null;
     const letters = splash?.querySelectorAll('.boot-letter') ?? [];
     if (
       !splash ||
       !mark ||
       !iris ||
+      !irisBtn ||
       letters.length === 0 ||
       icons.length === 0
     ) {
@@ -116,13 +123,13 @@ export const LaunchIntro = ({
         // merge: the mark dissolves into the iris as it lands
         .to(mark, { autoAlpha: 0, duration: 0.18, ease: 'power1.in' })
         .fromTo(
-          icons[0],
+          irisBtn,
           { autoAlpha: 0, y: 7 },
           { autoAlpha: 1, y: 0, duration: 0.26 },
           '<0.02',
         )
         .fromTo(
-          [icons[1], icons[2]],
+          [...icons].filter((b) => b !== irisBtn),
           { autoAlpha: 0, y: 7 },
           {
             autoAlpha: 1,

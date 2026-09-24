@@ -3,7 +3,7 @@
  * non-resizable; `windows/mod.rs` centers it under the bar).
  *
  * Errors used to render inside the bar pill, but the bar window is a
- * fixed 480×64 frame: an extra row squeezed the pill and broke its
+ * fixed 600×64 frame: an extra row squeezed the pill and broke its
  * icon-row⇄input-row content swap. This window carries them instead,
  * so no error can change the bar's layout.
  *

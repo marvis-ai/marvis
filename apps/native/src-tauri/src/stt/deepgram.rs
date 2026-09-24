@@ -229,7 +229,12 @@ async fn run_session(
                     if let Some((transcript, finality)) = parse_transcript(text.as_ref())
                         .map_err(|error| SessionFailure::Terminal(error.to_string()))?
                     {
-                        callback(TranscriptEvent { channel, text: transcript, finality });
+                        callback(TranscriptEvent {
+                            channel,
+                            text: transcript,
+                            finality,
+                            speaker_idx: None,
+                        });
                     }
                 }
                 Some(Ok(Message::Close(_))) | None => {

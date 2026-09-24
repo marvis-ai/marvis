@@ -21,6 +21,13 @@ fn cancel_flags() -> &'static Mutex<HashMap<String, Arc<AtomicBool>>> {
     FLAGS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/// Whether an `animate` task is currently driving `label`'s bounds —
+/// `Resized` enforcement must skip those events (the animator's own
+/// `set_size` ticks emit them too).
+pub fn is_animating(label: &str) -> bool {
+    cancel_flags().lock().unwrap().contains_key(label)
+}
+
 /// Animate `window`'s bounds to `to` over `dur`. `WebviewWindow` has no
 /// atomic bounds setter in Tauri 2 (`Webview::set_bounds` resizes the webview
 /// inside the window, not the window), so position and size are applied

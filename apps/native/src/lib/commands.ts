@@ -132,8 +132,8 @@ export interface Session {
   last_active_at: number;
 }
 
-/** `session_get` row (storage.rs `AiMessage`). */
-export interface AiMessage {
+/** `session_get` row (storage.rs `Message`). */
+export interface Message {
   id: number;
   session_id: number;
   role: string;
@@ -145,8 +145,12 @@ export interface Transcript {
   id: number;
   session_id: number;
   speaker: 'me' | 'them';
-  text: string;
+  /** Diarized voice cluster within `speaker`'s channel — null when the
+   * session ran without diarization or the turn was unlabelable. */
+  speaker_idx: number | null;
+  content: string;
   ts: number;
+  audio_file: string | null;
 }
 
 export interface ListenSummary {
@@ -302,6 +306,9 @@ export interface SherpaInstalledModel {
   description: string;
   bytes: number;
   source: string;
+  /** What the model is for — only `stt` entries may be selected as the
+   * transcription model; `speaker-embedding` feeds diarization. */
+  kind: 'stt' | 'speaker-embedding';
   installed: boolean;
 }
 
@@ -412,7 +419,7 @@ export const windowRecenter = () => invoke<void>('window_recenter');
 export const windowBarEdge = () => invoke<string>('window_bar_edge');
 
 /** Reports the whole card's desired TOTAL window height — expanded
- * mode only; the backend clamps [104, min(900, free space)]. */
+ * mode only; the backend clamps [104, free space]. */
 export const windowAdjustHeight = (height: number) =>
   invoke<void>('window_adjust_height', { height });
 
@@ -428,7 +435,7 @@ export const windowFocusBar = () => invoke<void>('window_focus_bar');
 
 /** The pill⇄input morph resizes the window itself (the capsule IS the
  * window under liquid glass) — report `expanded` so Rust can animate
- * the idle 112 ⇄ expanded 480 width change. */
+ * the idle 140 ⇄ expanded 600 width change. */
 export const windowSetBarExpanded = (expanded: boolean) =>
   invoke<void>('window_set_bar_expanded', { expanded });
 
@@ -466,7 +473,7 @@ export const captureStatus = () => invoke<CaptureStatus>('capture_status');
 export const sessionList = () => invoke<Session[]>('session_list');
 
 export const sessionGet = (id: number) =>
-  invoke<AiMessage[]>('session_get', { id });
+  invoke<Message[]>('session_get', { id });
 
 export const transcriptsFor = (id: number, limit?: number) =>
   invoke<Transcript[]>('transcripts_for', { id, limit });

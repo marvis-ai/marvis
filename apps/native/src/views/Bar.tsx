@@ -1,7 +1,7 @@
 /**
  * The always-on-top bar (`?view=bar`) — the UNIFIED window. Two shapes:
  *
- *  - Pill modes (mini | input | permission): the 136⇄480×64 capsule⇄
+ *  - Pill modes (mini | input | permission): the 140⇄600×64 capsule⇄
  *    input morph — the capsule IS the window under liquid glass, so
  *    `expanded` reports to `window_set_bar_expanded` and Rust animates
  *    the width change. Unchanged mechanics.
@@ -51,7 +51,7 @@ import {
   windowShowSettings,
 } from '@/lib/commands';
 import { EV_BAR_TOGGLE_INPUT, useTauriEvent } from '@/lib/events';
-import { hasActiveWork } from '@/lib/bar-state';
+import { barControls, hasActiveWork } from '@/lib/bar-state';
 import { useBarActivity } from '@/hooks/useBarActivity';
 import { useCardGeometry } from '@/hooks/useCardGeometry';
 import { useDictation } from '@/hooks/useDictation';
@@ -60,17 +60,12 @@ import { AskInput } from '@/components/bar/AskInput';
 import { BarButton } from '@/components/bar/BarButton';
 import { BootErrorRow } from '@/components/bar/BootErrorRow';
 import { DictationWaveform } from '@/components/bar/DictationWaveform';
-import { Grip } from '@/components/bar/Grip';
 import { IrisButton } from '@/components/bar/IrisButton';
 import { PermissionRow } from '@/components/bar/PermissionRow';
 import { ChatSection } from '@/components/ChatSection';
 import { LaunchIntro } from '@/components/LaunchIntro';
 import { ListenSection } from '@/components/ListenSection';
 import { PANEL } from '@/lib/classes';
-
-/** Card's max-height so the reported height never exceeds Rust's 900
- *  cap — frost keeps the stage's `p-1` (8 px of chrome). */
-const CARD_MAX = 900 - 8;
 
 const Bar = () => {
   const { gate, bootError, busy, setBusy, bootstrap, grantScreen } = useGate();
@@ -129,6 +124,10 @@ const Bar = () => {
    *  `showInputRow` stays true — dictation keys off this. */
   const inputRendered =
     showInputRow && !bootError && gate !== 'needs_permission';
+  /** The row's control set for this surface — `bar-state.ts` owns the
+   *  contract, the conditionals below consume it so the two can't
+   *  drift. */
+  const controls = barControls(showInputRow);
 
   const dictation = useDictation({
     text,
@@ -147,7 +146,6 @@ const Bar = () => {
    *  their stronger active affordances on top of it. */
   const activeWork = hasActiveWork({
     ask: askState,
-    captureRunning,
     listen: listenState,
     dictation: dictation.state,
   });
@@ -186,7 +184,7 @@ const Bar = () => {
   // which active section is shown when it is reopened.
 
   // The capsule IS the window under liquid glass — the pill⇄input morph
-  // resizes it (idle 136 ⇄ 480). While the card is open the morph is
+  // resizes it (idle 140 ⇄ 600). While the card is open the morph is
   // dormant: the width report is skipped so `bar_rect` (the canonical
   // pill) restores verbatim on collapse.
   useEffect(() => {
@@ -287,16 +285,20 @@ const Bar = () => {
   const toggleCapture = () => {
     if (busy) return;
     setBusy(true);
-    const failure = captureRunning
-      ? 'Screen recording stop failed'
-      : 'Screen recording start failed';
-    const transition = captureRunning ? captureStop() : captureStart();
+    // The state this press is trying to reach — pinned at click time so
+    // a `capture:state` event flipping the flag mid-flight can't skew
+    // the failure check.
+    const wantRunning = !captureRunning;
+    const failure = wantRunning
+      ? 'Screen recording start failed'
+      : 'Screen recording stop failed';
+    const transition = wantRunning ? captureStart() : captureStop();
     void transition
       .then((next) => {
         // The commands resolve `{ running, frames }` rather than
-        // rejecting, so a failed transition comes back as the
-        // UNCHANGED flag — surface it, then resync as usual.
-        if (next.running === captureRunning) {
+        // rejecting, so a failed transition comes back short of the
+        // target — surface it, then resync as usual.
+        if (next.running !== wantRunning) {
           raise(failure);
         }
         setCaptureRunning(next.running);
@@ -374,7 +376,12 @@ const Bar = () => {
     void windowSetChatOpen(true).catch(() => {});
     void listenStart()
       .then((next) => setListenState(next.state))
-      .catch(() => raise('Listen failed'))
+      .catch((e: unknown) =>
+        // The invoke message is already curated ('no audio source
+        // available', a needs_setup reason) — surface it like
+        // useDictation does instead of a bare 'Listen failed'.
+        raise(typeof e === 'string' && e ? e : 'Listen failed'),
+      )
       .finally(() => {
         speechBusy.current = false;
       });
@@ -405,7 +412,6 @@ const Bar = () => {
         onSubmit={submitAsk}
         className={rowCls}
         data-tauri-drag-region>
-        <Grip />
         <IrisButton
           active={
             listenState === 'listening' || dictation.state === 'listening'
@@ -435,7 +441,7 @@ const Bar = () => {
         {/* Collapsed-only recorders (`barControls(false)`): the screen
             capture toggle and meeting Listen. The expanded row renders
             neither — it gets dictation + settings instead. */}
-        {!showInputRow && (
+        {controls.includes('capture') && (
           <BarButton
             label={captureLabel}
             pressed={captureRunning}
@@ -446,9 +452,18 @@ const Bar = () => {
               captureRunning && 'bg-accent-soft text-accent',
             )}>
             <MonitorDotIcon className='size-5' />
+            {/* Recording badge — the shell pulse deliberately ignores
+                capture (it runs by default, so it would pulse
+                permanently); this corner ping carries the signal. */}
+            {captureRunning && (
+              <span
+                aria-hidden
+                className='animate-capture-ping absolute -top-0.5 -right-0.5 size-1.5 rounded-full bg-accent/50'
+              />
+            )}
           </BarButton>
         )}
-        {!showInputRow && (
+        {controls.includes('listen') && (
           <BarButton
             label={micLabel}
             pressed={listenState === 'listening'}
@@ -459,7 +474,11 @@ const Bar = () => {
         )}
         {/* Expanded-only dictation (`barControls(true)`) — the same
             `pressMic` route, landing on its `showInputRow` branch. */}
-        {showInputRow && (
+        {showInputRow && dictation.state === 'listening' && (
+          <DictationWaveform />
+        )}
+
+        {controls.includes('dictation') && (
           <BarButton
             label={micLabel}
             pressed={dictation.state === 'listening'}
@@ -468,13 +487,11 @@ const Bar = () => {
             <MicIcon className='size-5' />
           </BarButton>
         )}
-        {showInputRow && dictation.state === 'listening' && (
-          <DictationWaveform />
-        )}
+
         {/* Only rendered in the input row — the idle capsule has no
             room for a fourth control (tray menu + Cmd+, reach it
             anyway). */}
-        {showInputRow && (
+        {controls.includes('settings') && (
           <BarButton
             label='Settings'
             title='Settings (⌘,)'
@@ -517,7 +534,6 @@ const Bar = () => {
           // the reduced-motion query.
           activeWork && !cardOpen && 'animate-pulse',
         )}
-        style={cardOpen ? { maxHeight: CARD_MAX } : undefined}
         data-expanded={showInputRow || undefined}
         data-tauri-drag-region={cardOpen ? undefined : 'deep'}>
         {row()}

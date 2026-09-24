@@ -1,7 +1,6 @@
 import { ShieldAlertIcon } from '@marvis/ui';
 import { permissionsOpenPrefs } from '@/lib/commands';
 import { BTN_LINK, BTN_LINK_SM, BTN_PRIMARY, BTN_SM, cn } from '@/lib/classes';
-import { Grip } from '@/components/bar/Grip';
 
 /** The `needs_permission` gate row — screen recording is the bar's
  *  only hard requirement. */
@@ -17,7 +16,6 @@ export const PermissionRow = ({
   <div
     className={className}
     data-tauri-drag-region>
-    <Grip />
     <ShieldAlertIcon
       className='size-4.5 flex-none text-muted-foreground'
       data-tauri-drag-region

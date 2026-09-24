@@ -10,7 +10,7 @@
 //! goes to it FIRST: its text description replaces the image and the
 //! chain answers over a `<screen_context>` block, so chat providers never need
 //! image support; a failed read falls back to attaching the frame.
-//! Both sides of the exchange land in the `ask` session's `ai_messages`
+//! Both sides of the exchange land in the `ask` session's `messages`
 //! rows (the user row persists once, before the first attempt). A provider
 //! `MultimodalUnsupported` rejection retries once without the image
 //! (per attempt); [`AskService::close`] aborts any in-flight stream via
@@ -69,7 +69,7 @@ const EV_ERROR: &str = "ask:error";
 /// `send_screen_only`'s fixed question — the camera button's ask.
 const SCREEN_ONLY_PROMPT: &str = "Describe what is on my screen and how you can help.";
 
-/// Context window: only the trailing N persisted `ai_messages` ride
+/// Context window: only the trailing N persisted `messages` ride
 /// along with each ask (spec: last 20, text-only).
 const HISTORY_TAIL: usize = 20;
 
@@ -210,6 +210,9 @@ impl AskService {
         // previous run's reply or error into this one.
         *self.current_response.lock() = String::new();
         *self.last_error.lock() = None;
+        // A send arriving with the card closed starts a NEW conversation —
+        // the pill input isn't a follow-up field. Read before the flag flips.
+        let fresh_session = !deps.pool.lock().is_chat_open();
         // Expand first so any pre-flight error still renders in the card.
         deps.pool.lock().set_chat_open(app, true);
 
@@ -295,6 +298,7 @@ impl AskService {
                 &text,
                 frame.as_ref(),
                 &cancel,
+                fresh_session,
             )
             .await;
         });
@@ -352,6 +356,8 @@ impl Default for AskService {
 /// pool inside — [`AskService::send`] gathers those deps and delegates.
 ///
 /// Order of operations:
+/// 0. `fresh_session` (the send found the card closed): end the open
+///    ask session so this run starts a new conversation.
 /// 1. Persist the user message FIRST — it was already sent, so it must
 ///    be recorded even when every candidate later errors or is cancelled.
 /// 2. `ask:state{loading}` once (the chain is one run).
@@ -379,7 +385,17 @@ pub(crate) async fn send_chain(
     text: &str,
     frame: Option<&Frame>,
     cancel: &CancellationToken,
+    fresh_session: bool,
 ) -> Result<String, LlmError> {
+    // A send that arrived with the card closed is a new conversation:
+    // end the still-open ask session so get_or_create mints a fresh row.
+    if fresh_session {
+        if let Ok(Some(id)) = db.session_active_id("ask") {
+            if let Err(error) = db.session_end(id) {
+                log::warn!("ask: session_end before fresh send failed: {error}");
+            }
+        }
+    }
     // Order matters: history is read BEFORE the new user row persists —
     // the new turn is appended separately so it can carry the frame.
     let session_id = open_ask_session(db);
@@ -605,7 +621,7 @@ fn load_listen_context(db: &Db) -> String {
     match db.transcripts_tail(session_id, HISTORY_TAIL) {
         Ok(rows) => rows
             .iter()
-            .map(|row: &Transcript| format!("{}: {}", row.speaker, row.text))
+            .map(|row: &Transcript| format!("{}: {}", row.speaker, row.content))
             .collect::<Vec<_>>()
             .join("\n"),
         Err(error) => {
@@ -634,7 +650,7 @@ fn load_history(db: &Db, session_id: Option<i64>) -> Vec<ChatMessage> {
     let Some(sid) = session_id else {
         return Vec::new();
     };
-    let rows = match db.ai_messages_for(sid) {
+    let rows = match db.messages_for(sid) {
         Ok(rows) => rows,
         Err(e) => {
             log::warn!("ask: history load failed: {e}");
@@ -658,7 +674,7 @@ fn persist_user_message(db: &Db, session_id: Option<i64>, text: &str) {
     let Some(sid) = session_id else {
         return;
     };
-    if let Err(e) = db.ai_message_add(sid, "user", text) {
+    if let Err(e) = db.message_add(sid, "user", text) {
         log::warn!("ask: failed to persist user message: {e}");
     }
 }
@@ -668,7 +684,7 @@ fn persist_assistant_message(db: &Db, session_id: Option<i64>, full: &str) {
     let Some(sid) = session_id else {
         return;
     };
-    if let Err(e) = db.ai_message_add(sid, "assistant", full) {
+    if let Err(e) = db.message_add(sid, "assistant", full) {
         log::warn!("ask: failed to persist assistant message: {e}");
     }
 }
@@ -821,9 +837,9 @@ mod tests {
         }
     }
 
-    fn ask_messages(db: &Db) -> Vec<crate::storage::AiMessage> {
+    fn ask_messages(db: &Db) -> Vec<crate::storage::Message> {
         let sid = db.session_get_or_create_active("ask").unwrap();
-        db.ai_messages_for(sid).unwrap()
+        db.messages_for(sid).unwrap()
     }
 
     fn has_image(msg: &ChatMessage) -> bool {
@@ -863,6 +879,7 @@ mod tests {
             "what is this?",
             Some(&frame),
             &cancel,
+            false,
         )
         .await
         .unwrap();
@@ -927,6 +944,7 @@ mod tests {
             "q",
             None,
             &cancel,
+            false,
         )
         .await
         .unwrap();
@@ -979,6 +997,7 @@ mod tests {
             "q",
             None,
             &cancel,
+            false,
         )
         .await
         .unwrap_err();
@@ -1022,6 +1041,7 @@ mod tests {
             "q",
             None,
             &cancel,
+            false,
         )
         .await
         .unwrap_err();
@@ -1053,6 +1073,7 @@ mod tests {
             "q",
             Some(&frame),
             &cancel,
+            false,
         )
         .await
         .unwrap();
@@ -1099,6 +1120,7 @@ mod tests {
             "q",
             Some(&frame),
             &cancel,
+            false,
         )
         .await
         .unwrap_err();
@@ -1146,6 +1168,7 @@ mod tests {
             "q",
             Some(&frame),
             &cancel,
+            false,
         )
         .await
         .unwrap_err();
@@ -1188,6 +1211,7 @@ mod tests {
             "q",
             None,
             &cancel,
+            false,
         )
         .await
         .unwrap();
@@ -1216,6 +1240,7 @@ mod tests {
             "q",
             Some(&frame),
             &cancel,
+            false,
         )
         .await
         .unwrap_err();
@@ -1262,6 +1287,7 @@ mod tests {
             "what broke?",
             Some(&frame),
             &cancel,
+            false,
         )
         .await
         .unwrap();
@@ -1333,6 +1359,7 @@ mod tests {
             "q",
             Some(&frame),
             &cancel,
+            false,
         )
         .await
         .unwrap();
@@ -1364,6 +1391,7 @@ mod tests {
             "q",
             None,
             &cancel,
+            false,
         )
         .await
         .unwrap();
@@ -1400,6 +1428,7 @@ mod tests {
             "q",
             Some(&frame),
             &cancel,
+            false,
         )
         .await
         .unwrap_err();
@@ -1424,8 +1453,8 @@ mod tests {
         let dir = tmp_dir();
         let db = Db::at(dir.join("marvis.db")).unwrap();
         let sid = db.session_get_or_create_active("ask").unwrap();
-        db.ai_message_add(sid, "user", "first q").unwrap();
-        db.ai_message_add(sid, "assistant", "first a").unwrap();
+        db.message_add(sid, "user", "first q").unwrap();
+        db.message_add(sid, "assistant", "first a").unwrap();
         let provider = MockProvider::new(vec![Behavior::Tokens(vec!["ok".into()])]);
         let calls = provider.calls();
         let (_events, emit) = recorder();
@@ -1440,6 +1469,7 @@ mod tests {
             "follow-up",
             Some(&frame),
             &cancel,
+            false,
         )
         .await
         .unwrap();
@@ -1463,13 +1493,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn send_chain_fresh_session_ends_the_open_conversation() {
+        let dir = tmp_dir();
+        let db = Db::at(dir.join("marvis.db")).unwrap();
+        // An open ask session with prior turns — a card-closed send
+        // must not join it.
+        let old_sid = db.session_get_or_create_active("ask").unwrap();
+        db.message_add(old_sid, "user", "first q").unwrap();
+        db.message_add(old_sid, "assistant", "first a").unwrap();
+        let provider = MockProvider::new(vec![Behavior::Tokens(vec!["ok".into()])]);
+        let calls = provider.calls();
+        let (_events, emit) = recorder();
+        let cancel = CancellationToken::new();
+
+        send_chain(
+            vec![candidate("openai", provider)],
+            None,
+            &db,
+            &emit,
+            "new conversation",
+            None,
+            &cancel,
+            true,
+        )
+        .await
+        .unwrap();
+
+        // The old session ended; this run's rows landed in a NEW
+        // session, so no prior turns rode along as history.
+        let new_sid = db.session_active_id("ask").unwrap().unwrap();
+        assert_ne!(new_sid, old_sid);
+        let msgs = ask_messages(&db);
+        assert_eq!(msgs.len(), 2);
+        assert!(msgs.iter().all(|m| m.session_id == new_sid));
+        let calls = calls.lock();
+        assert_eq!(calls[0].len(), 2); // [system] + new user turn only
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
     async fn send_chain_history_tail_is_capped_at_20() {
         let dir = tmp_dir();
         let db = Db::at(dir.join("marvis.db")).unwrap();
         let sid = db.session_get_or_create_active("ask").unwrap();
         for i in 0..12 {
-            db.ai_message_add(sid, "user", &format!("u{i}")).unwrap();
-            db.ai_message_add(sid, "assistant", &format!("a{i}"))
+            db.message_add(sid, "user", &format!("u{i}")).unwrap();
+            db.message_add(sid, "assistant", &format!("a{i}"))
                 .unwrap();
         }
         let provider = MockProvider::new(vec![Behavior::Tokens(vec!["ok".into()])]);
@@ -1485,6 +1554,7 @@ mod tests {
             "new q",
             None,
             &cancel,
+            false,
         )
         .await
         .unwrap();

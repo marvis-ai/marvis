@@ -15,8 +15,8 @@ use crate::llm::{ChatMessage, Role};
 use crate::prompts::{summary_context, summary_system_prompt};
 use crate::storage::{Db, Transcript};
 use crate::stt::{
-    make_stt_provider, sanitize_provider_error, whisper_setup_error, Finality, SpeakerChannel,
-    TranscriptEvent, WhisperProvider,
+    make_stt_provider, sanitize_provider_error, sherpa_setup_error, whisper_setup_error, Finality,
+    SpeakerChannel, TranscriptEvent, WhisperProvider,
 };
 
 const SILENCE: Duration = Duration::from_millis(1500);
@@ -373,6 +373,26 @@ impl ListenService {
                 &WhisperProvider::status_with_bundled(bundled_whisper),
                 &model,
             ) {
+                *self.state.lock() = ListenStatus {
+                    state: "error".into(),
+                    provider: Some(provider_name),
+                    session_id: None,
+                    turns: 0,
+                    mic: false,
+                    error: Some(ListenError {
+                        message: message.to_string(),
+                        needs_setup: true,
+                    }),
+                };
+                emit(ListenEvent::Error {
+                    message: message.to_string(),
+                    needs_setup: true,
+                });
+                anyhow::bail!(message)
+            }
+        }
+        if provider_name == "sherpa" {
+            if let Some(message) = sherpa_setup_error(&model) {
                 *self.state.lock() = ListenStatus {
                     state: "error".into(),
                     provider: Some(provider_name),

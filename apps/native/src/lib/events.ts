@@ -38,6 +38,10 @@ export interface WhisperDownloadErrorPayload {
   model: string;
   message: string;
 }
+export const EV_SHERPA_DOWNLOAD_PROGRESS = 'sherpa:download-progress';
+export const EV_SHERPA_DOWNLOAD_ERROR = 'sherpa:download-error';
+export type SherpaDownloadProgressPayload = WhisperDownloadProgressPayload;
+export type SherpaDownloadErrorPayload = WhisperDownloadErrorPayload;
 export interface ListenStatePayload {
   state: 'idle' | 'listening' | 'error';
   provider: string | null;

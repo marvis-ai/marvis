@@ -46,6 +46,7 @@ mod llm;
 mod paths;
 mod permissions;
 mod prompts;
+mod sherpa_models;
 mod storage;
 pub mod stt;
 mod tray;
@@ -141,6 +142,7 @@ pub struct AppState {
     /// webview's listener would otherwise be lost.
     alert: Mutex<Option<serde_json::Value>>,
     voice_models: voice_models::VoiceModelManager,
+    sherpa_models: sherpa_models::SherpaModelManager,
 }
 
 impl AppState {
@@ -204,6 +206,9 @@ impl AppState {
             alert: Mutex::new(None),
             voice_models: voice_models::VoiceModelManager::at(
                 root.join("models").join("whisper").join("models"),
+            ),
+            sherpa_models: sherpa_models::SherpaModelManager::at(
+                root.join("models").join("sherpa").join("models"),
             ),
         }
     }
@@ -1179,6 +1184,50 @@ fn whisper_remove_model(
     Ok(state.voice_models.status(state.bundled_whisper.as_deref()))
 }
 
+#[tauri::command]
+fn sherpa_status(state: State<'_, AppState>) -> sherpa_models::SherpaStatus {
+    state.sherpa_models.status()
+}
+
+#[tauri::command]
+fn sherpa_download(state: State<'_, AppState>, model: String) -> Result<(), String> {
+    let entry =
+        sherpa_models::entry_for_id(&model).ok_or_else(|| "Unknown voice model".to_string())?;
+    state
+        .sherpa_models
+        .start_download(entry.id)
+        .map_err(safe_voice_error)
+}
+
+#[tauri::command]
+async fn sherpa_cancel_download(state: State<'_, AppState>) -> Result<(), String> {
+    state
+        .sherpa_models
+        .cancel_download()
+        .await
+        .map_err(safe_voice_error)
+}
+
+#[tauri::command]
+fn sherpa_remove_model(
+    state: State<'_, AppState>,
+    model: String,
+) -> Result<sherpa_models::SherpaStatus, String> {
+    let entry =
+        sherpa_models::entry_for_id(&model).ok_or_else(|| "Unknown voice model".to_string())?;
+    let selected = if state.config.lock().models.stt_provider == "sherpa" {
+        sherpa_models::entry_for_value(&state.config.lock().models.stt_model).map(|e| e.id)
+    } else {
+        None
+    };
+    state.sherpa_models.set_selected_model(selected);
+    state
+        .sherpa_models
+        .remove_model(entry.id)
+        .map_err(safe_voice_error)?;
+    Ok(state.sherpa_models.status())
+}
+
 // ---------------------------------------------------------------------------
 // Commands — windows
 // ---------------------------------------------------------------------------
@@ -1437,7 +1486,7 @@ fn config_get(state: State<'_, AppState>) -> Config {
 /// (bool), `app.appearance` (`auto|light|dark`), `app.accent`
 /// (`#rrggbb`, `""` resets to the spec slate), `compat.name`,
 /// `compat.base_url` (validated http(s) URL; `""` clears),
-/// `models.stt_provider` (`deepgram|whisper`), and `models.stt_model`
+/// `models.stt_provider` (`deepgram|whisper|sherpa`), and `models.stt_model`
 /// (a trimmed non-empty identifier). Provider order/switches/models have
 /// their own commands (`providers_reorder`,
 /// `provider_set_enabled`, `model_set_selected`). Persists `config.toml`
@@ -1628,6 +1677,8 @@ pub fn run() {
             let pool = WindowPool::create_bar_only(handle, onboarding_done)?;
             let voice_models = voice_models::VoiceModelManager::new();
             voice_models.attach_app(handle.clone());
+            let sherpa_models = sherpa_models::SherpaModelManager::new();
+            sherpa_models.attach_app(handle.clone());
             // Tauri externalBin sidecars are staged beside the executable
             // (`Contents/MacOS` in a macOS app), not under `Contents/Resources`.
             let bundled_whisper = std::env::current_exe().ok().and_then(|executable| {
@@ -1659,6 +1710,7 @@ pub fn run() {
                 speech_lifecycle: tokio::sync::Mutex::new(()),
                 alert: Mutex::new(None),
                 voice_models,
+                sherpa_models,
             });
             deeplink::init(handle, deeplink_dispatch(handle))?;
             // Warn-and-continue like hotkeys: a missing tray must never
@@ -1717,6 +1769,10 @@ pub fn run() {
             whisper_download,
             whisper_cancel_download,
             whisper_remove_model,
+            sherpa_status,
+            sherpa_download,
+            sherpa_cancel_download,
+            sherpa_remove_model,
             alert_show,
             alert_current,
             alert_dismiss,
@@ -1791,6 +1847,19 @@ mod tests {
         assert!(source.contains("dictation_stop,"));
         assert!(source.contains("dictation_status,"));
         assert!(source.contains("whisper_status,"));
+        assert!(source.contains("sherpa_status,"));
+        assert!(source.contains("sherpa_download,"));
+        assert!(source.contains("sherpa_cancel_download,"));
+        assert!(source.contains("sherpa_remove_model,"));
+    }
+
+    /// Both speech services must route the `sherpa` provider through the
+    /// curated setup check — a missing model download is a Settings fix
+    /// surfaced as `needs_setup`, never a raw engine/path error.
+    #[test]
+    fn sherpa_setup_check_is_wired_into_both_speech_services() {
+        assert!(include_str!("dictation.rs").contains("sherpa_setup_error(&model)"));
+        assert!(include_str!("listen.rs").contains("sherpa_setup_error(&model)"));
     }
 
     #[test]

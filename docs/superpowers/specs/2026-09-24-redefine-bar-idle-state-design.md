@@ -24,12 +24,10 @@ The expanded input row displays:
 
 1. The Iris/back control.
 2. The Ask input.
-3. `MonitorDotIcon` for continuous screen capture.
-4. `MicAudioLinesIcon` for Listen voice recording.
-5. `MicIcon` for dictation into the Ask input.
-6. The existing settings control.
+3. `MicIcon` for dictation into the Ask input.
+4. The existing settings control.
 
-The latest interaction decision takes precedence over the earlier requirement that the recording mic be hidden while collapsed: `MicAudioLinesIcon` is visible in both collapsed and expanded layouts.
+The screen-recording and Listen controls are intentionally hidden while the input is expanded. The latest interaction decision takes precedence over the earlier requirement that the recording mic be hidden while collapsed: `MicAudioLinesIcon` is visible in the collapsed layout only.
 
 ## Control behavior
 
@@ -47,7 +45,6 @@ The latest interaction decision takes precedence over the earlier requirement th
 - `MicAudioLinesIcon` is off by default from the bar's perspective.
 - Clicking it starts or stops the existing Listen flow with speaker diarization.
 - Starting Listen from the collapsed bar opens the Listen card, matching the current behavior.
-- Starting Listen from the expanded input keeps the expanded bar and uses Listen as the active recording mode.
 - The existing Listen state/error handling remains authoritative.
 
 ### Dictation

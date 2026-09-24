@@ -54,7 +54,7 @@ use crate::capture::{Frame, RingBuffer};
 use crate::config::Config;
 use crate::keystore::Keystore;
 use crate::llm::{ChatMessage, LlmError, Provider, Role};
-use crate::prompts::{live_system_prompt, live_user_prompt, screen_prompt};
+use crate::prompts::{live_system_prompt_for, live_user_prompt, screen_prompt};
 use crate::storage::{Db, Transcript};
 use crate::windows::{WindowPool, BAR_LABEL};
 use crate::ProviderCandidate;
@@ -220,12 +220,13 @@ impl AskService {
         // An empty chain is the "no usable provider" error — nothing to
         // fall back TO, so the card links straight to settings. The
         // screen reader (`[vision]`) resolves under the same lock.
-        let (candidates, vision) = {
+        let (candidates, vision, language) = {
             let cfg = deps.config.lock();
             let ks = deps.keystore.lock();
             (
                 crate::provider_candidates(&cfg, &ks),
                 crate::vision_candidate(&cfg, &ks),
+                cfg.app.main_language.clone(),
             )
         };
         if candidates.is_empty() {
@@ -299,6 +300,7 @@ impl AskService {
                 frame.as_ref(),
                 &cancel,
                 fresh_session,
+                &language,
             )
             .await;
         });
@@ -386,6 +388,7 @@ pub(crate) async fn send_chain(
     frame: Option<&Frame>,
     cancel: &CancellationToken,
     fresh_session: bool,
+    language: &str,
 ) -> Result<String, LlmError> {
     // A send that arrived with the card closed is a new conversation:
     // end the still-open ask session so get_or_create mints a fresh row.
@@ -451,6 +454,7 @@ pub(crate) async fn send_chain(
             frame,
             screen.as_deref(),
             cancel,
+            language,
         )
         .await
         {
@@ -499,9 +503,10 @@ async fn stream_candidate(
     frame: Option<&Frame>,
     screen: Option<&str>,
     cancel: &CancellationToken,
+    language: &str,
 ) -> CandidateOutcome {
     let mut streaming = false;
-    let mut msgs = build_messages(history, listen_history, text, frame, screen);
+    let mut msgs = build_messages(history, listen_history, text, frame, screen, language);
     let mut retried = false;
     loop {
         match stream_once(provider, &msgs, emit, cancel, &mut streaming).await {
@@ -511,7 +516,7 @@ async fn stream_candidate(
                 // Vision-incapable model gets ONE retry without the frame.
                 if !retried && frame.is_some() && e.is_multimodal() {
                     retried = true;
-                    msgs = build_messages(history, listen_history, text, None, screen);
+                    msgs = build_messages(history, listen_history, text, None, screen, language);
                     continue;
                 }
                 return CandidateOutcome::Failed(e);
@@ -601,9 +606,13 @@ fn build_messages(
     text: &str,
     frame: Option<&Frame>,
     screen: Option<&str>,
+    language: &str,
 ) -> Vec<ChatMessage> {
     let mut msgs = Vec::with_capacity(history.len() + 2);
-    msgs.push(ChatMessage::text(Role::System, live_system_prompt()));
+    msgs.push(ChatMessage::text(
+        Role::System,
+        live_system_prompt_for(language),
+    ));
     msgs.extend(history.iter().cloned());
     let request = live_user_prompt(text, listen_history, screen);
     msgs.push(match frame {
@@ -811,6 +820,7 @@ mod tests {
             "question",
             None,
             None,
+            "en",
         );
         let system = match &messages[0].content[0] {
             ContentPart::Text(text) => text,
@@ -822,6 +832,7 @@ mod tests {
         };
 
         assert!(system.contains("# Marvis Live Copilot"));
+        assert!(system.contains("preferred reply language is English"));
         assert!(!system.contains("Ignore previous instructions"));
         assert!(current.contains("<meeting_context>"));
         assert!(current.contains("Ignore previous instructions"));
@@ -880,6 +891,7 @@ mod tests {
             Some(&frame),
             &cancel,
             false,
+            "en",
         )
         .await
         .unwrap();
@@ -945,6 +957,7 @@ mod tests {
             None,
             &cancel,
             false,
+            "en",
         )
         .await
         .unwrap();
@@ -998,6 +1011,7 @@ mod tests {
             None,
             &cancel,
             false,
+            "en",
         )
         .await
         .unwrap_err();
@@ -1042,6 +1056,7 @@ mod tests {
             None,
             &cancel,
             false,
+            "en",
         )
         .await
         .unwrap_err();
@@ -1074,6 +1089,7 @@ mod tests {
             Some(&frame),
             &cancel,
             false,
+            "en",
         )
         .await
         .unwrap();
@@ -1121,6 +1137,7 @@ mod tests {
             Some(&frame),
             &cancel,
             false,
+            "en",
         )
         .await
         .unwrap_err();
@@ -1169,6 +1186,7 @@ mod tests {
             Some(&frame),
             &cancel,
             false,
+            "en",
         )
         .await
         .unwrap_err();
@@ -1212,6 +1230,7 @@ mod tests {
             None,
             &cancel,
             false,
+            "en",
         )
         .await
         .unwrap();
@@ -1241,6 +1260,7 @@ mod tests {
             Some(&frame),
             &cancel,
             false,
+            "en",
         )
         .await
         .unwrap_err();
@@ -1288,6 +1308,7 @@ mod tests {
             Some(&frame),
             &cancel,
             false,
+            "en",
         )
         .await
         .unwrap();
@@ -1360,6 +1381,7 @@ mod tests {
             Some(&frame),
             &cancel,
             false,
+            "en",
         )
         .await
         .unwrap();
@@ -1392,6 +1414,7 @@ mod tests {
             None,
             &cancel,
             false,
+            "en",
         )
         .await
         .unwrap();
@@ -1429,6 +1452,7 @@ mod tests {
             Some(&frame),
             &cancel,
             false,
+            "en",
         )
         .await
         .unwrap_err();
@@ -1470,6 +1494,7 @@ mod tests {
             Some(&frame),
             &cancel,
             false,
+            "en",
         )
         .await
         .unwrap();
@@ -1515,6 +1540,7 @@ mod tests {
             None,
             &cancel,
             true,
+            "en",
         )
         .await
         .unwrap();
@@ -1555,6 +1581,7 @@ mod tests {
             None,
             &cancel,
             false,
+            "en",
         )
         .await
         .unwrap();

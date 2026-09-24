@@ -1684,7 +1684,7 @@ fn config_set(app: AppHandle, key: String, value: serde_json::Value) -> Result<C
     let mut onboarding_changed = false;
     let mut accent_changed = false;
     let mut stt_changed = false;
-    let mut fps_changed = false;
+    let fps_changed: bool;
     {
         let mut cfg = state.config.lock();
         let prev_fps = cfg.recording.fps;

@@ -93,6 +93,9 @@ export interface AppPrefs {
   /** `#rrggbb` — the one hue the UI derives (`--accent` and every
    * `color-mix` off it). `''` in a file reads as the spec default. */
   accent: string;
+  /** `'en' | 'zh' | 'ja' | 'ko' | 'fr' | 'es'` — the default output
+   * language for chat replies and summaries, and the STT hint. */
+  main_language: string;
 }
 
 /** `[compat]` section — the OpenAI-compatible endpoint (DESIGN.md §6). */
@@ -111,11 +114,23 @@ export interface VisionPrefs {
   models: Record<string, string>;
 }
 
+/** `[recording]` section — ambient screen capture + voice-summary prefs. */
+export interface RecordingPrefs {
+  /** `true` = capture starts on entering Main; `false` = manual only —
+   * the bar's record toggle still works. */
+  auto_screenshots: boolean;
+  /** `8 | 4 | 2` — screen frame-rate cap; a write restarts a live capture. */
+  fps: number;
+  /** Summary focus instruction (template text or custom); `''` = Meeting. */
+  summary_prompt: string;
+}
+
 /** `config_get` / `config_set` return / `config:changed` payload. */
 export interface Config {
   app: AppPrefs;
   models: ModelPrefs;
   providers: ProviderPrefs;
+  recording: RecordingPrefs;
   hotkeys: Record<string, string>;
   window: WindowPrefs;
   compat: CompatPrefs;
@@ -498,9 +513,12 @@ export const configGet = () => invoke<Config>('config_get');
  * Writable keys only: `hotkeys.toggle_input`, `window.bar_x`, `window.bar_y`
  * (number sets, null clears), `app.onboarding_done` (bool),
  * `app.appearance` (`'auto'|'light'|'dark'`), `app.accent` (`'#rrggbb'`,
- * `''` resets), `compat.name`, `compat.base_url` (http(s) URL, `''`
+ * `''` resets), `app.main_language` (`'en'|'zh'|'ja'|'ko'|'fr'|'es'`),
+ * `compat.name`, `compat.base_url` (http(s) URL, `''`
  * clears), `vision.provider` (`''` or a vision-capable provider id),
- * `vision.models.<id>` (string; `''` removes). Provider
+ * `vision.models.<id>` (string; `''` removes),
+ * `recording.auto_screenshots` (bool), `recording.fps` (`8|4|2`),
+ * `recording.summary_prompt` (string). Provider
  * order/switches/models go through `providersReorder`/
  * `providerSetEnabled`/`modelSetSelected`. Every successful write
  * broadcasts `config:changed` and resolves to the full updated config.

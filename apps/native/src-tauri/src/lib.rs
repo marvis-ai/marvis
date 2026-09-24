@@ -1658,10 +1658,15 @@ fn config_get(state: State<'_, AppState>) -> Config {
 /// Limited writable surface: `hotkeys.<action>`, `window.bar_x`,
 /// `window.bar_y` (number sets, null clears), `app.onboarding_done`
 /// (bool), `app.appearance` (`auto|light|dark`), `app.accent`
-/// (`#rrggbb`, `""` resets to the spec slate), `compat.name`,
+/// (`#rrggbb`, `""` resets to the spec slate), `app.main_language`
+/// (`en|zh|ja|ko|fr|es` — chat/summary output language + STT hint),
+/// `compat.name`,
 /// `compat.base_url` (validated http(s) URL; `""` clears),
 /// `models.stt_provider` (`deepgram|whisper|sherpa`), and `models.stt_model`
-/// (a trimmed non-empty identifier). Provider order/switches/models have
+/// (a trimmed non-empty identifier), `recording.auto_screenshots` (bool),
+/// `recording.fps` (`8|4|2` — a write during a live capture restarts it
+/// so the new rate applies now), and `recording.summary_prompt` (string).
+/// Provider order/switches/models have
 /// their own commands (`providers_reorder`,
 /// `provider_set_enabled`, `model_set_selected`). Persists `config.toml`
 /// and returns the updated config. A `hotkeys.*` write delta-swaps the
@@ -1679,8 +1684,10 @@ fn config_set(app: AppHandle, key: String, value: serde_json::Value) -> Result<C
     let mut onboarding_changed = false;
     let mut accent_changed = false;
     let mut stt_changed = false;
+    let mut fps_changed = false;
     {
         let mut cfg = state.config.lock();
+        let prev_fps = cfg.recording.fps;
         match key.as_str() {
             "window.bar_x" => cfg.window.bar_x = window_pref_value(&value)?,
             "window.bar_y" => cfg.window.bar_y = window_pref_value(&value)?,
@@ -1718,6 +1725,12 @@ fn config_set(app: AppHandle, key: String, value: serde_json::Value) -> Result<C
                 accent_changed = cfg.app.accent != next;
                 cfg.app.accent = next;
             }
+            "app.main_language" => {
+                cfg.app.main_language = config::validate_main_language(
+                    value.as_str().ok_or("app.main_language must be a string")?,
+                )?;
+            }
+            key if config::apply_recording_config(&mut cfg.recording, key, &value)? => {}
             "compat.name" => {
                 cfg.compat.name = value
                     .as_str()
@@ -1779,6 +1792,7 @@ fn config_set(app: AppHandle, key: String, value: serde_json::Value) -> Result<C
             _ => return Err(format!("unknown or read-only config key {key:?}")),
         }
         config::save(&cfg).map_err(|e| e.to_string())?;
+        fps_changed = cfg.recording.fps != prev_fps;
     }
     if hotkeys_changed {
         swap_hotkeys(&app);
@@ -1787,6 +1801,18 @@ fn config_set(app: AppHandle, key: String, value: serde_json::Value) -> Result<C
         // Re-tint the bar's glass now — otherwise the new accent only
         // reaches the material on the next pill⇄card morph.
         state.pool.lock().refresh_bar_glass(&app);
+    }
+    if fps_changed
+        && state
+            .capture
+            .lock()
+            .as_ref()
+            .is_some_and(MacosCapture::is_running)
+    {
+        // A live session keeps its old cadence — rebuild it so the new
+        // rate applies immediately.
+        stop_capture(&app);
+        start_capture(&app);
     }
     if onboarding_changed {
         // Gate first: `enter_main` starts capture while the

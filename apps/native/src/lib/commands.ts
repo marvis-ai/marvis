@@ -375,6 +375,11 @@ export interface AlertPayload {
 export const alertShow = (message: string) =>
   invoke<void>('alert_show', { message });
 
+/** Fire-and-forget `alertShow` — every bar error goes to the alert
+ *  window, and a failed toast must never become an unhandled rejection. */
+export const raise = (message: string) =>
+  void alertShow(message).catch(() => {});
+
 /** The live payload, or `null` — read on mount in case the emit raced. */
 export const alertCurrent = () => invoke<AlertPayload | null>('alert_current');
 
@@ -450,6 +455,8 @@ export const permissionsRequestMic = () =>
 export const permissionsOpenPrefs = (section: string) =>
   invoke<void>('permissions_open_prefs', { section });
 
+export const captureStart = () => invoke<CaptureStatus>('capture_start');
+export const captureStop = () => invoke<CaptureStatus>('capture_stop');
 export const captureStatus = () => invoke<CaptureStatus>('capture_status');
 
 // ---------------------------------------------------------------------------

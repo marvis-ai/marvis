@@ -62,7 +62,7 @@ export const PANEL_HEAD =
 export const PANEL_BODY =
   'min-h-0 flex-1 select-text overflow-y-auto px-3.5 pt-3 pb-3.5 text-[13px] leading-[1.6]';
 export const CHIP =
-  'inline-flex items-center gap-1.25 rounded-full border border-border bg-[color-mix(in_oklch,var(--surface)_60%,transparent)] px-2 py-0.75 font-mono text-[10.5px] text-muted-foreground';
+  'inline-flex items-center gap-1 rounded-full border border-border bg-[color-mix(in_oklch,var(--surface)_60%,transparent)] px-2 py-0.75 font-mono text-[8.5px] text-muted-foreground tracking-tight';
 export const SPIN =
   'size-3 animate-rotate rounded-full border-2 border-[color-mix(in_oklch,var(--muted)_30%,transparent)] border-t-foreground motion-reduce:animate-none';
 

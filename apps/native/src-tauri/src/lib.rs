@@ -61,6 +61,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_liquid_glass::LiquidGlassExt;
 
 use ask::AskService;
+use capture::controller::{CaptureLifecycle, StartDecision, StopDecision};
 use capture::{FrameSource, MacosCapture, RingBuffer};
 use config::Config;
 use dictation::{DictationEvent, DictationService};
@@ -128,6 +129,11 @@ pub struct AppState {
     /// (enter/leave Main), and the `app:state` emit must be one critical
     /// section or two overlapping transitions can interleave (stale
     /// emit landing last, or hotkeys/capture from a dead gate state).
+    /// `capture_start` is the only other holder: its gate check +
+    /// `start_capture` must stay atomic against a concurrent
+    /// leave-transition. Both holders take locks in the order
+    /// `gate_transition` → `gate` → `capture` → `ring`, so they cannot
+    /// deadlock.
     gate_transition: Mutex<()>,
     /// Serializes `listen_start`/`dictation_start` end-to-end — the peer
     /// status check, the mic-permission await, and the service start
@@ -170,6 +176,13 @@ impl AppState {
     /// card is `Main`-only.
     pub(crate) fn gate_is_main(&self) -> bool {
         *self.gate.lock() == Gate::Main
+    }
+
+    /// The configured `#rrggbb` accent — the bar's liquid-glass tint
+    /// derives from it, so `config_set` re-applies the effect on
+    /// `app.accent` writes.
+    pub(crate) fn accent(&self) -> String {
+        self.config.lock().app.accent.clone()
     }
 
     /// The single source of truth for bar visibility. Re-reads
@@ -240,7 +253,9 @@ fn transition_gate(app: &AppHandle) {
     let state = app.state::<AppState>();
     // Serialize the whole transition: the gate read+swap, the Main
     // side-effects, and the `app:state` emit are one critical section.
-    // Nothing else locks `gate_transition`, so this cannot deadlock.
+    // `capture_start` is the other `gate_transition` holder — both
+    // follow the field's documented lock order, so this cannot
+    // deadlock.
     let _transition = state.gate_transition.lock();
     let new_gate = app_gate(&state);
     let old_gate = std::mem::replace(&mut *state.gate.lock(), new_gate);
@@ -254,28 +269,11 @@ fn transition_gate(app: &AppHandle) {
     let _ = app.emit("app:state", json!({ "gate": new_gate.name() }));
 }
 
-/// `Main` entry: start capture. Every step warns and
-/// continues — a failed piece must never wedge the gate.
+/// `Main` entry: start capture through the shared lifecycle boundary —
+/// it warns and continues on failure, so a failed piece never wedges
+/// the gate.
 fn enter_main(app: &AppHandle) {
-    let state = app.state::<AppState>();
-    let mut slot = state.capture.lock();
-    if slot.is_none() {
-        match MacosCapture::new() {
-            Ok(capture) => {
-                let ring = Arc::clone(&state.ring);
-                capture.start(Box::new(move |frame| ring.lock().push(frame)));
-                // Store only on success — a silently-failed start must
-                // not block a later retry (`is_running` is false when
-                // SCStream rejected the handler or `start_capture` failed).
-                if capture.is_running() {
-                    *slot = Some(capture);
-                } else {
-                    log::warn!("gate: screen capture failed to start");
-                }
-            }
-            Err(e) => log::warn!("gate: screen capture failed to init: {e}"),
-        }
-    }
+    start_capture(app);
 }
 
 /// `Main` exit (onboarding reset / permission revoked): cancel the
@@ -298,14 +296,108 @@ fn leave_main(app: &AppHandle) {
     if dictation_was_live {
         emit_dictation_state(app, &state.dictation.status());
     }
-    // Take the capture out and release the lock BEFORE `stop()` — it
-    // joins the capture worker, which must not hold `state.capture`
-    // while `capture_status` waits on it.
-    let capture = state.capture.lock().take();
+    // Capture teardown shares the command boundary: the capture leaves
+    // the mutex before `stop()` joins the worker, then `capture:state`
+    // broadcasts the result.
+    stop_capture(app);
+    state.pool.lock().hide_alert();
+}
+
+/// `{"running": bool, "frames": ring.len()}` — the capture status
+/// snapshot returned by the `capture_*` commands and carried by
+/// `capture:state`. Frame bytes are never serialized.
+type CaptureStatus = serde_json::Value;
+
+/// Live `{"running", "frames"}` snapshot — the single serializer for
+/// the status contract.
+fn capture_snapshot(state: &AppState) -> CaptureStatus {
+    let running = state
+        .capture
+        .lock()
+        .as_ref()
+        .is_some_and(MacosCapture::is_running);
+    json!({ "running": running, "frames": state.ring.lock().len() })
+}
+
+/// Broadcast `capture:state` to every window — fire-and-forget like
+/// `app:state`; a dead webview must never stall a transition.
+fn emit_capture_state(app: &AppHandle, status: &CaptureStatus) {
+    let _ = app.emit("capture:state", status);
+}
+
+/// The one capture-start boundary — `enter_main` and the
+/// `capture_start` command share it. Idempotent: a live capture
+/// returns the current status untouched. Otherwise a fresh
+/// [`MacosCapture`] is built and started with the existing ring-push
+/// callback, then stored only when `is_running()` — a silently-failed
+/// start must not block a later retry. Every step warns and continues;
+/// `capture:state` carries the result.
+fn start_capture(app: &AppHandle) -> CaptureStatus {
+    let state = app.state::<AppState>();
+    {
+        let mut slot = state.capture.lock();
+        // A stored capture counts as running only while `is_running`
+        // holds — a stopped leftover falls through to `Create` and is
+        // replaced by the fresh capture below.
+        let mut lifecycle = CaptureLifecycle::default();
+        if slot.as_ref().is_some_and(MacosCapture::is_running) {
+            lifecycle.mark_running();
+        }
+        if lifecycle.start_decision() == StartDecision::Create {
+            match MacosCapture::new() {
+                Ok(capture) => {
+                    let ring = Arc::clone(&state.ring);
+                    capture.start(Box::new(move |frame| ring.lock().push(frame)));
+                    // Store only on success (`is_running` is false when
+                    // SCStream rejected the handler or `start_capture`
+                    // failed).
+                    if capture.is_running() {
+                        *slot = Some(capture);
+                        lifecycle.mark_running();
+                    } else {
+                        log::warn!("gate: screen capture failed to start");
+                    }
+                }
+                Err(e) => log::warn!("gate: screen capture failed to init: {e}"),
+            }
+        }
+    }
+    let status = capture_snapshot(&state);
+    emit_capture_state(app, &status);
+    status
+}
+
+/// The one capture-stop boundary — `leave_main`, the `capture_stop`
+/// command, and app teardown share it. Idempotent: an empty slot is a
+/// no-op. The capture is taken out of the mutex and the lock released
+/// BEFORE `stop()` — it joins the capture worker, which must not hold
+/// `state.capture` while `capture_status` waits on it — then
+/// `capture:state` carries the result.
+fn stop_capture(app: &AppHandle) -> CaptureStatus {
+    let state = app.state::<AppState>();
+    let capture = {
+        let mut slot = state.capture.lock();
+        // Anything stored is a live session to end; `stop()` itself
+        // no-ops when the worker already isn't running.
+        let mut lifecycle = CaptureLifecycle::default();
+        if slot.is_some() {
+            lifecycle.mark_running();
+        }
+        match lifecycle.stop_decision() {
+            StopDecision::Stop => {
+                let taken = slot.take();
+                lifecycle.mark_stopped();
+                taken
+            }
+            StopDecision::Noop => None,
+        }
+    };
     if let Some(capture) = capture {
         capture.stop();
     }
-    state.pool.lock().hide_alert();
+    let status = capture_snapshot(&state);
+    emit_capture_state(app, &status);
+    status
 }
 
 /// Delta-swap to the config's current binding set via
@@ -1415,15 +1507,41 @@ fn permissions_open_prefs(section: String) -> Result<(), String> {
     permissions::open_prefs(&section).map_err(|e| e.to_string())
 }
 
-/// `{"running": bool, "frames": ring.len()}`.
+/// `{"running": bool, "frames": ring.len()}` — read-only; no emit.
 #[tauri::command]
 fn capture_status(state: State<'_, AppState>) -> serde_json::Value {
-    let running = state
-        .capture
-        .lock()
-        .as_ref()
-        .is_some_and(MacosCapture::is_running);
-    json!({ "running": running, "frames": state.ring.lock().len() })
+    capture_snapshot(&state)
+}
+
+/// Idempotent capture start — the same boundary `enter_main` uses.
+/// Emits `capture:state`, then resolves to `{"running", "frames"}`.
+#[tauri::command]
+fn capture_start(app: AppHandle) -> serde_json::Value {
+    let state = app.state::<AppState>();
+    // Crafted-invoke guard: the shipped UI disables the toggle outside
+    // `Main`, but a crafted invoke during onboarding would otherwise
+    // light the recorder while capture doesn't exist yet. The command
+    // still resolves the (unchanged) status — the toggle resyncs off
+    // `running` either way.
+    //
+    // The check and the start share `gate_transition` with
+    // `transition_gate`: a bare gate read could pass just before a
+    // transition swaps the gate and `leave_main` tears capture down,
+    // letting this start relight capture outside `Main`.
+    let _transition = state.gate_transition.lock();
+    if *state.gate.lock() != Gate::Main {
+        log::warn!("capture_start dropped while gate != Main");
+        return capture_snapshot(&state);
+    }
+    start_capture(&app)
+}
+
+/// Idempotent capture stop — the same boundary `leave_main` and app
+/// teardown use. Deliberately ungated: stopping must always be safe.
+/// Emits `capture:state`, then resolves to `{"running", "frames"}`.
+#[tauri::command]
+fn capture_stop(app: AppHandle) -> serde_json::Value {
+    stop_capture(&app)
 }
 
 // ---------------------------------------------------------------------------
@@ -1511,6 +1629,7 @@ fn config_set(app: AppHandle, key: String, value: serde_json::Value) -> Result<C
     let state = app.state::<AppState>();
     let mut hotkeys_changed = false;
     let mut onboarding_changed = false;
+    let mut accent_changed = false;
     {
         let mut cfg = state.config.lock();
         match key.as_str() {
@@ -1536,8 +1655,8 @@ fn config_set(app: AppHandle, key: String, value: serde_json::Value) -> Result<C
                     .ok_or("app.accent must be a string")?
                     .trim()
                     .to_string();
-                if v.is_empty() {
-                    cfg.app.accent = config::DEFAULT_ACCENT.to_string();
+                let next = if v.is_empty() {
+                    config::DEFAULT_ACCENT.to_string()
                 } else {
                     let ok = v.len() == 7
                         && v.starts_with('#')
@@ -1545,8 +1664,10 @@ fn config_set(app: AppHandle, key: String, value: serde_json::Value) -> Result<C
                     if !ok {
                         return Err("app.accent must be a #rrggbb color".to_string());
                     }
-                    cfg.app.accent = v;
-                }
+                    v
+                };
+                accent_changed = cfg.app.accent != next;
+                cfg.app.accent = next;
             }
             "compat.name" => {
                 cfg.compat.name = value
@@ -1611,6 +1732,11 @@ fn config_set(app: AppHandle, key: String, value: serde_json::Value) -> Result<C
     if hotkeys_changed {
         swap_hotkeys(&app);
     }
+    if accent_changed {
+        // Re-tint the bar's glass now — otherwise the new accent only
+        // reaches the material on the next pill⇄card morph.
+        state.pool.lock().refresh_bar_glass(&app);
+    }
     if onboarding_changed {
         // Gate first: `enter_main` starts capture while the
         // wizard is still the visible window; then the bar un-hides.
@@ -1654,6 +1780,7 @@ fn stop_speech(app: &AppHandle) {
 #[tauri::command]
 fn quit_application(app: AppHandle) {
     stop_speech(&app);
+    stop_capture(&app);
     app.exit(0);
 }
 
@@ -1684,7 +1811,7 @@ pub fn run() {
             let keystore = Keystore::new();
             // Bar only — it hosts the chat/listen card modes itself; the
             // bar stays hidden until onboarding is done.
-            let pool = WindowPool::create_bar_only(handle, onboarding_done)?;
+            let pool = WindowPool::create_bar_only(handle, onboarding_done, &cfg.app.accent)?;
             let voice_models = voice_models::VoiceModelManager::new();
             voice_models.attach_app(handle.clone());
             let sherpa_models = sherpa_models::SherpaModelManager::new();
@@ -1802,6 +1929,8 @@ pub fn run() {
             permissions_request_screen,
             permissions_request_mic,
             permissions_open_prefs,
+            capture_start,
+            capture_stop,
             capture_status,
             session_list,
             session_get,
@@ -1817,14 +1946,16 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app, event| {
-            // Keep speech teardown centralized at the application boundary:
-            // this covers tray/menu quit, window-manager quit, and other
-            // native exit paths in addition to the explicit command above.
+            // Keep capture + speech teardown centralized at the application
+            // boundary: this covers tray/menu quit, window-manager quit, and
+            // other native exit paths in addition to the explicit command
+            // above.
             if matches!(
                 event,
                 tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
             ) {
                 stop_speech(app);
+                stop_capture(app);
             }
         });
 }
@@ -1915,6 +2046,44 @@ mod tests {
                 "{signature} must hold the speech lifecycle lock across the await"
             );
         }
+    }
+
+    /// `capture_start` keeps the same crafted-invoke guard as
+    /// `ask_send`/`ask_send_screen_only`: it mutates only while the gate
+    /// is `Main`, and holds `gate_transition` across the check + start
+    /// so a racing `transition_gate` can't interleave between them.
+    /// `capture_stop` deliberately stays ungated — stopping must always
+    /// be safe.
+    #[test]
+    fn capture_start_is_gate_guarded_but_capture_stop_is_not() {
+        let source = include_str!("lib.rs");
+        let start_body = source
+            .split("fn capture_start(app: AppHandle)")
+            .nth(1)
+            .and_then(|rest| rest.split("\n#[tauri::command]").next())
+            .expect("capture_start body not found");
+        assert!(
+            start_body.contains("*state.gate.lock() != Gate::Main"),
+            "capture_start must drop the invoke while gate != Main"
+        );
+        let transition_lock = start_body
+            .find("state.gate_transition.lock()")
+            .expect("capture_start must hold gate_transition across check + start");
+        let gate_check = start_body.find("*state.gate.lock() != Gate::Main").unwrap();
+        let start_call = start_body.find("start_capture(&app)").unwrap();
+        assert!(
+            transition_lock < gate_check && transition_lock < start_call,
+            "gate_transition must be taken before the gate check and start_capture"
+        );
+        let stop_body = source
+            .split("fn capture_stop(app: AppHandle)")
+            .nth(1)
+            .and_then(|rest| rest.split("\nfn ").next())
+            .expect("capture_stop body not found");
+        assert!(
+            !stop_body.contains("Gate::Main"),
+            "capture_stop must stay callable at any gate"
+        );
     }
 
     /// `leave_main` must stop dictation: the session is bound to the

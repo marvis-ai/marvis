@@ -11,13 +11,16 @@
     "build:dev": "bash src-tauri/scripts/build-whisper-cli.sh --dev-stage && tauri dev",
     "check:task-2": "bash src-tauri/scripts/check-task-2-packaging.sh --fixture",
     "check:task-2:staged": "bash src-tauri/scripts/check-task-2-packaging.sh",
+    "check-types": "tsc --noEmit",
     "test": "bun test --pass-with-no-tests"
   },
   "dependencies": {
+    "@gsap/react": "^2.1.2",
     "@marvis/ui": "workspace:*",
     "@tailwindcss/vite": "^4.3.3",
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-opener": "^2",
+    "gsap": "^3.15.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "react-markdown": "^10.1.0",

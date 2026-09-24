@@ -6,11 +6,144 @@
   <link rel="icon" type="image/svg+xml"
         href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 48'%3E%3Crect x='3' y='3' width='42' height='42' rx='10' fill='%2331302e'/%3E%3Ccircle cx='24' cy='17.5' r='7.5' fill='%2378a1bb'/%3E%3Ccircle cx='24' cy='17.5' r='2.9' fill='%23ffffff'/%3E%3Crect x='14' y='30' width='20' height='2.6' rx='1.3' fill='%23f6f5f4'/%3E%3Crect x='17.5' y='34.8' width='13' height='2.6' rx='1.3' fill='%23a39e98'/%3E%3C/svg%3E" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Marvis</title>
+  <!-- Galada subset for the launch wordmark — preloaded so the intro
+       timeline never has to wait on the font. -->
+  <link rel="preload" href="/fonts/galada.woff2" as="font" type="font/woff2" crossorigin />
+  <!-- Boot splash: the webview's first paint is the brand lockup, not a
+       white box. `background: transparent` must land before the bundled
+       CSS or the window flashes opaque while it loads. The splash is a
+       SIBLING of #root — React never replaces it; LaunchIntro animates
+       this same DOM (CSS opacity write-on first, GSAP merge handoff
+       after) and Bar removes the node when the intro is over. -->
+  <style>
+    html,
+    body {
+      background: transparent;
+    }
+
+    @font-face {
+      font-family: 'Galada';
+      font-style: normal;
+      font-weight: 400;
+      font-display: swap;
+      src: url('/fonts/galada.woff2') format('woff2');
+    }
+
+    #boot-splash {
+      position: fixed;
+      inset: 0;
+      z-index: 50;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      gap: 7px;
+      pointer-events: none;
+    }
+
+    #boot-splash.show {
+      display: flex;
+    }
+
+    .boot-mark {
+      width: 22px;
+      height: 22px;
+      opacity: 0;
+      /* no nudge — flex centers it on the capsule centerline (y=32),
+         the same line the idle icons settle on */
+    }
+
+    .boot-word {
+      font-family: 'Galada', 'Segoe Script', cursive;
+      font-size: 24px;
+      line-height: 1;
+      white-space: nowrap;
+      color: #31302e;
+      transform: translateY(3px);
+    }
+
+    .boot-letter {
+      display: inline-block;
+      opacity: 0;
+    }
+
+    /* The CSS write-on is the pre-React leg of the intro — opacity-only
+       so the GSAP takeover can continue each letter from its current
+       value instead of restarting. */
+    #boot-splash.ready .boot-mark {
+      animation: mv-boot-in .4s cubic-bezier(.2, 0, .2, 1) .06s forwards;
+    }
+
+    #boot-splash.ready .boot-letter {
+      animation: mv-boot-in .55s cubic-bezier(.2, 0, .2, 1) .12s forwards;
+    }
+
+    #boot-splash.ready .boot-letter:nth-child(2) {
+      animation-delay: .18s;
+    }
+
+    #boot-splash.ready .boot-letter:nth-child(3) {
+      animation-delay: .24s;
+    }
+
+    #boot-splash.ready .boot-letter:nth-child(4) {
+      animation-delay: .30s;
+    }
+
+    #boot-splash.ready .boot-letter:nth-child(5) {
+      animation-delay: .36s;
+    }
+
+    #boot-splash.ready .boot-letter:nth-child(6) {
+      animation-delay: .42s;
+    }
+
+    @keyframes mv-boot-in {
+      to {
+        opacity: 1;
+      }
+    }
+
+    @media (prefers-color-scheme: dark) {
+      .boot-word {
+        color: oklch(0.84 0.01 230);
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+
+      #boot-splash.ready .boot-mark,
+      #boot-splash.ready .boot-letter {
+        animation: none;
+        opacity: 1;
+      }
+    }
+  </style>
+  <title>Marvis AI</title>
 </head>
 
 <body>
   <div id="root"></div>
+  <div id="boot-splash" aria-hidden="true">
+    <img class="boot-mark" src="/marvis-mark.svg" alt="" draggable="false" />
+    <span class="boot-word"><span class="boot-letter">M</span><span class="boot-letter">a</span><span
+            class="boot-letter">r</span><span class="boot-letter">v</span><span class="boot-letter">i</span><span
+            class="boot-letter">s</span></span>
+  </div>
+  <script>
+    // Splash is bar-window chrome only — prefs/alert share this index.html
+    // and must never flash the wordmark. `.ready` holds the CSS write-on
+    // until Galada is actually usable, so letters never play in the
+    // fallback cursive. The script runs during parse, before first paint.
+    (function () {
+      var s = document.getElementById('boot-splash');
+      var v = new URLSearchParams(location.search).get('view');
+      if (!s) return;
+      if (v === 'prefs' || v === 'alert') { s.remove(); return; }
+      s.classList.add('show');
+      var ready = function () { s.classList.add('ready'); };
+      document.fonts.load('24px Galada').then(ready, ready);
+    })();
+  </script>
   <script type="module" src="/src/main.tsx"></script>
 </body>
 

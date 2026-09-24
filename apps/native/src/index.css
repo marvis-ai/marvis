@@ -4,6 +4,11 @@
    ui package so its component classes (button variants, etc.) generate. */
 @source "../../../packages/ui/src";
 
+/* Galada — the "Marvis" wordmark face only (DESIGN.md §wordmark rules),
+   self-hosted subset extracted from assets/marvis-logo.svg. Its
+   @font-face lives inline in index.html so the boot splash can use it
+   before this bundle loads. */
+
 /* ─── Marvis overlay tokens (DESIGN.md §2) ────────────────────────────
    Spec names verbatim; the ui package's semantic slots are remapped onto
    them so shared pieces (focus rings, destructive, muted text) resolve
@@ -86,6 +91,8 @@
   --animate-iris-listen: iris-listen 1.6s var(--ease) infinite;
   --animate-caret: caret-blink 1.05s steps(1) infinite;
   --animate-waveform: mv-waveform 1.1s var(--ease) infinite;
+  --animate-capture-ping: mv-capture-ping 2.6s cubic-bezier(0, 0, 0.2, 1)
+    infinite;
   --animate-rotate: mv-rotate 0.8s linear infinite;
   --animate-fade-in: prf-fade-in var(--motion-base) var(--ease);
 }
@@ -163,20 +170,37 @@ body {
     opacity: 0;
   }
 }
-/* Listen animation wiring stays stateful: ListenSection adds
-   `animate-waveform` only for `listen:state=listening`; Bar adds
-   `listen-active` to the actual Iris button. */
+/* Listen/dictation animation wiring stays stateful: ListenSection and
+   Bar's dictation control add `animate-waveform` only while their mode
+   is listening; Bar adds `listen-active` to the actual Iris button. */
 .listen-active > span:first-child::before {
   animation: var(--animate-iris-listen);
 }
+/* All bar motion dies together under reduced motion: the iris pulse,
+   the waveforms (Listen + dictation), the capture ping badge, and the
+   shell's active-work pulse — stilled, never hidden, so layout and the
+   window sizing contract are unaffected. */
 @media (prefers-reduced-motion: reduce) {
   .listen-active > span:first-child::before,
-  .animate-waveform {
+  .animate-waveform,
+  .animate-capture-ping,
+  .animate-pulse {
     animation: none !important;
   }
 }
-/* listen waveform — Phase 2 applies `--animate-waveform` per bar with
-   staggered delays; idle/error bars remain still. */
+/* screen-capture badge — a slower, softer ping than Tailwind's stock
+   `animate-ping` (1s, scale-2); the badge itself is rounded accent at
+   50% so the ring reads as a glow rather than a hard dot. */
+@keyframes mv-capture-ping {
+  75%,
+  100% {
+    transform: scale(1.9);
+    opacity: 0;
+  }
+}
+
+/* listen + dictation waveform — applied per bar with staggered delays;
+   idle/error bars remain still. */
 @keyframes mv-waveform {
   0%,
   100% {

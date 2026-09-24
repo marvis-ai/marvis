@@ -20,11 +20,11 @@ keys, storage — the webview is UI only.
 - **Floating bar** — a breathing capsule that morphs into an input pill,
   then into a chat/listen card. Docks to any screen edge (top / bottom /
   left / right rail), drags anywhere, remembers its position.
-- **Ask** — type a question (or `Cmd+Enter` / `Cmd+Shift+S`): the latest
-  captured screen frame goes with it and the answer streams back as
-  markdown. An optional **vision provider** reads the frame first and
-  answers over its text description, so chat providers never need image
-  support.
+- **Ask** — type a question (`Enter` / `Cmd+Enter` sends, `Shift+Enter`
+  adds a line): the latest captured screen frame goes with it and the
+  answer streams back as markdown. An optional **vision provider** reads
+  the frame first and answers over its text description, so chat
+  providers never need image support.
 - **Provider failover chain** — OpenAI, Anthropic, Gemini, OpenRouter,
   Ollama, or any OpenAI-compatible endpoint (bring your own keys). Drag
   to re-rank, toggle to disable; a failed provider hands off to the next.
@@ -37,8 +37,9 @@ keys, storage — the webview is UI only.
 - **Screen capture** — continuous ~4 fps ScreenCaptureKit stream into an
   in-memory ring buffer (120 frames / 64 MB, JPEG @ 384 px). Screenshots
   are never written to disk.
-- **Global hotkeys** — all rebindable: `Cmd+/` toggle bar, `Cmd+Enter`
-  next step, `Cmd+Shift+S` screen-only ask, `Cmd+,` settings.
+- **Hotkeys** — `Cmd+Alt+Space` shows/hides the bar's input (global,
+  rebindable in Settings → Hotkeys). Inside the bar: `Cmd+,` opens settings,
+  `Enter` / `Cmd+Enter` sends, `Shift+Enter` adds a line.
 - **`marvis://` deep links** — `marvis://ask?text=…` asks; any other
   `marvis://*` link focuses the bar.
 - **Onboarding + permission gates** — guided first-run wizard, explicit

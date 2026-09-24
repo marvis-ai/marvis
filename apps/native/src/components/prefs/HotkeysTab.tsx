@@ -1,31 +1,38 @@
 /**
- * Hotkeys — the four configurable actions (`hotkeys.*` in config.toml).
- * Click a binding to rebind it: the row arms, the next chord becomes the
- * accelerator (a modifier is required — a bare key would hijack normal
- * typing), Esc cancels. Writes go through `config_set`, which
- * re-registers the live set; a chord already taken by another action is
- * refused here so it can't silently win the backend's first-wins dedup.
+ * Hotkeys — the one rebindable action (`hotkeys.toggle_input` in
+ * config.toml) plus the fixed keys the bar webview owns. Click the
+ * global binding to rebind it: the row arms, the next chord becomes
+ * the accelerator (a modifier is required — a bare key would hijack
+ * normal typing), Esc cancels. Writes go through `config_set`, which
+ * delta-swaps the registered set.
  */
 import { useEffect, useState } from 'react';
-import { configSet } from '../../lib/commands';
-import {
-  H2,
-  META,
-  PR_LABEL,
-  PR_SUB,
-  PRF_ROW,
-  PRF_ROWS,
-  SUB,
-  cn,
-} from '../../lib/classes';
-import { Kbd } from './bits';
+import { configSet } from '@/lib/commands';
+import { H2, PRF_ROWS, SUB, cn } from '@/lib/classes';
+import { Kbd, PrefRow } from './bits';
 import type { PrefsData } from './types';
 
 const ACTIONS: { id: string; label: string }[] = [
-  { id: 'toggle_visibility', label: 'Show / hide everything' },
-  { id: 'next_step', label: 'Send ask' },
-  { id: 'screen_only', label: 'Screenshot → ask' },
-  { id: 'show_settings', label: 'Settings' },
+  { id: 'toggle_input', label: 'Start to ask Marvis' },
+];
+
+/** The bar webview's fixed bindings — displayed, never rebindable. */
+const FIXED: { label: string; sub: string; accels: string[] }[] = [
+  {
+    label: 'Settings',
+    sub: 'Only while the bar is active',
+    accels: ['Cmd+,'],
+  },
+  {
+    label: 'Send · new line',
+    sub: 'Enter sends, Shift+Enter adds a line',
+    accels: ['Enter', 'Shift+Enter'],
+  },
+  {
+    label: 'Send with screenshot',
+    sub: 'At the input',
+    accels: ['Cmd+Enter'],
+  },
 ];
 
 /** Keys that are a modifier being held, not a bindable key press. */
@@ -105,13 +112,6 @@ export const HotkeysTab = ({ data }: { data: PrefsData }) => {
         setHint(null);
         return;
       }
-      const clash = ACTIONS.find(
-        (a) => a.id !== listening && hk[a.id] === accel,
-      );
-      if (clash) {
-        setHint(`Already bound to “${clash.label}”`);
-        return;
-      }
       setListening(null);
       setHint(null);
       void configSet(`hotkeys.${listening}`, accel)
@@ -128,26 +128,21 @@ export const HotkeysTab = ({ data }: { data: PrefsData }) => {
     <>
       <h2 className={H2}>Hotkeys</h2>
       <p className={SUB}>
-        Global, registered at the OS level. Click a binding, then press the new
-        chord — Esc cancels.
+        Show / hide the input is the only global chord — click its binding, then
+        press the new one; Esc cancels. The rest are fixed keys inside the bar.
       </p>
 
       <div className={PRF_ROWS}>
-        {ACTIONS.map((a, i) => {
+        {ACTIONS.map((a) => {
           const accel = hk[a.id];
           const armed = listening === a.id;
           return (
-            <div
+            <PrefRow
               key={a.id}
-              className={cn(PRF_ROW, i === ACTIONS.length - 1 && 'border-b-0')}>
-              <div>
-                <div className={PR_LABEL}>{a.label}</div>
-                {armed && (
-                  <div className={PR_SUB}>
-                    {hint ?? 'press a shortcut with ⌘, ⌃ or ⌥'}
-                  </div>
-                )}
-              </div>
+              label={a.label}
+              sub={
+                armed ? (hint ?? 'press a shortcut with ⌘, ⌃ or ⌥') : undefined
+              }>
               <button
                 type='button'
                 className={cn(
@@ -161,13 +156,24 @@ export const HotkeysTab = ({ data }: { data: PrefsData }) => {
                 }}>
                 <Kbd accel={accel ?? ''} />
               </button>
-            </div>
+            </PrefRow>
           );
         })}
+        {FIXED.map((f, i) => (
+          <PrefRow
+            key={f.label}
+            label={f.label}
+            sub={f.sub}
+            last={i === FIXED.length - 1}>
+            {f.accels.map((accel) => (
+              <Kbd
+                key={accel}
+                accel={accel}
+              />
+            ))}
+          </PrefRow>
+        ))}
       </div>
-      <p className={cn(META, 'mt-3.5')}>
-        before setup finishes, only Show/hide and Settings respond.
-      </p>
     </>
   );
 };

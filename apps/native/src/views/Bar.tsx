@@ -13,7 +13,7 @@
  * `cardOpen` is read off the window itself: `innerHeight > BAR_H` means
  * Rust expanded us — `set_chat_open` emits nothing by design, so the
  * `resize` event is the single open/close signal for every path
- * (Cmd+/, ask send, `ask_close`, `window_set_chat_open`).
+ * (tray Toggle, ask send, `ask_close`, `window_set_chat_open`).
  *
  * `growDir` is detected at expand time: the anchored edge is fixed for
  * grow-down and rises for grow-up, so the first expanded y-read compared
@@ -62,6 +62,7 @@ import {
   listenStop,
   listenStatus,
   windowAdjustHeight,
+  windowFocusBar,
   windowSetBarExpanded,
   windowSetChatOpen,
   windowShowSettings,
@@ -71,6 +72,7 @@ import {
 import {
   EV_ASK_STATE,
   EV_APP_STATE,
+  EV_BAR_TOGGLE_INPUT,
   EV_DICTATION_DRAFT,
   EV_DICTATION_ERROR,
   EV_DICTATION_STATE,
@@ -186,7 +188,7 @@ const Bar = () => {
     useState<ListenStatePayload['state']>('idle');
   const [dictationState, setDictationState] =
     useState<DictationStatePayload['state']>('idle');
-  const inputRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
   const cardRef = useRef<HTMLDivElement>(null);
   /** Last collapsed-mode outer y — the baseline the expand direction
@@ -458,6 +460,26 @@ const Bar = () => {
       setListenWanted(false);
     }
   });
+  // The `toggle_input` global hotkey (lib.rs `hotkey_dispatch` emits
+  // `bar:toggle-input`): morph capsule ⇄ input pill only — it never
+  // opens the card; an open card counts as "shown" and collapses.
+  useTauriEvent(EV_BAR_TOGGLE_INPUT, () => {
+    if (gate !== 'main') {
+      return;
+    }
+    if (cardOpen) {
+      void windowSetChatOpen(false).catch(() => {});
+      return;
+    }
+    if (open) {
+      collapse();
+      return;
+    }
+    setOpen(true);
+    // A global-hotkey show must focus the window too, or the user's
+    // typing lands in whatever app was frontmost.
+    void windowFocusBar().catch(() => {});
+  });
 
   // Card open/close is learned from the window itself; grow direction
   // from the y-delta at expand time. While collapsed the baseline y
@@ -596,8 +618,21 @@ const Bar = () => {
 
   // Type-to-wake on the collapsed pill; Esc collapses input → capsule,
   // and collapses the card via `ask_close` (cancel + `set_chat_open`).
+  // `Cmd+,` opens settings — a bar-local key (fires only while this
+  // window is focused), not a global hotkey.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (
+        e.key === ',' &&
+        e.metaKey &&
+        !e.ctrlKey &&
+        !e.altKey &&
+        !e.shiftKey
+      ) {
+        e.preventDefault();
+        void windowShowSettings().catch(() => {});
+        return;
+      }
       if (e.key === 'Escape') {
         if (cardOpen) {
           void askClose().catch(() => {});
@@ -683,8 +718,8 @@ const Bar = () => {
 
   // Submit = ask (a follow-up while the card is open). The backend
   // expands the window itself — no local collapse needed either way.
-  const submitAsk = (e: SubmitEvent<HTMLFormElement>) => {
-    e.preventDefault();
+  const submitAsk = (e?: SubmitEvent<HTMLFormElement>) => {
+    e?.preventDefault();
     const pendingStop = dictationStopPending.current;
     if (pendingStop !== null) {
       // A stop is already settling — Enter's contract is "submit the
@@ -714,7 +749,7 @@ const Bar = () => {
     'flex min-h-0 w-full flex-none items-center gap-1.5',
     cardOpen
       ? cn(
-          'h-16 border-border px-2.75',
+          'min-h-16 border-border px-2.75',
           // The divider sits between the row and the section — which
           // side depends on the grow direction (the row is bottom-
           // pinned under `flex-col-reverse` when growing up).
@@ -812,9 +847,19 @@ const Bar = () => {
             <ArrowLeftIcon className='size-5.5' />
           </span>
         </button>
-        <input
+        <textarea
           ref={inputRef}
           value={text}
+          rows={1}
+          onKeyDown={(e) => {
+            // Enter submits (Cmd+Enter too — the send already attaches
+            // the latest screen frame server-side); Shift+Enter is the
+            // textarea's default newline.
+            if (e.key === 'Enter' && !e.shiftKey) {
+              e.preventDefault();
+              submitAsk();
+            }
+          }}
           onChange={(e) => {
             // A keystroke commits its own caret — don't let a queued
             // dictation-selection restore jump it to the dictated slice.
@@ -881,7 +926,10 @@ const Bar = () => {
           placeholder='Ask Marvis…'
           aria-label='Ask Marvis'
           className={cn(
-            'min-w-0 flex-1 self-stretch border-0 bg-transparent text-[13.5px] text-foreground caret-accent outline-none select-text placeholder:text-muted-foreground focus-visible:shadow-none transition-[max-width_var(--motion-base)_var(--ease),opacity_var(--motion-fast)_var(--ease),margin-inline_var(--motion-base)_var(--ease)] motion-reduce:transition-none',
+            'field-sizing-content min-w-0 flex-1 resize-none self-center overflow-y-auto border-0 bg-transparent text-[13.5px] leading-5 text-foreground caret-accent outline-none select-text placeholder:text-muted-foreground focus-visible:shadow-none transition-[max-width_var(--motion-base)_var(--ease),opacity_var(--motion-fast)_var(--ease),margin-inline_var(--motion-base)_var(--ease)] motion-reduce:transition-none',
+            // Line cap: 2 inside the fixed-height pill (scrolls past),
+            // ~6 in the card — its ResizeObserver reports growth up.
+            cardOpen ? 'max-h-30' : 'max-h-10',
             showInputRow
               ? 'max-w-80'
               : 'pointer-events-none -mx-1.5 max-w-0 opacity-0',
@@ -1008,10 +1056,18 @@ const Bar = () => {
       <div
         ref={cardRef}
         className={cn(
-          'group/bar glass-surface relative flex w-full flex-none select-none',
+          'group/bar glass-surface relative flex w-full select-none',
           cardOpen
-            ? cn(PANEL, growDir === 'up' ? 'flex-col-reverse' : 'flex-col')
-            : 'h-full flex-col justify-center rounded-full bg-[color-mix(in_oklch,var(--surface)_80%,transparent)] backdrop-blur-[14px] transition-[border-color,box-shadow] duration-(--motion-base) ease-(--ease) motion-reduce:transition-none',
+            ? // `flex-1 min-h-0` (not `flex-none`): the card tracks the
+              // window through the expand animation, so its bottom edge —
+              // and the ShineBorder ring — is never clipped mid-grow; the
+              // scroll body absorbs the slack.
+              cn(
+                PANEL,
+                'min-h-0 flex-1',
+                growDir === 'up' ? 'flex-col-reverse' : 'flex-col',
+              )
+            : 'h-full flex-none flex-col justify-center rounded-full bg-[color-mix(in_oklch,var(--surface)_80%,transparent)] backdrop-blur-[14px] transition-[border-color,box-shadow] duration-(--motion-base) ease-(--ease) motion-reduce:transition-none',
         )}
         style={cardOpen ? { maxHeight: CARD_MAX } : undefined}
         data-expanded={showInputRow || undefined}

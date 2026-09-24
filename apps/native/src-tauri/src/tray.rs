@@ -34,8 +34,8 @@ pub fn init(
 ) -> tauri::Result<()> {
     let toggle = MenuItem::with_id(app, MENU_TOGGLE, "Show / Hide", true, None::<&str>)?;
     // The accelerator is display-only here (a tray menu isn't the app
-    // menu, so AppKit never fires it) — `Cmd+,` is bound for real as
-    // `hotkey::Action::ShowSettings`.
+    // menu, so AppKit never fires it) — `Cmd+,` is bound for real as a
+    // keydown handler in the bar webview (fires only while it's active).
     let settings = MenuItem::with_id(app, MENU_SETTINGS, "Settings", true, Some("CmdOrCtrl+,"))?;
     let quit = MenuItem::with_id(app, MENU_QUIT, "Quit Marvis", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&toggle, &settings, &quit])?;

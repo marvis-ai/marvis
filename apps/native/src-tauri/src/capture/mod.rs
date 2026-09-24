@@ -8,6 +8,7 @@
 //! [`MacosCapture`] (ScreenCaptureKit) is the production [`FrameSource`];
 //! `RingBuffer` and [`frame_hash`] are platform-pure and unit-tested here.
 
+pub(crate) mod controller;
 pub(crate) mod macos;
 pub(crate) use macos::primary_display_filter;
 pub use macos::MacosCapture;

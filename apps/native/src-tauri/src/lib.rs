@@ -61,6 +61,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_liquid_glass::LiquidGlassExt;
 
 use ask::AskService;
+use capture::controller::{CaptureLifecycle, StartDecision, StopDecision};
 use capture::{FrameSource, MacosCapture, RingBuffer};
 use config::Config;
 use dictation::{DictationEvent, DictationService};
@@ -254,28 +255,11 @@ fn transition_gate(app: &AppHandle) {
     let _ = app.emit("app:state", json!({ "gate": new_gate.name() }));
 }
 
-/// `Main` entry: start capture. Every step warns and
-/// continues — a failed piece must never wedge the gate.
+/// `Main` entry: start capture through the shared lifecycle boundary —
+/// it warns and continues on failure, so a failed piece never wedges
+/// the gate.
 fn enter_main(app: &AppHandle) {
-    let state = app.state::<AppState>();
-    let mut slot = state.capture.lock();
-    if slot.is_none() {
-        match MacosCapture::new() {
-            Ok(capture) => {
-                let ring = Arc::clone(&state.ring);
-                capture.start(Box::new(move |frame| ring.lock().push(frame)));
-                // Store only on success — a silently-failed start must
-                // not block a later retry (`is_running` is false when
-                // SCStream rejected the handler or `start_capture` failed).
-                if capture.is_running() {
-                    *slot = Some(capture);
-                } else {
-                    log::warn!("gate: screen capture failed to start");
-                }
-            }
-            Err(e) => log::warn!("gate: screen capture failed to init: {e}"),
-        }
-    }
+    start_capture(app);
 }
 
 /// `Main` exit (onboarding reset / permission revoked): cancel the
@@ -298,14 +282,108 @@ fn leave_main(app: &AppHandle) {
     if dictation_was_live {
         emit_dictation_state(app, &state.dictation.status());
     }
-    // Take the capture out and release the lock BEFORE `stop()` — it
-    // joins the capture worker, which must not hold `state.capture`
-    // while `capture_status` waits on it.
-    let capture = state.capture.lock().take();
+    // Capture teardown shares the command boundary: the capture leaves
+    // the mutex before `stop()` joins the worker, then `capture:state`
+    // broadcasts the result.
+    stop_capture(app);
+    state.pool.lock().hide_alert();
+}
+
+/// `{"running": bool, "frames": ring.len()}` — the capture status
+/// snapshot returned by the `capture_*` commands and carried by
+/// `capture:state`. Frame bytes are never serialized.
+type CaptureStatus = serde_json::Value;
+
+/// Live `{"running", "frames"}` snapshot — the single serializer for
+/// the status contract.
+fn capture_snapshot(state: &AppState) -> CaptureStatus {
+    let running = state
+        .capture
+        .lock()
+        .as_ref()
+        .is_some_and(MacosCapture::is_running);
+    json!({ "running": running, "frames": state.ring.lock().len() })
+}
+
+/// Broadcast `capture:state` to every window — fire-and-forget like
+/// `app:state`; a dead webview must never stall a transition.
+fn emit_capture_state(app: &AppHandle, status: &CaptureStatus) {
+    let _ = app.emit("capture:state", status);
+}
+
+/// The one capture-start boundary — `enter_main` and the
+/// `capture_start` command share it. Idempotent: a live capture
+/// returns the current status untouched. Otherwise a fresh
+/// [`MacosCapture`] is built and started with the existing ring-push
+/// callback, then stored only when `is_running()` — a silently-failed
+/// start must not block a later retry. Every step warns and continues;
+/// `capture:state` carries the result.
+fn start_capture(app: &AppHandle) -> CaptureStatus {
+    let state = app.state::<AppState>();
+    {
+        let mut slot = state.capture.lock();
+        // A stored capture counts as running only while `is_running`
+        // holds — a stopped leftover falls through to `Create` and is
+        // replaced by the fresh capture below.
+        let mut lifecycle = CaptureLifecycle::default();
+        if slot.as_ref().is_some_and(MacosCapture::is_running) {
+            lifecycle.mark_running();
+        }
+        if lifecycle.start_decision() == StartDecision::Create {
+            match MacosCapture::new() {
+                Ok(capture) => {
+                    let ring = Arc::clone(&state.ring);
+                    capture.start(Box::new(move |frame| ring.lock().push(frame)));
+                    // Store only on success (`is_running` is false when
+                    // SCStream rejected the handler or `start_capture`
+                    // failed).
+                    if capture.is_running() {
+                        *slot = Some(capture);
+                        lifecycle.mark_running();
+                    } else {
+                        log::warn!("gate: screen capture failed to start");
+                    }
+                }
+                Err(e) => log::warn!("gate: screen capture failed to init: {e}"),
+            }
+        }
+    }
+    let status = capture_snapshot(&state);
+    emit_capture_state(app, &status);
+    status
+}
+
+/// The one capture-stop boundary — `leave_main`, the `capture_stop`
+/// command, and app teardown share it. Idempotent: an empty slot is a
+/// no-op. The capture is taken out of the mutex and the lock released
+/// BEFORE `stop()` — it joins the capture worker, which must not hold
+/// `state.capture` while `capture_status` waits on it — then
+/// `capture:state` carries the result.
+fn stop_capture(app: &AppHandle) -> CaptureStatus {
+    let state = app.state::<AppState>();
+    let capture = {
+        let mut slot = state.capture.lock();
+        // Anything stored is a live session to end; `stop()` itself
+        // no-ops when the worker already isn't running.
+        let mut lifecycle = CaptureLifecycle::default();
+        if slot.is_some() {
+            lifecycle.mark_running();
+        }
+        match lifecycle.stop_decision() {
+            StopDecision::Stop => {
+                let taken = slot.take();
+                lifecycle.mark_stopped();
+                taken
+            }
+            StopDecision::Noop => None,
+        }
+    };
     if let Some(capture) = capture {
         capture.stop();
     }
-    state.pool.lock().hide_alert();
+    let status = capture_snapshot(&state);
+    emit_capture_state(app, &status);
+    status
 }
 
 /// Delta-swap to the config's current binding set via
@@ -1415,15 +1493,25 @@ fn permissions_open_prefs(section: String) -> Result<(), String> {
     permissions::open_prefs(&section).map_err(|e| e.to_string())
 }
 
-/// `{"running": bool, "frames": ring.len()}`.
+/// `{"running": bool, "frames": ring.len()}` — read-only; no emit.
 #[tauri::command]
 fn capture_status(state: State<'_, AppState>) -> serde_json::Value {
-    let running = state
-        .capture
-        .lock()
-        .as_ref()
-        .is_some_and(MacosCapture::is_running);
-    json!({ "running": running, "frames": state.ring.lock().len() })
+    capture_snapshot(&state)
+}
+
+/// Idempotent capture start — the same boundary `enter_main` uses.
+/// Emits `capture:state`, then resolves to `{"running", "frames"}`.
+#[tauri::command]
+fn capture_start(app: AppHandle) -> serde_json::Value {
+    start_capture(&app)
+}
+
+/// Idempotent capture stop — the same boundary `leave_main` and app
+/// teardown use. Emits `capture:state`, then resolves to
+/// `{"running", "frames"}`.
+#[tauri::command]
+fn capture_stop(app: AppHandle) -> serde_json::Value {
+    stop_capture(&app)
 }
 
 // ---------------------------------------------------------------------------
@@ -1654,6 +1742,7 @@ fn stop_speech(app: &AppHandle) {
 #[tauri::command]
 fn quit_application(app: AppHandle) {
     stop_speech(&app);
+    stop_capture(&app);
     app.exit(0);
 }
 
@@ -1802,6 +1891,8 @@ pub fn run() {
             permissions_request_screen,
             permissions_request_mic,
             permissions_open_prefs,
+            capture_start,
+            capture_stop,
             capture_status,
             session_list,
             session_get,
@@ -1817,14 +1908,16 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app, event| {
-            // Keep speech teardown centralized at the application boundary:
-            // this covers tray/menu quit, window-manager quit, and other
-            // native exit paths in addition to the explicit command above.
+            // Keep capture + speech teardown centralized at the application
+            // boundary: this covers tray/menu quit, window-manager quit, and
+            // other native exit paths in addition to the explicit command
+            // above.
             if matches!(
                 event,
                 tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
             ) {
                 stop_speech(app);
+                stop_capture(app);
             }
         });
 }

@@ -11,10 +11,10 @@ export default defineConfig(() => ({
 
   resolve: {
     alias: {
-      // packages/ui component sources import "@/…" (their own src);
-      // the barrel is consumed unbuilt, so map the alias to that
-      // package's src root. Native's own code never uses "@/".
-      '@': fileURLToPath(new URL('../../packages/ui/src', import.meta.url)),
+      // Map "@/…" to this app's own src root so local imports stay short
+      // (e.g. "@/lib/utils" → "src/lib/utils").
+      // packages/ui is imported via "@marvis/ui" and no longer needs this alias.
+      '@': fileURLToPath(new URL('./src', import.meta.url)),
     },
   },
 

@@ -5,15 +5,9 @@
 @source "../../../packages/ui/src";
 
 /* Galada — the "Marvis" wordmark face only (DESIGN.md §wordmark rules),
-   self-hosted subset extracted from assets/marvis-logo.svg; preloaded in
-   index.html so the launch intro never swaps mid-animation. */
-@font-face {
-  font-family: 'Galada';
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-  src: url('/fonts/galada.woff2') format('woff2');
-}
+   self-hosted subset extracted from assets/marvis-logo.svg. Its
+   @font-face lives inline in index.html so the boot splash can use it
+   before this bundle loads. */
 
 /* ─── Marvis overlay tokens (DESIGN.md §2) ────────────────────────────
    Spec names verbatim; the ui package's semantic slots are remapped onto
@@ -92,7 +86,6 @@
   --color-fg-soft: var(--fg-soft);
   --color-input-well: var(--input-well);
   --font-mono: var(--font-mono);
-  --font-wordmark: 'Galada', 'Segoe Script', cursive;
 
   --animate-iris-breath: iris-breath 7s var(--ease) infinite;
   --animate-iris-listen: iris-listen 1.6s var(--ease) infinite;

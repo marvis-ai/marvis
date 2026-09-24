@@ -445,6 +445,15 @@ const Bar = () => {
       .catch(() => {});
   }, [bootstrap]);
 
+  // The boot splash (index.html) is a sibling of #root — outside React —
+  // so it needs imperative removal once the intro has finished, was
+  // skipped (reduced-motion), or was interrupted mid-flight.
+  useEffect(() => {
+    if (!showIntro) {
+      document.getElementById('boot-splash')?.remove();
+    }
+  }, [showIntro]);
+
   useTauriEvent<AppStatePayload>(EV_APP_STATE, (p) => setGate(p.gate));
   useTauriEvent<ListenStatePayload>(EV_LISTEN_STATE, (p) => {
     setListenState(p.state);

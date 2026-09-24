@@ -178,6 +178,13 @@ impl AppState {
         *self.gate.lock() == Gate::Main
     }
 
+    /// The configured `#rrggbb` accent — the bar's liquid-glass tint
+    /// derives from it, so `config_set` re-applies the effect on
+    /// `app.accent` writes.
+    pub(crate) fn accent(&self) -> String {
+        self.config.lock().app.accent.clone()
+    }
+
     /// The single source of truth for bar visibility. Re-reads
     /// `onboarding_done` and asks the pool to reconcile — the bar floats
     /// only when onboarding is done AND the wizard isn't on screen
@@ -1622,6 +1629,7 @@ fn config_set(app: AppHandle, key: String, value: serde_json::Value) -> Result<C
     let state = app.state::<AppState>();
     let mut hotkeys_changed = false;
     let mut onboarding_changed = false;
+    let mut accent_changed = false;
     {
         let mut cfg = state.config.lock();
         match key.as_str() {
@@ -1647,8 +1655,8 @@ fn config_set(app: AppHandle, key: String, value: serde_json::Value) -> Result<C
                     .ok_or("app.accent must be a string")?
                     .trim()
                     .to_string();
-                if v.is_empty() {
-                    cfg.app.accent = config::DEFAULT_ACCENT.to_string();
+                let next = if v.is_empty() {
+                    config::DEFAULT_ACCENT.to_string()
                 } else {
                     let ok = v.len() == 7
                         && v.starts_with('#')
@@ -1656,8 +1664,10 @@ fn config_set(app: AppHandle, key: String, value: serde_json::Value) -> Result<C
                     if !ok {
                         return Err("app.accent must be a #rrggbb color".to_string());
                     }
-                    cfg.app.accent = v;
-                }
+                    v
+                };
+                accent_changed = cfg.app.accent != next;
+                cfg.app.accent = next;
             }
             "compat.name" => {
                 cfg.compat.name = value
@@ -1721,6 +1731,11 @@ fn config_set(app: AppHandle, key: String, value: serde_json::Value) -> Result<C
     }
     if hotkeys_changed {
         swap_hotkeys(&app);
+    }
+    if accent_changed {
+        // Re-tint the bar's glass now — otherwise the new accent only
+        // reaches the material on the next pill⇄card morph.
+        state.pool.lock().refresh_bar_glass(&app);
     }
     if onboarding_changed {
         // Gate first: `enter_main` starts capture while the
@@ -1796,7 +1811,7 @@ pub fn run() {
             let keystore = Keystore::new();
             // Bar only — it hosts the chat/listen card modes itself; the
             // bar stays hidden until onboarding is done.
-            let pool = WindowPool::create_bar_only(handle, onboarding_done)?;
+            let pool = WindowPool::create_bar_only(handle, onboarding_done, &cfg.app.accent)?;
             let voice_models = voice_models::VoiceModelManager::new();
             voice_models.attach_app(handle.clone());
             let sherpa_models = sherpa_models::SherpaModelManager::new();

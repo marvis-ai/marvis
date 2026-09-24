@@ -152,7 +152,7 @@ impl WindowPool {
     /// `show_bar` is the same `onboarding_done` flag — first-run
     /// installs keep the bar hidden until the wizard finishes;
     /// `set_bar_shown` owns it after.
-    pub fn create_bar_only(app: &AppHandle, show_bar: bool) -> anyhow::Result<Self> {
+    pub fn create_bar_only(app: &AppHandle, show_bar: bool, accent: &str) -> anyhow::Result<Self> {
         let mut pool = Self {
             bar: None,
             alert: None,
@@ -163,7 +163,14 @@ impl WindowPool {
             expand_dir: Dir::Down,
             bar_rect: DEFAULT_WORK,
         };
-        let bar = build_window(app, BAR_LABEL, BAR_IDLE_W, BAR_H, BAR_H / 2.0)?;
+        let bar = build_window(
+            app,
+            BAR_LABEL,
+            BAR_IDLE_W,
+            BAR_H,
+            BAR_H / 2.0,
+            accent_glass_tint(accent),
+        )?;
         {
             // Persist the resting place on every move — user drags via
             // `data-tauri-drag-region`, edge snaps, and reclamps alike.
@@ -188,7 +195,14 @@ impl WindowPool {
         // Built (hidden) up front so its webview is loaded and listening
         // before the first alert — an emit to a still-loading window
         // would be dropped.
-        pool.alert = Some(build_window(app, ALERT_LABEL, ALERT_W, ALERT_H, 14.0)?);
+        pool.alert = Some(build_window(
+            app,
+            ALERT_LABEL,
+            ALERT_W,
+            ALERT_H,
+            14.0,
+            None,
+        )?);
         pool.position_bar_at_startup();
         if show_bar {
             if let Some(bar) = &pool.bar {
@@ -378,6 +392,19 @@ impl WindowPool {
             movement::animate(&bar, self.bar_rect, ANIM_DUR);
             set_glass_radius(app, &bar, BAR_H / 2.0);
         }
+    }
+
+    /// Re-apply the bar's glass effect at its CURRENT radius — called
+    /// after an `app.accent` config write so the tint follows the new
+    /// accent without waiting for the next pill⇄card morph.
+    pub fn refresh_bar_glass(&self, app: &AppHandle) {
+        let Some(bar) = self.bar.clone() else { return };
+        let radius = if self.chat_open {
+            CARD_RADIUS
+        } else {
+            BAR_H / 2.0
+        };
+        set_glass_radius(app, &bar, radius);
     }
 
     /// `window_toggle_all`/tray Toggle: open ⇄ close the card. (The
@@ -630,12 +657,22 @@ impl WindowPool {
 /// then `set_visible_on_all_workspaces`, `set_content_protected`, and the
 /// liquid-glass material. `corner_radius` matches the surface's CSS radius —
 /// the glass view fills the window, so its shape IS the surface shape.
+/// `app.accent` (`#rrggbb`) at 50% alpha → the bar's glass `tint_color`.
+/// The alpha is load-bearing: the pre-26 `NSVisualEffectView` fallback
+/// paints the tint as an overlay fill, so an opaque value would bury
+/// the vibrancy entirely.
+fn accent_glass_tint(accent: &str) -> Option<String> {
+    let accent = accent.trim();
+    (accent.len() == 7 && accent.starts_with('#')).then(|| format!("{accent}80"))
+}
+
 fn build_window(
     app: &AppHandle,
     label: &str,
     w: f64,
     h: f64,
     corner_radius: f64,
+    tint_color: Option<String>,
 ) -> anyhow::Result<WebviewWindow> {
     let url = WebviewUrl::App(format!("index.html?view={label}").into());
     let win = WebviewWindowBuilder::new(app, label, url)
@@ -668,6 +705,7 @@ fn build_window(
                 &win,
                 LiquidGlassConfig {
                     corner_radius,
+                    tint_color,
                     ..Default::default()
                 },
             ) {
@@ -686,10 +724,15 @@ fn set_glass_radius(app: &AppHandle, win: &WebviewWindow, corner_radius: f64) {
     let app = app.clone();
     let win = win.clone();
     std::thread::spawn(move || {
+        // Re-supply the accent tint — `set_effect` CLEARS the tint when
+        // `tint_color` is `None`, so a radius-only re-apply would strip
+        // it on every pill⇄card morph.
+        let tint_color = accent_glass_tint(&app.state::<crate::AppState>().accent());
         if let Err(e) = app.liquid_glass().set_effect(
             &win,
             LiquidGlassConfig {
                 corner_radius,
+                tint_color,
                 ..Default::default()
             },
         ) {

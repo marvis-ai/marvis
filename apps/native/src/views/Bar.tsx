@@ -6,12 +6,12 @@
  *    `expanded` reports to `window_set_bar_expanded` and Rust animates
  *    the width change. Unchanged mechanics.
  *  - Card modes (chat | listen): the same window grown to
- *    600×(64+content) — the bar row becomes the card's header, pinned
- *    to the anchored edge (`flex-col-reverse` when growing up puts the
- *    row at the bottom and it never visually jumps).
+ *    600×(64+content) — the bar row is the card's bottom-anchored
+ *    footer under `flex-col-reverse`, with the chat/listen section
+ *    above it regardless of which way the window physically grows.
  *
- * `cardOpen`/`growDir` live in `useCardGeometry` — read off the window
- * itself (`resize`/`tauri://move` are the only open/close signals).
+ * `cardOpen` lives in `useCardGeometry` — read off the window
+ * itself (`resize` is the only open/close signal).
  * Dictation is `useDictation`; the permission gate is `useGate`; the
  * background-activity mirrors are `useBarActivity`.
  *
@@ -93,7 +93,7 @@ const Bar = () => {
    *  mutually exclusive server-side). */
   const speechBusy = useRef(false);
 
-  const { cardOpen, growDir } = useCardGeometry(cardRef, stageRef);
+  const { cardOpen } = useCardGeometry(cardRef, stageRef);
   const {
     listenWanted,
     setListenWanted,
@@ -312,10 +312,9 @@ const Bar = () => {
     cardOpen
       ? cn(
           'min-h-16 border-border px-2.75',
-          // The divider sits between the row and the section — which
-          // side depends on the grow direction (the row is bottom-
-          // pinned under `flex-col-reverse` when growing up).
-          growDir === 'up' ? 'border-t' : 'border-b',
+          // The row is bottom-pinned under `flex-col-reverse`, so the
+          // divider is always its top edge.
+          'border-t',
         )
       : showInputRow
         ? 'px-2.75'
@@ -508,11 +507,8 @@ const Bar = () => {
     <div
       ref={stageRef}
       className={cn(
-        'group/stage glass-stage flex h-full flex-col p-1',
-        growDir === 'up' ? 'justify-end' : 'justify-start',
-      )}
-      data-pos={growDir === 'up' ? 'bottom' : 'top'}
-      data-dir={growDir}>
+        'group/stage glass-stage flex h-full flex-col justify-end p-1',
+      )}>
       <div
         ref={cardRef}
         className={cn(
@@ -522,11 +518,7 @@ const Bar = () => {
               // window through the expand animation, so its bottom edge —
               // and the ShineBorder ring — is never clipped mid-grow; the
               // scroll body absorbs the slack.
-              cn(
-                PANEL,
-                'min-h-0 flex-1',
-                growDir === 'up' ? 'flex-col-reverse' : 'flex-col',
-              )
+              cn(PANEL, 'min-h-0 flex-1 flex-col-reverse')
             : 'h-full flex-none flex-col justify-center rounded-full bg-[color-mix(in_oklch,var(--surface)_80%,transparent)] backdrop-blur-[14px] transition-[border-color,box-shadow] duration-(--motion-base) ease-(--ease) motion-reduce:transition-none',
           // Activity pulse is scoped to the collapsed pill — never the
           // form row or the open card — so row sizing, control placement,

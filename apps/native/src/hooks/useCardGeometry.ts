@@ -6,18 +6,14 @@
  * `resize` event is the single open/close signal for every path
  * (tray Toggle, ask send, `ask_close`, `window_set_chat_open`).
  *
- * `growDir` is detected at expand time: the anchored edge is fixed for
- * grow-down and rises for grow-up, so the first expanded y-read compared
- * to the last collapsed y gives the direction. While collapsed the
- * baseline refreshes on every `tauri://move`/`resize` tick.
- *
  * While the card is open the hook also reports its desired TOTAL window
  * height back to Rust (`window_adjust_height`) so streaming content
- * grows/shrinks the window live.
+ * grows/shrinks the window live. The bar row is always the card's
+ * bottom-anchored footer (Bar.tsx lays out `flex-col-reverse`), so no
+ * grow-direction detection is needed here.
  */
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { RefObject } from 'react';
-import { getCurrentWindow } from '@tauri-apps/api/window';
 import { windowAdjustHeight } from '@/lib/commands';
 
 /** The bar row's height — the pill's window height in pill modes and
@@ -36,55 +32,14 @@ export const useCardGeometry = (
   const [cardOpen, setCardOpen] = useState(
     () => window.innerHeight > BAR_H + OPEN_EPS,
   );
-  /** Mutable mirror of `cardOpen` — the expand-direction compare needs
-   *  the pre-transition value without a side-effecting state updater
-   *  (StrictMode double-invokes updaters). */
-  const cardOpenRef = useRef(cardOpen);
-  const [growDir, setGrowDir] = useState<'up' | 'down'>('down');
-  /** Last collapsed-mode outer y — the baseline the expand direction
-   *  is detected against. */
-  const collapsedY = useRef<number | null>(null);
 
-  // Card open/close is learned from the window itself; grow direction
-  // from the y-delta at expand time. While collapsed the baseline y
-  // refreshes on move + resize ticks (a drag moves without resizing).
+  // Card open/close is learned from the window itself: any height
+  // change — expand, collapse, drag-resize — re-reads innerHeight.
   useEffect(() => {
-    const win = getCurrentWindow();
-    let alive = true;
-    const unMove = win.onMoved((e) => {
-      if (window.innerHeight <= BAR_H + OPEN_EPS) {
-        collapsedY.current = e.payload.y;
-      }
-    });
-    const read = () => {
-      const openNow = window.innerHeight > BAR_H + OPEN_EPS;
-      void win
-        .outerPosition()
-        .then((p) => {
-          if (!alive) {
-            return;
-          }
-          if (openNow && !cardOpenRef.current && collapsedY.current !== null) {
-            setGrowDir(p.y < collapsedY.current - 0.5 ? 'up' : 'down');
-          }
-          if (!openNow) {
-            collapsedY.current = p.y;
-          }
-          cardOpenRef.current = openNow;
-          setCardOpen(openNow);
-        })
-        .catch(() => {
-          cardOpenRef.current = openNow;
-          setCardOpen(openNow);
-        });
-    };
+    const read = () => setCardOpen(window.innerHeight > BAR_H + OPEN_EPS);
     window.addEventListener('resize', read);
     read();
-    return () => {
-      alive = false;
-      window.removeEventListener('resize', read);
-      void unMove.then((u) => u());
-    };
+    return () => window.removeEventListener('resize', read);
   }, []);
 
   // Report the card's desired TOTAL window height: leading + trailing
@@ -137,5 +92,5 @@ export const useCardGeometry = (
     };
   }, [cardOpen, cardRef, stageRef]);
 
-  return { cardOpen, growDir };
+  return { cardOpen };
 };

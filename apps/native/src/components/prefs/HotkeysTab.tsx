@@ -13,7 +13,7 @@ import { Kbd, PrefRow } from './bits';
 import type { PrefsData } from './types';
 
 const ACTIONS: { id: string; label: string }[] = [
-  { id: 'toggle_input', label: 'Show / hide the input' },
+  { id: 'toggle_input', label: 'Start to ask Marvis' },
 ];
 
 /** The bar webview's fixed bindings — displayed, never rebindable. */

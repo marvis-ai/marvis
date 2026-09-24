@@ -271,9 +271,17 @@ fn transition_gate(app: &AppHandle) {
 
 /// `Main` entry: start capture through the shared lifecycle boundary —
 /// it warns and continues on failure, so a failed piece never wedges
-/// the gate.
+/// the gate. Settings → Recording's `auto_screenshots` opts out of the
+/// ambient start; the bar's record toggle stays a manual override.
 fn enter_main(app: &AppHandle) {
-    start_capture(app);
+    let state = app.state::<AppState>();
+    if state.config.lock().recording.auto_screenshots {
+        start_capture(app);
+    } else {
+        // Still broadcast — listeners resync on every Main entry.
+        let status = capture_snapshot(&state);
+        emit_capture_state(app, &status);
+    }
 }
 
 /// `Main` exit (onboarding reset / permission revoked): cancel the
@@ -334,6 +342,9 @@ fn emit_capture_state(app: &AppHandle, status: &CaptureStatus) {
 /// `capture:state` carries the result.
 fn start_capture(app: &AppHandle) -> CaptureStatus {
     let state = app.state::<AppState>();
+    // The configured frame rate is read before the capture lock so the
+    // config mutex is never held while capture state is touched.
+    let fps = state.config.lock().recording.fps;
     {
         let mut slot = state.capture.lock();
         // A stored capture counts as running only while `is_running`
@@ -344,7 +355,7 @@ fn start_capture(app: &AppHandle) -> CaptureStatus {
             lifecycle.mark_running();
         }
         if lifecycle.start_decision() == StartDecision::Create {
-            match MacosCapture::new() {
+            match MacosCapture::new(fps) {
                 Ok(capture) => {
                     let ring = Arc::clone(&state.ring);
                     capture.start(Box::new(move |frame| ring.lock().push(frame)));

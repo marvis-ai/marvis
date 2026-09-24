@@ -35,8 +35,12 @@ use super::{frame_hash_rows, Frame, FrameSource};
 /// Longest edge of the encoded frame: height is capped at 384 px, width
 /// follows aspect.
 const TARGET_HEIGHT: u32 = 384;
-/// ~4 fps cadence; the stream is event-driven so this only bounds rate.
-const FRAME_INTERVAL_SECS: f64 = 0.25;
+/// fps → `minimum_frame_interval` seconds (8→0.125, 4→0.25, 2→0.5).
+/// The stream is event-driven so this only bounds rate; `fps.max(1)`
+/// guards a 0 write from dividing by zero.
+pub(crate) fn frame_interval_secs(fps: u32) -> f64 {
+    1.0 / f64::from(fps.max(1))
+}
 /// `frame_hash` samples every 4096th byte of the raw BGRA buffer.
 const HASH_STRIDE: usize = 4096;
 const JPEG_QUALITY: u8 = 80;
@@ -138,14 +142,14 @@ impl MacosCapture {
     ///
     /// Fails if screen-recording permission is missing or no display is
     /// shareable.
-    pub fn new() -> anyhow::Result<Self> {
+    pub fn new(fps: u32) -> anyhow::Result<Self> {
         let (filter, width, height) = primary_display_filter()?;
         let config = SCStreamConfiguration::new()
             .with_width(width)
             .with_height(height)
             .with_pixel_format(PixelFormat::BGRA)
             .with_shows_cursor(false)
-            .with_minimum_frame_interval(&CMTime::from_seconds(FRAME_INTERVAL_SECS, 600))
+            .with_minimum_frame_interval(&CMTime::from_seconds(frame_interval_secs(fps), 600))
             // Smallest allowed depth (3..=8): prefer dropping stale frames
             // over queueing them when the worker falls behind.
             .with_queue_depth(3);
@@ -346,9 +350,17 @@ mod tests {
     /// then grant permission when prompted; prints per-frame sizes and the
     /// total count after ~3 s.
     #[test]
+    fn frame_interval_maps_fps_to_seconds() {
+        assert_eq!(super::frame_interval_secs(8), 0.125);
+        assert_eq!(super::frame_interval_secs(4), 0.25);
+        assert_eq!(super::frame_interval_secs(2), 0.5);
+        assert_eq!(super::frame_interval_secs(0), 1.0); // defensive floor
+    }
+
+    #[test]
     #[ignore = "requires screen-recording permission and a GUI session"]
     fn captures_frames_for_three_seconds() {
-        let capture = MacosCapture::new().expect("shareable content (screen permission granted?)");
+        let capture = MacosCapture::new(4).expect("shareable content (screen permission granted?)");
         let count = Arc::new(AtomicUsize::new(0));
         let reporter = Arc::clone(&count);
         capture.start(Box::new(move |frame| {

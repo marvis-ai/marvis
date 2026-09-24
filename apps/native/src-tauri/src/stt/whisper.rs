@@ -261,14 +261,7 @@ fn transcribe_window(
 ) -> anyhow::Result<Option<String>> {
     let wav = WavGuard::create(samples, channel)?;
     let mut child = Command::new(binary)
-        .args([
-            "-m",
-            &model.to_string_lossy(),
-            "-f",
-            &wav.path.to_string_lossy(),
-            "--no-timestamps",
-            "--output-txt",
-        ])
+        .args(whisper_cli_args(model, &wav.path))
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()?;
@@ -324,6 +317,22 @@ fn transcribe_window(
         return Err(anyhow::anyhow!("whisper-cli exited unsuccessfully"));
     }
     Ok(parse_output(&output?))
+}
+
+/// Per-window whisper-cli arguments. `-l auto` detects the spoken language
+/// and transcribes in it; without `-l` the CLI decodes every window as
+/// English, so non-English speech comes out as English-looking text.
+fn whisper_cli_args(model: &Path, wav: &Path) -> Vec<String> {
+    vec![
+        "-m".into(),
+        model.to_string_lossy().into_owned(),
+        "-f".into(),
+        wav.to_string_lossy().into_owned(),
+        "-l".into(),
+        "auto".into(),
+        "--no-timestamps".into(),
+        "--output-txt".into(),
+    ]
 }
 
 fn read_bounded(reader: impl Read) -> io::Result<Vec<u8>> {
@@ -587,6 +596,20 @@ mod tests {
             errors.lock().unwrap().as_slice(),
             &["Whisper provider failed repeatedly and is no longer usable"]
         );
+    }
+
+    /// Transcripts must stay in the spoken language: `-l auto` runs
+    /// whisper.cpp's language detection per window, and no translate flag
+    /// may ever reach the CLI.
+    #[test]
+    fn cli_args_detect_language_and_never_translate() {
+        let args = whisper_cli_args(Path::new("/model.bin"), Path::new("/in.wav"));
+        let language = args
+            .windows(2)
+            .find(|pair| pair[0] == "-l" || pair[0] == "--language")
+            .map(|pair| pair[1].as_str());
+        assert_eq!(language, Some("auto"));
+        assert!(!args.iter().any(|arg| arg == "-tr" || arg == "--translate"));
     }
 
     #[test]

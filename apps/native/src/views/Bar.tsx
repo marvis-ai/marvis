@@ -24,9 +24,11 @@
  * stage-level region would intercept text selection in the scrollable
  * conversation. In pill mode it stays on the capsule chrome as before.
  *
- * The mic button routes by surface: with the Ask input visible it
- * dictates into the field (`dictation:*` — transient, nothing
- * persists); collapsed it opens the card into meeting Listen. While a
+ * The mic affordance splits by surface: collapsed shows the Listen
+ * recorder (`MicAudioLinesIcon`, opens the card into meeting Listen)
+ * next to the screen-capture toggle (`MonitorDotIcon`); expanded shows
+ * dictation (`MicIcon`) into the Ask field (`dictation:*` — transient,
+ * nothing persists). While a
  * dictation runs, `dictationRange` marks the dictated slice so live
  * drafts rewrite only their own text — a user edit inside it stops the
  * session and keeps the edit, and Enter stops for review instead of
@@ -39,9 +41,10 @@ import type { SubmitEvent } from 'react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import {
   ArrowLeftIcon,
-  CameraIcon,
   GripVerticalIcon,
+  MicAudioLinesIcon,
   MicIcon,
+  MonitorDotIcon,
   SettingsIcon,
   ShieldAlertIcon,
   ShineBorder,
@@ -51,7 +54,9 @@ import {
   alertShow,
   askClose,
   askSend,
-  askSendScreenOnly,
+  captureStart,
+  captureStatus,
+  captureStop,
   dictationStart,
   dictationStatus,
   dictationStop,
@@ -83,8 +88,11 @@ import {
   type DictationStatePayload,
   type ListenStatePayload,
   EV_CAPTURE_PERMISSION_NEEDED,
+  EV_CAPTURE_STATE,
+  type CaptureStatePayload,
   useTauriEvent,
 } from '../lib/events';
+import { hasActiveWork, type AskActivity } from '../lib/bar-state';
 import {
   applyDictationDraft,
   reconcileDictationEdit,
@@ -188,6 +196,12 @@ const Bar = () => {
     useState<ListenStatePayload['state']>('idle');
   const [dictationState, setDictationState] =
     useState<DictationStatePayload['state']>('idle');
+  /** Continuous screen capture — starts by default in the main gate,
+   *  toggled by the collapsed MonitorDot control. */
+  const [captureRunning, setCaptureRunning] = useState(false);
+  /** Local mirror of `ask:state` so loading/streaming count as active
+   *  work for the bar pulse. */
+  const [askState, setAskState] = useState<AskActivity>('idle');
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
   const cardRef = useRef<HTMLDivElement>(null);
@@ -252,6 +266,14 @@ const Bar = () => {
     : listenWanted
       ? 'listen'
       : 'chat';
+  /** Any live work pulses the floating shell — specific controls keep
+   *  their stronger active affordances on top of it. */
+  const activeWork = hasActiveWork({
+    ask: askState,
+    captureRunning,
+    listen: listenState,
+    dictation: dictationState,
+  });
 
   /** Snapshot the input's caret/selection as the dictation anchor — a
    *  selected range is replaced by the draft, a bare caret inserts.
@@ -400,6 +422,11 @@ const Bar = () => {
         }
       })
       .catch(() => {});
+    // A status read isn't user-actionable — sync the toggle silently
+    // and let `capture:state` correct it if the read raced a stop.
+    void captureStatus()
+      .then((next) => setCaptureRunning(next.running))
+      .catch(() => {});
   }, [bootstrap]);
 
   useTauriEvent<AppStatePayload>(EV_APP_STATE, (p) => setGate(p.gate));
@@ -454,8 +481,15 @@ const Bar = () => {
     void windowSetChatOpen(false).catch(() => {});
     setGate('needs_permission');
   });
-  // A send while in listen mode reasserts chat (`loading` = a run).
-  useTauriEvent<{ state: string }>(EV_ASK_STATE, (p) => {
+  // Capture lifecycle (Task 2 emits after every command + automatic
+  // transition) — the MonitorDot toggle tracks it live.
+  useTauriEvent<CaptureStatePayload>(EV_CAPTURE_STATE, (p) => {
+    setCaptureRunning(p.running);
+  });
+  // A send while in listen mode reasserts chat (`loading` = a run);
+  // every snapshot feeds the active-work pulse.
+  useTauriEvent<{ state: AskActivity }>(EV_ASK_STATE, (p) => {
+    setAskState(p.state);
     if (p.state === 'loading') {
       setListenWanted(false);
     }
@@ -745,6 +779,25 @@ const Bar = () => {
     sendAsk();
   };
 
+  /** Toggle continuous screen capture — a pure recorder switch that
+   *  never submits an Ask request. `busy` serializes against the
+   *  permission grant sharing the same flag. */
+  const toggleCapture = () => {
+    if (busy) return;
+    setBusy(true);
+    const transition = captureRunning ? captureStop() : captureStart();
+    void transition
+      .then((next) => setCaptureRunning(next.running))
+      .catch(() =>
+        raise(
+          captureRunning
+            ? 'Screen recording stop failed'
+            : 'Screen recording start failed',
+        ),
+      )
+      .finally(() => setBusy(false));
+  };
+
   const rowCls = cn(
     'flex min-h-0 w-full flex-none items-center gap-1.5',
     cardOpen
@@ -760,9 +813,10 @@ const Bar = () => {
         : 'justify-center px-1.75',
   );
 
-  /** The mic button's next action: stop the live mode first, dictate
-   *  into the visible Ask input, or start meeting Listen from the
-   *  collapsed capsule. */
+  /** The mic affordance's next action: stop the live mode first,
+   *  dictate into the visible Ask input, or start meeting Listen from
+   *  the collapsed capsule. Labels the collapsed Listen control and
+   *  the expanded dictation control alike. */
   const micLabel =
     dictationState === 'listening'
       ? 'Stop dictation'
@@ -771,6 +825,82 @@ const Bar = () => {
         : showInputRow
           ? 'Dictate'
           : 'Listen';
+
+  /** Shared press route for the split mic controls — collapsed Listen
+   *  (`MicAudioLinesIcon`) and expanded dictation (`MicIcon`). A live
+   *  session always stops first under `speechBusy` serialization; the
+   *  `showInputRow` branch then lands on whichever control is mounted. */
+  const pressMic = () => {
+    if (speechBusy.current) return;
+    speechBusy.current = true;
+    // An active session stops first — `speechBusy` stays held
+    // until it settles so a follow-up press can't start the
+    // other mode mid-teardown.
+    if (
+      dictationState === 'listening' ||
+      dictationStopPending.current !== null
+    ) {
+      void stopDictation(true).finally(() => {
+        speechBusy.current = false;
+      });
+      return;
+    }
+    if (listenState === 'listening') {
+      void listenStop()
+        .catch(() => raise('Stop failed'))
+        .finally(() => {
+          speechBusy.current = false;
+        });
+      return;
+    }
+    if (showInputRow) {
+      // The anchor is captured before the invoke so a draft
+      // can never race ahead of it.
+      captureDictationAnchor();
+      dictationStarting.current = true;
+      void dictationStart()
+        .then((next) => {
+          setDictationState(next.state);
+          if (next.state !== 'listening') {
+            dictationRange.current = null;
+          } else if (dictationRange.current === null) {
+            // A stop landed while the start was in flight —
+            // leave no live session behind.
+            void dictationStop().catch(() => {});
+          }
+        })
+        .catch((e: unknown) => {
+          // A deliberate stop landing mid-start rejects the
+          // invoke without failing: the anchor is already gone,
+          // or the backend aborted the commit with its internal
+          // 'dictation start was interrupted' marker — both are
+          // expected abandon/gate transitions, not alerts. Real
+          // failures already emitted `dictation:error`, so
+          // dedupe on it.
+          const message = typeof e === 'string' ? e : 'Dictation failed';
+          const abandoned =
+            dictationRange.current === null ||
+            message === 'dictation start was interrupted';
+          dictationRange.current = null;
+          if (!abandoned && message !== lastDictationError.current) {
+            raise(message);
+          }
+        })
+        .finally(() => {
+          dictationStarting.current = false;
+          speechBusy.current = false;
+        });
+      return;
+    }
+    setListenWanted(true);
+    void windowSetChatOpen(true).catch(() => {});
+    void listenStart()
+      .then((next) => setListenState(next.state))
+      .catch(() => raise('Listen failed'))
+      .finally(() => {
+        speechBusy.current = false;
+      });
+  };
 
   const row = () => {
     if (bootError) {
@@ -935,97 +1065,84 @@ const Bar = () => {
               : 'pointer-events-none -mx-1.5 max-w-0 opacity-0',
           )}
         />
-        <button
-          type='button'
-          className={BAR_BTN}
-          aria-label='Ask about the screen'
-          title='Ask about the screen'
-          disabled={gate !== 'main'}
-          onClick={() =>
-            void askSendScreenOnly().catch(() => raise('Send failed'))
-          }>
-          <CameraIcon className='size-5' />
-        </button>
-        <button
-          type='button'
-          className={BAR_BTN}
-          aria-label={micLabel}
-          title={micLabel}
-          disabled={gate !== 'main'}
-          onClick={() => {
-            if (speechBusy.current) return;
-            speechBusy.current = true;
-            // An active session stops first — `speechBusy` stays held
-            // until it settles so a follow-up press can't start the
-            // other mode mid-teardown.
-            if (
-              dictationState === 'listening' ||
-              dictationStopPending.current !== null
-            ) {
-              void stopDictation(true).finally(() => {
-                speechBusy.current = false;
-              });
-              return;
+        {/* Collapsed-only recorders (`barControls(false)`): the screen
+            capture toggle and meeting Listen. The expanded row renders
+            neither — it gets dictation + settings instead. */}
+        {!showInputRow && (
+          <button
+            type='button'
+            className={cn(BAR_BTN, 'relative', captureRunning && 'text-accent')}
+            aria-label={
+              captureRunning
+                ? 'Stop screen recording'
+                : 'Start screen recording'
             }
-            if (listenState === 'listening') {
-              void listenStop()
-                .catch(() => raise('Stop failed'))
-                .finally(() => {
-                  speechBusy.current = false;
-                });
-              return;
+            title={
+              captureRunning
+                ? 'Stop screen recording'
+                : 'Start screen recording'
             }
-            if (showInputRow) {
-              // The anchor is captured before the invoke so a draft
-              // can never race ahead of it.
-              captureDictationAnchor();
-              dictationStarting.current = true;
-              void dictationStart()
-                .then((next) => {
-                  setDictationState(next.state);
-                  if (next.state !== 'listening') {
-                    dictationRange.current = null;
-                  } else if (dictationRange.current === null) {
-                    // A stop landed while the start was in flight —
-                    // leave no live session behind.
-                    void dictationStop().catch(() => {});
-                  }
-                })
-                .catch((e: unknown) => {
-                  // A deliberate stop landing mid-start rejects the
-                  // invoke without failing: the anchor is already gone,
-                  // or the backend aborted the commit with its internal
-                  // 'dictation start was interrupted' marker — both are
-                  // expected abandon/gate transitions, not alerts. Real
-                  // failures already emitted `dictation:error`, so
-                  // dedupe on it.
-                  const message =
-                    typeof e === 'string' ? e : 'Dictation failed';
-                  const abandoned =
-                    dictationRange.current === null ||
-                    message === 'dictation start was interrupted';
-                  dictationRange.current = null;
-                  if (!abandoned && message !== lastDictationError.current) {
-                    raise(message);
-                  }
-                })
-                .finally(() => {
-                  dictationStarting.current = false;
-                  speechBusy.current = false;
-                });
-              return;
-            }
-            setListenWanted(true);
-            void windowSetChatOpen(true).catch(() => {});
-            void listenStart()
-              .then((next) => setListenState(next.state))
-              .catch(() => raise('Listen failed'))
-              .finally(() => {
-                speechBusy.current = false;
-              });
-          }}>
-          <MicIcon className='size-5' />
-        </button>
+            aria-pressed={captureRunning}
+            disabled={gate !== 'main'}
+            onClick={toggleCapture}>
+            <MonitorDotIcon className='size-5' />
+            {/* Corner badge carries the ping so the glyph stays
+                legible; `.animate-ping` is suppressed under reduced
+                motion in index.css. */}
+            {captureRunning && (
+              <span
+                className='absolute top-1 right-1 size-1.5 animate-ping rounded-full bg-accent'
+                aria-hidden='true'
+              />
+            )}
+          </button>
+        )}
+        {!showInputRow && (
+          <button
+            type='button'
+            className={BAR_BTN}
+            aria-label={micLabel}
+            title={micLabel}
+            aria-pressed={listenState === 'listening'}
+            disabled={gate !== 'main'}
+            onClick={pressMic}>
+            <MicAudioLinesIcon className='size-5' />
+          </button>
+        )}
+        {/* Expanded-only dictation (`barControls(true)`) — the same
+            `pressMic` route, landing on its `showInputRow` branch. */}
+        {showInputRow && (
+          <button
+            type='button'
+            className={BAR_BTN}
+            aria-label={micLabel}
+            title={micLabel}
+            aria-pressed={dictationState === 'listening'}
+            disabled={gate !== 'main'}
+            onClick={pressMic}>
+            <MicIcon className='size-5' />
+          </button>
+        )}
+        {/* Compact dictation waveform — reuses `--animate-waveform`;
+            the reduced-motion query stills it without layout change. */}
+        {showInputRow && dictationState === 'listening' && (
+          <span
+            className='flex h-3.5 items-center gap-0.5 text-accent'
+            aria-hidden='true'>
+            {['h-1', 'h-1.75', 'h-2.75', 'h-2', 'h-1.25'].map(
+              (height, index) => (
+                <span
+                  key={height}
+                  className={cn(
+                    height,
+                    'w-0.5 animate-waveform rounded-xs bg-current',
+                  )}
+                  style={{ animationDelay: `${index * 90}ms` }}
+                />
+              ),
+            )}
+          </span>
+        )}
         {/* Only rendered in the input row — the idle capsule has no
             room for a fourth control (tray menu + Cmd+, reach it
             anyway). */}
@@ -1068,6 +1185,10 @@ const Bar = () => {
                 growDir === 'up' ? 'flex-col-reverse' : 'flex-col',
               )
             : 'h-full flex-none flex-col justify-center rounded-full bg-[color-mix(in_oklch,var(--surface)_80%,transparent)] backdrop-blur-[14px] transition-[border-color,box-shadow] duration-(--motion-base) ease-(--ease) motion-reduce:transition-none',
+          // Activity pulse lives on the outer floating shell — never the
+          // form row — so row sizing and control placement don't move.
+          // `.animate-pulse` is stilled by the reduced-motion query.
+          activeWork && 'animate-pulse',
         )}
         style={cardOpen ? { maxHeight: CARD_MAX } : undefined}
         data-expanded={showInputRow || undefined}

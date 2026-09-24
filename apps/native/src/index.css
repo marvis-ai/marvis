@@ -163,20 +163,26 @@ body {
     opacity: 0;
   }
 }
-/* Listen animation wiring stays stateful: ListenSection adds
-   `animate-waveform` only for `listen:state=listening`; Bar adds
-   `listen-active` to the actual Iris button. */
+/* Listen/dictation animation wiring stays stateful: ListenSection and
+   Bar's dictation control add `animate-waveform` only while their mode
+   is listening; Bar adds `listen-active` to the actual Iris button. */
 .listen-active > span:first-child::before {
   animation: var(--animate-iris-listen);
 }
+/* All bar motion dies together under reduced motion: the iris pulse,
+   the waveforms (Listen + dictation), the capture ping badge, and the
+   shell's active-work pulse — stilled, never hidden, so layout and the
+   window sizing contract are unaffected. */
 @media (prefers-reduced-motion: reduce) {
   .listen-active > span:first-child::before,
-  .animate-waveform {
+  .animate-waveform,
+  .animate-ping,
+  .animate-pulse {
     animation: none !important;
   }
 }
-/* listen waveform — Phase 2 applies `--animate-waveform` per bar with
-   staggered delays; idle/error bars remain still. */
+/* listen + dictation waveform — applied per bar with staggered delays;
+   idle/error bars remain still. */
 @keyframes mv-waveform {
   0%,
   100% {

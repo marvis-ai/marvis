@@ -85,6 +85,10 @@ export interface DictationErrorPayload {
 /** Emitted to the `alert` window only — the toast payload (lib.rs
  * `show_alert`); `{ message }`. */
 export const EV_ALERT_SHOW = 'alert:show';
+/** Emitted to the `bar` window only — the `toggle_input` global hotkey
+ * (lib.rs `hotkey_dispatch`). The webview morphs capsule ⇄ input pill;
+ * an open card counts as "shown" and collapses. */
+export const EV_BAR_TOGGLE_INPUT = 'bar:toggle-input';
 /** Broadcast when a frame exists but screen permission was revoked
  * mid-session (ask.rs) — the bar flips back to its permission card. */
 export const EV_CAPTURE_PERMISSION_NEEDED = 'capture:permission-needed'; // { permission: 'screen' }

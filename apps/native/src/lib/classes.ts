@@ -54,8 +54,9 @@ export const PROV_ERR =
   'mt-1.25 text-[11px] leading-[1.35] break-words text-destructive';
 
 /* ─── panel + toast chrome ──────────────────────────────────────── */
+// No static border — ShineBorder draws the animated edge instead.
 export const PANEL =
-  'glass-surface flex flex-col overflow-hidden rounded-[18px] border border-border bg-[color-mix(in_oklch,var(--surface)_90%,transparent)] backdrop-blur-lg';
+  'glass-surface flex flex-col overflow-hidden rounded-[18px] bg-[color-mix(in_oklch,var(--surface)_90%,transparent)] backdrop-blur-lg';
 export const PANEL_HEAD =
   'flex items-start gap-1.5 border-b border-border px-3 py-2.25';
 export const PANEL_BODY =
@@ -70,7 +71,7 @@ export const PROV_CARD =
   'mb-2.5 rounded-xl border bg-surface px-3.5 py-3 transition-[border-color,opacity] duration-(--motion-fast) ease-(--ease) motion-reduce:transition-none';
 export const PRF_ROWS = 'border-t border-border';
 export const PRF_ROW =
-  'flex items-center justify-between gap-4 border-b border-border py-3 first-of-type:pt-0.5';
+  'flex items-center justify-between gap-4 border-b border-border py-3';
 export const PR_LABEL = 'text-[13px] font-[550]';
 export const PR_SUB = 'mt-0.5 max-w-[40ch] text-[11.5px] text-muted-foreground';
 export const PR_CTL = 'inline-flex flex-none items-center gap-2';

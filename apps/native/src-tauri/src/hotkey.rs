@@ -1,11 +1,13 @@
-//! Global hotkeys: every binding is config-driven (`config.hotkeys`) —
-//! Settings → Hotkeys rebinds any of the four actions, and the bar's
-//! movement/snap is pointer-driven so there are no fixed-position
-//! shortcuts at all.
+//! Global hotkeys: the only OS-level binding is config-driven
+//! (`config.hotkeys.toggle_input`) — Settings → Hotkeys rebinds
+//! it, and the bar's movement/snap is pointer-driven so there are no
+//! fixed-position shortcuts at all. Every other key is fixed inside
+//! the bar webview: `Cmd+,` opens settings while the bar is active,
+//! and at the input `Enter` sends, `Shift+Enter` adds a line, and
+//! `Cmd+Enter` sends with the current screen frame.
 //!
 //! Dispatch is decoupled: this module reports [`Action`]s through a
-//! caller-supplied closure that routes each one onto the pool/ask
-//! service (lib.rs `hotkey_dispatch`).
+//! caller-supplied closure (lib.rs `hotkey_dispatch`).
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -16,37 +18,34 @@ use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 use crate::config;
 
 /// A fired hotkey's intent. The dispatch closure maps each variant onto
-/// the real `WindowPool`/`ask` call.
+/// the real `WindowPool`/emit call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
-    /// `toggle_visibility` — collapse/expand the unified card (Cmd+/).
-    ToggleVisibility,
-    /// `next_step` — send the current input (or screen-only ask).
-    NextStep,
-    /// `screen_only` — manual screenshot → screen-only ask (`Cmd+Shift+S`).
-    ScreenOnly,
-    /// `show_settings` — the prefs window (`Cmd+,`; also the tray item).
-    ShowSettings,
+    /// `toggle_input` — capsule ⇄ input pill (`Cmd+Alt+Space` by
+    /// default). The webview owns the morph; dispatch emits
+    /// `bar:toggle-input` to it.
+    ToggleInput,
 }
 
 /// Config action name (`[hotkeys]` table key) → `Action`.
-/// `None` for names this module doesn't know — they're skipped with a
-/// warning at registration so a stale config key can't kill the rest.
+/// `None` for names this module doesn't know — including the retired
+/// `toggle_visibility`/`next_step`/`screen_only`/`show_settings` set
+/// (now fixed in-webview keys — see the module doc). Unknown names are
+/// skipped with a warning at registration so a stale config key can't
+/// kill the rest.
 fn action_for(name: &str) -> Option<Action> {
-    Some(match name {
-        "toggle_visibility" => Action::ToggleVisibility,
-        "next_step" => Action::NextStep,
-        "screen_only" => Action::ScreenOnly,
-        "show_settings" => Action::ShowSettings,
-        _ => return None,
-    })
+    match name {
+        "toggle_input" => Some(Action::ToggleInput),
+        _ => None,
+    }
 }
 
 /// Resolve a hotkey binding into a `Shortcut`.
 ///
-/// `binding` is normally a config accelerator string like `"Cmd+/"`; for
-/// convenience an action name (`"toggle_visibility"`) first resolves to
-/// its spec-default accelerator. Key tokens are normalized into the
+/// `binding` is normally a config accelerator string like
+/// `"Cmd+Alt+Space"`; for convenience an action name
+/// (`"toggle_input"`) first resolves to its spec-default
+/// accelerator. Key tokens are normalized into the
 /// `global-hotkey` crate's accelerator grammar before parsing — the
 /// crate already accepts every spec spelling verbatim (`/`, `[`, `]`,
 /// `Enter`, `Up`, `M`, digits are all valid tokens), so normalization is
@@ -94,31 +93,23 @@ fn parse_accelerator(accel: &str) -> Option<Shortcut> {
     tokens.join("+").parse().ok()
 }
 
-/// Every `(shortcut, action)` pair to register for `scope` — the whole
-/// set is the four `[hotkeys]` config actions; nothing is hardcoded.
-/// Unknown action names and accelerators that don't parse are warned and
+/// Every `(shortcut, action)` pair to register — the whole set is the
+/// single `[hotkeys]` config action; nothing is hardcoded. Unknown
+/// action names and accelerators that don't parse are warned and
 /// skipped rather than failing the whole set.
-fn bindings(binds: &BTreeMap<String, String>, scope: Scope) -> Vec<(Shortcut, Action)> {
+fn bindings(binds: &BTreeMap<String, String>) -> Vec<(Shortcut, Action)> {
     let mut out = Vec::new();
     for (name, accel) in binds {
         let Some(action) = action_for(name) else {
             log::warn!("hotkey: unknown action {name:?} (bound to {accel:?}); skipping");
             continue;
         };
-        // While gated only the chrome shortcuts stay live — show/hide and
-        // settings (the window where the user fixes the gated state).
-        // `next_step`/`screen_only` touch LLM/capture, so they're Main-only.
-        if scope == Scope::Limited
-            && !matches!(action, Action::ToggleVisibility | Action::ShowSettings)
-        {
-            continue;
-        }
         match accelerator_for(accel) {
             Some(shortcut) => out.push((shortcut, action)),
             None => {
                 log::warn!("hotkey: accelerator {accel:?} for action {name:?} didn't parse");
                 // Fall back to the spec default — a bad hand-edit must not
-                // leave the action (e.g. `toggle_visibility`) unbound.
+                // leave the action (e.g. `toggle_input`) unbound.
                 if let Some(default_accel) = crate::config::default_hotkeys().get(name.as_str()) {
                     if let Some(shortcut) = accelerator_for(default_accel) {
                         out.push((shortcut, action));
@@ -129,8 +120,8 @@ fn bindings(binds: &BTreeMap<String, String>, scope: Scope) -> Vec<(Shortcut, Ac
     }
 
     // Dedup by shortcut id — the plugin keys handlers by id, so a config
-    // collision (e.g. `next_step = "Cmd+/"`) would silently overwrite the
-    // first action's handler or fail OS registration. First wins.
+    // collision would silently overwrite the first action's handler or
+    // fail OS registration. First wins.
     let mut seen = std::collections::HashSet::new();
     out.retain(|(s, action)| {
         if seen.insert(s.id()) {
@@ -141,16 +132,6 @@ fn bindings(binds: &BTreeMap<String, String>, scope: Scope) -> Vec<(Shortcut, Ac
         }
     });
     out
-}
-
-/// Which set of bindings a `register_*` call installs.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Scope {
-    /// Everything: all four config actions.
-    All,
-    /// Gated state: only `toggle_visibility` + `show_settings` — nothing
-    /// that touches LLM/capture (no `next_step`, no `screen_only`).
-    Limited,
 }
 
 /// The `(shortcut, action)` pairs one registration pass installed; the
@@ -176,9 +157,9 @@ impl RegisteredHotkeys {
     }
 }
 
-/// Register every binding: all recognized `[hotkeys]` config actions
-/// (`toggle_visibility`, `next_step`, `screen_only`, `show_settings`).
-/// Called when the app reaches `main` state.
+/// Register every binding — the recognized `[hotkeys]` config actions
+/// (just `toggle_input`). Called at startup; the set is
+/// gate-independent, so gate transitions never re-register.
 ///
 /// **Re-registration contract:** on any register error this call
 /// unregisters only the shortcuts it registered during this call and
@@ -186,25 +167,12 @@ impl RegisteredHotkeys {
 /// touched, so the old set stays fully active. Callers swapping sets
 /// should prefer [`swap_hotkey_set`], which keeps shared pairs live and
 /// never re-registers them (macOS refuses duplicate registrations).
-/// Signature kept for the startup path / callers that predate the swap.
-#[allow(dead_code)]
 pub fn register_all(
     app: &AppHandle,
     binds: &BTreeMap<String, String>,
     dispatch: impl Fn(Action) + Send + Sync + 'static,
 ) -> anyhow::Result<RegisteredHotkeys> {
-    register(app, binds, Scope::All, dispatch)
-}
-
-/// Limited set for the gated state (startup): only `toggle_visibility`
-/// plus `show_settings` — the chrome shortcuts that don't touch
-/// LLM/capture. Same re-registration contract as [`register_all`].
-pub fn register_limited(
-    app: &AppHandle,
-    binds: &BTreeMap<String, String>,
-    dispatch: impl Fn(Action) + Send + Sync + 'static,
-) -> anyhow::Result<RegisteredHotkeys> {
-    register(app, binds, Scope::Limited, dispatch)
+    register(app, binds, dispatch)
 }
 
 /// [`swap_hotkey_set`] failure: a new pair failed to register and the
@@ -229,13 +197,13 @@ impl std::error::Error for SwapError {
     }
 }
 
-/// Delta-swap to a new binding set: pairs already live with the same
-/// `(shortcut, action)` stay registered untouched (their handler still
-/// dispatches correctly); pairs absent from the new set are unregistered;
-/// new pairs are registered. This ordering is what makes the swap work
-/// on macOS — Carbon's `RegisterEventHotKey` fails with
+/// Delta-swap to a new binding set: a pair already live with the same
+/// `(shortcut, action)` stays registered untouched (its handler still
+/// dispatches correctly); pairs absent from the new set are
+/// unregistered; new pairs are registered. This ordering is what makes
+/// the swap work on macOS — Carbon's `RegisterEventHotKey` fails with
 /// `eventHotKeyExistsErr` on a duplicate combo, so register-then-
-/// unregister can never succeed when the sets overlap (limited ⊂ all).
+/// unregister can never succeed when the sets overlap.
 ///
 /// On register failure, the newly-registered pairs are unwound AND the
 /// dropped old pairs are re-registered (best-effort rollback), then a
@@ -244,12 +212,10 @@ impl std::error::Error for SwapError {
 pub fn swap_hotkey_set(
     app: &AppHandle,
     binds: &BTreeMap<String, String>,
-    limited: bool,
     dispatch: impl Fn(Action) + Send + Sync + 'static,
     prev: RegisteredHotkeys,
 ) -> Result<RegisteredHotkeys, SwapError> {
-    let scope = if limited { Scope::Limited } else { Scope::All };
-    let new_bindings = bindings(binds, scope);
+    let new_bindings = bindings(binds);
     let (keep, drop_old, add) = plan_swap(&prev.pairs, &new_bindings);
 
     for (shortcut, _) in &drop_old {
@@ -305,17 +271,16 @@ fn plan_swap(prev: &[(Shortcut, Action)], new: &[(Shortcut, Action)]) -> SwapPla
     (keep, drop, add)
 }
 
-/// Resolve `binds` for `scope` and register the whole set (the
-/// `register_*` startup path — equivalent to `swap_hotkey_set` with an
-/// empty prev, kept separate so those signatures stay stable).
+/// Resolve `binds` and register the whole set (the startup path —
+/// equivalent to `swap_hotkey_set` with an empty prev, kept separate
+/// so that signature stays stable).
 fn register(
     app: &AppHandle,
     binds: &BTreeMap<String, String>,
-    scope: Scope,
     dispatch: impl Fn(Action) + Send + Sync + 'static,
 ) -> anyhow::Result<RegisteredHotkeys> {
     let dispatch: Arc<dyn Fn(Action) + Send + Sync> = Arc::new(dispatch);
-    let pairs = register_pairs(app, &bindings(binds, scope), &dispatch)?;
+    let pairs = register_pairs(app, &bindings(binds), &dispatch)?;
     Ok(RegisteredHotkeys { pairs })
 }
 
@@ -358,13 +323,13 @@ mod tests {
     use tauri_plugin_global_shortcut::{Code, Modifiers};
 
     #[test]
-    fn accelerator_for_toggle_visibility_parses_cmd_slash() {
-        // Spec default `Cmd+/` must parse — the grammar takes the literal
-        // `/` (and our normalized `Slash`) as the key token.
-        let s = accelerator_for("toggle_visibility").expect("Cmd+/ should parse");
-        assert_eq!(s.mods, Modifiers::SUPER);
-        assert_eq!(s.key, Code::Slash);
-        assert_eq!(s, "Cmd+/".parse::<Shortcut>().unwrap());
+    fn accelerator_for_toggle_input_parses_cmd_alt_space() {
+        // Spec default `Cmd+Alt+Space` must parse — `Space` is a named
+        // key in the grammar.
+        let s = accelerator_for("toggle_input").expect("Cmd+Alt+Space should parse");
+        assert_eq!(s.mods, Modifiers::SUPER | Modifiers::ALT);
+        assert_eq!(s.key, Code::Space);
+        assert_eq!(s, "Cmd+Alt+Space".parse::<Shortcut>().unwrap());
     }
 
     #[test]
@@ -377,8 +342,8 @@ mod tests {
 
     #[test]
     fn bracket_tokens_map_to_named_codes() {
-        // `Cmd+[` / `Cmd+]` (spec: prev/next response, Phase 3) must map
-        // to BracketLeft/BracketRight rather than erroring.
+        // `Cmd+[` / `Cmd+]` must map to BracketLeft/BracketRight rather
+        // than erroring.
         let left = accelerator_for("Cmd+[").unwrap();
         assert_eq!(left.mods, Modifiers::SUPER);
         assert_eq!(left.key, Code::BracketLeft);
@@ -392,39 +357,24 @@ mod tests {
         // Regression net: a default that fails to parse silently loses a
         // core binding at registration time.
         let binds = config::default_hotkeys();
-        assert_eq!(binds.len(), 4);
+        assert_eq!(binds.len(), 1);
         for (action, accel) in &binds {
             let s = accelerator_for(accel)
                 .unwrap_or_else(|| panic!("default {action} = {accel:?} must parse"));
             // Resolving by action name yields the same shortcut.
             assert_eq!(accelerator_for(action), Some(s), "action {action}");
         }
-        // Spec spellings → expected codes.
-        let expect = [
-            ("Cmd+Enter", Code::Enter, Modifiers::SUPER),
-            ("Cmd+,", Code::Comma, Modifiers::SUPER),
-            (
-                "Cmd+Shift+S",
-                Code::KeyS,
-                Modifiers::SUPER | Modifiers::SHIFT,
-            ),
-        ];
-        for (accel, key, mods) in expect {
-            let s = accelerator_for(accel).unwrap();
-            assert_eq!((s.key, s.mods), (key, mods), "accel {accel}");
-        }
     }
 
     #[test]
     fn action_for_maps_config_names() {
-        assert_eq!(
-            action_for("toggle_visibility"),
-            Some(Action::ToggleVisibility)
-        );
-        assert_eq!(action_for("next_step"), Some(Action::NextStep));
-        assert_eq!(action_for("screen_only"), Some(Action::ScreenOnly));
-        assert_eq!(action_for("show_settings"), Some(Action::ShowSettings));
-        // Stale names from the old nine-action set no longer bind.
+        assert_eq!(action_for("toggle_input"), Some(Action::ToggleInput));
+        // The retired actions (now fixed in-webview keys) and other
+        // stale names no longer bind.
+        assert_eq!(action_for("toggle_visibility"), None);
+        assert_eq!(action_for("next_step"), None);
+        assert_eq!(action_for("screen_only"), None);
+        assert_eq!(action_for("show_settings"), None);
         assert_eq!(action_for("move_up"), None);
         assert_eq!(action_for("scroll_down"), None);
         assert_eq!(action_for("toggle_click_through"), None);
@@ -432,87 +382,21 @@ mod tests {
     }
 
     #[test]
-    fn bindings_limited_keeps_only_gated_set() {
-        // While gated: toggle_visibility + show_settings only — nothing
-        // that touches LLM/capture (no next_step, no screen_only).
-        // Settings stays live because it's where the user fixes the
-        // gated state — parity with the always-enabled tray item.
-        let binds = config::default_hotkeys();
-        let got = bindings(&binds, Scope::Limited);
-        let actions: Vec<Action> = got.iter().map(|(_, a)| *a).collect();
-        assert!(actions.contains(&Action::ToggleVisibility));
-        assert!(actions.contains(&Action::ShowSettings));
-        assert!(!actions.contains(&Action::ScreenOnly));
-        assert!(!actions.contains(&Action::NextStep));
-        assert_eq!(got.len(), 2);
-    }
-
-    #[test]
-    fn bindings_all_includes_everything() {
-        let binds = config::default_hotkeys();
-        let got = bindings(&binds, Scope::All);
-        let actions: Vec<Action> = got.iter().map(|(_, a)| *a).collect();
-        assert!(actions.contains(&Action::ToggleVisibility));
-        assert!(actions.contains(&Action::NextStep));
-        assert!(actions.contains(&Action::ScreenOnly));
-        assert!(actions.contains(&Action::ShowSettings));
-        assert_eq!(got.len(), 4);
-    }
-
-    #[test]
-    fn settings_is_bound_to_cmd_comma_in_both_scopes() {
-        let binds = config::default_hotkeys();
-        for scope in [Scope::Limited, Scope::All] {
-            let (shortcut, _) = bindings(&binds, scope)
-                .into_iter()
-                .find(|(_, a)| *a == Action::ShowSettings)
-                .unwrap_or_else(|| panic!("ShowSettings must be bound in {scope:?}"));
-            assert_eq!(shortcut.mods, Modifiers::SUPER);
-            assert_eq!(shortcut.key, Code::Comma);
-            assert_eq!(shortcut, accelerator_for("Cmd+,").unwrap());
-        }
-    }
-
-    #[test]
-    fn plan_swap_downgrade_drops_only_nongated_pairs() {
-        // All → Limited (leave_main): every limited pair is already live
-        // in the full set, so keep = the whole limited set — nothing may
-        // be re-registered (macOS would error on the duplicate combo).
-        let binds = config::default_hotkeys();
-        let all = bindings(&binds, Scope::All);
-        let limited = bindings(&binds, Scope::Limited);
-        let (keep, drop, add) = plan_swap(&all, &limited);
-        assert_eq!(keep, limited);
-        assert!(add.is_empty());
-        assert_eq!(drop.len(), all.len() - limited.len());
-        // The dropped pairs are exactly the LLM/capture-touching ones.
-        let dropped: Vec<Action> = drop.iter().map(|(_, a)| *a).collect();
-        assert!(dropped.contains(&Action::ScreenOnly));
-        assert!(dropped.contains(&Action::NextStep));
-        assert!(!dropped.contains(&Action::ToggleVisibility));
-        assert!(!dropped.contains(&Action::ShowSettings));
-    }
-
-    #[test]
-    fn plan_swap_upgrade_adds_only_new_pairs() {
-        // Limited → All (enter_main): shared pairs stay live; only the
-        // newly allowed actions register.
-        let binds = config::default_hotkeys();
-        let all = bindings(&binds, Scope::All);
-        let limited = bindings(&binds, Scope::Limited);
-        let (keep, drop, add) = plan_swap(&limited, &all);
-        assert_eq!(keep, limited);
-        assert!(drop.is_empty());
-        assert_eq!(add.len(), all.len() - limited.len());
-        let added: Vec<Action> = add.iter().map(|(_, a)| *a).collect();
-        assert!(added.contains(&Action::ScreenOnly));
-        assert!(added.contains(&Action::NextStep));
+    fn bindings_returns_the_single_toggle_pair() {
+        let got = bindings(&config::default_hotkeys());
+        assert_eq!(
+            got,
+            vec![(
+                accelerator_for("Cmd+Alt+Space").unwrap(),
+                Action::ToggleInput
+            )]
+        );
     }
 
     #[test]
     fn plan_swap_identical_sets_is_noop() {
         let binds = config::default_hotkeys();
-        let all = bindings(&binds, Scope::All);
+        let all = bindings(&binds);
         let (keep, drop, add) = plan_swap(&all, &all.clone());
         assert_eq!(keep, all);
         assert!(drop.is_empty());
@@ -521,24 +405,19 @@ mod tests {
 
     #[test]
     fn plan_swap_rebound_shortcut_is_drop_plus_add() {
-        // `next_step = "Cmd+/"` collides with `toggle_visibility`'s
-        // default — `bindings` dedup gives Cmd+/ to `next_step` (first in
-        // map order). The live Cmd+/ pair changes action, so it must be
-        // dropped and re-registered: keeping it would leave the old
-        // handler firing the wrong action, and re-registering over it
-        // would hit the OS duplicate error.
+        // Rebinding `toggle_input` to a new chord: the old
+        // (shortcut, action) pair drops and the new one registers —
+        // re-registering over a live combo would hit the OS duplicate
+        // error.
         let mut binds = config::default_hotkeys();
-        let prev = bindings(&binds, Scope::All);
-        binds.insert("next_step".to_string(), "Cmd+/".to_string());
-        let new = bindings(&binds, Scope::All);
+        let prev = bindings(&binds);
+        binds.insert("toggle_input".to_string(), "Ctrl+Alt+J".to_string());
+        let new = bindings(&binds);
         let (keep, drop, add) = plan_swap(&prev, &new);
-        let cmd_slash = accelerator_for("Cmd+/").unwrap();
-        assert_eq!(add, vec![(cmd_slash, Action::NextStep)]);
-        assert_eq!(drop.len(), 2);
-        assert!(drop.contains(&(cmd_slash, Action::ToggleVisibility)));
-        // The old next_step binding (Cmd+Enter) is gone entirely.
-        let cmd_enter = accelerator_for("Cmd+Enter").unwrap();
-        assert!(drop.contains(&(cmd_enter, Action::NextStep)));
-        assert_eq!(keep.len() + drop.len(), prev.len());
+        let old = accelerator_for("Cmd+Alt+Space").unwrap();
+        let rebound = accelerator_for("Ctrl+Alt+J").unwrap();
+        assert_eq!(add, vec![(rebound, Action::ToggleInput)]);
+        assert_eq!(drop, vec![(old, Action::ToggleInput)]);
+        assert!(keep.is_empty());
     }
 }

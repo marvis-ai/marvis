@@ -305,22 +305,21 @@ pub struct WindowPrefs {
     pub bar_y: Option<f64>,
 }
 
-/// Default hotkey bindings — the whole configurable set (Settings →
-/// Hotkeys rebinds any of them). Bar movement/snap is pointer-driven,
-/// so there are deliberately no move/scroll/click-through actions.
+/// The one configurable binding (Settings → Hotkeys rebinds it).
+/// Every other key is fixed inside the bar webview: `Cmd+,` opens
+/// settings while the bar is active, and at the input `Enter` sends /
+/// `Shift+Enter` adds a line / `Cmd+Enter` sends with the current
+/// screen frame. Bar movement/snap is pointer-driven, so there are
+/// deliberately no move/scroll/click-through actions.
 pub fn default_hotkeys() -> BTreeMap<String, String> {
-    BTreeMap::from([
-        ("toggle_visibility".into(), "Cmd+/".into()),
-        ("next_step".into(), "Cmd+Enter".into()),
-        ("screen_only".into(), "Cmd+Shift+S".into()),
-        ("show_settings".into(), "Cmd+,".into()),
-    ])
+    BTreeMap::from([("toggle_input".into(), "Cmd+Alt+Space".into())])
 }
 
 /// A `[hotkeys]` table may list only user overrides; fill in the spec
 /// defaults for every action it doesn't mention, and drop names this
-/// build doesn't know (a stale `move_up` from an older config would
-/// otherwise sit in the file forever — nothing binds it).
+/// build doesn't know (stale `move_up`/`next_step`/`screen_only`/
+/// `show_settings` keys from older configs would otherwise sit in the
+/// file forever — nothing binds them).
 fn merge_default_hotkeys<'de, D>(deserializer: D) -> Result<BTreeMap<String, String>, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -611,7 +610,7 @@ mod tests {
                 .collect::<Vec<_>>()
         );
         assert!(cfg.providers.disabled.is_empty());
-        assert_eq!(cfg.hotkeys["toggle_visibility"], "Cmd+/");
+        assert_eq!(cfg.hotkeys["toggle_input"], "Cmd+Alt+Space");
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
@@ -796,7 +795,7 @@ mod tests {
         assert_eq!(cfg.models.llm_model, "gpt-4o");
         assert_eq!(cfg.providers.models["anthropic"], "gpt-4o");
         assert_eq!(cfg.models.stt_provider, "deepgram");
-        assert_eq!(cfg.hotkeys["toggle_visibility"], "Cmd+/");
+        assert_eq!(cfg.hotkeys["toggle_input"], "Cmd+Alt+Space");
         assert!(cfg.window.bar_x.is_none());
 
         // Spec example writes integer positions (`bar_x = 812`) into f64 fields.
@@ -809,36 +808,30 @@ mod tests {
 
     #[test]
     fn partial_hotkeys_merge_with_defaults_and_drop_stale() {
-        // User overrides one hotkey; the other actions still get
-        // defaults — and a stale name (`move_up`, removed from the
-        // configurable set) is dropped rather than kept forever.
+        // A user override on the one rebindable action lands; names
+        // this build doesn't know — including the retired
+        // `toggle_visibility`/`next_step`/`screen_only`/`show_settings`
+        // set — are dropped rather than kept forever.
         let tmp = tempfile_dir();
         let path = tmp.join("config.toml");
         std::fs::write(
             &path,
-            "[hotkeys]\nnext_step = \"Cmd+Shift+Enter\"\nmove_up = \"Cmd+Up\"\n",
+            "[hotkeys]\ntoggle_input = \"Ctrl+Alt+J\"\ntoggle_visibility = \"Cmd+/\"\nnext_step = \"Cmd+Enter\"\n",
         )
         .unwrap();
         let cfg = Config::load_from(&path).unwrap();
-        assert_eq!(cfg.hotkeys["next_step"], "Cmd+Shift+Enter");
-        assert_eq!(cfg.hotkeys["toggle_visibility"], "Cmd+/");
-        assert!(!cfg.hotkeys.contains_key("move_up"));
+        assert_eq!(cfg.hotkeys["toggle_input"], "Ctrl+Alt+J");
+        assert!(!cfg.hotkeys.contains_key("toggle_visibility"));
+        assert!(!cfg.hotkeys.contains_key("next_step"));
+        assert_eq!(cfg.hotkeys.len(), 1);
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
     fn default_hotkeys_matches_spec_table() {
         let hk = default_hotkeys();
-        let expected = [
-            ("toggle_visibility", "Cmd+/"),
-            ("next_step", "Cmd+Enter"),
-            ("screen_only", "Cmd+Shift+S"),
-            ("show_settings", "Cmd+,"),
-        ];
-        assert_eq!(hk.len(), expected.len());
-        for (action, accel) in expected {
-            assert_eq!(hk[action], accel, "hotkey {action}");
-        }
+        assert_eq!(hk.len(), 1);
+        assert_eq!(hk["toggle_input"], "Cmd+Alt+Space");
     }
 
     #[test]

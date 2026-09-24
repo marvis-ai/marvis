@@ -66,7 +66,7 @@ const EV_CHUNK: &str = "ask:chunk";
 const EV_DONE: &str = "ask:done";
 const EV_ERROR: &str = "ask:error";
 
-/// `send_screen_only`'s fixed question (spec §Hotkeys `Cmd+Shift+S`).
+/// `send_screen_only`'s fixed question — the camera button's ask.
 const SCREEN_ONLY_PROMPT: &str = "Describe what is on my screen and how you can help.";
 
 /// Context window: only the trailing N persisted `ai_messages` ride
@@ -171,7 +171,7 @@ impl AskService {
         self.kick(app, deps, text, false);
     }
 
-    /// `Cmd+Shift+S` / empty-input ask: fixed prompt, frame REQUIRED.
+    /// The camera button's screen-only ask: fixed prompt, frame REQUIRED.
     pub fn send_screen_only(self: &Arc<Self>, app: &AppHandle, deps: &Deps<'_>) {
         self.kick(app, deps, SCREEN_ONLY_PROMPT, true);
     }

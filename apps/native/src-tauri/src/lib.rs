@@ -11,8 +11,8 @@
 //! [`Gate`] = `NeedsPermission` → `Main`. `Main` needs BOTH halves of
 //! first-run readiness: `app.onboarding_done` AND screen-recording
 //! permission — while the wizard runs the gate never reaches `Main`, so
-//! the card can't open and capture + the full hotkey set simply don't
-//! exist yet. [`transition_gate`] recomputes the gate after every mutation that
+//! the card can't open and capture simply doesn't exist yet.
+//! [`transition_gate`] recomputes the gate after every mutation that
 //! can change it (`config_set` on `app.onboarding_done`,
 //! `permissions_request_screen`, and once at startup) and ALWAYS emits
 //! `app:state`.
@@ -78,8 +78,9 @@ const RING_MAX_BYTES: usize = 64 * 1024 * 1024;
 /// Local Ollama daemon's model list (same host the adapter streams from).
 const OLLAMA_TAGS_URL: &str = "http://localhost:11434/api/tags";
 
-/// Which UI state the bar may show. The card, the full hotkey set, and
-/// capture exist only in `Main`. (Onboarding isn't a gate state —
+/// Which UI state the bar may show. The card and capture exist only in
+/// `Main` — the single global hotkey (show/hide) is chrome-level and
+/// registered at startup either way. (Onboarding isn't a gate state —
 /// it's a visibility overlay on top: `onboarding_done` is one of `Main`'s
 /// two preconditions, so the wizard can never share the screen with the
 /// bar's live machinery.)
@@ -89,7 +90,7 @@ pub enum Gate {
     /// permission card covers both (during onboarding the bar is hidden
     /// anyway, so the label never misleads).
     NeedsPermission,
-    /// Fully live: card, full hotkeys, capture.
+    /// Fully live: card, capture.
     Main,
 }
 
@@ -220,7 +221,7 @@ impl AppState {
 
 /// `Main` needs both first-run halves: `app.onboarding_done` AND
 /// `permissions::screen_status()`. While the wizard runs the gate stays
-/// `NeedsPermission`, so `enter_main` (capture, full hotkeys) can't
+/// `NeedsPermission`, so `enter_main` (capture) can't
 /// fire underneath it — finishing onboarding re-evaluates through
 /// `config_set` → `transition_gate`.
 fn app_gate(state: &AppState) -> Gate {
@@ -253,11 +254,10 @@ fn transition_gate(app: &AppHandle) {
     let _ = app.emit("app:state", json!({ "gate": new_gate.name() }));
 }
 
-/// `Main` entry: full hotkey set + capture. Every step warns and
+/// `Main` entry: start capture. Every step warns and
 /// continues — a failed piece must never wedge the gate.
 fn enter_main(app: &AppHandle) {
     let state = app.state::<AppState>();
-    swap_hotkeys(app, true);
     let mut slot = state.capture.lock();
     if slot.is_none() {
         match MacosCapture::new() {
@@ -280,8 +280,7 @@ fn enter_main(app: &AppHandle) {
 
 /// `Main` exit (onboarding reset / permission revoked): cancel the
 /// in-flight ask and collapse the card, stop dictation, stop + drop
-/// capture, hide the alert toast, downgrade hotkeys to the gated
-/// limited set.
+/// capture, hide the alert toast.
 fn leave_main(app: &AppHandle) {
     let state = app.state::<AppState>();
     // Cancel any in-flight ask — an unbounded stream left running would
@@ -307,17 +306,16 @@ fn leave_main(app: &AppHandle) {
         capture.stop();
     }
     state.pool.lock().hide_alert();
-    swap_hotkeys(app, false);
 }
 
-/// Delta-swap to the full (`all = true`) or limited set via
+/// Delta-swap to the config's current binding set via
 /// [`hotkey::swap_hotkey_set`]: pairs shared with the live set stay
 /// registered untouched (macOS Carbon refuses duplicate registration of
 /// a combo, so a register-everything-then-unregister swap can never
-/// succeed — the limited set is a subset of the full one). On failure
-/// the swap has already rolled back; the returned `restored` set is what
-/// the OS still has bound, so it's stored either way.
-fn swap_hotkeys(app: &AppHandle, all: bool) {
+/// succeed). On failure the swap has already rolled back; the returned
+/// `restored` set is what the OS still has bound, so it's stored
+/// either way.
+fn swap_hotkeys(app: &AppHandle) {
     let state = app.state::<AppState>();
     let binds = state.config.lock().hotkeys.clone();
     let dispatch = hotkey_dispatch(app);
@@ -327,12 +325,12 @@ fn swap_hotkeys(app: &AppHandle, all: bool) {
     // so holding it here cannot deadlock.
     let mut slot = state.hotkeys.lock();
     let prev = slot.take().unwrap_or_default();
-    match hotkey::swap_hotkey_set(app, &binds, !all, dispatch, prev) {
+    match hotkey::swap_hotkey_set(app, &binds, dispatch, prev) {
         Ok(set) => {
             *slot = Some(set);
         }
         Err(e) => {
-            log::warn!("hotkey swap failed (all={all}): {e}");
+            log::warn!("hotkey swap failed: {e}");
             *slot = Some(e.restored);
         }
     }
@@ -342,24 +340,19 @@ fn swap_hotkeys(app: &AppHandle, all: bool) {
 // Dispatch closures
 // ---------------------------------------------------------------------------
 
-/// Map [`hotkey::Action`]s onto pool/ask calls. Owns an `AppHandle` and
-/// re-resolves `AppState` per press, so the same closure works for both
-/// registration scopes and across gate transitions.
+/// Rust→bar event the `toggle_input` hotkey fires. The webview owns the
+/// capsule⇄input morph (and the "open card counts as shown" collapse),
+/// so dispatch only emits — it never touches `chat_open`.
+const EV_BAR_TOGGLE_INPUT: &str = "bar:toggle-input";
+
+/// Map [`hotkey::Action`]s onto pool calls / bar events. Owns an
+/// `AppHandle` and re-resolves `AppState` per press, so the same
+/// closure survives gate transitions.
 fn hotkey_dispatch(app: &AppHandle) -> impl Fn(hotkey::Action) + Send + Sync + 'static {
     let app = app.clone();
-    move |action| {
-        let state = app.state::<AppState>();
-        match action {
-            hotkey::Action::ToggleVisibility => state.pool.lock().toggle_chat(&app),
-            // `next_step` and `screen_only` fire the screen-only ask.
-            // The gate guard mirrors `ask_send_screen_only`'s — during
-            // onboarding (gate != Main) the card can't open.
-            hotkey::Action::NextStep | hotkey::Action::ScreenOnly => {
-                if *state.gate.lock() == Gate::Main {
-                    state.ask.send_screen_only(&app, &state.deps());
-                }
-            }
-            hotkey::Action::ShowSettings => show_settings(&app),
+    move |action| match action {
+        hotkey::Action::ToggleInput => {
+            let _ = app.emit_to(windows::BAR_LABEL, EV_BAR_TOGGLE_INPUT, ());
         }
     }
 }
@@ -409,9 +402,9 @@ fn deeplink_dispatch(app: &AppHandle) -> impl Fn(deeplink::Action) + Send + Sync
 }
 
 /// Map tray menu ids onto pool/app calls — same re-resolve-per-event
-/// shape as [`hotkey_dispatch`]. `Toggle` mirrors `Cmd+/`
-/// (`window_toggle_all`), `Settings` mirrors `Cmd+,`; `Quit` is
-/// `app.exit(0)`.
+/// shape as [`hotkey_dispatch`]. `Toggle` runs `window_toggle_all`'s
+/// collapse/expand of the card, `Settings` mirrors the bar's `Cmd+,`;
+/// `Quit` is `app.exit(0)`.
 fn tray_menu_dispatch() -> impl Fn(&AppHandle, tauri::menu::MenuEvent) + Send + Sync + 'static {
     move |app, event| match event.id().as_ref() {
         tray::MENU_TOGGLE => app.state::<AppState>().pool.lock().toggle_chat(app),
@@ -472,7 +465,8 @@ fn show_alert(app: &AppHandle, message: &str) {
 }
 
 /// Surface the prefs window in settings mode. Works at ANY gate —
-/// `Cmd+,`/the tray item must respond even mid-onboarding.
+/// the tray item must respond even mid-onboarding (the bar's `Cmd+,`
+/// is a webview key, so it can't fire while the bar is hidden).
 fn show_settings(app: &AppHandle) {
     app.state::<AppState>()
         .pool
@@ -900,8 +894,8 @@ fn ask_close(app: AppHandle) {
     state.ask.close(&app, &state.pool);
 }
 
-/// The bar's camera affordance — same screen-only ask as `Cmd+Shift+S`
-/// (fixed prompt, frame required). Same gate guard as `ask_send`.
+/// The bar's camera affordance — a screen-only ask (fixed prompt,
+/// frame required). Same gate guard as `ask_send`.
 #[tauri::command]
 fn ask_send_screen_only(app: AppHandle) {
     let state = app.state::<AppState>();
@@ -1232,7 +1226,9 @@ fn sherpa_remove_model(
 // Commands — windows
 // ---------------------------------------------------------------------------
 
-/// `Cmd+/` behaviour as a command: collapse/expand the unified card.
+/// Tray Toggle's behaviour as a command: collapse/expand the unified
+/// card. (The global hotkey no longer routes here — it toggles only the
+/// bar's input pill via `bar:toggle-input`.)
 #[tauri::command]
 fn window_toggle_all(app: AppHandle) {
     app.state::<AppState>().pool.lock().toggle_chat(&app);
@@ -1250,7 +1246,19 @@ fn window_set_chat_open(app: AppHandle, open: bool) {
         .set_chat_open(&app, open);
 }
 
-/// Same entry point as `Cmd+,` and the tray's Settings item.
+/// Focus the bar window — the `bar:toggle-input` show path needs it so
+/// a global-hotkey reveal lands the user's typing in the field.
+#[tauri::command]
+fn window_focus_bar(app: AppHandle) {
+    let state = app.state::<AppState>();
+    // Clone the handle out so the pool guard drops before `set_focus`.
+    let bar = state.pool.lock().bar().cloned();
+    if let Some(bar) = bar {
+        let _ = bar.set_focus();
+    }
+}
+
+/// Same entry point as the bar's `Cmd+,` and the tray's Settings item.
 #[tauri::command]
 fn window_show_settings(app: AppHandle) {
     show_settings(&app);
@@ -1490,14 +1498,14 @@ fn config_get(state: State<'_, AppState>) -> Config {
 /// (a trimmed non-empty identifier). Provider order/switches/models have
 /// their own commands (`providers_reorder`,
 /// `provider_set_enabled`, `model_set_selected`). Persists `config.toml`
-/// and returns the updated config. A `hotkeys.*` write re-registers the
-/// active set (full or limited, matching the current gate). Every
+/// and returns the updated config. A `hotkeys.*` write delta-swaps the
+/// registered set. Every
 /// successful write broadcasts `config:changed` so open windows
 /// re-render (appearance flips, provider lists, the bar's drag hint).
 ///
 /// `app.onboarding_done` is the wizard's completion write: `true` ends
-/// onboarding → `transition_gate` can now reach `Main` (capture, full
-/// hotkeys, the card) and the bar appears; `false` (a re-run) reverses it.
+/// onboarding → `transition_gate` can now reach `Main` (capture, the
+/// card) and the bar appears; `false` (a re-run) reverses it.
 #[tauri::command]
 fn config_set(app: AppHandle, key: String, value: serde_json::Value) -> Result<Config, String> {
     let state = app.state::<AppState>();
@@ -1586,6 +1594,9 @@ fn config_set(app: AppHandle, key: String, value: serde_json::Value) -> Result<C
             }
             _ if key.starts_with("hotkeys.") => {
                 let name = &key["hotkeys.".len()..];
+                if !config::default_hotkeys().contains_key(name) {
+                    return Err(format!("unknown hotkey action {name:?}"));
+                }
                 let accel = value.as_str().ok_or("hotkey binding must be a string")?;
                 if hotkey::accelerator_for(accel).is_none() {
                     return Err(format!("accelerator {accel:?} doesn't parse"));
@@ -1598,8 +1609,7 @@ fn config_set(app: AppHandle, key: String, value: serde_json::Value) -> Result<C
         config::save(&cfg).map_err(|e| e.to_string())?;
     }
     if hotkeys_changed {
-        let all = *state.gate.lock() == Gate::Main;
-        swap_hotkeys(&app, all);
+        swap_hotkeys(&app);
     }
     if onboarding_changed {
         // Gate first: `enter_main` starts capture while the
@@ -1718,10 +1728,10 @@ pub fn run() {
             if let Err(e) = tray::init(handle, tray_menu_dispatch()) {
                 log::warn!("tray init failed: {e}");
             }
-            // Gated limited set until the gate reaches `Main`; kept in
-            // state so the swap contract can unregister it on upgrade.
+            // The one chrome-level binding is gate-independent; kept in
+            // state so a `config_set` rebind delta-swaps against it.
             let binds = handle.state::<AppState>().config.lock().hotkeys.clone();
-            match hotkey::register_limited(handle, &binds, hotkey_dispatch(handle)) {
+            match hotkey::register_all(handle, &binds, hotkey_dispatch(handle)) {
                 Ok(set) => {
                     handle.state::<AppState>().hotkeys.lock().replace(set);
                 }
@@ -1729,7 +1739,7 @@ pub fn run() {
             }
             // Computes the gate, enters `Main` if it's already open, and
             // emits `app:state` either way. Onboarding blocks `Main`, so
-            // a first run can never light capture/hotkeys here.
+            // a first run can never light capture here.
             transition_gate(handle);
             // First run (or any install that predates onboarding_done):
             // the wizard takes the decorated prefs window — alone; the
@@ -1778,6 +1788,7 @@ pub fn run() {
             alert_dismiss,
             window_toggle_all,
             window_set_chat_open,
+            window_focus_bar,
             window_show_settings,
             window_show_onboarding,
             window_hide_prefs,

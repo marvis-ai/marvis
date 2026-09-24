@@ -32,6 +32,8 @@ export {
   KeyboardIcon,
   KeyRoundIcon,
   MicIcon,
+  MicAudioLinesIcon,
+  MonitorDotIcon,
   PanelTopIcon,
   RotateCcwIcon,
   SettingsIcon,

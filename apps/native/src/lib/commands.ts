@@ -450,6 +450,8 @@ export const permissionsRequestMic = () =>
 export const permissionsOpenPrefs = (section: string) =>
   invoke<void>('permissions_open_prefs', { section });
 
+export const captureStart = () => invoke<CaptureStatus>('capture_start');
+export const captureStop = () => invoke<CaptureStatus>('capture_stop');
 export const captureStatus = () => invoke<CaptureStatus>('capture_status');
 
 // ---------------------------------------------------------------------------

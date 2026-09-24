@@ -92,6 +92,11 @@ export const EV_BAR_TOGGLE_INPUT = 'bar:toggle-input';
 /** Broadcast when a frame exists but screen permission was revoked
  * mid-session (ask.rs) — the bar flips back to its permission card. */
 export const EV_CAPTURE_PERMISSION_NEEDED = 'capture:permission-needed'; // { permission: 'screen' }
+export const EV_CAPTURE_STATE = 'capture:state';
+export interface CaptureStatePayload {
+  running: boolean;
+  frames: number;
+}
 /** Broadcast after every successful `config_set` — payload is the full
  * `Config`, so windows re-render without a second `config_get`. */
 export const EV_CONFIG_CHANGED = 'config:changed';

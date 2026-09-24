@@ -1080,7 +1080,7 @@ const Bar = () => {
             cardOpen ? 'max-h-30' : 'max-h-10',
             showInputRow
               ? 'max-w-80'
-              : 'pointer-events-none -mx-1.5 max-w-0 opacity-0',
+              : 'pointer-events-none -mx-0.75 max-w-0 opacity-0',
           )}
         />
         {/* Collapsed-only recorders (`barControls(false)`): the screen
@@ -1089,22 +1089,17 @@ const Bar = () => {
         {!showInputRow && (
           <button
             type='button'
-            className={cn(BAR_BTN, 'relative', captureRunning && 'text-accent')}
+            className={cn(
+              BAR_BTN,
+              'relative',
+              captureRunning && 'bg-accent-soft text-accent',
+            )}
             aria-label={captureLabel}
             title={captureLabel}
             aria-pressed={captureRunning}
             disabled={gate !== 'main'}
             onClick={toggleCapture}>
             <MonitorDotIcon className='size-5' />
-            {/* Corner badge carries the ping so the glyph stays
-                legible; `.animate-capture-ping` is suppressed under
-                reduced motion in index.css. */}
-            {captureRunning && (
-              <span
-                className='animate-capture-ping absolute top-1 right-1 size-1.5 rounded-full bg-accent/50'
-                aria-hidden='true'
-              />
-            )}
           </button>
         )}
         {!showInputRow && (

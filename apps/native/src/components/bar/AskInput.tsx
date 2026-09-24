@@ -47,7 +47,7 @@ export const AskInput = ({
       // Line cap: 2 inside the fixed-height pill (scrolls past),
       // ~6 in the card — its ResizeObserver reports growth up.
       cardOpen ? 'max-h-30' : 'max-h-10',
-      visible ? 'max-w-80' : 'pointer-events-none -mx-0.75 max-w-0 opacity-0',
+      visible ? 'max-w-full' : 'pointer-events-none -mx-0.75 max-w-0 opacity-0',
     )}
   />
 );

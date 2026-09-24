@@ -156,6 +156,7 @@ fn vad_config(model_dir: &Path) -> VadModelConfig {
 pub struct SherpaProvider {
     model_dir: PathBuf,
     channel: SpeakerChannel,
+    diarize: bool,
     queue: Option<mpsc::SyncSender<PcmChunk>>,
     cancel: Arc<AtomicBool>,
     worker: Option<JoinHandle<()>>,
@@ -165,14 +166,15 @@ impl SherpaProvider {
     /// Resolve the model dir eagerly. An unknown model value lands on a
     /// nonexistent dir under the models root so `start` fails cleanly with
     /// the same load error an uninstalled model reports.
-    pub fn new(model: &str, channel: SpeakerChannel) -> Self {
+    pub fn new(model: &str, channel: SpeakerChannel, diarize: bool) -> Self {
         let root = crate::paths::sherpa_models_dir();
-        let model_dir = crate::sherpa_models::entry_for_value(model)
+        let model_dir = crate::sherpa_models::stt_entry_for_value(model)
             .map(|entry| crate::sherpa_models::entry_dir(&root, entry))
             .unwrap_or_else(|| root.join("unknown-model"));
         Self {
             model_dir,
             channel,
+            diarize,
             queue: None,
             cancel: Arc::new(AtomicBool::new(false)),
             worker: None,
@@ -197,12 +199,14 @@ impl SttProvider for SherpaProvider {
         self.cancel.store(false, Ordering::Release);
         let cancel = Arc::clone(&self.cancel);
         let channel = self.channel;
+        let diarize = self.diarize;
         self.worker = Some(thread::spawn(move || {
             run_worker(
                 receiver,
                 vad,
                 engine,
                 channel,
+                diarize,
                 cancel,
                 callback,
                 error_callback,
@@ -235,16 +239,23 @@ impl Drop for SherpaProvider {
 /// Feed PCM chunks to the VAD and submit each completed speech segment to
 /// the shared engine. `flush` + one last drain on exit decodes trailing
 /// speech. A decode failure is terminal: report once and exit.
+#[allow(clippy::too_many_arguments)]
 fn run_worker(
     receiver: mpsc::Receiver<PcmChunk>,
     vad: VoiceActivityDetector,
     engine: Arc<SherpaEngine>,
     channel: SpeakerChannel,
+    diarize: bool,
     cancel: Arc<AtomicBool>,
     callback: Box<dyn Fn(TranscriptEvent) + Send + Sync>,
     error_callback: Box<dyn Fn(String) + Send + Sync>,
 ) {
     let decode = |samples: &[f32]| engine.decode(samples.to_vec());
+    // Diarization is progressive enhancement: a missing/unloadable
+    // embedding model leaves `speaker_idx` unset rather than failing STT.
+    let mut tracker = diarize
+        .then(crate::stt::speaker::tracker_if_installed)
+        .flatten();
     // Same terminal-error semantics as deepgram: a failure surfaced during a
     // user-requested stop is not an error worth an event.
     let report = |message: String| {
@@ -264,12 +275,12 @@ fn run_worker(
             .map(|sample| f32::from(*sample) / 32_768.0)
             .collect();
         vad.accept_waveform(&samples);
-        if !drain_segments(&vad, &decode, channel, &callback, &report) {
+        if !drain_segments(&vad, &decode, channel, &mut tracker, &callback, &report) {
             return;
         }
     }
     vad.flush();
-    drain_segments(&vad, &decode, channel, &callback, &report);
+    drain_segments(&vad, &decode, channel, &mut tracker, &callback, &report);
 }
 
 /// Decode every queued speech segment. `false` means a terminal decode
@@ -278,6 +289,7 @@ fn drain_segments(
     vad: &VoiceActivityDetector,
     decode: &dyn Fn(&[f32]) -> Result<String, String>,
     channel: SpeakerChannel,
+    tracker: &mut Option<crate::stt::SpeakerTracker>,
     callback: &(dyn Fn(TranscriptEvent) + Send + Sync),
     error_callback: &(dyn Fn(String) + Send + Sync),
 ) -> bool {
@@ -287,7 +299,7 @@ fn drain_segments(
         };
         let samples = segment.samples().to_vec();
         vad.pop();
-        if !emit_segment(&samples, decode, channel, callback, error_callback) {
+        if !emit_segment(&samples, decode, channel, tracker, callback, error_callback) {
             return false;
         }
     }
@@ -300,6 +312,7 @@ fn emit_segment(
     samples: &[f32],
     decode: impl Fn(&[f32]) -> Result<String, String>,
     channel: SpeakerChannel,
+    tracker: &mut Option<crate::stt::SpeakerTracker>,
     callback: &(dyn Fn(TranscriptEvent) + Send + Sync),
     error_callback: &(dyn Fn(String) + Send + Sync),
 ) -> bool {
@@ -307,10 +320,12 @@ fn emit_segment(
         Ok(text) => {
             let text = text.trim();
             if !text.is_empty() {
+                let speaker_idx = tracker.as_mut().and_then(|t| t.assign(samples));
                 callback(TranscriptEvent {
                     channel,
                     text: text.to_string(),
                     finality: Finality::Final,
+                    speaker_idx,
                 });
             }
             true
@@ -374,6 +389,7 @@ mod tests {
             &[0.0f32; 4],
             |_| Ok("  你好 world  ".to_string()),
             SpeakerChannel::Me,
+            &mut None,
             &|e| events.lock().unwrap().push(e),
             &|m| errors.lock().unwrap().push(m),
         );
@@ -394,6 +410,7 @@ mod tests {
             &[0.0f32; 4],
             |_| Ok("   ".to_string()),
             SpeakerChannel::Me,
+            &mut None,
             &|e| events.lock().unwrap().push(e),
             &|m| errors.lock().unwrap().push(m),
         ));
@@ -403,6 +420,7 @@ mod tests {
             &[0.0f32; 4],
             |_| Err("decode failed".to_string()),
             SpeakerChannel::Me,
+            &mut None,
             &|e| events.lock().unwrap().push(e),
             &|m| errors.lock().unwrap().push(m),
         ));
@@ -411,7 +429,7 @@ mod tests {
 
     #[test]
     fn provider_reports_not_enqueued_before_start_and_stop_is_idempotent() {
-        let mut p = SherpaProvider::new("sense-voice", SpeakerChannel::Me);
+        let mut p = SherpaProvider::new("sense-voice", SpeakerChannel::Me, false);
         assert!(!p.enqueue(PcmChunk {
             samples: vec![1],
             sample_rate: 16_000,
@@ -425,7 +443,7 @@ mod tests {
         // A non-catalog name resolves to a models-dir child that can never
         // exist, so this stays deterministic on hosts where the real
         // sense-voice model is installed.
-        let mut p = SherpaProvider::new("no-such-model", SpeakerChannel::Me);
+        let mut p = SherpaProvider::new("no-such-model", SpeakerChannel::Me, false);
         // No model files on disk → engine init fails synchronously.
         assert!(p.start(Box::new(|_| {}), Box::new(|_| {})).is_err());
     }

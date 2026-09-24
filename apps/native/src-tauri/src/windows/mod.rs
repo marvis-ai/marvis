@@ -68,8 +68,8 @@ pub enum Dir {
 /// The bar window's two widths: the capsule IS the window under liquid
 /// glass, so idle rests at BAR_IDLE_W (the 3-icon row) and any expanded
 /// content — input row, gate cards — uses BAR_W. Height never changes.
-const BAR_IDLE_W: f64 = 136.0;
-const BAR_W: f64 = 480.0;
+const BAR_IDLE_W: f64 = 140.0;
+const BAR_W: f64 = 600.0;
 const BAR_H: f64 = 64.0;
 /// Bar window label — the ask event target now that the chat card lives
 /// inside the bar window (`emit_to(BAR_LABEL, "ask:*", …)`).
@@ -88,7 +88,7 @@ pub const PREFS_LABEL: &str = "prefs";
 const PREFS_W: f64 = 720.0;
 const PREFS_H: f64 = 520.0;
 /// Transient alert toast — its own window because the bar is a fixed
-/// 480×64 pill with no room for an error row (the old inline row
+/// 600×64 pill with no room for an error row (the old inline row
 /// squeezed the pill's content). Label `alert`, `?view=alert`.
 pub const ALERT_LABEL: &str = "alert";
 const ALERT_W: f64 = 340.0;
@@ -176,19 +176,43 @@ impl WindowPool {
             // `data-tauri-drag-region`, edge snaps, and reclamps alike.
             // `Moved` fires per frame during a drag, so the write is
             // debounced: the last generation wins after 400 ms of quiet.
+            //
+            // `Resized` is different: macOS 26 edge-drags resize
+            // borderless windows even with `resizable(false)`, so any
+            // stray size snaps back to the canonical bounds — fully for
+            // the fixed-size pill, x/width only for the open card (its
+            // dragged height is adopted via `window_adjust_height`).
             let app_moved = app.clone();
+            let app_resized = app.clone();
             bar.on_window_event(move |event| {
-                if !matches!(event, tauri::WindowEvent::Moved(_)) {
-                    return;
-                }
-                let gen = BAR_MOVE_GEN.fetch_add(1, Ordering::Relaxed) + 1;
-                let app = app_moved.clone();
-                std::thread::spawn(move || {
-                    std::thread::sleep(Duration::from_millis(400));
-                    if BAR_MOVE_GEN.load(Ordering::Relaxed) == gen {
-                        crate::persist_bar_position(&app);
+                match event {
+                    tauri::WindowEvent::Moved(_) => {
+                        let gen = BAR_MOVE_GEN.fetch_add(1, Ordering::Relaxed) + 1;
+                        let app = app_moved.clone();
+                        std::thread::spawn(move || {
+                            std::thread::sleep(Duration::from_millis(400));
+                            if BAR_MOVE_GEN.load(Ordering::Relaxed) == gen {
+                                crate::persist_bar_position(&app);
+                            }
+                        });
                     }
-                });
+                    tauri::WindowEvent::Resized(_) => {
+                        // Our animator emits `Resized` per tick — only
+                        // enforce while no animation is in flight.
+                        if movement::is_animating(BAR_LABEL) {
+                            return;
+                        }
+                        // This handler registers before `app.manage(AppState)`
+                        // (setup order) — a `Resized` delivered inside
+                        // `position_bar_at_startup` must not panic on the
+                        // missing state.
+                        let Some(state) = app_resized.try_state::<crate::AppState>() else {
+                            return;
+                        };
+                        state.pool.lock().enforce_bar_bounds();
+                    }
+                    _ => {}
+                }
             });
         }
         pool.bar = Some(bar);
@@ -360,6 +384,13 @@ impl WindowPool {
         }
     }
 
+    /// Whether the card is currently expanded. ask's pre-flight reads
+    /// this BEFORE `set_chat_open(true)` to tell a fresh pill send (new
+    /// conversation) from a card follow-up.
+    pub fn is_chat_open(&self) -> bool {
+        self.chat_open
+    }
+
     /// `window_set_chat_open` / tray Toggle / ask
     /// pre-flight: animate the bar
     /// window collapsed ⇄ expanded per §Expansion. Emits nothing — the
@@ -392,6 +423,7 @@ impl WindowPool {
             movement::animate(&bar, self.bar_rect, ANIM_DUR);
             set_glass_radius(app, &bar, BAR_H / 2.0);
         }
+        self.sync_bar_size_limits();
     }
 
     /// Re-apply the bar's glass effect at its CURRENT radius — called
@@ -466,6 +498,7 @@ impl WindowPool {
             w: BAR_IDLE_W,
             h: BAR_H,
         };
+        self.sync_bar_size_limits();
         if let Some(bar) = &self.bar {
             movement::animate(bar, self.target_rect(), ANIM_DUR);
         }
@@ -494,12 +527,13 @@ impl WindowPool {
         if let Some(bar) = &self.bar {
             movement::animate(bar, self.target_rect(), ANIM_DUR);
         }
+        self.sync_bar_size_limits();
     }
 
     /// `window_adjust_height(px)`: `px` is the desired TOTAL window
     /// height (the frontend measures the whole card). Expanded-only —
     /// ignored when the card is closed. `expanded_rect` clamps to
-    /// `[BAR_H + 40, min(900, free space)]` keeping the anchored edge
+    /// `[BAR_H + 40, free space]` keeping the anchored edge
     /// fixed; the clamped result is recorded for later expands.
     pub fn adjust_height(&mut self, px: f64) {
         if !px.is_finite() {
@@ -549,6 +583,7 @@ impl WindowPool {
         if let Some(bar) = &self.bar {
             set_rect(bar, rect);
         }
+        self.sync_bar_size_limits();
         self.reclamp();
     }
 
@@ -623,6 +658,89 @@ impl WindowPool {
         }
     }
 
+    /// Keep Tahoe's resize affordance honest — macOS 26 edge-drags
+    /// borderless windows even with `resizable(false)`, and the ↔
+    /// cursor still appears on the side edges. Pinning min == max on
+    /// the width axis makes AppKit drop the horizontal affordance and
+    /// clamps the drag itself (`enforce_bar_bounds` stays as the
+    /// backstop). An open card keeps a free height axis within
+    /// `[BAR_H + MIN_CHAT_H, free space in the grow direction]` — the
+    /// same bound `expanded_rect` applies, so an edge-drag can't pull
+    /// the card past the work-area edge it grows toward. Programmatic
+    /// `set_size` ignores these limits, so the morph animations are
+    /// unaffected.
+    fn sync_bar_size_limits(&self) {
+        let Some(bar) = &self.bar else { return };
+        // `bar_rect` still holds the DEFAULT_WORK sentinel until
+        // `position_bar_at_startup` runs — a real bar is never wider
+        // than EXPANDED_W.
+        if self.bar_rect.w > layout::EXPANDED_W {
+            return;
+        }
+        let (w, min_h, max_h) = if self.chat_open {
+            let work = self.bar_work_area();
+            let free = if self.expand_dir == Dir::Up {
+                self.bar_rect.bottom() - work.y
+            } else {
+                work.bottom() - self.bar_rect.y
+            };
+            (
+                layout::EXPANDED_W,
+                BAR_H + layout::MIN_CHAT_H,
+                free.max(BAR_H + layout::MIN_CHAT_H),
+            )
+        } else {
+            (self.bar_rect.w, BAR_H, BAR_H)
+        };
+        let _ = bar.set_min_size(Some(LogicalSize::new(w, min_h)));
+        let _ = bar.set_max_size(Some(LogicalSize::new(w, max_h)));
+    }
+
+    /// Snap the bar back to its canonical bounds after a stray user
+    /// resize — macOS 26 edge-drags resize borderless windows even with
+    /// `resizable(false)`. The pill is fixed-size and restores whole;
+    /// the open card restores x/width and re-pins the anchored edge
+    /// (an edge-drag always changes `w`, and a corner drag can move
+    /// `y` too), keeping the dragged height the webview adopts through
+    /// `window_adjust_height`. Called on `Resized` when no animation is
+    /// in flight.
+    fn enforce_bar_bounds(&self) {
+        let Some(bar) = &self.bar else { return };
+        // `bar_rect` still holds the DEFAULT_WORK sentinel until
+        // `position_bar_at_startup` runs — a real bar is never wider
+        // than EXPANDED_W.
+        if self.bar_rect.w > layout::EXPANDED_W {
+            return;
+        }
+        let Some(live) = window_rect(bar) else { return };
+        let off = |a: f64, b: f64| (a - b).abs() > 0.5;
+        if self.chat_open {
+            if !off(live.w, layout::EXPANDED_W) {
+                return;
+            }
+            let target = self.target_rect();
+            // Re-pin the anchored edge: grow-down keeps the pill's top,
+            // grow-up keeps its bottom — otherwise a corner drag leaves
+            // the card detached until the next `window_adjust_height`.
+            let y = if self.expand_dir == Dir::Up {
+                target.bottom() - live.h
+            } else {
+                target.y
+            };
+            set_rect(
+                bar,
+                Rect {
+                    x: target.x,
+                    y,
+                    w: target.w,
+                    ..live
+                },
+            );
+        } else if off(live.w, self.bar_rect.w) || off(live.h, self.bar_rect.h) {
+            set_rect(bar, self.bar_rect);
+        }
+    }
+
     /// Pull the live bar rect from the OS so user drags stay
     /// authoritative. While the card is open the live rect IS the card —
     /// derive the canonical pill back via `expand_dir` (keeping the
@@ -657,7 +775,8 @@ impl WindowPool {
 /// then `set_visible_on_all_workspaces`, `set_content_protected`, and the
 /// liquid-glass material. `corner_radius` matches the surface's CSS radius —
 /// the glass view fills the window, so its shape IS the surface shape.
-/// `app.accent` (`#rrggbb`) at 20% alpha → the bar's glass `tint_color`.
+/// `app.accent` (`#rrggbb`) at 8% alpha (`{accent}15`) → the bar's glass
+/// `tint_color`.
 /// The alpha is load-bearing: the pre-26 `NSVisualEffectView` fallback
 /// paints the tint as an overlay fill, so an opaque value would bury
 /// the vibrancy entirely — and even on glass, a stronger tint reads
@@ -678,6 +797,13 @@ fn build_window(
     let url = WebviewUrl::App(format!("index.html?view={label}").into());
     let win = WebviewWindowBuilder::new(app, label, url)
         .inner_size(w, h)
+        // Pin user-resize to the built size: Tahoe edge-drags borderless
+        // windows even with `resizable(false)`, and min == max drops the
+        // affordance/cursor. Programmatic `set_size` is not limited, so
+        // the bar's morphs still animate — `sync_bar_size_limits`
+        // re-pins to each canonical width afterward.
+        .min_inner_size(w, h)
+        .max_inner_size(w, h)
         .decorations(false)
         .transparent(true)
         .always_on_top(true)

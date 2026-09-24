@@ -1,0 +1,700 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Verba · Live meeting transcript</title>
+  <style>
+    :root {
+      --bg:      oklch(99% 0.002 240);
+      --surface: oklch(100% 0 0);
+      --fg:      oklch(18% 0.012 250);
+      --muted:   oklch(54% 0.012 250);
+      --border:  oklch(92% 0.005 250);
+      --accent:  oklch(58% 0.18 255);
+
+      /* categorical — speaker diarization + status */
+      --spk-a: oklch(60% 0.17 252);
+      --spk-b: oklch(64% 0.19 155);
+      --spk-c: oklch(66% 0.19 40);
+      --rec:   oklch(62% 0.22 27);
+
+      --accent-soft: color-mix(in oklch, var(--accent) 12%, transparent);
+      --fg-soft:     color-mix(in oklch, var(--fg) 5%, transparent);
+
+      --font-display: -apple-system, BlinkMacSystemFont, 'SF Pro Display', system-ui, sans-serif;
+      --font-body:    -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
+      --font-mono:    ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, monospace;
+
+      --fs-meta: 13px;
+      --gap-xs: 8px;
+      --gap-sm: 12px;
+      --gap-md: 20px;
+      --gap-lg: 32px;
+      --radius: 10px;
+      --radius-lg: 16px;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; }
+    html { -webkit-text-size-adjust: 100%; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--fg);
+      font-family: var(--font-body);
+      font-size: 16px;
+      line-height: 1.55;
+      text-rendering: optimizeLegibility;
+      -webkit-font-smoothing: antialiased;
+    }
+    button { font: inherit; cursor: pointer; }
+    a { color: inherit; text-decoration: none; }
+
+    .meta { font-family: var(--font-mono); font-size: var(--fs-meta); color: var(--muted); }
+    .num  { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+
+    /* ─── top chrome ─────────────────────────────────────────────── */
+    .topnav {
+      height: 56px;
+      display: flex; align-items: center; gap: var(--gap-md);
+      padding-inline: 20px;
+      background: color-mix(in oklch, var(--surface) 88%, transparent);
+      backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--border);
+    }
+    .logo { font-family: var(--font-display); font-size: 17px; font-weight: 600; letter-spacing: -0.01em; }
+    .crumb { display: flex; align-items: center; gap: 8px; min-width: 0; }
+    .crumb .sep { color: var(--border); }
+    .crumb .meet { font-size: 14px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+    .nav-right { margin-left: auto; display: flex; align-items: center; gap: var(--gap-sm); }
+
+    .live-pill {
+      display: inline-flex; align-items: center; gap: 7px;
+      padding: 5px 11px;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase;
+      color: var(--fg);
+      background: var(--surface);
+    }
+    .rec-dot {
+      width: 7px; height: 7px; border-radius: 50%;
+      background: var(--rec);
+      animation: pulse 1.6s ease-in-out infinite;
+    }
+    @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.25; } }
+
+    .btn {
+      display: inline-flex; align-items: center; gap: 8px;
+      padding: 8px 14px;
+      border-radius: var(--radius);
+      border: 1px solid transparent;
+      font-size: 13.5px; font-weight: 500; letter-spacing: -0.005em;
+      transition: background 0.15s ease, border-color 0.15s ease;
+    }
+    .btn:active { transform: translateY(1px); }
+    .btn-primary { background: var(--accent); color: var(--surface); border-color: var(--accent); }
+    .btn-primary:hover { background: color-mix(in oklch, var(--accent) 88%, black); }
+    .btn-secondary { background: var(--surface); color: var(--fg); border-color: var(--border); }
+    .btn-secondary:hover { border-color: color-mix(in oklch, var(--fg) 35%, var(--border)); }
+    .btn-ghost { background: transparent; color: var(--muted); border-color: transparent; padding-inline: 10px; }
+    .btn-ghost:hover { color: var(--fg); }
+    .btn:disabled { opacity: 0.45; cursor: default; transform: none; }
+    button:focus-visible, a:focus-visible, input:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+      border-radius: 6px;
+    }
+
+    /* ─── app shell ──────────────────────────────────────────────── */
+    .app-shell {
+      display: grid;
+      grid-template-columns: 300px 1fr;
+      height: calc(100vh - 56px);
+      min-height: 0;
+    }
+
+    /* ─── sidebar ────────────────────────────────────────────────── */
+    .sidebar {
+      border-right: 1px solid var(--border);
+      padding: 20px;
+      overflow-y: auto;
+      display: flex; flex-direction: column; gap: var(--gap-lg);
+      background: var(--surface);
+    }
+    .side-label {
+      font-family: var(--font-mono); font-size: 11px;
+      letter-spacing: 0.08em; text-transform: uppercase;
+      color: var(--muted);
+      margin: 0 0 10px;
+    }
+    .meet-card h1 {
+      font-family: var(--font-display);
+      font-size: 19px; font-weight: 600; letter-spacing: -0.015em;
+      line-height: 1.25; margin: 0 0 6px;
+    }
+    .meet-card .meta { display: block; }
+
+    .spk-row { display: flex; align-items: center; gap: 10px; padding: 9px 0; }
+    .av {
+      width: 30px; height: 30px; flex: 0 0 30px;
+      border-radius: 50%;
+      display: grid; place-items: center;
+      font-family: var(--font-mono); font-size: 10.5px; font-weight: 600;
+      letter-spacing: 0.02em;
+    }
+    .av-a { background: color-mix(in oklch, var(--spk-a) 14%, transparent); color: var(--spk-a); }
+    .av-b { background: color-mix(in oklch, var(--spk-b) 16%, transparent); color: oklch(50% 0.15 155); }
+    .av-c { background: color-mix(in oklch, var(--spk-c) 16%, transparent); color: oklch(52% 0.15 40); }
+    .av-ai { background: var(--accent-soft); color: var(--accent); }
+    .spk-name { font-size: 13.5px; font-weight: 600; line-height: 1.2; }
+    .spk-role { font-size: 12px; color: var(--muted); line-height: 1.2; }
+    .spk-time { margin-left: auto; font-family: var(--font-mono); font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+    .spk-bar { height: 3px; background: var(--fg-soft); border-radius: 2px; margin-top: 6px; overflow: hidden; }
+    .spk-bar i { display: block; height: 100%; width: 0%; border-radius: 2px; transition: width 0.4s ease; }
+    .bar-a i { background: var(--spk-a); } .bar-b i { background: var(--spk-b); } .bar-c i { background: var(--spk-c); }
+
+    .spk-speaking .spk-name::after {
+      content: '';
+      display: inline-block;
+      width: 6px; height: 6px; border-radius: 50%;
+      margin-left: 7px;
+      background: var(--rec);
+      animation: pulse 1.2s ease-in-out infinite;
+    }
+
+    /* simulation controls */
+    .sim-controls { display: flex; flex-direction: column; gap: 10px; }
+    .seg {
+      display: flex; border: 1px solid var(--border); border-radius: var(--radius);
+      overflow: hidden; background: var(--surface);
+    }
+    .seg button {
+      flex: 1; padding: 7px 0; border: 0; background: transparent;
+      font-family: var(--font-mono); font-size: 12px; color: var(--muted);
+    }
+    .seg button + button { border-left: 1px solid var(--border); }
+    .seg button.on { background: var(--fg); color: var(--surface); }
+    .sim-row { display: flex; gap: 8px; }
+    .sim-row .btn { flex: 1; justify-content: center; }
+
+    /* ─── transcript pane ────────────────────────────────────────── */
+    .tpane { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+
+    .t-head {
+      display: flex; align-items: center; gap: var(--gap-md);
+      padding: 0 20px;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface);
+      height: 48px; flex: 0 0 48px;
+    }
+    .tabs { display: flex; gap: 2px; height: 100%; }
+    .tabs button {
+      border: 0; background: transparent; padding: 0 12px;
+      font-size: 13.5px; color: var(--muted); font-weight: 500;
+      border-bottom: 2px solid transparent;
+      display: inline-flex; align-items: center; gap: 7px;
+    }
+    .tabs button:hover { color: var(--fg); }
+    .tabs button.on { color: var(--fg); border-bottom-color: var(--accent); }
+    .tabs .cnt {
+      font-family: var(--font-mono); font-size: 11px;
+      background: var(--fg-soft); color: var(--muted);
+      padding: 1px 6px; border-radius: 999px;
+    }
+    .t-status { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+    .status-txt { font-size: 12.5px; color: var(--muted); }
+    .eq { display: inline-flex; align-items: flex-end; gap: 2px; height: 14px; }
+    .eq i { width: 2.5px; background: var(--accent); border-radius: 1px; height: 4px; }
+    .eq.on i { animation: eq 0.9s ease-in-out infinite; }
+    .eq.on i:nth-child(2) { animation-delay: 0.15s; }
+    .eq.on i:nth-child(3) { animation-delay: 0.3s; }
+    .eq.on i:nth-child(4) { animation-delay: 0.45s; }
+    @keyframes eq { 0%,100% { height: 4px; } 50% { height: 13px; } }
+
+    .t-body { flex: 1; min-height: 0; position: relative; display: flex; flex-direction: column; }
+    .t-scroll {
+      flex: 1; overflow-y: auto;
+      padding: 36px 24px 64px;
+      scroll-behavior: auto;
+    }
+    .t-col { max-width: 720px; margin-inline: auto; }
+
+    .turn { display: grid; grid-template-columns: 34px 1fr; gap: 14px; margin-bottom: 30px; }
+    .turn-head { display: flex; align-items: baseline; gap: 9px; margin-bottom: 5px; flex-wrap: wrap; }
+    .turn-name { font-size: 13.5px; font-weight: 600; }
+    .name-a { color: var(--spk-a); } .name-b { color: oklch(46% 0.13 155); } .name-c { color: oklch(50% 0.14 40); }
+    .turn-time { font-family: var(--font-mono); font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+    .turn-text { margin: 0; font-size: 16.5px; line-height: 1.72; letter-spacing: -0.003em; }
+    .w-int { color: var(--muted); }
+    .caret {
+      display: inline-block; vertical-align: -0.14em;
+      width: 2px; height: 1.05em; margin-left: 2px;
+      background: var(--accent); border-radius: 1px;
+      animation: blink 1s steps(2, start) infinite;
+    }
+    @keyframes blink { 50% { opacity: 0; } }
+    .edge-note {
+      text-align: center; font-family: var(--font-mono); font-size: 11.5px;
+      color: var(--muted); margin-top: 8px;
+    }
+
+    .jump-live {
+      position: absolute; left: 50%; bottom: 18px; transform: translateX(-50%);
+      display: none; align-items: center; gap: 8px;
+      padding: 8px 16px;
+      background: var(--fg); color: var(--surface);
+      border: 0; border-radius: 999px;
+      font-size: 12.5px; font-weight: 500;
+      box-shadow: 0 4px 16px color-mix(in oklch, var(--fg) 18%, transparent);
+    }
+    .jump-live.show { display: inline-flex; }
+
+    /* panels (summary / action items) */
+    .panel { display: none; }
+    .panel.on { display: block; }
+    .panel-empty { color: var(--muted); font-size: 14px; padding: 8px 0; }
+    .sum-item {
+      display: grid; grid-template-columns: 58px 1fr; gap: 14px;
+      padding: 14px 0; border-bottom: 1px solid var(--border);
+      font-size: 14.5px; line-height: 1.55;
+    }
+    .sum-item .meta { padding-top: 2px; }
+    .act-item {
+      display: flex; align-items: flex-start; gap: 12px;
+      padding: 13px 0; border-bottom: 1px solid var(--border);
+      font-size: 14.5px;
+    }
+    .act-item input[type="checkbox"] {
+      width: 16px; height: 16px; margin-top: 3px;
+      accent-color: var(--accent); flex: 0 0 16px;
+    }
+    .act-item .who {
+      font-family: var(--font-mono); font-size: 11px; font-weight: 600;
+      padding: 2px 7px; border-radius: 999px; margin-left: 8px; white-space: nowrap;
+    }
+    .who-a { background: color-mix(in oklch, var(--spk-a) 12%, transparent); color: var(--spk-a); }
+    .who-b { background: color-mix(in oklch, var(--spk-b) 14%, transparent); color: oklch(46% 0.13 155); }
+    .who-c { background: color-mix(in oklch, var(--spk-c) 14%, transparent); color: oklch(50% 0.14 40); }
+    .act-item.done span.txt { color: var(--muted); text-decoration: line-through; }
+
+    /* ask bar */
+    .ask-bar {
+      flex: 0 0 auto;
+      border-top: 1px solid var(--border);
+      background: var(--surface);
+      padding: 12px 20px;
+    }
+    .ask-inner { max-width: 720px; margin-inline: auto; display: flex; gap: 10px; }
+    .ask-inner input {
+      flex: 1; padding: 10px 14px;
+      border: 1px solid var(--border); border-radius: var(--radius);
+      background: var(--bg); color: var(--fg);
+      font: inherit; font-size: 14px;
+    }
+    .ask-inner input::placeholder { color: var(--muted); }
+    .ask-answer {
+      border: 1px solid var(--border); border-radius: var(--radius-lg);
+      background: var(--surface); padding: 16px 18px; margin-bottom: 30px;
+      display: grid; grid-template-columns: 34px 1fr; gap: 14px;
+    }
+    .ask-answer .turn-text { font-size: 14.5px; }
+
+    @media (max-width: 920px) {
+      .app-shell { grid-template-columns: 1fr; grid-template-rows: auto 1fr; height: auto; min-height: calc(100vh - 56px); }
+      .sidebar { border-right: 0; border-bottom: 1px solid var(--border); flex-direction: row; flex-wrap: wrap; gap: var(--gap-md); }
+      .sidebar > section { flex: 1 1 240px; }
+      .meet-card { flex-basis: 100%; }
+      .tpane { min-height: 70vh; }
+      .crumb .meet { max-width: 34vw; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topnav" data-od-id="topnav">
+    <span class="logo">Verba</span>
+    <div class="crumb">
+      <span class="sep meta">/</span>
+      <span class="meet">Launch readiness — weekly sync</span>
+    </div>
+    <div class="nav-right">
+      <span class="live-pill" data-od-id="live-badge"><i class="rec-dot"></i>Recording&nbsp;<span class="num" id="clock">00:00</span></span>
+      <button class="btn btn-ghost">Share</button>
+      <button class="btn btn-primary" data-od-id="end-btn">End meeting</button>
+    </div>
+  </header>
+
+  <div class="app-shell">
+    <aside class="sidebar" data-od-id="sidebar">
+      <section class="meet-card">
+        <p class="side-label">Session</p>
+        <h1>Launch readiness — weekly sync</h1>
+        <span class="meta">Thu, Sep 24 · 3 participants · EN</span>
+      </section>
+
+      <section data-od-id="participants">
+        <p class="side-label">Speakers</p>
+        <div class="spk-row" id="row-a" data-od-id="participant-maya">
+          <span class="av av-a">MC</span>
+          <div style="flex:1;min-width:0;">
+            <div class="spk-name">Maya Chen</div>
+            <div class="spk-role">Product</div>
+            <div class="spk-bar bar-a"><i id="bar-a"></i></div>
+          </div>
+          <span class="spk-time" id="pct-a">0%</span>
+        </div>
+        <div class="spk-row" id="row-b" data-od-id="participant-jonas">
+          <span class="av av-b">JW</span>
+          <div style="flex:1;min-width:0;">
+            <div class="spk-name">Jonas Weber</div>
+            <div class="spk-role">Engineering</div>
+            <div class="spk-bar bar-b"><i id="bar-b"></i></div>
+          </div>
+          <span class="spk-time" id="pct-b">0%</span>
+        </div>
+        <div class="spk-row" id="row-c" data-od-id="participant-priya">
+          <span class="av av-c">PN</span>
+          <div style="flex:1;min-width:0;">
+            <div class="spk-name">Priya Nair</div>
+            <div class="spk-role">Design</div>
+            <div class="spk-bar bar-c"><i id="bar-c"></i></div>
+          </div>
+          <span class="spk-time" id="pct-c">0%</span>
+        </div>
+      </section>
+
+      <section class="sim-controls" data-od-id="sim-controls">
+        <p class="side-label">Playback</p>
+        <div class="seg" id="speed-seg">
+          <button data-speed="1" class="on">1×</button>
+          <button data-speed="2">2×</button>
+          <button data-speed="4">4×</button>
+        </div>
+        <div class="sim-row">
+          <button class="btn btn-secondary" id="pause-btn">Pause</button>
+          <button class="btn btn-secondary" id="restart-btn">Replay</button>
+        </div>
+      </section>
+    </aside>
+
+    <section class="tpane" data-od-id="transcript-pane">
+      <div class="t-head" data-od-id="transcript-tabs">
+        <div class="tabs">
+          <button class="on" data-tab="transcript">Transcript</button>
+          <button data-tab="summary">Summary <span class="cnt" id="cnt-summary">0</span></button>
+          <button data-tab="actions">Action items <span class="cnt" id="cnt-actions">0</span></button>
+        </div>
+        <div class="t-status">
+          <span class="eq on" id="eq"><i></i><i></i><i></i><i></i></span>
+          <span class="status-txt" id="status-txt">Listening</span>
+        </div>
+      </div>
+
+      <div class="t-body">
+        <div class="t-scroll" id="scroller">
+          <div class="t-col">
+            <div class="panel on" id="panel-transcript" data-od-id="transcript-flow"></div>
+            <div class="panel" id="panel-summary" data-od-id="summary-panel">
+              <div class="panel-empty" id="summary-empty">Key points will appear here as the meeting unfolds.</div>
+            </div>
+            <div class="panel" id="panel-actions" data-od-id="actions-panel">
+              <div class="panel-empty" id="actions-empty">Action items will be detected as owners commit to them.</div>
+            </div>
+          </div>
+        </div>
+        <button class="jump-live" id="jump-live" data-od-id="jump-live">↓ Jump to live</button>
+      </div>
+
+      <form class="ask-bar" id="ask-form" data-od-id="ask-bar">
+        <div class="ask-inner">
+          <input id="ask-input" type="text" placeholder="Ask about this meeting…" autocomplete="off" />
+          <button class="btn btn-secondary" type="submit">Ask</button>
+        </div>
+      </form>
+    </section>
+  </div>
+
+  <script>
+    /* ── data ─────────────────────────────────────────────────── */
+    const SPEAKERS = {
+      a: { name: 'Maya Chen',  initials: 'MC', cls: 'a' },
+      b: { name: 'Jonas Weber', initials: 'JW', cls: 'b' },
+      c: { name: 'Priya Nair',  initials: 'PN', cls: 'c' },
+    };
+
+    const SCRIPT = [
+      { s: 'a', t: "Okay, let's start. Fifteen minutes on launch readiness. Jonas, can you kick us off — where did the API migration land this week?",
+        sum: "Weekly launch-readiness sync opened with API migration status." },
+      { s: 'b', t: "Yep. Migration is done on staging as of last night. We cut the last of the v1 routes around two a.m., and error rates look clean this morning.",
+        sum: "API migration finished on staging; v1 routes fully cut over." },
+      { s: 'b', t: "The one thing still open is rate limiting on the new gateway. It works, but I want one more day of soak before we call it done.",
+        act: { who: 'b', txt: "Jonas — finish rate-limit soak on the new gateway and confirm by Friday." } },
+      { s: 'a', t: "One more day is fine. I'd rather ship late on a Friday than roll back on a Monday." },
+      { s: 'c', t: "Before we move on — onboarding. The new empty states shipped Monday, and activation is already up. The drop between sign-up and first project shrank a lot.",
+        sum: "New onboarding empty states shipped Monday; early activation improved." },
+      { s: 'a', t: "That's the good news I needed. How much of that do you trust this early, though?" },
+      { s: 'c', t: "Directionally, a lot. The sample is still small — it's three days — but the funnel shape changed exactly where we predicted." },
+      { s: 'b', t: "Worth saying: part of that lift might be the faster cold start, not just the empty states. TTI dropped almost a second after the bundle split." },
+      { s: 'c', t: "Fair. Either way I want a proper read next week once we have a full cohort. I'll pull the numbers.",
+        act: { who: 'c', txt: "Priya — pull the full-cohort activation readout for next week's sync." } },
+      { s: 'a', t: "Good. Next: the launch checklist itself. Where are we on the status page and the rollback runbook?" },
+      { s: 'b', t: "Status page is live on the new domain. Rollback runbook is drafted — I walked through it yesterday and found two gaps, both fixed. I want Priya to sanity-check the customer-facing wording." },
+      { s: 'c', t: "Send it over. I can review this afternoon.",
+        act: { who: 'c', txt: "Priya — review customer-facing wording in the rollback runbook today." } },
+      { s: 'a', t: "Perfect. Last thing: pricing page. Legal signed off, so we're just waiting on the experiment results." },
+      { s: 'b', t: "Experiment needs three more days to hit power. I wouldn't read anything into the current split — the sample's too thin." },
+      { s: 'a', t: "Agreed, no peeking. So: launch stays on for the tenth, contingent on the rate-limit soak and the pricing read. Maya — that's me — I'll update the launch doc and send the go/no-go checklist around tomorrow.",
+        act: { who: 'a', txt: "Maya — update the launch doc and circulate the go/no-go checklist tomorrow." },
+        sum: "Launch date holds for the 10th, gated on rate-limit soak and pricing experiment." },
+      { s: 'c', t: "Works for me. If the experiment slips I'll flag it in the channel rather than waiting for next week." },
+      { s: 'b', t: "Same. Anything weird in the soak, I'll page the thread immediately." },
+      { s: 'a', t: "Then we're done early — twelve minutes. Thanks both." },
+    ];
+
+    const ASK_ANSWERS = [
+      { k: ['rate', 'limit', 'gateway', 'soak'], a: "The rate limiter on the new gateway is functional but still soaking. Jonas wants one more day of clean metrics before calling it done — it's one of the two gates on the October 10th launch." },
+      { k: ['launch', 'date', 'ship', 'when'], a: "Launch is still on for the 10th. It's gated on two things: Jonas finishing the rate-limit soak on the gateway, and the pricing experiment reaching statistical power — about three more days." },
+      { k: ['onboarding', 'activation', 'empty'], a: "Activation improved after the new empty states shipped Monday. Priya cautioned the sample is only three days old — Jonas added that faster cold start (~1s TTI drop) may share credit. A full-cohort read lands next week." },
+      { k: ['action', 'todo', 'task', 'who'], a: "Four action items so far: Jonas finishes the rate-limit soak by Friday; Priya reviews the rollback-runbook wording today and pulls the activation cohort readout next week; Maya circulates the go/no-go checklist tomorrow." },
+    ];
+    const ASK_DEFAULT = "Based on the transcript so far: the migration is done on staging, onboarding activation is trending up, and the October 10th launch holds pending the rate-limit soak and the pricing experiment read.";
+
+    /* ── engine ───────────────────────────────────────────────── */
+    const flow      = document.getElementById('panel-transcript');
+    const scroller  = document.getElementById('scroller');
+    const clockEl   = document.getElementById('clock');
+    const statusTxt = document.getElementById('status-txt');
+    const eq        = document.getElementById('eq');
+    const pauseBtn  = document.getElementById('pause-btn');
+    const jumpBtn   = document.getElementById('jump-live');
+
+    let turnIdx = 0, wordIdx = 0, words = [];
+    let playing = true, speed = 1, timer = null;
+    let clock = 0, wordCounts = { a: 0, b: 0, c: 0 };
+    let follow = true, finished = false;
+    let curPara = null, curCaret = null;
+
+    const fmt = s => String(Math.floor(s / 60)).padStart(2, '0') + ':' + String(Math.floor(s % 60)).padStart(2, '0');
+
+    function makeTurn(turn) {
+      const sp = SPEAKERS[turn.s];
+      const el = document.createElement('article');
+      el.className = 'turn';
+      el.setAttribute('data-od-id', 'turn-' + sp.cls + '-' + (turnIdx + 1));
+      el.innerHTML =
+        '<span class="av av-' + sp.cls + '">' + sp.initials + '</span>' +
+        '<div><div class="turn-head">' +
+          '<span class="turn-name name-' + sp.cls + '">' + sp.name + '</span>' +
+          '<span class="turn-time">' + fmt(clock) + '</span>' +
+        '</div><p class="turn-text"></p></div>';
+      flow.appendChild(el);
+      return el.querySelector('.turn-text');
+    }
+
+    function markSpeaking(cls) {
+      ['a', 'b', 'c'].forEach(k => document.getElementById('row-' + k).classList.toggle('spk-speaking', k === cls));
+    }
+
+    function updateBars() {
+      const total = wordCounts.a + wordCounts.b + wordCounts.c || 1;
+      ['a', 'b', 'c'].forEach(k => {
+        const pct = Math.round(wordCounts[k] / total * 100);
+        document.getElementById('bar-' + k).style.width = pct + '%';
+        document.getElementById('pct-' + k).textContent = pct + '%';
+      });
+    }
+
+    function addMeta(turn) {
+      if (turn.sum) {
+        document.getElementById('summary-empty')?.remove();
+        const d = document.createElement('div');
+        d.className = 'sum-item';
+        d.innerHTML = '<span class="meta num">' + fmt(clock) + '</span><span>' + turn.sum + '</span>';
+        document.getElementById('panel-summary').appendChild(d);
+        const c = document.getElementById('cnt-summary');
+        c.textContent = +c.textContent + 1;
+      }
+      if (turn.act) {
+        document.getElementById('actions-empty')?.remove();
+        const l = document.createElement('label');
+        l.className = 'act-item';
+        l.innerHTML = '<input type="checkbox"><span class="txt">' + turn.act.txt +
+          '<span class="who who-' + turn.act.who + '">' + SPEAKERS[turn.act.who].name.split(' ')[0] + '</span></span>';
+        l.querySelector('input').addEventListener('change', e => l.classList.toggle('done', e.target.checked));
+        document.getElementById('panel-actions').appendChild(l);
+        const c = document.getElementById('cnt-actions');
+        c.textContent = +c.textContent + 1;
+      }
+    }
+
+    function finalizeInterim() {
+      curPara?.querySelectorAll('.w-int').forEach(w => w.classList.remove('w-int'));
+    }
+
+    function attachCaret() {
+      finalizeInterim();
+      curCaret = document.createElement('span');
+      curCaret.className = 'caret';
+      curPara.appendChild(curCaret);
+    }
+
+    function emitWord() {
+      if (!playing) return;
+      if (turnIdx >= SCRIPT.length) { endScript(); return; }
+
+      const turn = SCRIPT[turnIdx];
+      if (wordIdx === 0) {
+        words = turn.t.split(/\s+/);
+        curPara = makeTurn(turn);
+        markSpeaking(turn.s);
+        attachCaret();
+      }
+
+      // emit the next word as an interim hypothesis
+      const w = document.createElement('span');
+      w.className = 'w-int';
+      w.textContent = (wordIdx === 0 ? '' : ' ') + words[wordIdx];
+      curPara.insertBefore(w, curCaret);
+      wordIdx++;
+      wordCounts[turn.s]++;
+      updateBars();
+
+      // earlier interim words commit once a newer word arrives
+      const interims = curPara.querySelectorAll('.w-int');
+      for (let i = 0; i < interims.length - 2; i++) interims[i].classList.remove('w-int');
+
+      maybeScroll();
+
+      if (wordIdx >= words.length) {
+        // turn finished — finalize everything, credit summary/action, pause
+        finalizeInterim();
+        addMeta(turn);
+        turnIdx++; wordIdx = 0;
+        timer = setTimeout(emitWord, 1100 / speed);
+      } else {
+        const w2 = words[wordIdx - 1];
+        const pause = /[.!?…]$/.test(w2) ? 340 : /[,;:—]$/.test(w2) ? 200 : 0;
+        timer = setTimeout(emitWord, (150 + Math.random() * 130 + pause) / speed);
+      }
+    }
+
+    function endScript() {
+      finished = true;
+      markSpeaking(null);
+      finalizeInterim();
+      const note = document.createElement('div');
+      note.className = 'edge-note';
+      note.textContent = '— live edge · waiting for speech —';
+      flow.appendChild(note);
+      statusTxt.textContent = 'Listening · waiting for speech';
+      maybeScroll();
+    }
+
+    function maybeScroll() {
+      if (follow) scroller.scrollTo({ top: scroller.scrollHeight });
+    }
+
+    /* clock */
+    setInterval(() => { if (playing) { clock += speed; clockEl.textContent = fmt(clock); } }, 1000);
+
+    /* controls */
+    pauseBtn.addEventListener('click', () => {
+      playing = !playing;
+      pauseBtn.textContent = playing ? 'Pause' : 'Resume';
+      eq.classList.toggle('on', playing);
+      statusTxt.textContent = playing ? 'Listening' : 'Paused';
+      if (playing && !finished) emitWord();
+      if (!playing) clearTimeout(timer);
+    });
+
+    document.getElementById('speed-seg').addEventListener('click', e => {
+      const b = e.target.closest('button[data-speed]');
+      if (!b) return;
+      speed = +b.dataset.speed;
+      document.querySelectorAll('#speed-seg button').forEach(x => x.classList.toggle('on', x === b));
+    });
+
+    document.getElementById('restart-btn').addEventListener('click', () => {
+      clearTimeout(timer);
+      turnIdx = 0; wordIdx = 0; clock = 0; finished = false;
+      wordCounts = { a: 0, b: 0, c: 0 };
+      flow.innerHTML = '';
+      document.getElementById('panel-summary').innerHTML = '<div class="panel-empty" id="summary-empty">Key points will appear here as the meeting unfolds.</div>';
+      document.getElementById('panel-actions').innerHTML = '<div class="panel-empty" id="actions-empty">Action items will be detected as owners commit to them.</div>';
+      document.getElementById('cnt-summary').textContent = '0';
+      document.getElementById('cnt-actions').textContent = '0';
+      clockEl.textContent = '00:00';
+      updateBars(); markSpeaking(null);
+      follow = true; jumpBtn.classList.remove('show');
+      if (!playing) pauseBtn.click();
+      emitWord();
+    });
+
+    /* follow-live */
+    scroller.addEventListener('scroll', () => {
+      const dist = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
+      follow = dist < 80;
+      jumpBtn.classList.toggle('show', !follow);
+    });
+    jumpBtn.addEventListener('click', () => {
+      follow = true;
+      jumpBtn.classList.remove('show');
+      scroller.scrollTo({ top: scroller.scrollHeight, behavior: 'smooth' });
+    });
+
+    /* tabs */
+    document.querySelector('.tabs').addEventListener('click', e => {
+      const b = e.target.closest('button[data-tab]');
+      if (!b) return;
+      document.querySelectorAll('.tabs button').forEach(x => x.classList.toggle('on', x === b));
+      ['transcript', 'summary', 'actions'].forEach(t =>
+        document.getElementById('panel-' + t).classList.toggle('on', t === b.dataset.tab));
+    });
+
+    /* ask about this meeting */
+    document.getElementById('ask-form').addEventListener('submit', e => {
+      e.preventDefault();
+      const input = document.getElementById('ask-input');
+      const q = input.value.trim();
+      if (!q) return;
+      input.value = '';
+      const lower = q.toLowerCase();
+      const hit = ASK_ANSWERS.find(x => x.k.some(k => lower.includes(k)));
+      const answer = hit ? hit.a : ASK_DEFAULT;
+
+      const card = document.createElement('div');
+      card.className = 'ask-answer';
+      card.innerHTML =
+        '<span class="av av-ai">V</span>' +
+        '<div><div class="turn-head"><span class="turn-name" style="color:var(--accent)">Verba</span>' +
+        '<span class="turn-time">' + fmt(clock) + '</span></div>' +
+        '<p class="turn-text"><span class="meta" style="display:block;margin-bottom:6px;">“' + q.replace(/</g, '&lt;') + '”</span></p></div>';
+      flow.appendChild(card);
+      const p = card.querySelector('.turn-text');
+      const caret = document.createElement('span');
+      caret.className = 'caret';
+      p.appendChild(caret);
+      const aw = answer.split(/\s+/);
+      let i = 0;
+      (function typeAns() {
+        if (i >= aw.length) { caret.remove(); maybeScroll(); return; }
+        const s = document.createElement('span');
+        s.className = 'w-int';
+        s.textContent = ' ' + aw[i++];
+        p.insertBefore(s, caret);
+        p.querySelectorAll('.w-int').forEach((el, j, arr) => { if (j < arr.length - 2) el.classList.remove('w-int'); });
+        maybeScroll();
+        setTimeout(typeAns, 90 / speed);
+      })();
+
+      // switch to transcript tab so the answer is visible
+      document.querySelector('.tabs button[data-tab="transcript"]').click();
+      follow = true;
+      scroller.scrollTo({ top: scroller.scrollHeight });
+    });
+
+    /* start */
+    setTimeout(emitWord, 700);
+  </script>
+</body>
+</html>

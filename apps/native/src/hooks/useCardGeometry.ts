@@ -36,6 +36,10 @@ export const useCardGeometry = (
   const [cardOpen, setCardOpen] = useState(
     () => window.innerHeight > BAR_H + OPEN_EPS,
   );
+  /** Mutable mirror of `cardOpen` — the expand-direction compare needs
+   *  the pre-transition value without a side-effecting state updater
+   *  (StrictMode double-invokes updaters). */
+  const cardOpenRef = useRef(cardOpen);
   const [growDir, setGrowDir] = useState<'up' | 'down'>('down');
   /** Last collapsed-mode outer y — the baseline the expand direction
    *  is detected against. */
@@ -60,17 +64,19 @@ export const useCardGeometry = (
           if (!alive) {
             return;
           }
-          setCardOpen((was) => {
-            if (openNow && !was && collapsedY.current !== null) {
-              setGrowDir(p.y < collapsedY.current - 0.5 ? 'up' : 'down');
-            }
-            return openNow;
-          });
+          if (openNow && !cardOpenRef.current && collapsedY.current !== null) {
+            setGrowDir(p.y < collapsedY.current - 0.5 ? 'up' : 'down');
+          }
           if (!openNow) {
             collapsedY.current = p.y;
           }
+          cardOpenRef.current = openNow;
+          setCardOpen(openNow);
         })
-        .catch(() => setCardOpen(openNow));
+        .catch(() => {
+          cardOpenRef.current = openNow;
+          setCardOpen(openNow);
+        });
     };
     window.addEventListener('resize', read);
     read();
@@ -83,14 +89,15 @@ export const useCardGeometry = (
 
   // Report the card's desired TOTAL window height: leading + trailing
   // throttle, only on a real (>EPS) change — `adjust_height` animates
-  // per call. The observer watches the CARD element (content-sized,
-  // capped at CARD_MAX) — NOT the window-fixed `h-full` stage, whose
-  // box only changes on real window resizes, so streaming content
-  // growth/shrink actually triggers reports. `scrollHeight` reads the
-  // uncapped content height (overflow counts); the backend clamps to
-  // min(900, free). The stage's vertical padding is added back (frost
-  // keeps `p-1`, glass strips it) so the report is total window height
-  // under both materials.
+  // per call. The observer watches the CARD element — NOT the
+  // window-fixed `h-full` stage, whose box only changes on real window
+  // resizes, so streaming content growth/shrink actually triggers
+  // reports. `scrollHeight` reads the uncapped content height (overflow
+  // counts — and a user-stretched window reads as its rendered height,
+  // so a manual resize sticks); the backend clamps to the work area's
+  // free space. The stage's vertical padding is added back (frost keeps
+  // `p-1`, glass strips it) so the report is total window height under
+  // both materials.
   useEffect(() => {
     const el = cardRef.current;
     const stage = stageRef.current;
@@ -105,10 +112,7 @@ export const useCardGeometry = (
       const padY = cs
         ? parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom)
         : 0;
-      const h = Math.min(
-        Math.ceil(el.scrollHeight + (Number.isFinite(padY) ? padY : 0)),
-        900,
-      );
+      const h = Math.ceil(el.scrollHeight + (Number.isFinite(padY) ? padY : 0));
       if (Math.abs(h - lastValue) <= HEIGHT_EPS) {
         return;
       }

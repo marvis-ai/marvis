@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   configGet,
   listenStatus,
@@ -24,7 +24,7 @@ import {
   type ListenSummaryPayload,
   type ListenTurnPayload,
 } from '../lib/events';
-import { BTN_OUTLINE, BTN_SM, CHIP, EMPTY, cn } from '../lib/classes';
+import { BTN_OUTLINE, BTN_SM, CHIP, EMPTY, NUM, cn } from '../lib/classes';
 
 type Turn = ListenTurnPayload & {
   interim?: boolean;
@@ -33,6 +33,58 @@ type Turn = ListenTurnPayload & {
 type Summary = ListenSummaryPayload;
 
 const waveformHeights = ['h-2', 'h-3.5', 'h-4.5', 'h-3', 'h-1.75'];
+
+/* ─── transcript document model ──────────────────────────────────
+   Consecutive turns from one speaker identity (channel + diarized
+   voice cluster) merge into a block: one header, a paragraph per
+   turn. A trailing interim rides the open block. */
+
+interface TurnIdentity {
+  speaker: 'me' | 'them';
+  speaker_idx: number | null;
+}
+
+const speakerKey = (turn: TurnIdentity) =>
+  `${turn.speaker}:${turn.speaker_idx ?? ''}`;
+
+const speakerName = (turn: TurnIdentity) =>
+  turn.speaker === 'me'
+    ? turn.speaker_idx != null && turn.speaker_idx > 0
+      ? `Guest ${turn.speaker_idx}`
+      : 'You'
+    : turn.speaker_idx == null
+      ? 'Speaker'
+      : `Speaker ${turn.speaker_idx + 1}`;
+
+const SPEAKER_COLOR_CLASSES = [
+  'text-speaker-1',
+  'text-speaker-2',
+  'text-speaker-3',
+  'text-speaker-4',
+] as const;
+
+const speakerColor = (turn: TurnIdentity) =>
+  turn.speaker === 'me' && !(turn.speaker_idx != null && turn.speaker_idx > 0)
+    ? 'text-accent'
+    : turn.speaker_idx == null
+      ? 'text-fg-2'
+      : SPEAKER_COLOR_CLASSES[turn.speaker_idx % SPEAKER_COLOR_CLASSES.length];
+
+interface TurnBlock {
+  key: string;
+  name: string;
+  color: string;
+  ts: number;
+  finals: Turn[];
+  interim: Turn | null;
+}
+
+const timeLabel = (ts: number) => {
+  const date = new Date(ts * 1000);
+  const hh = String(date.getHours()).padStart(2, '0');
+  const mm = String(date.getMinutes()).padStart(2, '0');
+  return `${hh}:${mm}`;
+};
 
 const whisperSourceLabel = (source: WhisperBinarySource | null) => {
   if (source === 'Bundled') return 'Bundled with Marvis';
@@ -99,7 +151,15 @@ export const ListenSection = () => {
         ]);
         if (cancelled || sessionRef.current !== current.session_id) return;
         setTurns((live) => {
-          const persisted = rows.map((row) => ({ ...row, final: true }));
+          // Persisted rows (`content`) fold into the live-turn shape (`text`).
+          const persisted: Turn[] = rows.map((row) => ({
+            speaker: row.speaker,
+            speaker_idx: row.speaker_idx,
+            text: row.content,
+            ts: row.ts,
+            session_id: row.session_id,
+            final: true,
+          }));
           const keys = new Set(
             live.map((turn) => `${turn.speaker}:${turn.ts}:${turn.text}`),
           );
@@ -155,6 +215,44 @@ export const ListenSection = () => {
   };
   const listening = status.state === 'listening';
   const activeProvider = provider ?? status.provider ?? 'stt';
+
+  // Document scroll: follow live output while pinned; scrolling up
+  // releases the pin and offers a way back to the live edge.
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const [pinned, setPinned] = useState(true);
+  const handleScroll = () => {
+    const el = scrollRef.current;
+    if (el) setPinned(el.scrollHeight - el.scrollTop - el.clientHeight < 48);
+  };
+  const blocks = useMemo(() => {
+    const out: TurnBlock[] = [];
+    for (const turn of turns) {
+      const key = speakerKey(turn);
+      let block = out[out.length - 1];
+      if (!block || block.key !== key) {
+        block = {
+          key,
+          name: speakerName(turn),
+          color: speakerColor(turn),
+          ts: turn.ts,
+          finals: [],
+          interim: null,
+        };
+        out.push(block);
+      }
+      if (turn.interim) {
+        block.interim = turn;
+      } else {
+        block.finals.push(turn);
+        block.interim = null;
+      }
+    }
+    return out;
+  }, [turns]);
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (el && pinned) el.scrollTop = el.scrollHeight;
+  }, [blocks, summary, pinned]);
 
   return (
     <div className='flex min-h-0 flex-1 flex-col'>
@@ -213,70 +311,103 @@ export const ListenSection = () => {
           Microphone unavailable; system audio only.
         </div>
       )}
-      <div className='min-h-0 flex-1 overflow-y-auto px-3.5 py-3 text-[13px] leading-[1.6]'>
-        {turns.map((turn, index) => (
-          <div
-            key={`${turn.ts}-${index}`}
-            className={cn(
-              'mb-2 flex gap-2',
-              turn.speaker === 'me' && 'justify-end',
-            )}>
-            <span className='w-8 flex-none text-[10px] font-semibold uppercase text-muted-foreground'>
-              {turn.speaker}
-            </span>
-            <p
-              className={cn(
-                'max-w-[82%] wrap-break-word whitespace-pre-wrap select-text',
-                turn.interim && 'text-muted-foreground italic',
-              )}>
-              {turn.text}
-            </p>
-          </div>
-        ))}
-        {summary && (
-          <section className='mt-3 border-t border-border pt-2.5'>
-            <p className='text-xs font-semibold'>
-              TLDR{summary.topic ? ` · ${summary.topic}` : ''}
-            </p>
-            <p className='mt-1 select-text'>{summary.tldr}</p>
-            {summary.bullets.slice(0, 5).length > 0 && (
-              <ul className='mt-1 list-disc pl-4'>
-                {summary.bullets.slice(0, 5).map((bullet) => (
-                  <li key={bullet}>{bullet}</li>
-                ))}
-              </ul>
-            )}
-            {summary.follow_ups.slice(0, 3).length > 0 && (
-              <div className='mt-2 flex flex-wrap gap-1.5'>
-                {summary.follow_ups.slice(0, 3).map((followUp) => (
-                  <span
-                    key={followUp}
-                    className={CHIP}>
-                    {followUp}
-                  </span>
-                ))}
+      <div className='relative min-h-0 flex-1'>
+        <div
+          ref={scrollRef}
+          onScroll={handleScroll}
+          className='h-full overflow-y-auto px-3.5 py-3 text-[13px] leading-[1.6]'>
+          {blocks.map((block) => (
+            <div
+              key={`${block.key}-${block.ts}`}
+              className='mb-3.5'>
+              <div className={cn('flex items-center gap-1.5', block.color)}>
+                <span
+                  aria-hidden
+                  className='size-1.75 flex-none rounded-full bg-current'
+                />
+                <span className='text-[12px] font-[650] tracking-[-0.005em]'>
+                  {block.name}
+                </span>
+                <span className={cn(NUM, 'text-[10px] text-muted-foreground')}>
+                  {timeLabel(block.ts)}
+                </span>
               </div>
-            )}
-          </section>
-        )}
-        {turns.length === 0 && !summary && !error && (
-          <p className={EMPTY}>
-            {listening
-              ? 'Speak naturally — your transcript will appear here.'
-              : 'Start listening to capture a conversation.'}
-          </p>
-        )}
-        <div className='mt-2 flex flex-wrap gap-1.5'>
-          <span className={CHIP}>
-            {activeProvider}
-            {model ? ` · ${model}` : ' · stt'}
-          </span>
-          {activeProvider === 'whisper' && whisper && (
-            <span className={CHIP}>
-              {whisperSourceLabel(whisper.binary_status.source)}
-            </span>
+              <p className='mt-1 wrap-break-word whitespace-pre-wrap select-text'>
+                {block.finals.map((turn) => turn.text).join(' ')}
+                {block.interim && (
+                  <span className='text-muted-foreground'>
+                    {block.finals.length > 0 ? ' ' : ''}
+                    {block.interim.text}
+                    <span
+                      aria-hidden
+                      className='animate-caret ml-0.5 inline-block h-[0.95em] w-[1.5px] translate-y-[0.15em] bg-current'
+                    />
+                  </span>
+                )}
+              </p>
+            </div>
+          ))}
+          {summary && (
+            <section className='mt-3 border-t border-border pt-2.5'>
+              <p className='text-xs font-semibold'>
+                TLDR{summary.topic ? ` · ${summary.topic}` : ''}
+              </p>
+              <p className='mt-1 select-text'>{summary.tldr}</p>
+              {summary.bullets.slice(0, 5).length > 0 && (
+                <ul className='mt-1 list-disc pl-4'>
+                  {summary.bullets.slice(0, 5).map((bullet) => (
+                    <li key={bullet}>{bullet}</li>
+                  ))}
+                </ul>
+              )}
+              {summary.follow_ups.slice(0, 3).length > 0 && (
+                <div className='mt-2 flex flex-wrap gap-1.5'>
+                  {summary.follow_ups.slice(0, 3).map((followUp) => (
+                    <span
+                      key={followUp}
+                      className={CHIP}>
+                      {followUp}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </section>
           )}
+          {turns.length === 0 && !summary && !error && (
+            <p className={EMPTY}>
+              {listening
+                ? 'Speak naturally — your transcript will appear here.'
+                : 'Start listening to capture a conversation.'}
+            </p>
+          )}
+          <div className='mt-2 flex flex-wrap gap-1.5'>
+            <span className={CHIP}>
+              {activeProvider}
+              {model ? ` · ${model}` : ' · stt'}
+            </span>
+            {activeProvider === 'whisper' && whisper && (
+              <span className={CHIP}>
+                {whisperSourceLabel(whisper.binary_status.source)}
+              </span>
+            )}
+          </div>
         </div>
+        {!pinned && turns.length > 0 && (
+          <button
+            type='button'
+            className={cn(
+              BTN_SM,
+              BTN_OUTLINE,
+              'absolute bottom-2 left-1/2 -translate-x-1/2 bg-surface shadow-sm',
+            )}
+            onClick={() => {
+              const el = scrollRef.current;
+              if (el) el.scrollTop = el.scrollHeight;
+              setPinned(true);
+            }}>
+            Jump to live
+          </button>
+        )}
       </div>
     </div>
   );

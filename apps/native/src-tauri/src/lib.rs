@@ -38,6 +38,7 @@ pub mod audio;
 mod capture;
 mod config;
 mod deeplink;
+mod dictation;
 mod hotkey;
 mod keystore;
 mod listen;
@@ -61,6 +62,7 @@ use tauri_plugin_liquid_glass::LiquidGlassExt;
 use ask::AskService;
 use capture::{FrameSource, MacosCapture, RingBuffer};
 use config::Config;
+use dictation::{DictationEvent, DictationService};
 use hotkey::RegisteredHotkeys;
 use keystore::Keystore;
 use listen::{ListenEvent, ListenService};
@@ -112,6 +114,7 @@ pub struct AppState {
     capture: Mutex<Option<MacosCapture>>,
     ask: Arc<AskService>,
     listen: Arc<ListenService>,
+    dictation: Arc<DictationService>,
     /// Whisper CLI staged beside the executable by `externalBin`.
     bundled_whisper: Option<std::path::PathBuf>,
     pool: Mutex<WindowPool>,
@@ -124,6 +127,14 @@ pub struct AppState {
     /// section or two overlapping transitions can interleave (stale
     /// emit landing last, or hotkeys/capture from a dead gate state).
     gate_transition: Mutex<()>,
+    /// Serializes `listen_start`/`dictation_start` end-to-end — the peer
+    /// status check, the mic-permission await, and the service start
+    /// must be one critical section or two concurrent first-starts can
+    /// both see the peer idle and double-open the microphone. Async so
+    /// the guard can be held across the permission await while the
+    /// command futures stay `Send`. Stops don't take it: dictation's
+    /// start/stop epoch already makes a mid-flight start lose safely.
+    speech_lifecycle: tokio::sync::Mutex<()>,
     /// Payload of the alert toast currently on screen (`None` when
     /// dismissed). Kept server-side so the toast can re-read it on mount
     /// via `alert_current` — an `alert:show` emit that races the
@@ -183,11 +194,13 @@ impl AppState {
             capture: Mutex::new(None),
             ask: Arc::new(AskService::new()),
             listen: Arc::new(ListenService::new()),
+            dictation: Arc::new(DictationService::new()),
             bundled_whisper: None,
             pool: Mutex::new(WindowPool::new_empty()),
             hotkeys: Mutex::new(None),
             gate: Mutex::new(Gate::NeedsPermission),
             gate_transition: Mutex::new(()),
+            speech_lifecycle: tokio::sync::Mutex::new(()),
             alert: Mutex::new(None),
             voice_models: voice_models::VoiceModelManager::at(
                 root.join("models").join("whisper").join("models"),
@@ -261,8 +274,9 @@ fn enter_main(app: &AppHandle) {
 }
 
 /// `Main` exit (onboarding reset / permission revoked): cancel the
-/// in-flight ask and collapse the card, stop + drop capture, hide the
-/// alert toast, downgrade hotkeys to the gated limited set.
+/// in-flight ask and collapse the card, stop dictation, stop + drop
+/// capture, hide the alert toast, downgrade hotkeys to the gated
+/// limited set.
 fn leave_main(app: &AppHandle) {
     let state = app.state::<AppState>();
     // Cancel any in-flight ask — an unbounded stream left running would
@@ -270,6 +284,16 @@ fn leave_main(app: &AppHandle) {
     // future send on the busy-check until it resolves on its own.
     // Listen is independent of card visibility; only `listen_stop` stops it.
     state.ask.close(app, &state.pool);
+    // Dictation is bound to the ask input that leaving Main hides — an
+    // invisible session must not keep the microphone. (Its epoch also
+    // aborts any `dictation_start` still in flight.) Emit the state only
+    // when one was live so bar views resync; `dictation_status` covers
+    // the rest on mount.
+    let dictation_was_live = state.dictation.status().is_listening();
+    let _ = state.dictation.stop();
+    if dictation_was_live {
+        emit_dictation_state(app, &state.dictation.status());
+    }
     // Take the capture out and release the lock BEFORE `stop()` — it
     // joins the capture worker, which must not hold `state.capture`
     // while `capture_status` waits on it.
@@ -941,8 +965,18 @@ fn emit_listen_event(app: &AppHandle, event: ListenEvent) {
 #[tauri::command]
 async fn listen_start(app: AppHandle) -> Result<listen::ListenStatus, String> {
     let state = app.state::<AppState>();
+    // Serialized with `dictation_start` end-to-end: the peer-status
+    // check, the mic-permission await, and the service start are one
+    // critical section — two concurrent first-starts can no longer both
+    // see the peer idle and double-open the microphone.
+    let _lifecycle = state.speech_lifecycle.lock().await;
     if *state.gate.lock() != Gate::Main {
         return Err("Listen is unavailable until setup is complete".into());
+    }
+    // Mutual exclusion: a live dictation session owns the microphone —
+    // a stale/racing `listen_start` must fail instead of stealing it.
+    if state.dictation.status().is_listening() {
+        return Err("Stop dictation before listening".into());
     }
     let mic_allowed = tauri::async_runtime::spawn_blocking(permissions::mic_request)
         .await
@@ -979,6 +1013,104 @@ fn listen_stop(app: AppHandle) {
 #[tauri::command]
 fn listen_status(state: State<'_, AppState>) -> listen::ListenStatus {
     state.listen.status()
+}
+
+const EV_DICTATION_STATE: &str = "dictation:state";
+const EV_DICTATION_DRAFT: &str = "dictation:draft";
+const EV_DICTATION_ERROR: &str = "dictation:error";
+
+/// `dictation:state` carries the whole durable status — `DictationStatus`'s
+/// wire fields (`state`/`provider`/`error`) already are the payload.
+fn emit_dictation_state(app: &AppHandle, status: &dictation::DictationStatus) {
+    let _ = app.emit_to(windows::BAR_LABEL, EV_DICTATION_STATE, status);
+}
+
+fn emit_dictation_event(app: &AppHandle, event: DictationEvent) {
+    match event {
+        DictationEvent::Draft(draft) => {
+            let _ = app.emit_to(windows::BAR_LABEL, EV_DICTATION_DRAFT, draft);
+        }
+        DictationEvent::Error {
+            message,
+            needs_setup,
+        } => {
+            let _ = app.emit_to(
+                windows::BAR_LABEL,
+                EV_DICTATION_ERROR,
+                json!({ "message": message, "needs_setup": needs_setup }),
+            );
+            // Re-emit the durable status snapshot so a bar that missed the
+            // failure resynchronizes — same contract as `listen:error`.
+            let status = app.state::<AppState>().dictation.status();
+            emit_dictation_state(app, &status);
+        }
+    }
+}
+
+/// Mic-only dictation into the Ask input: requests mic permission, never
+/// opens `SystemAudioSource`, and persists nothing. Mutually exclusive with
+/// meeting Listen — the mic button normally stops the other mode first, so
+/// a conflict here means a stale/racing invoke and must fail safely.
+#[tauri::command]
+async fn dictation_start(app: AppHandle) -> Result<dictation::DictationStatus, String> {
+    let state = app.state::<AppState>();
+    // Serialized with `listen_start` end-to-end: the peer-status check,
+    // the mic-permission await, and the service start are one critical
+    // section — two concurrent first-starts can no longer both see the
+    // peer idle and double-open the microphone.
+    let _lifecycle = state.speech_lifecycle.lock().await;
+    if *state.gate.lock() != Gate::Main {
+        return Err("Dictation is unavailable until setup is complete".into());
+    }
+    if state.listen.status().is_listening() {
+        return Err("Stop listening before dictating".into());
+    }
+    let mic_allowed = tauri::async_runtime::spawn_blocking(permissions::mic_request)
+        .await
+        .unwrap_or(false);
+    let config = state.config.lock().clone();
+    let keystore = state.keystore.lock().clone();
+    let app_for_emit = app.clone();
+    let emit = Arc::new(move |event| emit_dictation_event(&app_for_emit, event));
+    if let Err(error) = state.dictation.start(
+        &keystore,
+        &config,
+        mic_allowed,
+        state.bundled_whisper.as_deref(),
+        emit,
+    ) {
+        // DictationService owns the event contract for failures it emits:
+        // setup failures have already emitted needs_setup:true, so
+        // re-emitting here would produce a contradictory second event.
+        return Err(error.to_string());
+    }
+    // `leave_main` may have run while the session was being built —
+    // dictation is bound to the (now hidden) ask input, so a start that
+    // outlived `Main` stops itself instead of running invisibly.
+    if *state.gate.lock() != Gate::Main {
+        let _ = state.dictation.stop();
+        emit_dictation_state(&app, &state.dictation.status());
+        return Err("Dictation is unavailable until setup is complete".into());
+    }
+    let status = state.dictation.status();
+    emit_dictation_state(&app, &status);
+    Ok(status)
+}
+
+/// Stop dictation and return the authoritative final draft. Idempotent —
+/// repeated calls return an empty final draft and leave the input alone.
+#[tauri::command]
+fn dictation_stop(app: AppHandle) -> dictation::DictationDraft {
+    let state = app.state::<AppState>();
+    let draft = state.dictation.stop();
+    emit_dictation_state(&app, &state.dictation.status());
+    draft
+}
+
+/// Live dictation status for bar resync (`idle` | `listening` | `error`).
+#[tauri::command]
+fn dictation_status(state: State<'_, AppState>) -> dictation::DictationStatus {
+    state.dictation.status()
 }
 
 #[tauri::command]
@@ -1452,13 +1584,17 @@ fn surface_material(app: AppHandle) -> &'static str {
     }
 }
 
-fn stop_listen(app: &AppHandle) {
-    app.state::<AppState>().listen.stop();
+/// App-exit teardown for every speech session — meeting Listen and Ask
+/// dictation share the microphone, so quitting must release both.
+fn stop_speech(app: &AppHandle) {
+    let state = app.state::<AppState>();
+    state.listen.stop();
+    let _ = state.dictation.stop();
 }
 
 #[tauri::command]
 fn quit_application(app: AppHandle) {
-    stop_listen(&app);
+    stop_speech(&app);
     app.exit(0);
 }
 
@@ -1514,11 +1650,13 @@ pub fn run() {
                 capture: Mutex::new(None),
                 ask: Arc::new(AskService::new()),
                 listen: Arc::new(ListenService::new()),
+                dictation: Arc::new(DictationService::new()),
                 bundled_whisper,
                 pool: Mutex::new(pool),
                 hotkeys: Mutex::new(None),
                 gate: Mutex::new(Gate::NeedsPermission),
                 gate_transition: Mutex::new(()),
+                speech_lifecycle: tokio::sync::Mutex::new(()),
                 alert: Mutex::new(None),
                 voice_models,
             });
@@ -1571,6 +1709,9 @@ pub fn run() {
             listen_start,
             listen_stop,
             listen_status,
+            dictation_start,
+            dictation_stop,
+            dictation_status,
             voice_models_catalog,
             whisper_status,
             whisper_download,
@@ -1609,14 +1750,14 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app, event| {
-            // Keep Listen teardown centralized at the application boundary:
+            // Keep speech teardown centralized at the application boundary:
             // this covers tray/menu quit, window-manager quit, and other
             // native exit paths in addition to the explicit command above.
             if matches!(
                 event,
                 tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
             ) {
-                stop_listen(app);
+                stop_speech(app);
             }
         });
 }
@@ -1646,6 +1787,9 @@ mod tests {
         assert!(source.contains("listen_start,"));
         assert!(source.contains("listen_stop,"));
         assert!(source.contains("listen_status,"));
+        assert!(source.contains("dictation_start,"));
+        assert!(source.contains("dictation_stop,"));
+        assert!(source.contains("dictation_status,"));
         assert!(source.contains("whisper_status,"));
     }
 
@@ -1654,7 +1798,112 @@ mod tests {
         let source = include_str!("lib.rs");
         assert!(source.contains("tauri::RunEvent::ExitRequested { .. }"));
         assert!(source.contains("| tauri::RunEvent::Exit"));
-        assert!(source.contains("stop_listen(app);"));
+        assert!(source.contains("stop_speech(app);"));
+    }
+
+    /// The speech commands keep their documented guards in source: both
+    /// start commands gate on `Main`, and each refuses to run while the
+    /// other mode's durable status is `listening` (mutual exclusion must
+    /// hold even for a stale/racing invoke).
+    #[test]
+    fn speech_commands_keep_gate_and_mutual_exclusion_guards() {
+        let source = include_str!("lib.rs");
+        assert!(source.contains("Dictation is unavailable until setup is complete"));
+        assert!(source.contains("state.listen.status().is_listening()"));
+        assert!(source.contains("state.dictation.status().is_listening()"));
+        assert!(source.contains("dictation:state"));
+        assert!(source.contains("dictation:draft"));
+        assert!(source.contains("dictation:error"));
+    }
+
+    /// Both start commands must hold `speech_lifecycle` across their
+    /// peer check, the mic-permission await, and the service start —
+    /// that's what makes the mutual exclusion atomic against a
+    /// concurrent first-start (the check-then-act gap is what raced).
+    #[test]
+    fn speech_starts_share_a_lifecycle_lock() {
+        let source = include_str!("lib.rs");
+        assert!(source.contains("speech_lifecycle: tokio::sync::Mutex<()>"));
+        for signature in ["async fn listen_start", "async fn dictation_start"] {
+            let body = source
+                .split(signature)
+                .nth(1)
+                .and_then(|rest| rest.split("\n#[tauri::command]").next())
+                .unwrap_or_else(|| panic!("{signature} body not found"));
+            assert!(
+                body.contains("state.speech_lifecycle.lock().await"),
+                "{signature} must hold the speech lifecycle lock across the await"
+            );
+        }
+    }
+
+    /// `leave_main` must stop dictation: the session is bound to the
+    /// ask input that leaving Main hides, so an invisible dictation
+    /// must not keep the microphone. Listen is deliberately untouched —
+    /// meeting Listen is independent of card visibility.
+    #[test]
+    fn leave_main_stops_dictation_but_not_listen() {
+        let source = include_str!("lib.rs");
+        let body = source
+            .split("fn leave_main(app: &AppHandle)")
+            .nth(1)
+            .and_then(|rest| rest.split("\nfn ").next())
+            .expect("leave_main body not found");
+        assert!(body.contains("state.dictation.stop()"));
+        assert!(!body.contains("state.listen.stop()"));
+    }
+
+    /// Mutual exclusion keys off the durable `listening` state of each
+    /// service — `error`/`idle` must not block the other mode.
+    #[test]
+    fn speech_status_predicates_only_match_listening() {
+        assert!(!listen::ListenStatus {
+            state: "idle".into(),
+            provider: None,
+            session_id: None,
+            turns: 0,
+            mic: false,
+            error: None,
+        }
+        .is_listening());
+        assert!(listen::ListenStatus {
+            state: "listening".into(),
+            provider: None,
+            session_id: None,
+            turns: 0,
+            mic: false,
+            error: None,
+        }
+        .is_listening());
+
+        assert!(!dictation::DictationStatus {
+            state: "error".into(),
+            provider: None,
+            error: None,
+        }
+        .is_listening());
+        assert!(dictation::DictationStatus {
+            state: "listening".into(),
+            provider: None,
+            error: None,
+        }
+        .is_listening());
+    }
+
+    /// The dictation service is wired into `AppState` alongside Listen and
+    /// starts idle; stop is safe on a fresh service.
+    #[test]
+    fn dictation_service_is_wired_into_app_state() {
+        let tmp = tmp_dir();
+        let state = AppState::for_test(&tmp);
+        let status = state.dictation.status();
+        assert_eq!(status.state, "idle");
+        assert_eq!(status.provider, None);
+        assert_eq!(status.error, None);
+        let draft = state.dictation.stop();
+        assert_eq!(draft.text, "");
+        assert!(draft.finality);
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     /// Brief smoke test: `config_get` against a temp `AppState` returns

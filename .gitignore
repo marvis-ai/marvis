@@ -33,3 +33,6 @@ dist-ssr
 # turbo
 .turbo
 .neon
+
+# Agent worktrees
+.worktrees/

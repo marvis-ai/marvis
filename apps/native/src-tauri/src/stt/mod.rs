@@ -70,6 +70,37 @@ pub trait SttProvider: Send {
     fn stop(&mut self);
 }
 
+/// Bundled-aware Whisper setup validation shared by Listen and Dictation:
+/// a missing executable or configured model is a user-fixable setup error.
+/// Messages are curated — they never include paths or install details.
+pub(crate) fn whisper_setup_error(status: &WhisperStatus, model: &str) -> Option<&'static str> {
+    if status.binary.is_none() {
+        return Some("whisper-cli was not found; install it and try again");
+    }
+    let model_available = WhisperProvider::model_filename(model)
+        .ok()
+        .is_some_and(|filename| status.models.iter().any(|name| name == filename));
+    (!model_available)
+        .then_some("configured Whisper model was not found; choose an installed model in Settings")
+}
+
+/// Provider-error text safe for `*:error` webview events: flattened to one
+/// line and length-capped so process output or transport details cannot
+/// reach the frontend raw.
+pub(crate) fn sanitize_provider_error(message: &str) -> String {
+    let mut sanitized = message.replace(['\n', '\r'], " ");
+    if sanitized.len() > 240 {
+        // `truncate` panics on a non-char boundary — walk back to one so
+        // multi-byte text can never crash the error path.
+        let mut boundary = 240;
+        while !sanitized.is_char_boundary(boundary) {
+            boundary -= 1;
+        }
+        sanitized.truncate(boundary);
+    }
+    sanitized
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -89,5 +120,26 @@ mod tests {
     fn provider_interface_accepts_normalized_pcm_only() {
         fn assert_provider<T: SttProvider>() {}
         assert_provider::<WhisperProvider>();
+    }
+
+    #[test]
+    fn sanitize_provider_error_flattens_lines_and_caps_length() {
+        assert_eq!(sanitize_provider_error("one\ntwo\rthree"), "one two three");
+        assert!(!sanitize_provider_error("a\r\nb").contains(['\n', '\r']));
+        assert_eq!(sanitize_provider_error(&"x".repeat(500)).len(), 240);
+    }
+
+    /// Byte 240 lands inside the 2-byte `é` — a naive `truncate(240)`
+    /// would panic; the cap must walk back to a char boundary instead.
+    #[test]
+    fn sanitize_provider_error_truncates_on_char_boundary() {
+        let input = format!("{}é", "x".repeat(239));
+        let sanitized = sanitize_provider_error(&input);
+        assert_eq!(sanitized, "x".repeat(239));
+        assert_eq!(sanitized.len(), 239);
+
+        // An exactly-240-byte multi-byte tail still truncates cleanly.
+        let input = format!("{}é", "x".repeat(238));
+        assert_eq!(sanitize_provider_error(&input).len(), 240);
     }
 }

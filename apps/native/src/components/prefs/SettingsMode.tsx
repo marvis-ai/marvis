@@ -11,6 +11,7 @@ import {
   PanelTopIcon,
   ShieldIcon,
   SlidersHorizontalIcon,
+  VideoIcon,
 } from '@marvis/ui';
 import { AboutTab } from './AboutTab';
 import { BarTab } from './BarTab';
@@ -18,12 +19,14 @@ import { GeneralTab } from './GeneralTab';
 import { HotkeysTab } from './HotkeysTab';
 import { PrivacyTab } from './PrivacyTab';
 import { ProvidersTab } from './ProvidersTab';
+import { RecordingTab } from './RecordingTab';
 import { cn } from '../../lib/classes';
 import type { PrefsData } from './types';
 
 const TABS = [
   { id: 'general', label: 'General', icon: SlidersHorizontalIcon },
   { id: 'bar', label: 'Bar', icon: PanelTopIcon },
+  { id: 'recording', label: 'Recording', icon: VideoIcon },
   { id: 'providers', label: 'Providers', icon: KeyRoundIcon },
   { id: 'hotkeys', label: 'Hotkeys', icon: KeyboardIcon },
   { id: 'privacy', label: 'Privacy & data', icon: ShieldIcon },
@@ -68,6 +71,7 @@ export const SettingsMode = ({ data }: { data: PrefsData }) => {
       <div className='min-w-0 overflow-y-auto px-6 pt-8 pb-5.5'>
         {tab === 'general' && <GeneralTab data={data} />}
         {tab === 'bar' && <BarTab />}
+        {tab === 'recording' && <RecordingTab data={data} />}
         {tab === 'providers' && <ProvidersTab data={data} />}
         {tab === 'hotkeys' && <HotkeysTab data={data} />}
         {tab === 'privacy' && <PrivacyTab />}

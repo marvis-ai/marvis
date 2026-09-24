@@ -5,9 +5,18 @@
  * token `color-mix`es off it).
  */
 import { configSet } from '@/lib/commands';
-import { H2, PRF_ROWS } from '@/lib/classes';
+import { H2, MODEL_SEL, PRF_ROWS, cn } from '@/lib/classes';
 import { PrefRow, Seg } from './bits';
 import type { PrefsData } from './types';
+
+const LANGUAGES = [
+  { id: 'en', label: 'English' },
+  { id: 'zh', label: '中文' },
+  { id: 'ja', label: '日本語' },
+  { id: 'ko', label: '한국어' },
+  { id: 'fr', label: 'Français' },
+  { id: 'es', label: 'Español' },
+] as const;
 
 export const GeneralTab = ({ data }: { data: PrefsData }) => {
   const cfg = data.config;
@@ -49,6 +58,27 @@ export const GeneralTab = ({ data }: { data: PrefsData }) => {
               { id: 'dark', label: 'Dark' },
             ]}
           />
+        </PrefRow>
+        <PrefRow
+          label='Main language'
+          sub='The default for chat replies, meeting summaries, and dictation — unless you ask for another language in the moment.'>
+          <select
+            aria-label='Main language'
+            className={cn(MODEL_SEL, 'w-40 flex-none')}
+            value={cfg?.app.main_language ?? 'en'}
+            onChange={(e) =>
+              void configSet('app.main_language', e.target.value)
+                .then(data.setConfig)
+                .catch(() => {})
+            }>
+            {LANGUAGES.map((l) => (
+              <option
+                key={l.id}
+                value={l.id}>
+                {l.label}
+              </option>
+            ))}
+          </select>
         </PrefRow>
         <PrefRow
           label='Accent color'

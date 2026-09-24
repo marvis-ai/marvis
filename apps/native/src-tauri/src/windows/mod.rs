@@ -16,7 +16,7 @@ use tauri::{
     WebviewWindowBuilder,
 };
 
-use tauri_plugin_liquid_glass::{LiquidGlassConfig, LiquidGlassExt};
+use tauri_plugin_liquid_glass::{GlassMaterialVariant, LiquidGlassConfig, LiquidGlassExt};
 
 use layout::{clamp_to_work_area, derive_pill_rect, expand_dir_for, expanded_rect};
 
@@ -80,9 +80,11 @@ const CHAT_DEFAULT_H: f64 = 480.0;
 /// The expanded card's corner radius — matches the CSS card's
 /// `rounded-[18px]`; the glass shape follows it while a card is up.
 const CARD_RADIUS: f64 = 18.0;
-/// The preferences window — a normal decorated macOS window (native
-/// traffic lights, opaque, NOT always-on-top), not an overlay panel.
-/// Label `prefs`, `?view=prefs`; it hosts both the settings sidebar and
+/// The preferences window — a decorated macOS window backed by the
+/// Sidebar liquid-glass material (transparent titlebar, traffic lights
+/// overlaying content), not an overlay panel. It floats only while
+/// focused — the bar keeps its global always-on-top level. Label
+/// `prefs`, `?view=prefs`; it hosts both the settings sidebar and
 /// the onboarding wizard, switched by `prefs:mode` emits.
 pub const PREFS_LABEL: &str = "prefs";
 const PREFS_W: f64 = 720.0;
@@ -357,6 +359,9 @@ impl WindowPool {
 
     pub fn hide_prefs(&self) {
         if let Some(win) = &self.prefs {
+            // Drop the focused-only float before hiding — a hidden
+            // window must never hold the always-on-top level.
+            let _ = win.set_always_on_top(false);
             let _ = win.hide();
         }
     }
@@ -867,10 +872,16 @@ fn set_glass_radius(app: &AppHandle, win: &WebviewWindow, corner_radius: f64) {
 }
 
 /// The prefs window is deliberately NOT built by [`build_window`]: it's a
-/// real macOS window, not overlay chrome — native decorations (traffic
-/// lights + title), opaque, normal focus, no always-on-top. It stays
-/// content-protected (the privacy spec holds for every window) and
-/// joinable on all workspaces so it can be summoned over any space.
+/// real macOS window, not overlay chrome — native decorations, normal
+/// focus — but it IS a liquid-glass surface: `TitleBarStyle::Transparent`
+/// + `hidden_title` push the content under the traffic lights (the
+/// Settings.app look) and `GlassMaterialVariant::Sidebar` paints the
+/// whole window in the sidebar material. It joins the bar's floating
+/// level ONLY while focused (so it can overlap the bar the user keeps
+/// on top) and drops back on blur — focus events keep `always_on_top`
+/// mirroring the window's active state. It stays content-protected
+/// (the privacy spec holds for every window) and joinable on all
+/// workspaces so it can be summoned over any space.
 /// `CloseRequested` is intercepted into a hide: the window is owned by
 /// the pool for the app's lifetime, so the red light must not destroy
 /// the webview (a fresh build would lose scroll/tab state).
@@ -880,7 +891,9 @@ fn build_prefs_window(app: &AppHandle) -> anyhow::Result<WebviewWindow> {
         .inner_size(PREFS_W, PREFS_H)
         .title("Marvis — Settings")
         .decorations(true)
-        .transparent(false)
+        .title_bar_style(tauri::TitleBarStyle::Transparent)
+        .hidden_title(true)
+        .transparent(true)
         .resizable(false)
         .visible(false)
         // Tauri's file-drop handler swallows element drags inside the
@@ -891,15 +904,22 @@ fn build_prefs_window(app: &AppHandle) -> anyhow::Result<WebviewWindow> {
     {
         let handle = win.clone();
         let app = app.clone();
-        win.on_window_event(move |event| {
-            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+        win.on_window_event(move |event| match event {
+            tauri::WindowEvent::CloseRequested { api, .. } => {
                 api.prevent_close();
+                let _ = handle.set_always_on_top(false);
                 let _ = handle.hide();
                 // Closing a wizard re-exposes the bar if onboarding is
                 // already done (a re-run); on a true first run the flag
                 // is still false and the bar correctly stays hidden.
                 app.state::<crate::AppState>().sync_bar_visibility();
             }
+            // Float only while active: focused prefs may overlap the
+            // always-on-top bar; on blur it drops to the normal level.
+            tauri::WindowEvent::Focused(focused) => {
+                let _ = handle.set_always_on_top(*focused);
+            }
+            _ => {}
         });
     }
     if let Err(e) = win.set_visible_on_all_workspaces(true) {
@@ -908,6 +928,27 @@ fn build_prefs_window(app: &AppHandle) -> anyhow::Result<WebviewWindow> {
     if let Err(e) = win.set_content_protected(true) {
         log::warn!("windows: set_content_protected failed for prefs: {e}");
     }
+    // set_effect dispatches to the main queue and blocks on it; the pool
+    // lock is held by `show_prefs`'s caller path, which main-thread
+    // callbacks also take — apply on a detached thread so the lock is
+    // never held across the wait. Warn-only on failure, same as above.
+    std::thread::spawn({
+        let app = app.clone();
+        let win = win.clone();
+        move || {
+            if let Err(e) = app.liquid_glass().set_effect(
+                &win,
+                LiquidGlassConfig {
+                    corner_radius: 0.0,
+                    tint_color: None,
+                    variant: GlassMaterialVariant::Sidebar,
+                    ..Default::default()
+                },
+            ) {
+                log::warn!("windows: liquid glass failed for prefs: {e}");
+            }
+        }
+    });
     Ok(win)
 }
 

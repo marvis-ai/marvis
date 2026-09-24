@@ -97,7 +97,7 @@ const Prefs = () => {
   };
 
   return (
-    <div className='relative flex h-full flex-col overflow-hidden bg-background text-foreground'>
+    <div className='prefs-shell relative flex h-full flex-col overflow-hidden bg-background text-foreground'>
       {bootError ? (
         <div className='grid flex-1 place-items-center p-5'>
           <RetryCard onRetry={() => void bootstrap()} />

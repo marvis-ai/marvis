@@ -136,6 +136,14 @@ body,
   background-color: color-mix(in oklch, var(--surface) 30%, transparent);
   backdrop-filter: none;
 }
+
+/* The prefs window's own material: the glass view fills the whole
+   window (transparent titlebar), so the webview root goes transparent
+   under a native material just like .glass-stage. */
+[data-material='glass'] .prefs-shell,
+[data-material='vibrancy'] .prefs-shell {
+  background: transparent;
+}
 body {
   color: var(--fg);
 }

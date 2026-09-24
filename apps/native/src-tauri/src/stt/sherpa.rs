@@ -37,27 +37,34 @@ pub struct SherpaEngine {
     thread: JoinHandle<()>,
 }
 
-static ENGINE: Mutex<Option<(PathBuf, Arc<SherpaEngine>)>> = Mutex::new(None);
+static ENGINE: Mutex<Option<(PathBuf, String, Arc<SherpaEngine>)>> = Mutex::new(None);
 
-fn engine_for(model_dir: &Path) -> Result<Arc<SherpaEngine>, String> {
-    engine_for_with(model_dir, SherpaEngine::spawn)
+fn engine_for(model_dir: &Path, language: &str) -> Result<Arc<SherpaEngine>, String> {
+    engine_for_with(model_dir, language, SherpaEngine::spawn)
 }
 
 /// `spawn` is a seam so tests can stand up engines without model files.
 fn engine_for_with(
     model_dir: &Path,
-    spawn: impl FnOnce(&Path) -> Result<SherpaEngine, String>,
+    language: &str,
+    spawn: impl FnOnce(&Path, &str) -> Result<SherpaEngine, String>,
 ) -> Result<Arc<SherpaEngine>, String> {
     let mut slot = ENGINE.lock();
-    if let Some((dir, engine)) = &*slot {
+    if let Some((dir, lang, engine)) = &*slot {
         // A cached engine whose decode thread died can never decode again —
         // fall through and respawn rather than hand out the dead Arc forever.
-        if dir == model_dir && engine.alive() {
+        // The language is baked into the recognizer, so a changed hint
+        // respawns too — a stale engine can't transcribe in the wrong code.
+        if dir == model_dir && lang == language && engine.alive() {
             return Ok(engine.clone());
         }
     }
-    let engine = Arc::new(spawn(model_dir)?);
-    *slot = Some((model_dir.to_path_buf(), engine.clone()));
+    let engine = Arc::new(spawn(model_dir, language)?);
+    *slot = Some((
+        model_dir.to_path_buf(),
+        language.to_string(),
+        engine.clone(),
+    ));
     Ok(engine)
 }
 
@@ -65,12 +72,13 @@ impl SherpaEngine {
     /// Spawn the engine thread. Recognizer creation runs on that thread and
     /// reports `Result<(), String>` back over an init channel so a missing or
     /// corrupt model fails `spawn` synchronously instead of poisoning jobs.
-    fn spawn(model_dir: &Path) -> Result<Self, String> {
+    fn spawn(model_dir: &Path, language: &str) -> Result<Self, String> {
         let (jobs, rx) = mpsc::channel::<DecodeJob>();
         let (init, ready) = mpsc::channel::<Result<(), String>>();
         let dir = model_dir.to_path_buf();
+        let language = language.to_string();
         let thread = thread::spawn(move || {
-            let recognizer = match create_recognizer(&dir) {
+            let recognizer = match create_recognizer(&dir, &language) {
                 Ok(recognizer) => {
                     let _ = init.send(Ok(()));
                     recognizer
@@ -121,11 +129,24 @@ impl SherpaEngine {
     }
 }
 
-fn create_recognizer(model_dir: &Path) -> Result<OfflineRecognizer, String> {
+/// The SenseVoice `language` value for an `app.main_language` code — the
+/// model supports en/zh/ja/ko (+yue/auto); French and Spanish stay on
+/// auto-detect rather than naming a code the model can't decode.
+fn sense_voice_language(code: &str) -> &'static str {
+    match code.trim() {
+        "en" => "en",
+        "zh" => "zh",
+        "ja" => "ja",
+        "ko" => "ko",
+        _ => "auto",
+    }
+}
+
+fn create_recognizer(model_dir: &Path, language: &str) -> Result<OfflineRecognizer, String> {
     let mut config = OfflineRecognizerConfig::default();
     config.model_config.sense_voice = OfflineSenseVoiceModelConfig {
         model: Some(model_dir.join("model.int8.onnx").display().to_string()),
-        language: Some("auto".into()),
+        language: Some(sense_voice_language(language).into()),
         use_itn: true,
     };
     config.model_config.tokens = Some(model_dir.join("tokens.txt").display().to_string());
@@ -157,6 +178,7 @@ pub struct SherpaProvider {
     model_dir: PathBuf,
     channel: SpeakerChannel,
     diarize: bool,
+    language: String,
     queue: Option<mpsc::SyncSender<PcmChunk>>,
     cancel: Arc<AtomicBool>,
     worker: Option<JoinHandle<()>>,
@@ -166,7 +188,7 @@ impl SherpaProvider {
     /// Resolve the model dir eagerly. An unknown model value lands on a
     /// nonexistent dir under the models root so `start` fails cleanly with
     /// the same load error an uninstalled model reports.
-    pub fn new(model: &str, channel: SpeakerChannel, diarize: bool) -> Self {
+    pub fn new(model: &str, channel: SpeakerChannel, diarize: bool, language: &str) -> Self {
         let root = crate::paths::sherpa_models_dir();
         let model_dir = crate::sherpa_models::stt_entry_for_value(model)
             .map(|entry| crate::sherpa_models::entry_dir(&root, entry))
@@ -175,6 +197,7 @@ impl SherpaProvider {
             model_dir,
             channel,
             diarize,
+            language: language.to_string(),
             queue: None,
             cancel: Arc::new(AtomicBool::new(false)),
             worker: None,
@@ -191,7 +214,7 @@ impl SttProvider for SherpaProvider {
         if self.worker.is_some() {
             anyhow::bail!("sherpa provider is already running");
         }
-        let engine = engine_for(&self.model_dir).map_err(anyhow::Error::msg)?;
+        let engine = engine_for(&self.model_dir, &self.language).map_err(anyhow::Error::msg)?;
         let vad = VoiceActivityDetector::create(&vad_config(&self.model_dir), VAD_BUFFER_SECONDS)
             .ok_or_else(|| anyhow::anyhow!("the speech model could not be loaded"))?;
         let (sender, receiver) = mpsc::sync_channel(QUEUE_DEPTH);
@@ -361,22 +384,52 @@ mod tests {
         SherpaEngine { jobs, thread }
     }
 
+    /// `ENGINE` is one global slot — parallel tests would evict each
+    /// other's engine mid-assert, so every ENGINE-touching test holds
+    /// this for its duration.
+    static ENGINE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn engine_for_respawns_after_the_engine_thread_dies() {
+        let _guard = ENGINE_TEST_LOCK.lock().unwrap();
         let dir = Path::new("dead-engine-test-dir");
         // Seed the registry the way a dead decode thread leaves it: the
         // cached Arc is still valid but can never decode again.
         let dead = Arc::new(dead_engine());
         assert!(!dead.alive());
-        *ENGINE.lock() = Some((dir.to_path_buf(), dead.clone()));
-        let next = engine_for_with(dir, |_| Ok(test_engine())).unwrap();
+        *ENGINE.lock() = Some((dir.to_path_buf(), "en".to_string(), dead.clone()));
+        let next = engine_for_with(dir, "en", |_, _| Ok(test_engine())).unwrap();
         // A fresh engine replaces the dead Arc — not the poisoned slot.
         assert!(next.alive());
         assert!(!Arc::ptr_eq(&dead, &next));
         // The live replacement is cached and reused on the next call.
-        let again = engine_for_with(dir, |_| Ok(test_engine())).unwrap();
+        let again = engine_for_with(dir, "en", |_, _| Ok(test_engine())).unwrap();
         assert!(Arc::ptr_eq(&next, &again));
         *ENGINE.lock() = None;
+    }
+
+    /// The recognizer's language is baked in at spawn — a changed hint
+    /// can't reuse the cached engine even while it's still alive.
+    #[test]
+    fn engine_for_respawns_on_language_change() {
+        let _guard = ENGINE_TEST_LOCK.lock().unwrap();
+        let dir = Path::new("language-switch-test-dir");
+        let en = engine_for_with(dir, "en", |_, _| Ok(test_engine())).unwrap();
+        let again = engine_for_with(dir, "en", |_, _| Ok(test_engine())).unwrap();
+        assert!(Arc::ptr_eq(&en, &again));
+        let zh = engine_for_with(dir, "zh", |_, _| Ok(test_engine())).unwrap();
+        assert!(!Arc::ptr_eq(&en, &zh));
+        *ENGINE.lock() = None;
+    }
+
+    /// en/zh/ja/ko map verbatim; French/Spanish — which SenseVoice can't
+    /// decode — stay on auto-detect instead of a bogus code.
+    #[test]
+    fn sense_voice_language_maps_supported_and_falls_back() {
+        assert_eq!(sense_voice_language("ko"), "ko");
+        assert_eq!(sense_voice_language("zh"), "zh");
+        assert_eq!(sense_voice_language("fr"), "auto");
+        assert_eq!(sense_voice_language("bogus"), "auto");
     }
 
     #[test]
@@ -429,7 +482,7 @@ mod tests {
 
     #[test]
     fn provider_reports_not_enqueued_before_start_and_stop_is_idempotent() {
-        let mut p = SherpaProvider::new("sense-voice", SpeakerChannel::Me, false);
+        let mut p = SherpaProvider::new("sense-voice", SpeakerChannel::Me, false, "en");
         assert!(!p.enqueue(PcmChunk {
             samples: vec![1],
             sample_rate: 16_000,
@@ -443,7 +496,7 @@ mod tests {
         // A non-catalog name resolves to a models-dir child that can never
         // exist, so this stays deterministic on hosts where the real
         // sense-voice model is installed.
-        let mut p = SherpaProvider::new("no-such-model", SpeakerChannel::Me, false);
+        let mut p = SherpaProvider::new("no-such-model", SpeakerChannel::Me, false, "en");
         // No model files on disk → engine init fails synchronously.
         assert!(p.start(Box::new(|_| {}), Box::new(|_| {})).is_err());
     }

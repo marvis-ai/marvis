@@ -5,7 +5,7 @@
  * token `color-mix`es off it).
  */
 import { configSet } from '@/lib/commands';
-import { H2, NUM, PRF_ROWS } from '@/lib/classes';
+import { H2, PRF_ROWS } from '@/lib/classes';
 import { PrefRow, Seg } from './bits';
 import type { PrefsData } from './types';
 

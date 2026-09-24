@@ -375,6 +375,11 @@ export interface AlertPayload {
 export const alertShow = (message: string) =>
   invoke<void>('alert_show', { message });
 
+/** Fire-and-forget `alertShow` — every bar error goes to the alert
+ *  window, and a failed toast must never become an unhandled rejection. */
+export const raise = (message: string) =>
+  void alertShow(message).catch(() => {});
+
 /** The live payload, or `null` — read on mount in case the emit raced. */
 export const alertCurrent = () => invoke<AlertPayload | null>('alert_current');
 

@@ -8,16 +8,8 @@
  */
 import { useEffect, useState } from 'react';
 import { configSet } from '@/lib/commands';
-import {
-  H2,
-  PR_LABEL,
-  PR_SUB,
-  PRF_ROW,
-  PRF_ROWS,
-  SUB,
-  cn,
-} from '@/lib/classes';
-import { Kbd } from './bits';
+import { H2, PRF_ROWS, SUB, cn } from '@/lib/classes';
+import { Kbd, PrefRow } from './bits';
 import type { PrefsData } from './types';
 
 const ACTIONS: { id: string; label: string }[] = [
@@ -132,9 +124,6 @@ export const HotkeysTab = ({ data }: { data: PrefsData }) => {
     // re-arms whenever the armed action or the bindings change.
   }, [listening, hk]);
 
-  const rows = ACTIONS.length + FIXED.length;
-  let rowIndex = -1;
-
   return (
     <>
       <h2 className={H2}>Hotkeys</h2>
@@ -145,21 +134,15 @@ export const HotkeysTab = ({ data }: { data: PrefsData }) => {
 
       <div className={PRF_ROWS}>
         {ACTIONS.map((a) => {
-          rowIndex += 1;
           const accel = hk[a.id];
           const armed = listening === a.id;
           return (
-            <div
+            <PrefRow
               key={a.id}
-              className={cn(PRF_ROW, rowIndex === rows - 1 && 'border-b-0')}>
-              <div>
-                <div className={PR_LABEL}>{a.label}</div>
-                {armed && (
-                  <div className={PR_SUB}>
-                    {hint ?? 'press a shortcut with ⌘, ⌃ or ⌥'}
-                  </div>
-                )}
-              </div>
+              label={a.label}
+              sub={
+                armed ? (hint ?? 'press a shortcut with ⌘, ⌃ or ⌥') : undefined
+              }>
               <button
                 type='button'
                 className={cn(
@@ -173,30 +156,23 @@ export const HotkeysTab = ({ data }: { data: PrefsData }) => {
                 }}>
                 <Kbd accel={accel ?? ''} />
               </button>
-            </div>
+            </PrefRow>
           );
         })}
-        {FIXED.map((f) => {
-          rowIndex += 1;
-          return (
-            <div
-              key={f.label}
-              className={cn(PRF_ROW, rowIndex === rows - 1 && 'border-b-0')}>
-              <div>
-                <div className={PR_LABEL}>{f.label}</div>
-                <div className={PR_SUB}>{f.sub}</div>
-              </div>
-              <span className='flex items-center gap-1.5'>
-                {f.accels.map((accel) => (
-                  <Kbd
-                    key={accel}
-                    accel={accel}
-                  />
-                ))}
-              </span>
-            </div>
-          );
-        })}
+        {FIXED.map((f, i) => (
+          <PrefRow
+            key={f.label}
+            label={f.label}
+            sub={f.sub}
+            last={i === FIXED.length - 1}>
+            {f.accels.map((accel) => (
+              <Kbd
+                key={accel}
+                accel={accel}
+              />
+            ))}
+          </PrefRow>
+        ))}
       </div>
     </>
   );

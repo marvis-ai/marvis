@@ -104,6 +104,7 @@ import {
 } from '../lib/dictation';
 import { ChatSection } from '../components/ChatSection';
 import { Iris } from '../components/Iris';
+import { LaunchIntro } from '../components/LaunchIntro';
 import { ListenSection } from '../components/ListenSection';
 import { RetryCard } from '../components/RetryCard';
 import {
@@ -203,6 +204,11 @@ const Bar = () => {
   /** Local mirror of `ask:state` so loading/streaming count as active
    *  work for the bar pulse. */
   const [askState, setAskState] = useState<AskActivity>('idle');
+  /** The launch wordmark plays once per webview mount. Reduced-motion
+   *  users skip it entirely — the capsule just opens on the icon row. */
+  const [introDone, setIntroDone] = useState(
+    () => window.matchMedia('(prefers-reduced-motion: reduce)').matches,
+  );
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
   const cardRef = useRef<HTMLDivElement>(null);
@@ -255,6 +261,10 @@ const Bar = () => {
   /** The row shows the input row in card modes regardless of `open` —
    *  it's the card header and the follow-up field. */
   const showInputRow = expanded || cardOpen;
+  /** The launch wordmark covers the collapsed idle capsule only —
+   *  `expanded` is already true for the gate cards and boot error, so
+   *  `!showInputRow` keeps it off every non-idle surface. */
+  const showIntro = !introDone && !showInputRow;
   /** Whether the Ask `<input>` is actually mounted: the permission
    *  card and the boot-error retry replace the whole row while
    *  `showInputRow` stays true, so dictation visibility keys off
@@ -1200,6 +1210,7 @@ const Bar = () => {
         data-expanded={showInputRow || undefined}
         data-tauri-drag-region={cardOpen ? undefined : 'deep'}>
         {row()}
+        {showIntro && <LaunchIntro onDone={() => setIntroDone(true)} />}
         {section === 'chat' && <ChatSection />}
         {section === 'listen' && <ListenSection />}
         {/* Capsule shimmer — accent duotone follows light/dark via the

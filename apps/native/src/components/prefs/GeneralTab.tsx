@@ -4,8 +4,8 @@
  * both live to every window (the accent lands on `--accent`; every other
  * token `color-mix`es off it).
  */
-import { configSet } from '../../lib/commands';
-import { H2, NUM, PRF_ROWS } from '../../lib/classes';
+import { configSet } from '@/lib/commands';
+import { H2, NUM, PRF_ROWS } from '@/lib/classes';
 import { PrefRow, Seg } from './bits';
 import type { PrefsData } from './types';
 
@@ -55,6 +55,7 @@ export const GeneralTab = ({ data }: { data: PrefsData }) => {
           sub='The one hue — live states, switches, and focus rings all derive from it.'
           last>
           <span className='inline-flex items-center gap-2.5'>
+            <span className='font-mono text-xs tabular-nums'>{accent}</span>
             <input
               type='color'
               aria-label='Accent color'
@@ -62,7 +63,6 @@ export const GeneralTab = ({ data }: { data: PrefsData }) => {
               value={accent}
               onChange={(e) => setAccent(e.target.value)}
             />
-            <span className={NUM}>{accent}</span>
           </span>
         </PrefRow>
       </div>

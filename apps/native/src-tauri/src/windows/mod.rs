@@ -664,7 +664,7 @@ impl WindowPool {
 /// heavy over the capsule.
 fn accent_glass_tint(accent: &str) -> Option<String> {
     let accent = accent.trim();
-    (accent.len() == 7 && accent.starts_with('#')).then(|| format!("{accent}33"))
+    (accent.len() == 7 && accent.starts_with('#')).then(|| format!("{accent}15"))
 }
 
 fn build_window(

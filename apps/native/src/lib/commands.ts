@@ -132,8 +132,8 @@ export interface Session {
   last_active_at: number;
 }
 
-/** `session_get` row (storage.rs `AiMessage`). */
-export interface AiMessage {
+/** `session_get` row (storage.rs `Message`). */
+export interface Message {
   id: number;
   session_id: number;
   role: string;
@@ -145,8 +145,9 @@ export interface Transcript {
   id: number;
   session_id: number;
   speaker: 'me' | 'them';
-  text: string;
+  content: string;
   ts: number;
+  audio_file: string | null;
 }
 
 export interface ListenSummary {
@@ -466,7 +467,7 @@ export const captureStatus = () => invoke<CaptureStatus>('capture_status');
 export const sessionList = () => invoke<Session[]>('session_list');
 
 export const sessionGet = (id: number) =>
-  invoke<AiMessage[]>('session_get', { id });
+  invoke<Message[]>('session_get', { id });
 
 export const transcriptsFor = (id: number, limit?: number) =>
   invoke<Transcript[]>('transcripts_for', { id, limit });

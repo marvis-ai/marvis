@@ -11,8 +11,8 @@
 //!
 //! ```sql
 //! sessions(id PK, type 'ask'|'listen', title?, started_at, ended_at?, last_active_at)
-//! ai_messages(id PK, session_id FK → sessions.id ON DELETE CASCADE, role, content, ts)
-//! transcripts(id PK, session_id FK → sessions.id ON DELETE CASCADE, speaker, text, ts)
+//! messages(id PK, session_id FK → sessions.id ON DELETE CASCADE, role, content, ts)
+//! transcripts(id PK, session_id FK → sessions.id ON DELETE CASCADE, speaker, content, ts, audio_file?)
 //! summaries(id PK, session_id FK → sessions.id ON DELETE CASCADE, tldr, bullets, follow_ups, topic?, ts)
 //! ```
 //!
@@ -41,7 +41,7 @@ const SCHEMA: &str = "
         last_active_at INTEGER NOT NULL
     );
 
-    CREATE TABLE IF NOT EXISTS ai_messages (
+    CREATE TABLE IF NOT EXISTS messages (
         id         INTEGER PRIMARY KEY,
         session_id INTEGER NOT NULL,
         role       TEXT NOT NULL,
@@ -54,8 +54,9 @@ const SCHEMA: &str = "
         id         INTEGER PRIMARY KEY,
         session_id INTEGER NOT NULL,
         speaker    TEXT NOT NULL,
-        text       TEXT NOT NULL,
+        content    TEXT NOT NULL,
         ts         INTEGER NOT NULL,
+        audio_file TEXT,
         FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
     );
 
@@ -84,9 +85,9 @@ pub struct Session {
     pub last_active_at: i64,
 }
 
-/// A row of `ai_messages`. `Serialize` for the `session_get` command.
+/// A row of `messages`. `Serialize` for the `session_get` command.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
-pub struct AiMessage {
+pub struct Message {
     pub id: i64,
     pub session_id: i64,
     pub role: String,
@@ -94,14 +95,17 @@ pub struct AiMessage {
     pub ts: i64,
 }
 
-/// A persisted speaker turn from a listen session.
+/// A persisted speaker turn from a listen session. `audio_file` is the
+/// retained segment recording's path — `NULL` while audio isn't kept
+/// (whisper's wavs are temp files deleted after transcription).
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct Transcript {
     pub id: i64,
     pub session_id: i64,
     pub speaker: String,
-    pub text: String,
+    pub content: String,
     pub ts: i64,
+    pub audio_file: Option<String>,
 }
 
 /// A persisted structured summary from a listen session.
@@ -230,16 +234,11 @@ impl Db {
     }
 
     /// Append a message to a session; returns the new row id.
-    pub fn ai_message_add(
-        &self,
-        session_id: i64,
-        role: &str,
-        content: &str,
-    ) -> anyhow::Result<i64> {
+    pub fn message_add(&self, session_id: i64, role: &str, content: &str) -> anyhow::Result<i64> {
         let conn = self.conn.lock();
         let ts = now();
         conn.execute(
-            "INSERT INTO ai_messages (session_id, role, content, ts)
+            "INSERT INTO messages (session_id, role, content, ts)
              VALUES (?1, ?2, ?3, ?4)",
             params![session_id, role, content, ts],
         )?;
@@ -253,14 +252,14 @@ impl Db {
     }
 
     /// A session's messages, oldest first; `id` breaks same-second ties.
-    pub fn ai_messages_for(&self, session_id: i64) -> anyhow::Result<Vec<AiMessage>> {
+    pub fn messages_for(&self, session_id: i64) -> anyhow::Result<Vec<Message>> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
-            "SELECT id, session_id, role, content, ts FROM ai_messages
+            "SELECT id, session_id, role, content, ts FROM messages
              WHERE session_id = ?1 ORDER BY ts ASC, id ASC",
         )?;
         let rows = stmt.query_map([session_id], |row| {
-            Ok(AiMessage {
+            Ok(Message {
                 id: row.get(0)?,
                 session_id: row.get(1)?,
                 role: row.get(2)?,
@@ -272,18 +271,21 @@ impl Db {
     }
 
     /// Append a finalized listen turn; returns the new row id.
+    /// `audio_file` is the retained segment recording's path — `None`
+    /// today (audio isn't kept past transcription).
     pub fn transcript_add(
         &self,
         session_id: i64,
         speaker: &str,
-        text: &str,
+        content: &str,
+        audio_file: Option<&str>,
     ) -> anyhow::Result<i64> {
         let conn = self.conn.lock();
         let ts = now();
         conn.execute(
-            "INSERT INTO transcripts (session_id, speaker, text, ts)
-             VALUES (?1, ?2, ?3, ?4)",
-            params![session_id, speaker, text, ts],
+            "INSERT INTO transcripts (session_id, speaker, content, ts, audio_file)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![session_id, speaker, content, ts, audio_file],
         )?;
         conn.execute(
             "UPDATE sessions SET last_active_at = ?1 WHERE id = ?2",
@@ -300,7 +302,7 @@ impl Db {
     ) -> anyhow::Result<Vec<Transcript>> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
-            "SELECT id, session_id, speaker, text, ts FROM transcripts
+            "SELECT id, session_id, speaker, content, ts, audio_file FROM transcripts
              WHERE session_id = ?1 ORDER BY ts ASC, id ASC LIMIT ?2",
         )?;
         let rows = stmt.query_map(
@@ -310,8 +312,9 @@ impl Db {
                     id: row.get(0)?,
                     session_id: row.get(1)?,
                     speaker: row.get(2)?,
-                    text: row.get(3)?,
+                    content: row.get(3)?,
                     ts: row.get(4)?,
+                    audio_file: row.get(5)?,
                 })
             },
         )?;
@@ -330,7 +333,7 @@ impl Db {
         }
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
-            "SELECT id, session_id, speaker, text, ts FROM transcripts
+            "SELECT id, session_id, speaker, content, ts, audio_file FROM transcripts
              WHERE session_id = ?1 ORDER BY ts DESC, id DESC LIMIT ?2",
         )?;
         let rows = stmt.query_map(params![session_id, limit as i64], |row| {
@@ -338,8 +341,9 @@ impl Db {
                 id: row.get(0)?,
                 session_id: row.get(1)?,
                 speaker: row.get(2)?,
-                text: row.get(3)?,
+                content: row.get(3)?,
                 ts: row.get(4)?,
+                audio_file: row.get(5)?,
             })
         })?;
         let mut rows = rows.collect::<rusqlite::Result<Vec<_>>>()?;
@@ -464,16 +468,16 @@ mod tests {
     }
 
     #[test]
-    fn ai_message_roundtrip_is_ordered() {
+    fn message_roundtrip_is_ordered() {
         let dir = tmp_dir();
         let db = Db::at(dir.join("marvis.db")).unwrap();
         let sid = db.session_get_or_create_active("ask").unwrap();
 
-        db.ai_message_add(sid, "user", "hello").unwrap();
-        db.ai_message_add(sid, "assistant", "hi there").unwrap();
-        db.ai_message_add(sid, "user", "follow-up").unwrap();
+        db.message_add(sid, "user", "hello").unwrap();
+        db.message_add(sid, "assistant", "hi there").unwrap();
+        db.message_add(sid, "user", "follow-up").unwrap();
 
-        let msgs = db.ai_messages_for(sid).unwrap();
+        let msgs = db.messages_for(sid).unwrap();
         assert_eq!(msgs.len(), 3);
         assert_eq!(msgs[0].role, "user");
         assert_eq!(msgs[0].content, "hello");
@@ -489,7 +493,7 @@ mod tests {
         }
         // Messages are scoped to their session.
         let other = db.session_get_or_create_active("listen").unwrap();
-        assert!(db.ai_messages_for(other).unwrap().is_empty());
+        assert!(db.messages_for(other).unwrap().is_empty());
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -509,11 +513,11 @@ mod tests {
         }
 
         let sid = db.session_get_or_create_active("ask").unwrap();
-        db.ai_message_add(sid, "user", "one").unwrap();
-        db.ai_message_add(sid, "assistant", "two").unwrap();
+        db.message_add(sid, "user", "one").unwrap();
+        db.message_add(sid, "assistant", "two").unwrap();
 
         db.session_delete(sid).unwrap();
-        assert!(db.ai_messages_for(sid).unwrap().is_empty());
+        assert!(db.messages_for(sid).unwrap().is_empty());
         assert!(db.session_list().unwrap().iter().all(|s| s.id != sid));
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -525,24 +529,25 @@ mod tests {
         let db = Db::at(dir.join("marvis.db")).unwrap();
         let sid = db.session_get_or_create_active("listen").unwrap();
 
-        db.transcript_add(sid, "me", "hello").unwrap();
-        db.transcript_add(sid, "them", "hi there").unwrap();
-        db.transcript_add(sid, "me", "follow-up").unwrap();
+        db.transcript_add(sid, "me", "hello", None).unwrap();
+        db.transcript_add(sid, "them", "hi there", None).unwrap();
+        db.transcript_add(sid, "me", "follow-up", None).unwrap();
 
         let transcripts = db.transcripts_for(sid, None).unwrap();
         assert_eq!(transcripts.len(), 3);
         assert_eq!(transcripts[0].speaker, "me");
-        assert_eq!(transcripts[0].text, "hello");
+        assert_eq!(transcripts[0].content, "hello");
+        assert!(transcripts[0].audio_file.is_none());
         assert_eq!(transcripts[1].speaker, "them");
-        assert_eq!(transcripts[1].text, "hi there");
-        assert_eq!(transcripts[2].text, "follow-up");
+        assert_eq!(transcripts[1].content, "hi there");
+        assert_eq!(transcripts[2].content, "follow-up");
         assert!(transcripts[0].id < transcripts[1].id && transcripts[1].id < transcripts[2].id);
         assert!(transcripts.iter().all(|transcript| transcript.ts > 0));
 
         let limited = db.transcripts_for(sid, Some(2)).unwrap();
         assert_eq!(limited.len(), 2);
-        assert_eq!(limited[0].text, "hello");
-        assert_eq!(limited[1].text, "hi there");
+        assert_eq!(limited[0].content, "hello");
+        assert_eq!(limited[1].content, "hi there");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -553,13 +558,14 @@ mod tests {
         let db = Db::at(dir.join("marvis.db")).unwrap();
         let sid = db.session_get_or_create_active("listen").unwrap();
         for id in 0..25 {
-            db.transcript_add(sid, "me", &format!("turn-{id}")).unwrap();
+            db.transcript_add(sid, "me", &format!("turn-{id}"), None)
+                .unwrap();
         }
 
         let tail = db.transcripts_tail(sid, 20).unwrap();
         assert_eq!(tail.len(), 20);
-        assert_eq!(tail.first().unwrap().text, "turn-5");
-        assert_eq!(tail.last().unwrap().text, "turn-24");
+        assert_eq!(tail.first().unwrap().content, "turn-5");
+        assert_eq!(tail.last().unwrap().content, "turn-24");
         assert!(tail.windows(2).all(|rows| rows[0].id < rows[1].id));
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -615,7 +621,7 @@ mod tests {
         let dir = tmp_dir();
         let db = Db::at(dir.join("marvis.db")).unwrap();
         let sid = db.session_get_or_create_active("listen").unwrap();
-        db.transcript_add(sid, "me", "hello").unwrap();
+        db.transcript_add(sid, "me", "hello", None).unwrap();
         db.summary_add(sid, "Summary", &[], &[], None).unwrap();
 
         db.session_delete(sid).unwrap();

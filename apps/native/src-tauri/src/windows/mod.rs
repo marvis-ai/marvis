@@ -360,6 +360,13 @@ impl WindowPool {
         }
     }
 
+    /// Whether the card is currently expanded. ask's pre-flight reads
+    /// this BEFORE `set_chat_open(true)` to tell a fresh pill send (new
+    /// conversation) from a card follow-up.
+    pub fn is_chat_open(&self) -> bool {
+        self.chat_open
+    }
+
     /// `window_set_chat_open` / tray Toggle / ask
     /// pre-flight: animate the bar
     /// window collapsed ⇄ expanded per §Expansion. Emits nothing — the

@@ -16,8 +16,8 @@ use crate::audio::{AudioSource, MicSource, PcmChunk};
 use crate::config::Config;
 use crate::keystore::Keystore;
 use crate::stt::{
-    make_stt_provider, sanitize_provider_error, sherpa_setup_error, whisper_setup_error, Finality,
-    SpeakerChannel, SttProvider, TranscriptEvent, WhisperProvider,
+    make_stt_provider, sanitize_provider_error, stt_setup_error, Finality, SpeakerChannel,
+    SttProvider, TranscriptEvent,
 };
 
 const WORKER_TICK: Duration = Duration::from_millis(100);
@@ -203,31 +203,14 @@ impl DictationService {
         } else {
             None
         };
-        if provider_name == "deepgram" && key.is_none() {
-            return Err(self.fail(
-                epoch,
-                &provider_name,
-                "Speech-to-text provider is not configured",
-                true,
-                &emit,
-            ));
-        }
-        if provider_name == "whisper" {
-            // The same bundled-aware binary/model validation Listen uses —
-            // a missing binary or model is a setup error, not a panic.
-            if let Some(message) = whisper_setup_error(
-                &WhisperProvider::status_with_bundled(bundled_whisper),
-                &model,
-            ) {
-                return Err(self.fail(epoch, &provider_name, message, true, &emit));
-            }
-        }
-        if provider_name == "sherpa" {
-            // Same curated setup-error contract as whisper — a missing model
-            // download is a Settings fix, not a panic.
-            if let Some(message) = sherpa_setup_error(&model) {
-                return Err(self.fail(epoch, &provider_name, message, true, &emit));
-            }
+        if let Some(message) = stt_setup_error(
+            &provider_name,
+            key.as_deref(),
+            &model,
+            bundled_whisper,
+            &crate::paths::sherpa_models_dir(),
+        ) {
+            return Err(self.fail(epoch, &provider_name, message, true, &emit));
         }
 
         // Build the provider before touching the microphone so a bad
@@ -361,6 +344,69 @@ impl DictationService {
             error: None,
         };
         draft
+    }
+
+    /// Re-check a durable setup failure against current settings — same
+    /// contract as `ListenService::revalidate_setup`: a fixed cause clears
+    /// the error to `idle`, a still-broken setup rewrites the message.
+    /// `mic_allowed` mirrors `start()`'s gate order (permission precedes
+    /// provider checks); the caller re-reads it rather than prompting.
+    /// Returns the updated status when it changed so the caller can emit
+    /// `dictation:state`.
+    pub fn revalidate_setup(
+        &self,
+        keystore: &Keystore,
+        config: &Config,
+        bundled_whisper: Option<&Path>,
+        sherpa_root: &Path,
+        mic_allowed: bool,
+    ) -> Option<DictationStatus> {
+        let mut status = self.state.lock();
+        if status.state != "error" || status.error.as_ref().is_none_or(|e| !e.needs_setup) {
+            return None;
+        }
+        let provider = config.models.stt_provider.clone();
+        let message = if !mic_allowed {
+            Some("Microphone permission is required to dictate")
+        } else {
+            let key = if provider == "deepgram" {
+                keystore.key("deepgram")
+            } else {
+                None
+            };
+            stt_setup_error(
+                &provider,
+                key.as_deref(),
+                &config.models.stt_model,
+                bundled_whisper,
+                sherpa_root,
+            )
+        };
+        match message {
+            None => {
+                *status = DictationStatus {
+                    state: "idle".into(),
+                    provider: None,
+                    error: None,
+                };
+                Some(status.clone())
+            }
+            Some(message) => {
+                if status
+                    .error
+                    .as_ref()
+                    .is_some_and(|error| error.message == message)
+                {
+                    return None;
+                }
+                status.provider = Some(provider);
+                status.error = Some(DictationError {
+                    message: message.to_string(),
+                    needs_setup: true,
+                });
+                Some(status.clone())
+            }
+        }
     }
 
     /// Record a failure in the durable status, emit it as a sanitized
@@ -731,6 +777,74 @@ mod tests {
                 needs_setup: true,
             })
         );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// Revalidation walks `start()`'s gate order: a denied mic still
+    /// reports the mic error, then the next blocker (here the missing
+    /// Deepgram key), and only a fully fixed setup clears to `idle`.
+    #[test]
+    fn revalidate_setup_walks_mic_then_provider_and_clears_when_fixed() {
+        let root = service_root();
+        let mut keystore = Keystore::at(root.join("keys.json"));
+        let config = Config::default();
+        let (_events, emit) = event_log();
+        let service = DictationService::new();
+        let sherpa_root = root.join("sherpa");
+
+        assert!(service
+            .start(&keystore, &config, false, None, emit)
+            .is_err());
+        assert_eq!(service.status().state, "error");
+
+        // Mic still denied → same error, nothing to report.
+        assert!(service
+            .revalidate_setup(&keystore, &config, None, &sherpa_root, false)
+            .is_none());
+
+        // Mic granted → the next gate (missing key) becomes the reason.
+        let next = service
+            .revalidate_setup(&keystore, &config, None, &sherpa_root, true)
+            .expect("a different broken reason must yield a new status");
+        assert_eq!(next.state, "error");
+        assert_eq!(
+            next.error,
+            Some(DictationError {
+                message: "Speech-to-text provider is not configured".into(),
+                needs_setup: true,
+            })
+        );
+
+        // Key stored → the durable error clears to idle.
+        keystore.set_key("deepgram", "dg-key").unwrap();
+        let next = service
+            .revalidate_setup(&keystore, &config, None, &sherpa_root, true)
+            .expect("resolved error must yield a new status");
+        assert_eq!(next.state, "idle");
+        assert_eq!(next.error, None);
+        assert_eq!(service.status().state, "idle");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// Revalidation only touches setup failures — a runtime
+    /// (`needs_setup: false`) error stays put.
+    #[test]
+    fn revalidate_setup_ignores_runtime_errors() {
+        let root = service_root();
+        let keystore = Keystore::at(root.join("keys.json"));
+        let config = Config::default();
+        let service = DictationService::new();
+        *service.state.lock() = DictationStatus {
+            state: "error".into(),
+            provider: Some("deepgram".into()),
+            error: Some(DictationError {
+                message: "provider went away".into(),
+                needs_setup: false,
+            }),
+        };
+        assert!(service
+            .revalidate_setup(&keystore, &config, None, &root.join("sherpa"), true)
+            .is_none());
         let _ = std::fs::remove_dir_all(root);
     }
 

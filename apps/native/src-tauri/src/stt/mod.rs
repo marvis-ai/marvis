@@ -87,13 +87,36 @@ pub(crate) fn whisper_setup_error(status: &WhisperStatus, model: &str) -> Option
         .then_some("configured Whisper model was not found; choose an installed model in Settings")
 }
 
+/// The full provider setup check shared by Listen and Dictation — both at
+/// start pre-flight and when a settings change re-validates a durable
+/// setup error. Deepgram needs its keystore entry, whisper its binary +
+/// model, sherpa its downloaded file set under `sherpa_root`. Unknown
+/// providers pass here and fail later in `make_stt_provider`.
+pub(crate) fn stt_setup_error(
+    provider: &str,
+    deepgram_key: Option<&str>,
+    model: &str,
+    bundled_whisper: Option<&std::path::Path>,
+    sherpa_root: &std::path::Path,
+) -> Option<&'static str> {
+    if provider == "deepgram" && deepgram_key.is_none() {
+        return Some("Speech-to-text provider is not configured");
+    }
+    if provider == "whisper" {
+        return whisper_setup_error(
+            &WhisperProvider::status_with_bundled(bundled_whisper),
+            model,
+        );
+    }
+    if provider == "sherpa" {
+        return sherpa_setup_error_at(sherpa_root, model);
+    }
+    None
+}
+
 /// Sherpa setup validation shared by Listen and Dictation — a missing or
 /// partially downloaded model is a user-fixable setup error. Messages are
 /// curated; they never include paths or engine details.
-pub(crate) fn sherpa_setup_error(model: &str) -> Option<&'static str> {
-    sherpa_setup_error_at(&crate::paths::sherpa_models_dir(), model)
-}
-
 fn sherpa_setup_error_at(root: &std::path::Path, model: &str) -> Option<&'static str> {
     let Some(entry) = crate::sherpa_models::entry_for_value(model) else {
         return Some(
@@ -167,6 +190,39 @@ mod tests {
             std::fs::write(dir.join(file.filename), b"").unwrap();
         }
         assert_eq!(sherpa_setup_error_at(&root, "sense-voice"), None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The umbrella check mirrors the per-provider start gates: deepgram
+    /// needs a key, sherpa a downloaded file set, and an unknown provider
+    /// passes through to `make_stt_provider`.
+    #[test]
+    fn stt_setup_error_covers_each_provider_gate() {
+        let root = stt_test_dir("umbrella");
+        assert_eq!(
+            stt_setup_error("deepgram", None, "nova-2", None, &root),
+            Some("Speech-to-text provider is not configured")
+        );
+        assert_eq!(
+            stt_setup_error("deepgram", Some("dg-key"), "nova-2", None, &root),
+            None
+        );
+        let missing = stt_setup_error("sherpa", None, "sense-voice", None, &root).unwrap();
+        assert!(missing.contains("not downloaded"));
+        let entry = crate::sherpa_models::entry_for_value("sense-voice").unwrap();
+        let dir = crate::sherpa_models::entry_dir(&root, entry);
+        std::fs::create_dir_all(&dir).unwrap();
+        for file in entry.files {
+            std::fs::write(dir.join(file.filename), b"").unwrap();
+        }
+        assert_eq!(
+            stt_setup_error("sherpa", None, "sense-voice", None, &root),
+            None
+        );
+        assert_eq!(
+            stt_setup_error("not-a-provider", None, "x", None, &root),
+            None
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 

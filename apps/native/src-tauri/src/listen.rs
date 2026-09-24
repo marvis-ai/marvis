@@ -15,8 +15,8 @@ use crate::llm::{ChatMessage, Role};
 use crate::prompts::{summary_context, summary_system_prompt};
 use crate::storage::{Db, Transcript};
 use crate::stt::{
-    make_stt_provider, sanitize_provider_error, sherpa_setup_error, whisper_setup_error, Finality,
-    SpeakerChannel, TranscriptEvent, WhisperProvider,
+    make_stt_provider, sanitize_provider_error, stt_setup_error, Finality, SpeakerChannel,
+    TranscriptEvent,
 };
 
 const SILENCE: Duration = Duration::from_millis(1500);
@@ -349,8 +349,13 @@ impl ListenService {
         } else {
             None
         };
-        if provider_name == "deepgram" && key.is_none() {
-            let message = "Speech-to-text provider is not configured".to_string();
+        if let Some(message) = stt_setup_error(
+            &provider_name,
+            key.as_deref(),
+            &model,
+            bundled_whisper,
+            &crate::paths::sherpa_models_dir(),
+        ) {
             *self.state.lock() = ListenStatus {
                 state: "error".into(),
                 provider: Some(provider_name),
@@ -358,58 +363,15 @@ impl ListenService {
                 turns: 0,
                 mic: false,
                 error: Some(ListenError {
-                    message: message.clone(),
+                    message: message.to_string(),
                     needs_setup: true,
                 }),
             };
             emit(ListenEvent::Error {
-                message,
+                message: message.to_string(),
                 needs_setup: true,
             });
-            anyhow::bail!("Speech-to-text provider is not configured")
-        }
-        if provider_name == "whisper" {
-            if let Some(message) = whisper_setup_error(
-                &WhisperProvider::status_with_bundled(bundled_whisper),
-                &model,
-            ) {
-                *self.state.lock() = ListenStatus {
-                    state: "error".into(),
-                    provider: Some(provider_name),
-                    session_id: None,
-                    turns: 0,
-                    mic: false,
-                    error: Some(ListenError {
-                        message: message.to_string(),
-                        needs_setup: true,
-                    }),
-                };
-                emit(ListenEvent::Error {
-                    message: message.to_string(),
-                    needs_setup: true,
-                });
-                anyhow::bail!(message)
-            }
-        }
-        if provider_name == "sherpa" {
-            if let Some(message) = sherpa_setup_error(&model) {
-                *self.state.lock() = ListenStatus {
-                    state: "error".into(),
-                    provider: Some(provider_name),
-                    session_id: None,
-                    turns: 0,
-                    mic: false,
-                    error: Some(ListenError {
-                        message: message.to_string(),
-                        needs_setup: true,
-                    }),
-                };
-                emit(ListenEvent::Error {
-                    message: message.to_string(),
-                    needs_setup: true,
-                });
-                anyhow::bail!(message)
-            }
+            anyhow::bail!(message)
         }
         let session_id = db.session_get_or_create_active("listen")?;
         let existing = db.transcripts_for(session_id, None)?;
@@ -583,6 +545,65 @@ impl ListenService {
         Ok(())
     }
 
+    /// Re-check a durable setup failure against current settings — a config
+    /// write, key store, or model install can resolve the cause without a
+    /// new start attempt, and the error should clear (or rewrite to the
+    /// still-broken reason) instead of lingering until then. Returns the
+    /// updated status when it changed so the caller can emit `listen:state`;
+    /// live sessions and non-setup errors are left untouched.
+    pub fn revalidate_setup(
+        &self,
+        keystore: &Keystore,
+        config: &Config,
+        bundled_whisper: Option<&std::path::Path>,
+        sherpa_root: &std::path::Path,
+    ) -> Option<ListenStatus> {
+        let mut status = self.state.lock();
+        if status.state != "error" || status.error.as_ref().is_none_or(|e| !e.needs_setup) {
+            return None;
+        }
+        let provider = config.models.stt_provider.clone();
+        let key = if provider == "deepgram" {
+            keystore.key("deepgram")
+        } else {
+            None
+        };
+        match stt_setup_error(
+            &provider,
+            key.as_deref(),
+            &config.models.stt_model,
+            bundled_whisper,
+            sherpa_root,
+        ) {
+            None => {
+                *status = ListenStatus {
+                    state: "idle".into(),
+                    provider: None,
+                    session_id: None,
+                    turns: 0,
+                    mic: false,
+                    error: None,
+                };
+                Some(status.clone())
+            }
+            Some(message) => {
+                if status
+                    .error
+                    .as_ref()
+                    .is_some_and(|error| error.message == message)
+                {
+                    return None;
+                }
+                status.provider = Some(provider);
+                status.error = Some(ListenError {
+                    message: message.to_string(),
+                    needs_setup: true,
+                });
+                Some(status.clone())
+            }
+        }
+    }
+
     pub fn stop(&self) {
         let Some(running) = self.running.lock().take() else {
             *self.state.lock() = ListenStatus {
@@ -625,18 +646,21 @@ fn append_history(history: &mut Vec<Transcript>, transcript: Transcript) {
 }
 
 fn persist_turn(context: &Arc<SessionContext>, turn: ClosedTurn) {
-    let inserted =
-        context
-            .db
-            .transcript_add(context.session_id, speaker_name(turn.speaker), &turn.text);
+    let inserted = context.db.transcript_add(
+        context.session_id,
+        speaker_name(turn.speaker),
+        &turn.text,
+        None,
+    );
     let history_snapshot = match inserted {
         Ok(id) => {
             let transcript = Transcript {
                 id,
                 session_id: context.session_id,
                 speaker: speaker_name(turn.speaker).into(),
-                text: turn.text.clone(),
+                content: turn.text.clone(),
                 ts: turn.ts,
+                audio_file: None,
             };
             let mut history = context.history.lock();
             append_history(&mut history, transcript);
@@ -743,7 +767,7 @@ pub async fn generate_summary(
     let candidates = crate::provider_candidates(config, keystore);
     let history = transcript
         .iter()
-        .map(|t| format!("{}: {}", t.speaker, t.text))
+        .map(|t| format!("{}: {}", t.speaker, t.content))
         .collect::<Vec<_>>()
         .join("\n");
     let previous = match db.summary_latest(session_id) {
@@ -918,8 +942,9 @@ mod tests {
                     id,
                     session_id: 1,
                     speaker: "me".into(),
-                    text: id.to_string(),
+                    content: id.to_string(),
                     ts: id,
+                    audio_file: None,
                 },
             );
         }
@@ -945,7 +970,7 @@ mod tests {
             models: Vec::new(),
         };
         assert_eq!(
-            whisper_setup_error(&missing, "base"),
+            crate::stt::whisper_setup_error(&missing, "base"),
             Some("whisper-cli was not found; install it and try again")
         );
 
@@ -954,11 +979,11 @@ mod tests {
             models: Vec::new(),
         };
         assert_eq!(
-            whisper_setup_error(&no_model, "base"),
+            crate::stt::whisper_setup_error(&no_model, "base"),
             Some("configured Whisper model was not found; choose an installed model in Settings")
         );
         assert_eq!(
-            whisper_setup_error(&no_model, "unknown"),
+            crate::stt::whisper_setup_error(&no_model, "unknown"),
             Some("configured Whisper model was not found; choose an installed model in Settings")
         );
 
@@ -966,8 +991,11 @@ mod tests {
             binary: Some("/usr/local/bin/whisper-cli".into()),
             models: vec!["ggml-base.bin".into()],
         };
-        assert_eq!(whisper_setup_error(&ready, "base"), None);
-        assert_eq!(whisper_setup_error(&ready, "ggml-base.bin"), None);
+        assert_eq!(crate::stt::whisper_setup_error(&ready, "base"), None);
+        assert_eq!(
+            crate::stt::whisper_setup_error(&ready, "ggml-base.bin"),
+            None
+        );
     }
 
     #[test]
@@ -1018,6 +1046,105 @@ mod tests {
                 "needs_setup": true,
             })
         );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    fn setup_error_service() -> (ListenService, std::path::PathBuf, Keystore, Config) {
+        static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "marvis-listen-reval-test-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        let db = Arc::new(crate::storage::Db::at(root.join("marvis.db")).unwrap());
+        let keystore = Keystore::at(root.join("keys.json"));
+        let config = Config::default();
+        let service = ListenService::new();
+        assert!(service
+            .start(db, &keystore, &config, false, None, Arc::new(|_| {}))
+            .is_err());
+        assert_eq!(service.status().state, "error");
+        (service, root, keystore, config)
+    }
+
+    /// A durable setup error clears to `idle` once its cause is fixed —
+    /// here the missing Deepgram key — and re-checking an unchanged cause
+    /// reports no change.
+    #[test]
+    fn revalidate_setup_clears_error_once_the_cause_is_fixed() {
+        let (service, root, mut keystore, config) = setup_error_service();
+        let sherpa_root = root.join("sherpa");
+
+        // Cause still present → nothing to report.
+        assert!(service
+            .revalidate_setup(&keystore, &config, None, &sherpa_root)
+            .is_none());
+
+        keystore.set_key("deepgram", "dg-key").unwrap();
+        let next = service
+            .revalidate_setup(&keystore, &config, None, &sherpa_root)
+            .expect("resolved error must yield a new status");
+        assert_eq!(next.state, "idle");
+        assert_eq!(next.error, None);
+        assert_eq!(service.status().state, "idle");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// Still broken under new settings → the durable error rewrites to the
+    /// reason a fresh start would hit, not the stale original one.
+    #[test]
+    fn revalidate_setup_rewrites_error_to_the_current_reason() {
+        let (service, root, keystore, _config) = setup_error_service();
+        let sherpa_root = root.join("sherpa");
+        let mut config = Config::default();
+        config.models.stt_provider = "sherpa".into();
+        config.models.stt_model = "sense-voice".into();
+
+        let next = service
+            .revalidate_setup(&keystore, &config, None, &sherpa_root)
+            .expect("a different broken reason must yield a new status");
+        assert_eq!(next.state, "error");
+        assert_eq!(next.provider.as_deref(), Some("sherpa"));
+        assert_eq!(
+            next.error,
+            Some(ListenError {
+                message: "the SenseVoice model is not downloaded; download it in Settings".into(),
+                needs_setup: true,
+            })
+        );
+        // Same still-broken check again → unchanged, no re-emit.
+        assert!(service
+            .revalidate_setup(&keystore, &config, None, &sherpa_root)
+            .is_none());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// Revalidation only touches setup failures: a runtime error and any
+    /// non-error state are none of its business.
+    #[test]
+    fn revalidate_setup_ignores_runtime_errors_and_non_error_states() {
+        let (service, root, keystore, config) = setup_error_service();
+        let sherpa_root = root.join("sherpa");
+
+        *service.state.lock() = ListenStatus {
+            state: "error".into(),
+            provider: Some("deepgram".into()),
+            session_id: None,
+            turns: 0,
+            mic: false,
+            error: Some(ListenError {
+                message: "provider went away".into(),
+                needs_setup: false,
+            }),
+        };
+        assert!(service
+            .revalidate_setup(&keystore, &config, None, &sherpa_root)
+            .is_none());
+
+        service.stop();
+        assert!(service
+            .revalidate_setup(&keystore, &config, None, &sherpa_root)
+            .is_none());
         let _ = std::fs::remove_dir_all(root);
     }
 

@@ -69,7 +69,7 @@ use hotkey::RegisteredHotkeys;
 use keystore::Keystore;
 use listen::{ListenEvent, ListenService};
 use llm::{make_provider, ProviderKind};
-use storage::{AiMessage, Db, Session, Summary, Transcript};
+use storage::{Db, Message, Session, Summary, Transcript};
 use windows::WindowPool;
 
 /// Frame ring caps from the spec: 120 frames / 64 MB (~60 s horizon).
@@ -766,6 +766,9 @@ async fn keystore_set_key(
         emit_keystore_changed(&app, &ks);
         keystore_status_payload(&ks)
     };
+    if provider == "deepgram" {
+        refresh_speech_setup(&app);
+    }
     Ok(payload)
 }
 
@@ -782,6 +785,9 @@ fn keystore_remove_key(app: AppHandle, provider: String) -> Result<serde_json::V
         emit_keystore_changed(&app, &ks);
         keystore_status_payload(&ks)
     };
+    if provider == "deepgram" {
+        refresh_speech_setup(&app);
+    }
     Ok(payload)
 }
 
@@ -1102,8 +1108,11 @@ fn listen_stop(app: AppHandle) {
 }
 
 #[tauri::command]
-fn listen_status(state: State<'_, AppState>) -> listen::ListenStatus {
-    state.listen.status()
+fn listen_status(app: AppHandle) -> listen::ListenStatus {
+    // Self-healing read: a cause fixed outside the tracked triggers (e.g.
+    // an externally installed whisper-cli) clears on the next resync.
+    refresh_speech_setup(&app);
+    app.state::<AppState>().listen.status()
 }
 
 const EV_DICTATION_STATE: &str = "dictation:state";
@@ -1135,6 +1144,35 @@ fn emit_dictation_event(app: &AppHandle, event: DictationEvent) {
             let status = app.state::<AppState>().dictation.status();
             emit_dictation_state(app, &status);
         }
+    }
+}
+
+/// A durable setup error should live exactly as long as its cause. STT
+/// config writes, Deepgram key changes, a mic grant, and completed model
+/// downloads each re-run the speech services' pre-flight checks through
+/// here — a resolved error resets to `idle` and a still-broken one
+/// rewrites to the current reason, both via the usual `*:state` resync,
+/// so no webview keeps showing a problem the user already fixed.
+pub(crate) fn refresh_speech_setup(app: &AppHandle) {
+    let state = app.state::<AppState>();
+    let config = state.config.lock().clone();
+    let keystore = state.keystore.lock().clone();
+    let bundled = state.bundled_whisper.as_deref();
+    let sherpa_root = paths::sherpa_models_dir();
+    if let Some(status) =
+        state
+            .listen
+            .revalidate_setup(&keystore, &config, bundled, &sherpa_root)
+    {
+        emit_listen_state(app, &status);
+    }
+    let mic_allowed = permissions::mic_status() == permissions::PermissionState::Authorized;
+    if let Some(status) =
+        state
+            .dictation
+            .revalidate_setup(&keystore, &config, bundled, &sherpa_root, mic_allowed)
+    {
+        emit_dictation_state(app, &status);
     }
 }
 
@@ -1200,8 +1238,9 @@ fn dictation_stop(app: AppHandle) -> dictation::DictationDraft {
 
 /// Live dictation status for bar resync (`idle` | `listening` | `error`).
 #[tauri::command]
-fn dictation_status(state: State<'_, AppState>) -> dictation::DictationStatus {
-    state.dictation.status()
+fn dictation_status(app: AppHandle) -> dictation::DictationStatus {
+    refresh_speech_setup(&app);
+    app.state::<AppState>().dictation.status()
 }
 
 #[tauri::command]
@@ -1494,10 +1533,14 @@ async fn permissions_request_screen(app: AppHandle) -> bool {
 /// completion can dispatch to the main queue and deadlock a blocked main
 /// thread — so the call is explicitly `spawn_blocking`'d.
 #[tauri::command]
-async fn permissions_request_mic() -> bool {
-    tauri::async_runtime::spawn_blocking(permissions::mic_request)
+async fn permissions_request_mic(app: AppHandle) -> bool {
+    let granted = tauri::async_runtime::spawn_blocking(permissions::mic_request)
         .await
-        .unwrap_or(false)
+        .unwrap_or(false);
+    if granted {
+        refresh_speech_setup(&app);
+    }
+    granted
 }
 
 /// `section` is the full privacy pane name (`Privacy_ScreenCapture`,
@@ -1554,8 +1597,8 @@ fn session_list(state: State<'_, AppState>) -> Result<Vec<Session>, String> {
 }
 
 #[tauri::command]
-fn session_get(state: State<'_, AppState>, id: i64) -> Result<Vec<AiMessage>, String> {
-    state.db.ai_messages_for(id).map_err(|e| e.to_string())
+fn session_get(state: State<'_, AppState>, id: i64) -> Result<Vec<Message>, String> {
+    state.db.messages_for(id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1630,6 +1673,7 @@ fn config_set(app: AppHandle, key: String, value: serde_json::Value) -> Result<C
     let mut hotkeys_changed = false;
     let mut onboarding_changed = false;
     let mut accent_changed = false;
+    let mut stt_changed = false;
     {
         let mut cfg = state.config.lock();
         match key.as_str() {
@@ -1686,7 +1730,9 @@ fn config_set(app: AppHandle, key: String, value: serde_json::Value) -> Result<C
                 }
                 cfg.compat.base_url = v.to_string();
             }
-            key if config::apply_stt_config(&mut cfg.models, key, &value)? => {}
+            key if config::apply_stt_config(&mut cfg.models, key, &value)? => {
+                stt_changed = true;
+            }
             "vision.provider" => {
                 let v = value
                     .as_str()
@@ -1745,6 +1791,9 @@ fn config_set(app: AppHandle, key: String, value: serde_json::Value) -> Result<C
     }
     let updated = state.config.lock().clone();
     let _ = app.emit("config:changed", &updated);
+    if stt_changed {
+        refresh_speech_setup(&app);
+    }
     Ok(updated)
 }
 
@@ -1995,13 +2044,14 @@ mod tests {
         assert!(source.contains("sherpa_remove_model,"));
     }
 
-    /// Both speech services must route the `sherpa` provider through the
-    /// curated setup check — a missing model download is a Settings fix
-    /// surfaced as `needs_setup`, never a raw engine/path error.
+    /// Both speech services must route providers through the shared
+    /// curated setup check — a missing model download or key is a
+    /// Settings fix surfaced as `needs_setup`, never a raw engine/path
+    /// error.
     #[test]
     fn sherpa_setup_check_is_wired_into_both_speech_services() {
-        assert!(include_str!("dictation.rs").contains("sherpa_setup_error(&model)"));
-        assert!(include_str!("listen.rs").contains("sherpa_setup_error(&model)"));
+        assert!(include_str!("dictation.rs").contains("stt_setup_error("));
+        assert!(include_str!("listen.rs").contains("stt_setup_error("));
     }
 
     #[test]

@@ -310,8 +310,15 @@ impl SherpaModelManager {
                 test_files,
             )
             .await;
-            if let Err(error) = result {
-                emit_error(&app, entry.id.as_str(), &error);
+            match result {
+                // A finished install may resolve a durable speech setup
+                // error — re-validate so the stale banner clears now.
+                Ok(()) => {
+                    if let Some(app) = &app {
+                        crate::refresh_speech_setup(app);
+                    }
+                }
+                Err(error) => emit_error(&app, entry.id.as_str(), &error),
             }
         });
         state.active = Some(ActiveDownload {

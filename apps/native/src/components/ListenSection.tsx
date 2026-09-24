@@ -99,7 +99,14 @@ export const ListenSection = () => {
         ]);
         if (cancelled || sessionRef.current !== current.session_id) return;
         setTurns((live) => {
-          const persisted = rows.map((row) => ({ ...row, final: true }));
+          // Persisted rows (`content`) fold into the live-turn shape (`text`).
+          const persisted: Turn[] = rows.map((row) => ({
+            speaker: row.speaker,
+            text: row.content,
+            ts: row.ts,
+            session_id: row.session_id,
+            final: true,
+          }));
           const keys = new Set(
             live.map((turn) => `${turn.speaker}:${turn.ts}:${turn.text}`),
           );

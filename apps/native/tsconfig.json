@@ -6,9 +6,9 @@
     "module": "ESNext",
     "skipLibCheck": true,
 
-    /* packages/ui sources import "@/…" (their own src) — resolve it for
-       consumers that typecheck across the package boundary. */
-    "paths": { "@/*": ["../../packages/ui/src/*"] },
+    /* Map "@/…" to this app's own src root (e.g. "@/lib/utils" → "src/lib/utils").
+       packages/ui is imported via "@marvis/ui" and no longer needs this alias. */
+    "paths": { "@/*": ["./src/*"] },
 
     /* Bundler mode */
     "moduleResolution": "bundler",

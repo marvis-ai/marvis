@@ -1,3 +1,5 @@
+'use client';
+
 import { Badge } from '@marvis/ui';
 import { Fragment, type ReactNode } from 'react';
 import { MvAskPanel, MvBar } from './mv';
@@ -58,13 +60,13 @@ export const Hero = () => (
     <div className='container hero-center'>
       <p className='eyebrow'>Private / Personal AI for All</p>
       <h1 className='hero-h1'>
-        Ask anything about what&rsquo;s on your screen — and keep every frame
-        on your machine.
+        Ask anything about what&rsquo;s on your screen — and keep every frame on
+        your machine.
       </h1>
       <p className='lead'>
         A floating bar for developers and power users who live at the keyboard.
-        It sees your screen — only with permission — and your keys, history,
-        and screen data never leave your machine.
+        It sees your screen — only with permission — and your keys, history, and
+        screen data never leave your machine.
       </p>
       <div className='hero-cta'>
         <WaitlistDialog

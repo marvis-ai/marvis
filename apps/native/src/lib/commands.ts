@@ -296,6 +296,44 @@ export const whisperRemoveModel = (model: string) =>
   invoke<WhisperStatus>('whisper_remove_model', { model });
 
 // ---------------------------------------------------------------------------
+// dictation
+// ---------------------------------------------------------------------------
+
+export interface DictationErrorPayload {
+  message: string;
+  needs_setup: boolean;
+}
+
+/** `dictation_start` / `dictation_status` return — same wire shape as the
+ * `dictation:state` event. */
+export interface DictationStatus {
+  state: 'idle' | 'listening' | 'error';
+  provider: string | null;
+  error: DictationErrorPayload | null;
+}
+
+/** `dictation_stop` return / `dictation:draft` payload. `final` is
+ * serde-renamed from `finality` — only the authoritative stop draft
+ * arrives `final: true`. */
+export interface DictationDraftPayload {
+  text: string;
+  final: boolean;
+}
+
+/** Mic-only dictation into the Ask input — mutually exclusive with
+ * meeting Listen; the backend rejects a conflicting start either way. */
+export const dictationStart = () => invoke<DictationStatus>('dictation_start');
+
+/** Idempotent — resolves to the authoritative final draft (empty when
+ * nothing was dictated). */
+export const dictationStop = () =>
+  invoke<DictationDraftPayload>('dictation_stop');
+
+/** Live status for the bar's mount-time resync. */
+export const dictationStatus = () =>
+  invoke<DictationStatus>('dictation_status');
+
+// ---------------------------------------------------------------------------
 // windows
 // ---------------------------------------------------------------------------
 

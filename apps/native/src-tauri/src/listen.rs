@@ -14,7 +14,10 @@ use crate::keystore::Keystore;
 use crate::llm::{ChatMessage, Role};
 use crate::prompts::{summary_context, summary_system_prompt};
 use crate::storage::{Db, Transcript};
-use crate::stt::{make_stt_provider, Finality, SpeakerChannel, TranscriptEvent, WhisperProvider};
+use crate::stt::{
+    make_stt_provider, sanitize_provider_error, whisper_setup_error, Finality, SpeakerChannel,
+    TranscriptEvent, WhisperProvider,
+};
 
 const SILENCE: Duration = Duration::from_millis(1500);
 const SUMMARY_EVERY: usize = 5;
@@ -261,6 +264,14 @@ pub struct ListenStatus {
     pub error: Option<ListenError>,
 }
 
+impl ListenStatus {
+    /// `true` while a Listen session owns audio sources — `dictation_start`
+    /// reads this for the dictation/Listen mutual-exclusion check.
+    pub fn is_listening(&self) -> bool {
+        self.state == "listening"
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "kind", content = "payload")]
 pub enum ListenEvent {
@@ -295,17 +306,6 @@ pub struct ListenService {
     running: Mutex<Option<Running>>,
     db: Mutex<Option<Arc<Db>>>,
     history: Arc<Mutex<Vec<Transcript>>>,
-}
-
-fn whisper_setup_error(status: &crate::stt::WhisperStatus, model: &str) -> Option<&'static str> {
-    if status.binary.is_none() {
-        return Some("whisper-cli was not found; install it and try again");
-    }
-    let model_available = WhisperProvider::model_filename(model)
-        .ok()
-        .is_some_and(|filename| status.models.iter().any(|name| name == filename));
-    (!model_available)
-        .then_some("configured Whisper model was not found; choose an installed model in Settings")
 }
 
 impl ListenService {
@@ -703,14 +703,6 @@ fn format_previous_summary(summary: &ListenSummary) -> String {
         summary.bullets.join("; "),
         summary.follow_ups.join("; ")
     )
-}
-
-fn sanitize_provider_error(message: &str) -> String {
-    let mut sanitized = message.replace(['\n', '\r'], " ");
-    if sanitized.len() > 240 {
-        sanitized.truncate(240);
-    }
-    sanitized
 }
 
 fn build_summary_messages(history: &str, previous: Option<&str>) -> [ChatMessage; 2] {

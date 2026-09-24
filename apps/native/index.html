@@ -130,15 +130,17 @@
             class="boot-letter">s</span></span>
   </div>
   <script>
-    // Splash is bar-window chrome only — prefs/alert share this index.html
-    // and must never flash the wordmark. `.ready` holds the CSS write-on
-    // until Galada is actually usable, so letters never play in the
-    // fallback cursive. The script runs during parse, before first paint.
+    // Splash is bar-window chrome only — prefs/alert (and any future
+    // view sharing this index.html) must never flash the wordmark, so
+    // the gate whitelists `bar` rather than listing exclusions. `.ready`
+    // holds the CSS write-on until Galada is actually usable, so letters
+    // never play in the fallback cursive. The script runs during parse,
+    // before first paint.
     (function () {
       var s = document.getElementById('boot-splash');
       var v = new URLSearchParams(location.search).get('view');
       if (!s) return;
-      if (v === 'prefs' || v === 'alert') { s.remove(); return; }
+      if (v !== 'bar') { s.remove(); return; }
       s.classList.add('show');
       var ready = function () { s.classList.add('ready'); };
       document.fonts.load('24px Galada').then(ready, ready);

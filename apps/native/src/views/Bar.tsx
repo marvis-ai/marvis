@@ -51,7 +51,7 @@ import {
   windowShowSettings,
 } from '@/lib/commands';
 import { EV_BAR_TOGGLE_INPUT, useTauriEvent } from '@/lib/events';
-import { hasActiveWork } from '@/lib/bar-state';
+import { barControls, hasActiveWork } from '@/lib/bar-state';
 import { useBarActivity } from '@/hooks/useBarActivity';
 import { useCardGeometry } from '@/hooks/useCardGeometry';
 import { useDictation } from '@/hooks/useDictation';
@@ -124,6 +124,10 @@ const Bar = () => {
    *  `showInputRow` stays true — dictation keys off this. */
   const inputRendered =
     showInputRow && !bootError && gate !== 'needs_permission';
+  /** The row's control set for this surface — `bar-state.ts` owns the
+   *  contract, the conditionals below consume it so the two can't
+   *  drift. */
+  const controls = barControls(showInputRow);
 
   const dictation = useDictation({
     text,
@@ -142,7 +146,6 @@ const Bar = () => {
    *  their stronger active affordances on top of it. */
   const activeWork = hasActiveWork({
     ask: askState,
-    captureRunning,
     listen: listenState,
     dictation: dictation.state,
   });
@@ -282,16 +285,20 @@ const Bar = () => {
   const toggleCapture = () => {
     if (busy) return;
     setBusy(true);
-    const failure = captureRunning
-      ? 'Screen recording stop failed'
-      : 'Screen recording start failed';
-    const transition = captureRunning ? captureStop() : captureStart();
+    // The state this press is trying to reach — pinned at click time so
+    // a `capture:state` event flipping the flag mid-flight can't skew
+    // the failure check.
+    const wantRunning = !captureRunning;
+    const failure = wantRunning
+      ? 'Screen recording start failed'
+      : 'Screen recording stop failed';
+    const transition = wantRunning ? captureStart() : captureStop();
     void transition
       .then((next) => {
         // The commands resolve `{ running, frames }` rather than
-        // rejecting, so a failed transition comes back as the
-        // UNCHANGED flag — surface it, then resync as usual.
-        if (next.running === captureRunning) {
+        // rejecting, so a failed transition comes back short of the
+        // target — surface it, then resync as usual.
+        if (next.running !== wantRunning) {
           raise(failure);
         }
         setCaptureRunning(next.running);
@@ -434,7 +441,7 @@ const Bar = () => {
         {/* Collapsed-only recorders (`barControls(false)`): the screen
             capture toggle and meeting Listen. The expanded row renders
             neither — it gets dictation + settings instead. */}
-        {!showInputRow && (
+        {controls.includes('capture') && (
           <BarButton
             label={captureLabel}
             pressed={captureRunning}
@@ -445,9 +452,18 @@ const Bar = () => {
               captureRunning && 'bg-accent-soft text-accent',
             )}>
             <MonitorDotIcon className='size-5' />
+            {/* Recording badge — the shell pulse deliberately ignores
+                capture (it runs by default, so it would pulse
+                permanently); this corner ping carries the signal. */}
+            {captureRunning && (
+              <span
+                aria-hidden
+                className='animate-capture-ping absolute -top-0.5 -right-0.5 size-1.5 rounded-full bg-accent/50'
+              />
+            )}
           </BarButton>
         )}
-        {!showInputRow && (
+        {controls.includes('listen') && (
           <BarButton
             label={micLabel}
             pressed={listenState === 'listening'}
@@ -458,7 +474,7 @@ const Bar = () => {
         )}
         {/* Expanded-only dictation (`barControls(true)`) — the same
             `pressMic` route, landing on its `showInputRow` branch. */}
-        {showInputRow && (
+        {controls.includes('dictation') && (
           <BarButton
             label={micLabel}
             pressed={dictation.state === 'listening'}
@@ -473,7 +489,7 @@ const Bar = () => {
         {/* Only rendered in the input row — the idle capsule has no
             room for a fourth control (tray menu + Cmd+, reach it
             anyway). */}
-        {showInputRow && (
+        {controls.includes('settings') && (
           <BarButton
             label='Settings'
             title='Settings (⌘,)'

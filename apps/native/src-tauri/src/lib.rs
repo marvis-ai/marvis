@@ -700,7 +700,12 @@ fn window_pref_value(value: &serde_json::Value) -> Result<Option<f64>, String> {
 /// drag/snap/morph settle, not per pixel. Broadcasts `config:changed`
 /// like any other write.
 pub(crate) fn persist_bar_position(app: &AppHandle) {
-    let state = app.state::<AppState>();
+    // The bar's `Moved` handler registers before `app.manage(AppState)`
+    // — a debounced write that fires inside that gap must not panic on
+    // the missing state (the next move persists anyway).
+    let Some(state) = app.try_state::<AppState>() else {
+        return;
+    };
     // The idle capsule rect, not the live one: a drag while the bar is
     // expanded (600) must persist the capsule's anchor, else relaunch
     // shifts the capsule left by half the expansion.
@@ -1341,7 +1346,7 @@ fn sherpa_remove_model(
     let entry =
         sherpa_models::entry_for_id(&model).ok_or_else(|| "Unknown voice model".to_string())?;
     let selected = if state.config.lock().models.stt_provider == "sherpa" {
-        sherpa_models::entry_for_value(&state.config.lock().models.stt_model).map(|e| e.id)
+        sherpa_models::stt_entry_for_value(&state.config.lock().models.stt_model).map(|e| e.id)
     } else {
         None
     };

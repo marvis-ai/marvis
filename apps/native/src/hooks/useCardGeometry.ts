@@ -36,6 +36,10 @@ export const useCardGeometry = (
   const [cardOpen, setCardOpen] = useState(
     () => window.innerHeight > BAR_H + OPEN_EPS,
   );
+  /** Mutable mirror of `cardOpen` — the expand-direction compare needs
+   *  the pre-transition value without a side-effecting state updater
+   *  (StrictMode double-invokes updaters). */
+  const cardOpenRef = useRef(cardOpen);
   const [growDir, setGrowDir] = useState<'up' | 'down'>('down');
   /** Last collapsed-mode outer y — the baseline the expand direction
    *  is detected against. */
@@ -60,17 +64,19 @@ export const useCardGeometry = (
           if (!alive) {
             return;
           }
-          setCardOpen((was) => {
-            if (openNow && !was && collapsedY.current !== null) {
-              setGrowDir(p.y < collapsedY.current - 0.5 ? 'up' : 'down');
-            }
-            return openNow;
-          });
+          if (openNow && !cardOpenRef.current && collapsedY.current !== null) {
+            setGrowDir(p.y < collapsedY.current - 0.5 ? 'up' : 'down');
+          }
           if (!openNow) {
             collapsedY.current = p.y;
           }
+          cardOpenRef.current = openNow;
+          setCardOpen(openNow);
         })
-        .catch(() => setCardOpen(openNow));
+        .catch(() => {
+          cardOpenRef.current = openNow;
+          setCardOpen(openNow);
+        });
     };
     window.addEventListener('resize', read);
     read();

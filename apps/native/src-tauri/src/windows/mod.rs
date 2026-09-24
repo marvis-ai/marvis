@@ -202,11 +202,14 @@ impl WindowPool {
                         if movement::is_animating(BAR_LABEL) {
                             return;
                         }
-                        app_resized
-                            .state::<crate::AppState>()
-                            .pool
-                            .lock()
-                            .enforce_bar_bounds();
+                        // This handler registers before `app.manage(AppState)`
+                        // (setup order) — a `Resized` delivered inside
+                        // `position_bar_at_startup` must not panic on the
+                        // missing state.
+                        let Some(state) = app_resized.try_state::<crate::AppState>() else {
+                            return;
+                        };
+                        state.pool.lock().enforce_bar_bounds();
                     }
                     _ => {}
                 }
@@ -661,9 +664,11 @@ impl WindowPool {
     /// the width axis makes AppKit drop the horizontal affordance and
     /// clamps the drag itself (`enforce_bar_bounds` stays as the
     /// backstop). An open card keeps a free height axis within
-    /// `[BAR_H + MIN_CHAT_H, work height]` so the ↕ cursor remains
-    /// honest. Programmatic `set_size` ignores these limits, so the
-    /// morph animations are unaffected.
+    /// `[BAR_H + MIN_CHAT_H, free space in the grow direction]` — the
+    /// same bound `expanded_rect` applies, so an edge-drag can't pull
+    /// the card past the work-area edge it grows toward. Programmatic
+    /// `set_size` ignores these limits, so the morph animations are
+    /// unaffected.
     fn sync_bar_size_limits(&self) {
         let Some(bar) = &self.bar else { return };
         // `bar_rect` still holds the DEFAULT_WORK sentinel until
@@ -673,10 +678,16 @@ impl WindowPool {
             return;
         }
         let (w, min_h, max_h) = if self.chat_open {
+            let work = self.bar_work_area();
+            let free = if self.expand_dir == Dir::Up {
+                self.bar_rect.bottom() - work.y
+            } else {
+                work.bottom() - self.bar_rect.y
+            };
             (
                 layout::EXPANDED_W,
                 BAR_H + layout::MIN_CHAT_H,
-                self.bar_work_area().h,
+                free.max(BAR_H + layout::MIN_CHAT_H),
             )
         } else {
             (self.bar_rect.w, BAR_H, BAR_H)
@@ -688,8 +699,9 @@ impl WindowPool {
     /// Snap the bar back to its canonical bounds after a stray user
     /// resize — macOS 26 edge-drags resize borderless windows even with
     /// `resizable(false)`. The pill is fixed-size and restores whole;
-    /// the open card restores only x/width (an edge-drag always changes
-    /// `w`), keeping the dragged height the webview adopts through
+    /// the open card restores x/width and re-pins the anchored edge
+    /// (an edge-drag always changes `w`, and a corner drag can move
+    /// `y` too), keeping the dragged height the webview adopts through
     /// `window_adjust_height`. Called on `Resized` when no animation is
     /// in flight.
     fn enforce_bar_bounds(&self) {
@@ -707,10 +719,19 @@ impl WindowPool {
                 return;
             }
             let target = self.target_rect();
+            // Re-pin the anchored edge: grow-down keeps the pill's top,
+            // grow-up keeps its bottom — otherwise a corner drag leaves
+            // the card detached until the next `window_adjust_height`.
+            let y = if self.expand_dir == Dir::Up {
+                target.bottom() - live.h
+            } else {
+                target.y
+            };
             set_rect(
                 bar,
                 Rect {
                     x: target.x,
+                    y,
                     w: target.w,
                     ..live
                 },
@@ -754,7 +775,8 @@ impl WindowPool {
 /// then `set_visible_on_all_workspaces`, `set_content_protected`, and the
 /// liquid-glass material. `corner_radius` matches the surface's CSS radius —
 /// the glass view fills the window, so its shape IS the surface shape.
-/// `app.accent` (`#rrggbb`) at 20% alpha → the bar's glass `tint_color`.
+/// `app.accent` (`#rrggbb`) at 8% alpha (`{accent}15`) → the bar's glass
+/// `tint_color`.
 /// The alpha is load-bearing: the pre-26 `NSVisualEffectView` fallback
 /// paints the tint as an overlay fill, so an opaque value would bury
 /// the vibrancy entirely — and even on glass, a stronger tint reads

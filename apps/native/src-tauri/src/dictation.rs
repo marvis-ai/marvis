@@ -221,6 +221,7 @@ impl DictationService {
             model,
             SpeakerChannel::Me,
             bundled_whisper,
+            false,
         ) {
             Ok(stt) => stt,
             Err(error) => {
@@ -544,6 +545,7 @@ mod tests {
             channel,
             text: text.into(),
             finality,
+            speaker_idx: None,
         }
     }
 

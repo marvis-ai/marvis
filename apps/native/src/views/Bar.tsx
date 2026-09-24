@@ -474,6 +474,10 @@ const Bar = () => {
         )}
         {/* Expanded-only dictation (`barControls(true)`) — the same
             `pressMic` route, landing on its `showInputRow` branch. */}
+        {showInputRow && dictation.state === 'listening' && (
+          <DictationWaveform />
+        )}
+
         {controls.includes('dictation') && (
           <BarButton
             label={micLabel}
@@ -483,9 +487,7 @@ const Bar = () => {
             <MicIcon className='size-5' />
           </BarButton>
         )}
-        {showInputRow && dictation.state === 'listening' && (
-          <DictationWaveform />
-        )}
+
         {/* Only rendered in the input row — the idle capsule has no
             room for a fourth control (tray menu + Cmd+, reach it
             anyway). */}

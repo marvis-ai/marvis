@@ -12,7 +12,7 @@
 //! ```sql
 //! sessions(id PK, type 'ask'|'listen', title?, started_at, ended_at?, last_active_at)
 //! messages(id PK, session_id FK → sessions.id ON DELETE CASCADE, role, content, ts)
-//! transcripts(id PK, session_id FK → sessions.id ON DELETE CASCADE, speaker, content, ts, audio_file?)
+//! transcripts(id PK, session_id FK → sessions.id ON DELETE CASCADE, speaker, speaker_idx?, content, ts, audio_file?)
 //! summaries(id PK, session_id FK → sessions.id ON DELETE CASCADE, tldr, bullets, follow_ups, topic?, ts)
 //! ```
 //!
@@ -51,12 +51,13 @@ const SCHEMA: &str = "
     );
 
     CREATE TABLE IF NOT EXISTS transcripts (
-        id         INTEGER PRIMARY KEY,
-        session_id INTEGER NOT NULL,
-        speaker    TEXT NOT NULL,
-        content    TEXT NOT NULL,
-        ts         INTEGER NOT NULL,
-        audio_file TEXT,
+        id          INTEGER PRIMARY KEY,
+        session_id  INTEGER NOT NULL,
+        speaker     TEXT NOT NULL,
+        speaker_idx INTEGER,
+        content     TEXT NOT NULL,
+        ts          INTEGER NOT NULL,
+        audio_file  TEXT,
         FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
     );
 
@@ -103,6 +104,9 @@ pub struct Transcript {
     pub id: i64,
     pub session_id: i64,
     pub speaker: String,
+    /// Diarized voice cluster within `speaker`'s channel — `NULL` when the
+    /// session ran without diarization or the turn was unlabelable.
+    pub speaker_idx: Option<i64>,
     pub content: String,
     pub ts: i64,
     pub audio_file: Option<String>,
@@ -280,13 +284,21 @@ impl Db {
         speaker: &str,
         content: &str,
         audio_file: Option<&str>,
+        speaker_idx: Option<u32>,
     ) -> anyhow::Result<i64> {
         let conn = self.conn.lock();
         let ts = now();
         conn.execute(
-            "INSERT INTO transcripts (session_id, speaker, content, ts, audio_file)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![session_id, speaker, content, ts, audio_file],
+            "INSERT INTO transcripts (session_id, speaker, speaker_idx, content, ts, audio_file)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                session_id,
+                speaker,
+                speaker_idx.map(i64::from),
+                content,
+                ts,
+                audio_file
+            ],
         )?;
         conn.execute(
             "UPDATE sessions SET last_active_at = ?1 WHERE id = ?2",
@@ -303,7 +315,7 @@ impl Db {
     ) -> anyhow::Result<Vec<Transcript>> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
-            "SELECT id, session_id, speaker, content, ts, audio_file FROM transcripts
+            "SELECT id, session_id, speaker, speaker_idx, content, ts, audio_file FROM transcripts
              WHERE session_id = ?1 ORDER BY ts ASC, id ASC LIMIT ?2",
         )?;
         let rows = stmt.query_map(
@@ -313,9 +325,10 @@ impl Db {
                     id: row.get(0)?,
                     session_id: row.get(1)?,
                     speaker: row.get(2)?,
-                    content: row.get(3)?,
-                    ts: row.get(4)?,
-                    audio_file: row.get(5)?,
+                    speaker_idx: row.get(3)?,
+                    content: row.get(4)?,
+                    ts: row.get(5)?,
+                    audio_file: row.get(6)?,
                 })
             },
         )?;
@@ -334,7 +347,7 @@ impl Db {
         }
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
-            "SELECT id, session_id, speaker, content, ts, audio_file FROM transcripts
+            "SELECT id, session_id, speaker, speaker_idx, content, ts, audio_file FROM transcripts
              WHERE session_id = ?1 ORDER BY ts DESC, id DESC LIMIT ?2",
         )?;
         let rows = stmt.query_map(params![session_id, limit as i64], |row| {
@@ -342,9 +355,10 @@ impl Db {
                 id: row.get(0)?,
                 session_id: row.get(1)?,
                 speaker: row.get(2)?,
-                content: row.get(3)?,
-                ts: row.get(4)?,
-                audio_file: row.get(5)?,
+                speaker_idx: row.get(3)?,
+                content: row.get(4)?,
+                ts: row.get(5)?,
+                audio_file: row.get(6)?,
             })
         })?;
         let mut rows = rows.collect::<rusqlite::Result<Vec<_>>>()?;
@@ -455,6 +469,9 @@ fn migrate(conn: &Connection) -> anyhow::Result<()> {
         }
         if !has("audio_file") {
             conn.execute_batch("ALTER TABLE transcripts ADD COLUMN audio_file TEXT")?;
+        }
+        if !has("speaker_idx") {
+            conn.execute_batch("ALTER TABLE transcripts ADD COLUMN speaker_idx INTEGER")?;
         }
     }
     Ok(())
@@ -575,9 +592,9 @@ mod tests {
         let db = Db::at(dir.join("marvis.db")).unwrap();
         let sid = db.session_get_or_create_active("listen").unwrap();
 
-        db.transcript_add(sid, "me", "hello", None).unwrap();
-        db.transcript_add(sid, "them", "hi there", None).unwrap();
-        db.transcript_add(sid, "me", "follow-up", None).unwrap();
+        db.transcript_add(sid, "me", "hello", None, None).unwrap();
+        db.transcript_add(sid, "them", "hi there", None, None).unwrap();
+        db.transcript_add(sid, "me", "follow-up", None, None).unwrap();
 
         let transcripts = db.transcripts_for(sid, None).unwrap();
         assert_eq!(transcripts.len(), 3);
@@ -604,7 +621,7 @@ mod tests {
         let db = Db::at(dir.join("marvis.db")).unwrap();
         let sid = db.session_get_or_create_active("listen").unwrap();
         for id in 0..25 {
-            db.transcript_add(sid, "me", &format!("turn-{id}"), None)
+            db.transcript_add(sid, "me", &format!("turn-{id}"), None, None)
                 .unwrap();
         }
 
@@ -667,7 +684,7 @@ mod tests {
         let dir = tmp_dir();
         let db = Db::at(dir.join("marvis.db")).unwrap();
         let sid = db.session_get_or_create_active("listen").unwrap();
-        db.transcript_add(sid, "me", "hello", None).unwrap();
+        db.transcript_add(sid, "me", "hello", None, None).unwrap();
         db.summary_add(sid, "Summary", &[], &[], None).unwrap();
 
         db.session_delete(sid).unwrap();
@@ -817,7 +834,7 @@ mod tests {
         assert_eq!(transcripts[0].content, "old turn");
         assert!(transcripts[0].audio_file.is_none());
         // New writes hit the upgraded columns.
-        db.transcript_add(1, "them", "new turn", Some("/tmp/seg.wav"))
+        db.transcript_add(1, "them", "new turn", Some("/tmp/seg.wav"), None)
             .unwrap();
         let transcripts = db.transcripts_for(1, None).unwrap();
         assert_eq!(transcripts[1].audio_file.as_deref(), Some("/tmp/seg.wav"));

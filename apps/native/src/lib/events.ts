@@ -51,6 +51,9 @@ export interface ListenStatePayload {
 }
 export interface ListenTurnPayload {
   speaker: 'me' | 'them';
+  /** Diarized voice cluster within `speaker`'s channel — null when
+   * diarization is off or the turn was unlabelable. */
+  speaker_idx: number | null;
   text: string;
   ts: number;
   session_id: number;

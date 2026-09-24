@@ -51,6 +51,7 @@ pub struct WhisperProvider {
     model: String,
     channel: SpeakerChannel,
     binary: Option<PathBuf>,
+    diarize: bool,
     input: Option<mpsc::SyncSender<PcmChunk>>,
     stop: Arc<AtomicBool>,
     child: Arc<Mutex<Option<Child>>>,
@@ -58,11 +59,17 @@ pub struct WhisperProvider {
 }
 
 impl WhisperProvider {
-    pub fn new(model: impl Into<String>, channel: SpeakerChannel, bundled: Option<&Path>) -> Self {
+    pub fn new(
+        model: impl Into<String>,
+        channel: SpeakerChannel,
+        bundled: Option<&Path>,
+        diarize: bool,
+    ) -> Self {
         Self {
             model: model.into(),
             channel,
             binary: Self::discover_with_bundled(bundled).map(|(path, _)| path),
+            diarize,
             input: None,
             stop: Arc::new(AtomicBool::new(false)),
             child: Arc::new(Mutex::new(None)),
@@ -149,6 +156,7 @@ impl SttProvider for WhisperProvider {
         let stop = Arc::clone(&self.stop);
         let child = Arc::clone(&self.child);
         let channel = self.channel;
+        let diarize = self.diarize;
         self.worker = Some(thread::spawn(move || {
             run_chunks(
                 receiver,
@@ -157,6 +165,7 @@ impl SttProvider for WhisperProvider {
                 binary,
                 model,
                 channel,
+                diarize,
                 stop,
                 child,
             )
@@ -201,9 +210,15 @@ fn run_chunks(
     binary: PathBuf,
     model: PathBuf,
     channel: SpeakerChannel,
+    diarize: bool,
     stop: Arc<AtomicBool>,
     child_slot: Arc<Mutex<Option<Child>>>,
 ) {
+    // Diarization is progressive enhancement: a missing/unloadable
+    // embedding model leaves `speaker_idx` unset rather than failing STT.
+    let mut tracker = diarize
+        .then(crate::stt::speaker::tracker_if_installed)
+        .flatten();
     let mut buffer = Vec::with_capacity(WINDOW_SAMPLES);
     let mut consecutive_failures = 0;
     while !stop.load(Ordering::Acquire) {
@@ -228,10 +243,13 @@ fn run_chunks(
             ) {
                 Ok(Some(text)) => {
                     consecutive_failures = 0;
+                    let f32_samples: Vec<f32> =
+                        window.iter().map(|s| f32::from(*s) / 32_768.0).collect();
                     callback(TranscriptEvent {
                         channel,
                         text,
                         finality: Finality::Final,
+                        speaker_idx: tracker.as_mut().and_then(|t| t.assign(&f32_samples)),
                     });
                 }
                 Ok(None) => consecutive_failures = 0,
@@ -589,6 +607,7 @@ mod tests {
             PathBuf::from("/missing/whisper-cli"),
             PathBuf::from("/missing/model.bin"),
             SpeakerChannel::Me,
+            false,
             Arc::new(AtomicBool::new(false)),
             Arc::new(Mutex::new(None)),
         );

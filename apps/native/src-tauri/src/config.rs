@@ -93,7 +93,7 @@ pub(crate) fn validate_whisper_model(value: &str) -> Result<String, String> {
 }
 
 pub(crate) fn validate_sherpa_model(value: &str) -> Result<String, String> {
-    crate::sherpa_models::entry_for_value(value.trim())
+    crate::sherpa_models::stt_entry_for_value(value.trim())
         .map(|entry| entry.id.as_str().to_string())
         .ok_or_else(|| format!("unknown Sherpa model {value:?}"))
 }
@@ -130,12 +130,12 @@ pub(crate) fn apply_stt_config(
                 models.stt_model = "tiny".to_string();
             } else if provider == "deepgram"
                 && (entry_for_value(&models.stt_model).is_some()
-                    || crate::sherpa_models::entry_for_value(&models.stt_model).is_some())
+                    || crate::sherpa_models::stt_entry_for_value(&models.stt_model).is_some())
             {
                 models.stt_model = "nova-2".to_string();
             }
             if provider == "sherpa"
-                && crate::sherpa_models::entry_for_value(&models.stt_model).is_none()
+                && crate::sherpa_models::stt_entry_for_value(&models.stt_model).is_none()
             {
                 models.stt_model = "sense-voice".to_string();
             }

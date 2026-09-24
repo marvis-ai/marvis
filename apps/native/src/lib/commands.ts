@@ -145,6 +145,9 @@ export interface Transcript {
   id: number;
   session_id: number;
   speaker: 'me' | 'them';
+  /** Diarized voice cluster within `speaker`'s channel — null when the
+   * session ran without diarization or the turn was unlabelable. */
+  speaker_idx: number | null;
   content: string;
   ts: number;
   audio_file: string | null;
@@ -303,6 +306,9 @@ export interface SherpaInstalledModel {
   description: string;
   bytes: number;
   source: string;
+  /** What the model is for — only `stt` entries may be selected as the
+   * transcription model; `speaker-embedding` feeds diarization. */
+  kind: 'stt' | 'speaker-embedding';
   installed: boolean;
 }
 

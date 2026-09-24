@@ -21,11 +21,30 @@ const SIZE_TOLERANCE_PERCENT: u64 = 10;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SherpaModelId {
     SenseVoice,
+    SpeakerEmbedding,
 }
 impl SherpaModelId {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::SenseVoice => "sense-voice",
+            Self::SpeakerEmbedding => "speaker-id",
+        }
+    }
+}
+
+/// What a catalog entry is for. STT entries can be selected as the
+/// transcription model; `SpeakerEmbedding` entries only feed speaker
+/// diarization and must never appear as a selectable STT model.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SherpaModelKind {
+    Stt,
+    SpeakerEmbedding,
+}
+impl SherpaModelKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Stt => "stt",
+            Self::SpeakerEmbedding => "speaker-embedding",
         }
     }
 }
@@ -48,6 +67,7 @@ pub struct SherpaCatalogEntry {
     pub description: &'static str,
     pub files: &'static [SherpaFileSpec],
     pub source: &'static str,
+    pub kind: SherpaModelKind,
 }
 
 const SENSE_VOICE_FILES: &[SherpaFileSpec] = &[
@@ -71,14 +91,33 @@ const SENSE_VOICE_FILES: &[SherpaFileSpec] = &[
     },
 ];
 
-const CATALOG: [SherpaCatalogEntry; 1] = [SherpaCatalogEntry {
-    id: SherpaModelId::SenseVoice,
-    dirname: "sense-voice",
-    label: "SenseVoice",
-    description: "Multilingual SenseVoice recognition (zh/en/ja/ko/yue) segmented by Silero VAD.",
-    files: SENSE_VOICE_FILES,
-    source: CATALOG_SOURCE,
+const SPEAKER_EMBEDDING_FILES: &[SherpaFileSpec] = &[SherpaFileSpec {
+    filename: "3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx",
+    url: "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx",
+    bytes: 28_281_164,
+    sha256: "aa3cfc16963a10586a9393f5035d6d6b57e98d358b347f80c2a30bf4f00ceba2",
 }];
+
+const CATALOG: [SherpaCatalogEntry; 2] = [
+    SherpaCatalogEntry {
+        id: SherpaModelId::SenseVoice,
+        dirname: "sense-voice",
+        label: "SenseVoice",
+        description: "Multilingual SenseVoice recognition (zh/en/ja/ko/yue) segmented by Silero VAD.",
+        files: SENSE_VOICE_FILES,
+        source: CATALOG_SOURCE,
+        kind: SherpaModelKind::Stt,
+    },
+    SherpaCatalogEntry {
+        id: SherpaModelId::SpeakerEmbedding,
+        dirname: "speaker-id",
+        label: "Speaker ID",
+        description: "Speaker embeddings for diarization — labels distinct voices in the transcript.",
+        files: SPEAKER_EMBEDDING_FILES,
+        source: CATALOG_SOURCE,
+        kind: SherpaModelKind::SpeakerEmbedding,
+    },
+];
 
 pub const fn catalog() -> &'static [SherpaCatalogEntry] {
     &CATALOG
@@ -108,9 +147,21 @@ fn entry_for_dirname(value: &str) -> Option<&'static SherpaCatalogEntry> {
 pub fn entry_for_value(value: &str) -> Option<&'static SherpaCatalogEntry> {
     entry_for_id(value).or_else(|| entry_for_dirname(value))
 }
+/// STT-selectable subset of `entry_for_value` — non-transcription entries
+/// (speaker embeddings) resolve to `None` here so they can never be stored
+/// as `models.stt_model`.
+pub fn stt_entry_for_value(value: &str) -> Option<&'static SherpaCatalogEntry> {
+    entry_for_value(value).filter(|entry| entry.kind == SherpaModelKind::Stt)
+}
 /// `root/<dirname>/` — the directory that owns every file of an entry.
 pub fn entry_dir(root: &Path, entry: &SherpaCatalogEntry) -> PathBuf {
     root.join(entry.dirname)
+}
+/// Path to the speaker-embedding ONNX when its catalog entry is installed.
+pub fn speaker_embedding_model_path(root: &Path) -> Option<PathBuf> {
+    let entry = entry_for_id(SherpaModelId::SpeakerEmbedding.as_str())?;
+    let path = entry_dir(root, entry).join(entry.files[0].filename);
+    path.is_file().then_some(path)
 }
 /// An entry is installed only when its entire file set is present.
 pub fn entry_installed_at(root: &Path, entry: &SherpaCatalogEntry) -> bool {
@@ -135,6 +186,7 @@ pub struct SherpaInstalledModel {
     pub description: &'static str,
     pub bytes: u64,
     pub source: &'static str,
+    pub kind: &'static str,
     pub installed: bool,
 }
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -220,15 +272,15 @@ impl SherpaModelManager {
         }
     }
     #[cfg(test)]
-    fn with_test_files(root: PathBuf, files: Vec<TestSource>) -> Self {
+    fn with_test_files(root: PathBuf, model: SherpaModelId, files: Vec<TestSource>) -> Self {
         // `download()` consumes the override positionally, one `TestSource`
-        // per entry file — a short vec would silently fall back to the pinned
-        // production URLs, so require a complete set at construction.
-        assert!(
-            catalog()
-                .iter()
-                .all(|entry| files.len() == entry.files.len()),
-            "test override must supply one TestSource per file of the catalog entry"
+        // per file of the downloaded entry — a short vec would silently fall
+        // back to the pinned production URLs, so require a complete set for
+        // the entry this test intends to download.
+        assert_eq!(
+            files.len(),
+            entry_for_id(model.as_str()).map_or(0, |entry| entry.files.len()),
+            "test override must supply one TestSource per file of the downloaded entry"
         );
         let mut manager = Self::at(root);
         manager.test_files = Some(files);
@@ -266,6 +318,7 @@ impl SherpaModelManager {
                     description: e.description,
                     bytes: entry_bytes(e),
                     source: e.source,
+                    kind: e.kind.as_str(),
                     installed: entry_installed_at(&self.root, e),
                 })
                 .collect(),
@@ -586,11 +639,12 @@ mod tests {
     use sha2::{Digest, Sha256};
 
     #[test]
-    fn catalog_is_the_approved_sense_voice_file_set() {
-        assert_eq!(catalog().len(), 1);
+    fn catalog_is_the_approved_file_set() {
+        assert_eq!(catalog().len(), 2);
         let entry = &catalog()[0];
         assert_eq!(entry.id.as_str(), "sense-voice");
         assert_eq!(entry.dirname, "sense-voice");
+        assert_eq!(entry.kind, SherpaModelKind::Stt);
         assert_eq!(
             entry.files.iter().map(|f| f.filename).collect::<Vec<_>>(),
             ["model.int8.onnx", "tokens.txt", "silero_vad.onnx"]
@@ -598,6 +652,29 @@ mod tests {
         assert!(entry.files.iter().all(|f| f.url.starts_with("https://")
             && f.sha256.len() == 64
             && f.sha256.chars().all(|c| c.is_ascii_hexdigit())));
+        let speaker = &catalog()[1];
+        assert_eq!(speaker.id.as_str(), "speaker-id");
+        assert_eq!(speaker.dirname, "speaker-id");
+        assert_eq!(speaker.kind, SherpaModelKind::SpeakerEmbedding);
+        assert_eq!(speaker.files.len(), 1);
+        assert!(speaker.files.iter().all(|f| f.url.starts_with("https://")
+            && f.sha256.len() == 64
+            && f.sha256.chars().all(|c| c.is_ascii_hexdigit())));
+    }
+
+    /// The embedding model must never be selectable as the transcription
+    /// model — `stt_entry_for_value` filters non-STT entries while the
+    /// general lookup still resolves them for download/remove.
+    #[test]
+    fn speaker_embedding_is_downloadable_but_never_an_stt_model() {
+        assert!(entry_for_value("speaker-id").is_some());
+        assert!(stt_entry_for_value("speaker-id").is_none());
+        assert!(stt_entry_for_value("sense-voice").is_some());
+        assert!(crate::config::validate_sherpa_model("speaker-id").is_err());
+        assert_eq!(
+            crate::config::validate_sherpa_model("sense-voice").unwrap(),
+            "sense-voice"
+        );
     }
 
     #[test]
@@ -640,6 +717,7 @@ mod tests {
                 description: "d",
                 bytes: 1,
                 source: CATALOG_SOURCE,
+                kind: "stt",
                 installed: true,
             }],
             download: None,
@@ -729,7 +807,7 @@ mod tests {
             fixture(b"sync start tokens".to_vec(), Duration::from_millis(100)),
             fixture(b"sync start vad".to_vec(), Duration::from_millis(100)),
         ];
-        let manager = SherpaModelManager::with_test_files(root.clone(), sources);
+        let manager = SherpaModelManager::with_test_files(root.clone(), SherpaModelId::SenseVoice, sources);
 
         manager.start_download(SherpaModelId::SenseVoice).unwrap();
         tauri::async_runtime::block_on(manager.cancel_download()).unwrap();
@@ -752,7 +830,7 @@ mod tests {
         assert!(sources[0].url.starts_with("http://127.0.0.1:"));
         let root = temp_root();
         let dir = entry_dir(&root, &catalog()[0]);
-        let manager = SherpaModelManager::with_test_files(root.clone(), sources);
+        let manager = SherpaModelManager::with_test_files(root.clone(), SherpaModelId::SenseVoice, sources);
         manager.start_download(SherpaModelId::SenseVoice).unwrap();
         assert!(matches!(
             manager.start_download(SherpaModelId::SenseVoice),
@@ -768,7 +846,7 @@ mod tests {
         fs::write(dir.join("model.int8.onnx"), b"keep me").unwrap();
         let mut bad_sources = fixture_set(&bodies, Duration::ZERO);
         bad_sources[0].sha256 = "00".repeat(32);
-        let bad = SherpaModelManager::with_test_files(root.clone(), bad_sources);
+        let bad = SherpaModelManager::with_test_files(root.clone(), SherpaModelId::SenseVoice, bad_sources);
         bad.start_download(SherpaModelId::SenseVoice).unwrap();
         while bad.status().download.is_some() {
             tokio::task::yield_now().await;
@@ -779,7 +857,7 @@ mod tests {
         // A size far outside the ±10% band aborts the install as well.
         let mut bad_size_sources = fixture_set(&bodies, Duration::ZERO);
         bad_size_sources[0].bytes = u64::MAX / 2;
-        let bad_size = SherpaModelManager::with_test_files(root.clone(), bad_size_sources);
+        let bad_size = SherpaModelManager::with_test_files(root.clone(), SherpaModelId::SenseVoice, bad_size_sources);
         bad_size.start_download(SherpaModelId::SenseVoice).unwrap();
         while bad_size.status().download.is_some() {
             tokio::task::yield_now().await;
@@ -789,7 +867,7 @@ mod tests {
 
         // Success requires every file in the set to land, content intact.
         let success_sources = fixture_set(&bodies, Duration::ZERO);
-        let success = SherpaModelManager::with_test_files(root.clone(), success_sources);
+        let success = SherpaModelManager::with_test_files(root.clone(), SherpaModelId::SenseVoice, success_sources);
         success.start_download(SherpaModelId::SenseVoice).unwrap();
         while success.status().download.is_some() {
             tokio::task::yield_now().await;
@@ -850,7 +928,7 @@ mod tests {
             b"fixture c".to_vec(),
         ];
         let sources = fixture_set(&bodies, Duration::from_millis(100));
-        let manager = SherpaModelManager::with_test_files(root.clone(), sources);
+        let manager = SherpaModelManager::with_test_files(root.clone(), SherpaModelId::SenseVoice, sources);
         manager.start_download(SherpaModelId::SenseVoice).unwrap();
         assert!(matches!(
             manager.remove_model(SherpaModelId::SenseVoice),
@@ -865,7 +943,7 @@ mod tests {
         let root = temp_root();
         let bodies = [b"race a".to_vec(), b"race b".to_vec(), b"race c".to_vec()];
         let sources = fixture_set(&bodies, Duration::ZERO);
-        let manager = Arc::new(SherpaModelManager::with_test_files(root.clone(), sources));
+        let manager = Arc::new(SherpaModelManager::with_test_files(root.clone(), SherpaModelId::SenseVoice, sources));
         manager.start_download(SherpaModelId::SenseVoice).unwrap();
         let canceller = Arc::clone(&manager);
         canceller.cancel_download().await.unwrap();
@@ -897,7 +975,7 @@ mod tests {
             b"fixture c".to_vec(),
         ];
         let sources = fixture_set(&bodies, Duration::from_millis(100));
-        let manager = SherpaModelManager::with_test_files(root.clone(), sources);
+        let manager = SherpaModelManager::with_test_files(root.clone(), SherpaModelId::SenseVoice, sources);
         manager.start_download(SherpaModelId::SenseVoice).unwrap();
         manager.cancel_download().await.unwrap();
         assert_eq!(fs::read(tmp).unwrap(), b"owned by someone else");

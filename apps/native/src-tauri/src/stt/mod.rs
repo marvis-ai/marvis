@@ -4,10 +4,12 @@ use crate::audio::PcmChunk;
 
 mod deepgram;
 mod sherpa;
+pub mod speaker;
 mod whisper;
 
 pub use deepgram::DeepgramProvider;
 pub use sherpa::SherpaProvider;
+pub use speaker::{tracker_if_installed, SpeakerTracker};
 pub use whisper::{WhisperBinarySource, WhisperBinaryStatus, WhisperProvider, WhisperStatus};
 
 /// The source channel represented by a transcript event.
@@ -25,22 +27,28 @@ pub enum Finality {
 }
 
 /// A normalized transcript emitted by an STT provider.
+/// `speaker_idx` is the diarized voice cluster within `channel` —
+/// `None` when speaker diarization is off or the segment was unlabelable.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TranscriptEvent {
     pub channel: SpeakerChannel,
     pub text: String,
     pub finality: Finality,
+    pub speaker_idx: Option<u32>,
 }
 
 /// Platform-independent speech-to-text provider.
 /// Construct the configured provider. Callers retrieve the Deepgram key from
 /// `Keystore` and pass it here; this module never accesses the keystore.
+/// `diarize` enables per-segment speaker clustering for the local
+/// providers — it degrades silently when the embedding model is absent.
 pub fn make_stt_provider(
     provider: &str,
     key: Option<String>,
     model: String,
     channel: SpeakerChannel,
     bundled_whisper: Option<&std::path::Path>,
+    diarize: bool,
 ) -> anyhow::Result<Box<dyn SttProvider>> {
     match provider {
         "deepgram" => Ok(Box::new(DeepgramProvider::new(
@@ -52,8 +60,9 @@ pub fn make_stt_provider(
             model,
             channel,
             bundled_whisper,
+            diarize,
         ))),
-        "sherpa" => Ok(Box::new(SherpaProvider::new(&model, channel))),
+        "sherpa" => Ok(Box::new(SherpaProvider::new(&model, channel, diarize))),
         _ => anyhow::bail!("unsupported STT provider: {provider}"),
     }
 }
@@ -118,7 +127,7 @@ pub(crate) fn stt_setup_error(
 /// partially downloaded model is a user-fixable setup error. Messages are
 /// curated; they never include paths or engine details.
 fn sherpa_setup_error_at(root: &std::path::Path, model: &str) -> Option<&'static str> {
-    let Some(entry) = crate::sherpa_models::entry_for_value(model) else {
+    let Some(entry) = crate::sherpa_models::stt_entry_for_value(model) else {
         return Some(
             "configured Sherpa model was not found; choose an installed model in Settings",
         );
@@ -154,6 +163,7 @@ mod tests {
             channel: SpeakerChannel::Me,
             text: "hello".to_string(),
             finality: Finality::Final,
+            speaker_idx: None,
         };
         assert_eq!(event.channel, SpeakerChannel::Me);
         assert_eq!(event.finality, Finality::Final);

@@ -31,6 +31,13 @@
   --input-well: color-mix(in oklch, var(--fg) 4%, transparent);
   --focus-ring: 0 0 0 3px color-mix(in oklch, var(--accent) 45%, transparent);
 
+  /* Diarized speaker identity hues — equal lightness/chroma, spaced hues,
+   * so no label reads as "the important one". "You" stays --accent. */
+  --speaker-1: oklch(0.55 0.12 160); /* teal-green */
+  --speaker-2: oklch(0.62 0.12 60); /* amber */
+  --speaker-3: oklch(0.56 0.15 355); /* rose */
+  --speaker-4: oklch(0.55 0.12 295); /* violet */
+
   --ease: cubic-bezier(0.2, 0, 0, 1);
   --motion-fast: 150ms;
   --motion-base: 200ms;
@@ -74,6 +81,10 @@
   /* error text mixes toward white on dark */
   --destructive: color-mix(in oklch, oklch(0.577 0.245 27.3) 75%, white);
   --secondary: color-mix(in oklch, var(--fg) 10%, var(--surface));
+  --speaker-1: oklch(0.72 0.13 160);
+  --speaker-2: oklch(0.76 0.13 65);
+  --speaker-3: oklch(0.74 0.15 355);
+  --speaker-4: oklch(0.74 0.13 295);
 }
 
 /* Spec-token bridges so utilities resolve straight to the :root vars —
@@ -85,6 +96,10 @@
   --color-accent-text: var(--accent-text);
   --color-fg-soft: var(--fg-soft);
   --color-input-well: var(--input-well);
+  --color-speaker-1: var(--speaker-1);
+  --color-speaker-2: var(--speaker-2);
+  --color-speaker-3: var(--speaker-3);
+  --color-speaker-4: var(--speaker-4);
   --font-mono: var(--font-mono);
 
   --animate-iris-breath: iris-breath 7s var(--ease) infinite;

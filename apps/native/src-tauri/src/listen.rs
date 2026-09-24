@@ -28,6 +28,9 @@ const SUMMARY_TIMEOUT: Duration = Duration::from_secs(30);
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClosedTurn {
     pub speaker: SpeakerChannel,
+    /// Diarized voice cluster within `speaker`'s channel — `None` when
+    /// diarization is off or the segment was unlabelable.
+    pub speaker_idx: Option<u32>,
     pub text: String,
     pub ts: i64,
 }
@@ -36,6 +39,7 @@ pub struct ClosedTurn {
 pub struct ListenTurn {
     #[serde(serialize_with = "serialize_speaker")]
     pub speaker: SpeakerChannel,
+    pub speaker_idx: Option<u32>,
     pub text: String,
     pub ts: i64,
     pub session_id: i64,
@@ -48,6 +52,7 @@ struct Pending {
     committed: String,
     provisional: Option<String>,
     last_final: Option<Instant>,
+    speaker_idx: Option<u32>,
 }
 
 /// Deterministic state machine for provisional and final STT results.
@@ -79,6 +84,17 @@ impl TurnAssembler {
             }
             self.active = Some(event.channel);
         }
+        // A different confirmed voice closes the current turn even inside
+        // one channel's silence window — a document transcript shows each
+        // speaker's run as its own block.
+        let speaker_changed = event.finality == Finality::Final
+            && !self.pending(event.channel).committed.is_empty()
+            && self.pending(event.channel).speaker_idx.is_some()
+            && event.speaker_idx.is_some()
+            && self.pending(event.channel).speaker_idx != event.speaker_idx;
+        if speaker_changed {
+            out.extend(self.close(event.channel));
+        }
         let pending = self.pending_mut(event.channel);
         match event.finality {
             Finality::Interim => pending.provisional = Some(text),
@@ -86,6 +102,10 @@ impl TurnAssembler {
                 pending.provisional = None;
                 append_segment(&mut pending.committed, &text);
                 pending.last_final = Some(now);
+                // An unlabeled segment keeps the turn's current speaker;
+                // a labeled one claims it (the turn already split above
+                // when two labels disagreed).
+                pending.speaker_idx = event.speaker_idx.or(pending.speaker_idx);
             }
         }
         out.extend(self.flush_due(now));
@@ -113,6 +133,12 @@ impl TurnAssembler {
         (!text.trim().is_empty()).then(|| text.trim().to_string())
     }
 
+    /// The open turn's established speaker label — what the interim
+    /// `ListenTurn` should carry rather than the latest event's label.
+    pub fn interim_label(&self, channel: SpeakerChannel) -> Option<u32> {
+        self.pending(channel).speaker_idx
+    }
+
     fn flush_due(&mut self, now: Instant) -> Vec<ClosedTurn> {
         let mut out = Vec::new();
         for channel in [SpeakerChannel::Me, SpeakerChannel::Them] {
@@ -137,12 +163,14 @@ impl TurnAssembler {
             append_segment(&mut text, &provisional);
         }
         pending.last_final = None;
+        let speaker_idx = pending.speaker_idx.take();
         if text.trim().is_empty() {
             return Vec::new();
         }
         self.closed += 1;
         vec![ClosedTurn {
             speaker: channel,
+            speaker_idx,
             text: text.trim().to_string(),
             ts: now_unix(),
         }]
@@ -410,6 +438,7 @@ impl ListenService {
                     model.clone(),
                     channel,
                     bundled_whisper,
+                    true,
                 ) {
                     Ok(stt) => stt,
                     Err(error) => {
@@ -422,11 +451,13 @@ impl ListenService {
                 if let Err(error) = stt.start(
                     Box::new(move |event| {
                         let channel = event.channel;
-                        let (turns, interim) = {
+                        let speaker_idx = event.speaker_idx;
+                        let (turns, interim, interim_label) = {
                             let mut assembler = callback_assembler.lock();
                             let turns = assembler.push(event);
                             let interim = assembler.interim(channel);
-                            (turns, interim)
+                            let label = assembler.interim_label(channel).or(speaker_idx);
+                            (turns, interim, label)
                         };
                         for turn in turns {
                             persist_turn(&callback_context, turn);
@@ -434,6 +465,7 @@ impl ListenService {
                         if let Some(text) = interim {
                             (callback_context.emit)(ListenEvent::Turn(ListenTurn {
                                 speaker: channel,
+                                speaker_idx: interim_label,
                                 text,
                                 ts: now_unix(),
                                 session_id: callback_context.session_id,
@@ -651,6 +683,7 @@ fn persist_turn(context: &Arc<SessionContext>, turn: ClosedTurn) {
         speaker_name(turn.speaker),
         &turn.text,
         None,
+        turn.speaker_idx,
     );
     let history_snapshot = match inserted {
         Ok(id) => {
@@ -658,6 +691,7 @@ fn persist_turn(context: &Arc<SessionContext>, turn: ClosedTurn) {
                 id,
                 session_id: context.session_id,
                 speaker: speaker_name(turn.speaker).into(),
+                speaker_idx: turn.speaker_idx.map(i64::from),
                 content: turn.text.clone(),
                 ts: turn.ts,
                 audio_file: None,
@@ -681,6 +715,7 @@ fn persist_turn(context: &Arc<SessionContext>, turn: ClosedTurn) {
         }
         (context.emit)(ListenEvent::Turn(ListenTurn {
             speaker: turn.speaker,
+            speaker_idx: turn.speaker_idx,
             text: turn.text,
             ts: turn.ts,
             session_id: context.session_id,
@@ -693,6 +728,7 @@ fn persist_turn(context: &Arc<SessionContext>, turn: ClosedTurn) {
     }
     (context.emit)(ListenEvent::Turn(ListenTurn {
         speaker: turn.speaker,
+        speaker_idx: turn.speaker_idx,
         text: turn.text,
         ts: turn.ts,
         session_id: context.session_id,
@@ -824,6 +860,16 @@ mod tests {
             channel,
             text: text.into(),
             finality,
+            speaker_idx: None,
+        }
+    }
+
+    fn diarized(channel: SpeakerChannel, text: &str, speaker_idx: u32) -> TranscriptEvent {
+        TranscriptEvent {
+            channel,
+            text: text.into(),
+            finality: Finality::Final,
+            speaker_idx: Some(speaker_idx),
         }
     }
 
@@ -878,6 +924,40 @@ mod tests {
         a.push_at(event(SpeakerChannel::Me, "hello", Finality::Final), t);
         assert_eq!(a.flush_at(t + SILENCE).pop().unwrap().text, "hello");
     }
+    /// A document transcript renders one block per speaker run — so a
+    /// confirmed voice change must close the open turn even before the
+    /// silence timeout, and each closed turn keeps its own label.
+    #[test]
+    fn speaker_change_closes_turn_with_its_own_label() {
+        let mut a = TurnAssembler::new();
+        let t = Instant::now();
+        a.push_at(diarized(SpeakerChannel::Them, "first part", 0), t);
+        a.push_at(diarized(SpeakerChannel::Them, "still me", 0), t);
+        let closed = a.push_at(diarized(SpeakerChannel::Them, "now another", 1), t);
+        assert_eq!(closed.len(), 1);
+        assert_eq!(closed[0].speaker_idx, Some(0));
+        assert_eq!(closed[0].text, "first part still me");
+        let rest = a.flush();
+        assert_eq!(rest.len(), 1);
+        assert_eq!(rest[0].speaker_idx, Some(1));
+        assert_eq!(rest[0].text, "now another");
+    }
+
+    /// Unlabeled segments must not split a labeled turn: when diarization
+    /// can't label a window the text still belongs to the open speaker run.
+    #[test]
+    fn unlabeled_segment_keeps_current_speaker() {
+        let mut a = TurnAssembler::new();
+        let t = Instant::now();
+        a.push_at(diarized(SpeakerChannel::Me, "labeled", 2), t);
+        a.push_at(event(SpeakerChannel::Me, "unlabeled", Finality::Final), t);
+        assert!(a.flush_at(t).is_empty());
+        let closed = a.flush();
+        assert_eq!(closed.len(), 1);
+        assert_eq!(closed[0].speaker_idx, Some(2));
+        assert_eq!(closed[0].text, "labeled unlabeled");
+    }
+
     #[test]
     fn committed_text_survives_later_interim_segment() {
         let mut a = TurnAssembler::new();
@@ -945,6 +1025,7 @@ mod tests {
                     id,
                     session_id: 1,
                     speaker: "me".into(),
+                    speaker_idx: None,
                     content: id.to_string(),
                     ts: id,
                     audio_file: None,

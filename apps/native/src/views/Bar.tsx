@@ -1185,10 +1185,11 @@ const Bar = () => {
                 growDir === 'up' ? 'flex-col-reverse' : 'flex-col',
               )
             : 'h-full flex-none flex-col justify-center rounded-full bg-[color-mix(in_oklch,var(--surface)_80%,transparent)] backdrop-blur-[14px] transition-[border-color,box-shadow] duration-(--motion-base) ease-(--ease) motion-reduce:transition-none',
-          // Activity pulse lives on the outer floating shell — never the
-          // form row — so row sizing and control placement don't move.
-          // `.animate-pulse` is stilled by the reduced-motion query.
-          activeWork && 'animate-pulse',
+          // Activity pulse is scoped to the collapsed pill — never the
+          // form row or the open card — so row sizing, control placement,
+          // and card content don't move. `.animate-pulse` is stilled by
+          // the reduced-motion query.
+          activeWork && !cardOpen && 'animate-pulse',
         )}
         style={cardOpen ? { maxHeight: CARD_MAX } : undefined}
         data-expanded={showInputRow || undefined}

@@ -712,16 +712,19 @@ fn persist_turn(context: &Arc<SessionContext>, turn: ClosedTurn) {
                     .ok()
                     .and_then(|runtime| {
                         runtime
-                            .block_on(tokio::time::timeout(
-                                SUMMARY_TIMEOUT,
-                                generate_summary(
-                                    &summary_context.db,
-                                    summary_context.session_id,
-                                    &summary_context.config,
-                                    &summary_context.keystore,
-                                    &transcript,
-                                ),
-                            ))
+                            .block_on(async {
+                                tokio::time::timeout(
+                                    SUMMARY_TIMEOUT,
+                                    generate_summary(
+                                        &summary_context.db,
+                                        summary_context.session_id,
+                                        &summary_context.config,
+                                        &summary_context.keystore,
+                                        &transcript,
+                                    ),
+                                )
+                                .await
+                            })
                             .ok()
                             .and_then(Result::ok)
                     });

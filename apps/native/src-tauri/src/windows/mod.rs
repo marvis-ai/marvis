@@ -657,13 +657,14 @@ impl WindowPool {
 /// then `set_visible_on_all_workspaces`, `set_content_protected`, and the
 /// liquid-glass material. `corner_radius` matches the surface's CSS radius —
 /// the glass view fills the window, so its shape IS the surface shape.
-/// `app.accent` (`#rrggbb`) at 50% alpha → the bar's glass `tint_color`.
+/// `app.accent` (`#rrggbb`) at 20% alpha → the bar's glass `tint_color`.
 /// The alpha is load-bearing: the pre-26 `NSVisualEffectView` fallback
 /// paints the tint as an overlay fill, so an opaque value would bury
-/// the vibrancy entirely.
+/// the vibrancy entirely — and even on glass, a stronger tint reads
+/// heavy over the capsule.
 fn accent_glass_tint(accent: &str) -> Option<String> {
     let accent = accent.trim();
-    (accent.len() == 7 && accent.starts_with('#')).then(|| format!("{accent}80"))
+    (accent.len() == 7 && accent.starts_with('#')).then(|| format!("{accent}33"))
 }
 
 fn build_window(

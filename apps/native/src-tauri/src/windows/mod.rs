@@ -94,8 +94,6 @@ pub const ALERT_LABEL: &str = "alert";
 const ALERT_W: f64 = 340.0;
 /// Fixed toast height — informational only, so one layout suffices.
 const ALERT_H: f64 = 100.0;
-/// Distance below the work-area top for the default bar position.
-const BAR_TOP_OFFSET: f64 = 21.0;
 /// Slide-in distance above the target rect when the alert toast appears.
 const SHOW_OFFSET_Y: f64 = 10.0;
 /// Fallback work area if every monitor query fails.
@@ -487,14 +485,14 @@ impl WindowPool {
         }
     }
 
-    /// Settings → Bar "Re-center": restore the startup default — centered
-    /// on the primary work area, 21 px under the top. Persists via the
-    /// `Moved` debounce like any other move.
+    /// Settings → Bar "Re-center": restore the startup default — the
+    /// middle of the primary work area. Persists via the `Moved`
+    /// debounce like any other move.
     pub fn recenter_bar(&mut self) {
         let work = self.primary_work_area();
         self.bar_rect = Rect {
             x: work.center_x() - BAR_IDLE_W / 2.0,
-            y: work.y + BAR_TOP_OFFSET,
+            y: work.center_y() - BAR_H / 2.0,
             w: BAR_IDLE_W,
             h: BAR_H,
         };
@@ -558,7 +556,7 @@ impl WindowPool {
     }
 
     /// Initial bar position: `config.window.bar_x/y` if BOTH are set, else
-    /// centered 21 px under the work-area top. Re-clamps to the primary
+    /// the middle of the primary work area. Re-clamps to the primary
     /// monitor when the saved position's center is off-screen.
     pub fn position_bar_at_startup(&mut self) {
         let prefs = crate::config::load().window;
@@ -573,7 +571,7 @@ impl WindowPool {
                 let work = self.primary_work_area();
                 Rect {
                     x: work.center_x() - BAR_IDLE_W / 2.0,
-                    y: work.y + BAR_TOP_OFFSET,
+                    y: work.center_y() - BAR_H / 2.0,
                     w: BAR_IDLE_W,
                     h: BAR_H,
                 }

@@ -426,8 +426,8 @@ export const prefsMode = () => invoke<string>('prefs_mode');
 export const windowSnapEdge = (edge: string) =>
   invoke<void>('window_snap_edge', { edge });
 
-/** Restore the default bar position — centered, 21 px under the primary
- * work area's top. Persists via the same Moved→debounce write. */
+/** Restore the default bar position — the middle of the primary work
+ * area. Persists via the same Moved→debounce write. */
 export const windowRecenter = () => invoke<void>('window_recenter');
 
 /** Nearest work-area edge of the live bar — the picker's current value. */

@@ -1498,7 +1498,7 @@ fn window_snap_edge(state: State<'_, AppState>, edge: String) -> Result<(), Stri
 }
 
 /// Settings → Bar "Re-center": restores the default position —
-/// centered on the primary work area, just under the menu bar.
+/// the middle of the primary work area.
 /// Persists through the same `Moved` debounce as a drag.
 #[tauri::command]
 fn window_recenter(state: State<'_, AppState>) {

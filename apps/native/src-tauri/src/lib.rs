@@ -129,6 +129,11 @@ pub struct AppState {
     /// (enter/leave Main), and the `app:state` emit must be one critical
     /// section or two overlapping transitions can interleave (stale
     /// emit landing last, or hotkeys/capture from a dead gate state).
+    /// `capture_start` is the only other holder: its gate check +
+    /// `start_capture` must stay atomic against a concurrent
+    /// leave-transition. Both holders take locks in the order
+    /// `gate_transition` → `gate` → `capture` → `ring`, so they cannot
+    /// deadlock.
     gate_transition: Mutex<()>,
     /// Serializes `listen_start`/`dictation_start` end-to-end — the peer
     /// status check, the mic-permission await, and the service start
@@ -241,7 +246,9 @@ fn transition_gate(app: &AppHandle) {
     let state = app.state::<AppState>();
     // Serialize the whole transition: the gate read+swap, the Main
     // side-effects, and the `app:state` emit are one critical section.
-    // Nothing else locks `gate_transition`, so this cannot deadlock.
+    // `capture_start` is the other `gate_transition` holder — both
+    // follow the field's documented lock order, so this cannot
+    // deadlock.
     let _transition = state.gate_transition.lock();
     let new_gate = app_gate(&state);
     let old_gate = std::mem::replace(&mut *state.gate.lock(), new_gate);
@@ -1509,6 +1516,12 @@ fn capture_start(app: AppHandle) -> serde_json::Value {
     // light the recorder while capture doesn't exist yet. The command
     // still resolves the (unchanged) status — the toggle resyncs off
     // `running` either way.
+    //
+    // The check and the start share `gate_transition` with
+    // `transition_gate`: a bare gate read could pass just before a
+    // transition swaps the gate and `leave_main` tears capture down,
+    // letting this start relight capture outside `Main`.
+    let _transition = state.gate_transition.lock();
     if *state.gate.lock() != Gate::Main {
         log::warn!("capture_start dropped while gate != Main");
         return capture_snapshot(&state);
@@ -2022,8 +2035,10 @@ mod tests {
 
     /// `capture_start` keeps the same crafted-invoke guard as
     /// `ask_send`/`ask_send_screen_only`: it mutates only while the gate
-    /// is `Main`. `capture_stop` deliberately stays ungated — stopping
-    /// must always be safe.
+    /// is `Main`, and holds `gate_transition` across the check + start
+    /// so a racing `transition_gate` can't interleave between them.
+    /// `capture_stop` deliberately stays ungated — stopping must always
+    /// be safe.
     #[test]
     fn capture_start_is_gate_guarded_but_capture_stop_is_not() {
         let source = include_str!("lib.rs");
@@ -2035,6 +2050,15 @@ mod tests {
         assert!(
             start_body.contains("*state.gate.lock() != Gate::Main"),
             "capture_start must drop the invoke while gate != Main"
+        );
+        let transition_lock = start_body
+            .find("state.gate_transition.lock()")
+            .expect("capture_start must hold gate_transition across check + start");
+        let gate_check = start_body.find("*state.gate.lock() != Gate::Main").unwrap();
+        let start_call = start_body.find("start_capture(&app)").unwrap();
+        assert!(
+            transition_lock < gate_check && transition_lock < start_call,
+            "gate_transition must be taken before the gate check and start_capture"
         );
         let stop_body = source
             .split("fn capture_stop(app: AppHandle)")

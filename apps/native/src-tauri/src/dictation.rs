@@ -16,8 +16,8 @@ use crate::audio::{AudioSource, MicSource, PcmChunk};
 use crate::config::Config;
 use crate::keystore::Keystore;
 use crate::stt::{
-    make_stt_provider, sanitize_provider_error, whisper_setup_error, Finality, SpeakerChannel,
-    SttProvider, TranscriptEvent, WhisperProvider,
+    make_stt_provider, sanitize_provider_error, sherpa_setup_error, whisper_setup_error, Finality,
+    SpeakerChannel, SttProvider, TranscriptEvent, WhisperProvider,
 };
 
 const WORKER_TICK: Duration = Duration::from_millis(100);
@@ -219,6 +219,13 @@ impl DictationService {
                 &WhisperProvider::status_with_bundled(bundled_whisper),
                 &model,
             ) {
+                return Err(self.fail(epoch, &provider_name, message, true, &emit));
+            }
+        }
+        if provider_name == "sherpa" {
+            // Same curated setup-error contract as whisper — a missing model
+            // download is a Settings fix, not a panic.
+            if let Some(message) = sherpa_setup_error(&model) {
                 return Err(self.fail(epoch, &provider_name, message, true, &emit));
             }
         }

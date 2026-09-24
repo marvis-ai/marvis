@@ -4,24 +4,32 @@ import {
   configSet,
   keystoreRemoveKey,
   keystoreSetKey,
+  sherpaCancelDownload,
+  sherpaDownload,
+  sherpaRemoveModel,
+  sherpaStatus,
   voiceModelsCatalog,
   whisperCancelDownload,
   whisperDownload,
   whisperRemoveModel,
   whisperStatus,
+  type SherpaStatus,
   type VoiceModelCatalogEntry,
   type WhisperBinarySource,
   type WhisperStatus,
 } from '../../lib/commands';
 import {
+  EV_SHERPA_DOWNLOAD_ERROR,
+  EV_SHERPA_DOWNLOAD_PROGRESS,
   EV_WHISPER_DOWNLOAD_ERROR,
   EV_WHISPER_DOWNLOAD_PROGRESS,
   useTauriEvent,
+  type SherpaDownloadErrorPayload,
+  type SherpaDownloadProgressPayload,
   type WhisperDownloadErrorPayload,
   type WhisperDownloadProgressPayload,
 } from '../../lib/events';
 import {
-  BTN_DANGER,
   BTN_LG,
   BTN_SM,
   BTN_LINK_LG,
@@ -37,6 +45,7 @@ import {
   cn,
 } from '../../lib/classes';
 import type { PrefsData } from './types';
+import { VoiceModelGrid } from './VoiceModelGrid';
 
 const DEEPGRAM_MODELS = [
   'nova-2',
@@ -51,12 +60,6 @@ const DEEPGRAM_MODELS = [
   'nova-2-drivethru',
   'nova-2-automotive',
 ];
-
-const formatBytes = (bytes: number) => {
-  if (bytes >= 1024 * 1024 * 1024)
-    return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
-  return `${Math.round(bytes / (1024 * 1024))} MB`;
-};
 
 const safeVoiceError = (fallback: string) => fallback;
 
@@ -86,16 +89,22 @@ export const VoiceSetup = ({
 }: VoiceSetupProps) => {
   const [catalog, setCatalog] = useState<VoiceModelCatalogEntry[]>([]);
   const [whisper, setWhisper] = useState<WhisperStatus | null>(null);
+  const [sherpa, setSherpa] = useState<SherpaStatus | null>(null);
   const [error, setError] = useState('');
   const [downloadError, setDownloadError] = useState('');
   const [progress, setProgress] = useState<
     Record<string, WhisperDownloadProgressPayload>
   >({});
+  const [sherpaProgress, setSherpaProgress] = useState<
+    Record<string, SherpaDownloadProgressPayload>
+  >({});
   const [deepgramKeyInput, setDeepgramKeyInput] = useState('');
   const [deepgramSaving, setDeepgramSaving] = useState(false);
   const whisperRef = useRef<WhisperStatus | null>(null);
+  const sherpaRef = useRef<SherpaStatus | null>(null);
   const pendingDownloadRef = useRef<string | null>(null);
   whisperRef.current = whisper;
+  sherpaRef.current = sherpa;
   const config = data.config;
   const deepgramKey =
     data.status?.keys.find(([id]) => id === 'deepgram')?.[1] ?? null;
@@ -128,12 +137,35 @@ export const VoiceSetup = ({
     });
   }, []);
 
+  const refreshSherpa = useCallback(async () => {
+    let status: SherpaStatus;
+    try {
+      status = await sherpaStatus();
+    } catch {
+      status = { models: [], download: null };
+    }
+    setSherpa(status);
+    setSherpaProgress((current) => {
+      // Status is authoritative, same as refreshWhisper.
+      if (!status.download) return {};
+      const installed = new Set(
+        status.models
+          .filter((entry) => entry.installed)
+          .map((entry) => entry.id),
+      );
+      const next = { ...current };
+      for (const model of installed) delete next[model];
+      return next;
+    });
+  }, []);
+
   useEffect(() => {
     void voiceModelsCatalog()
       .then(setCatalog)
       .catch(() => setError('Could not load voice models'));
     void refreshWhisper();
-  }, [refreshWhisper]);
+    void refreshSherpa();
+  }, [refreshWhisper, refreshSherpa]);
 
   useTauriEvent<WhisperDownloadProgressPayload>(
     EV_WHISPER_DOWNLOAD_PROGRESS,
@@ -165,17 +197,54 @@ export const VoiceSetup = ({
       void refreshWhisper();
     },
   );
+  useTauriEvent<SherpaDownloadProgressPayload>(
+    EV_SHERPA_DOWNLOAD_PROGRESS,
+    (payload) => {
+      if (payload.total > 0 && payload.received >= payload.total) {
+        setSherpaProgress((current) => {
+          const next = { ...current };
+          delete next[payload.model];
+          return next;
+        });
+        void refreshSherpa();
+      } else {
+        setSherpaProgress((current) => ({
+          ...current,
+          [payload.model]: payload,
+        }));
+        setSherpa((current) =>
+          current ? { ...current, download: payload } : current,
+        );
+      }
+    },
+  );
+  useTauriEvent<SherpaDownloadErrorPayload>(
+    EV_SHERPA_DOWNLOAD_ERROR,
+    (payload) => {
+      setDownloadError(payload.message);
+      setSherpaProgress((current) => {
+        const next = { ...current };
+        delete next[payload.model];
+        return next;
+      });
+      void refreshSherpa();
+    },
+  );
 
   useEffect(() => {
     if (!cancelOnUnmount) return;
     return () => {
-      const hasActiveDownload = Boolean(whisperRef.current?.download);
       const hasPendingDownloadRequest = pendingDownloadRef.current !== null;
+      // Clear the local marker before awaiting cancellation so a request that
+      // rejects because cancellation won the race cannot surface a failure.
+      pendingDownloadRef.current = null;
+      const hasActiveDownload = Boolean(whisperRef.current?.download);
       if (hasActiveDownload || hasPendingDownloadRequest) {
-        // Clear the local marker before awaiting cancellation so a request that
-        // rejects because cancellation won the race cannot surface a failure.
-        pendingDownloadRef.current = null;
         void whisperCancelDownload().catch(() => {});
+      }
+      const hasActiveSherpaDownload = Boolean(sherpaRef.current?.download);
+      if (hasActiveSherpaDownload || hasPendingDownloadRequest) {
+        void sherpaCancelDownload().catch(() => {});
       }
     };
   }, [cancelOnUnmount]);
@@ -188,6 +257,7 @@ export const VoiceSetup = ({
   const installedModels =
     whisper?.models.filter((entry) => entry.installed) ?? [];
   const activeDownload = whisper?.download;
+  const sherpaActiveDownload = sherpa?.download;
   const save = (
     key: 'models.stt_provider' | 'models.stt_model',
     value: string,
@@ -272,6 +342,48 @@ export const VoiceSetup = ({
       setError(safeVoiceError('Could not remove model'));
     }
   };
+  const startSherpaDownload = async (id: string) => {
+    if (sherpaActiveDownload || pendingDownloadRef.current !== null) return;
+    // Same pending marker as whisperDownload — onboarding can unmount before
+    // the invoke resolves and must still cancel this request.
+    pendingDownloadRef.current = id;
+    setDownloadError('');
+    setError('');
+    try {
+      await sherpaDownload(id);
+      await refreshSherpa();
+    } catch (e) {
+      if (pendingDownloadRef.current === id) {
+        setDownloadError(safeVoiceError('Could not start model download'));
+        await refreshSherpa();
+      }
+    } finally {
+      if (pendingDownloadRef.current === id) pendingDownloadRef.current = null;
+    }
+  };
+  const cancelSherpaDownload = async () => {
+    const canceledModel = sherpaActiveDownload?.model;
+    try {
+      await sherpaCancelDownload();
+      setSherpaProgress((current) => {
+        if (!canceledModel || !(canceledModel in current)) return current;
+        const next = { ...current };
+        delete next[canceledModel];
+        return next;
+      });
+      await refreshSherpa();
+    } catch (e) {
+      setDownloadError(safeVoiceError('Could not cancel download'));
+    }
+  };
+  const removeSherpaModel = async (id: string) => {
+    setError('');
+    try {
+      setSherpa(await sherpaRemoveModel(id));
+    } catch (e) {
+      setError(safeVoiceError('Could not remove model'));
+    }
+  };
 
   return (
     <div>
@@ -284,9 +396,13 @@ export const VoiceSetup = ({
                 ? deepgramKey
                   ? 'bg-accent'
                   : 'bg-[color-mix(in_oklch,var(--fg)_20%,transparent)]'
-                : whisper?.binary && installedModels.length > 0
-                  ? 'bg-accent'
-                  : 'bg-[color-mix(in_oklch,var(--fg)_20%,transparent)]',
+                : provider === 'whisper'
+                  ? whisper?.binary && installedModels.length > 0
+                    ? 'bg-accent'
+                    : 'bg-[color-mix(in_oklch,var(--fg)_20%,transparent)]'
+                  : sherpa?.models.some((entry) => entry.installed)
+                    ? 'bg-accent'
+                    : 'bg-[color-mix(in_oklch,var(--fg)_20%,transparent)]',
             )}
           />
           <span className={LBL}>Provider</span>
@@ -296,10 +412,12 @@ export const VoiceSetup = ({
             onChange={(e) => {
               save('models.stt_provider', e.target.value);
               if (e.target.value === 'whisper') void refreshWhisper();
+              if (e.target.value === 'sherpa') void refreshSherpa();
             }}
             aria-label='Speech-to-text provider'>
             <option value='deepgram'>Deepgram</option>
             <option value='whisper'>Whisper (local)</option>
+            <option value='sherpa'>Sherpa (local)</option>
           </select>
         </div>
         {provider === 'deepgram' ? (
@@ -372,116 +490,41 @@ export const VoiceSetup = ({
               )}
             </p>
           </>
-        ) : (
+        ) : provider === 'whisper' ? (
           <>
             <p className={PROV_NOTE}>
               Choose a local Whisper model below. The app downloads models only,
               never the whisper-cli binary.
             </p>
-            <div className='mt-2.5 grid gap-2'>
-              {catalog.map((entry) => {
-                const installed =
+            <VoiceModelGrid
+              entries={catalog}
+              isInstalled={(id) => {
+                const entry = catalog.find((item) => item.id === id);
+                return (
                   whisper?.models.find(
                     (item) =>
-                      item.id === entry.id || item.filename === entry.filename,
-                  )?.installed ?? false;
-                const selected =
-                  provider === 'whisper' &&
-                  (model === entry.id || model === entry.filename);
-                const currentProgress =
-                  progress[entry.id] ??
-                  (activeDownload?.model === entry.id ? activeDownload : null);
-                const downloading = activeDownload?.model === entry.id;
-                return (
-                  <div
-                    key={entry.id}
-                    className={cn(
-                      'rounded-lg border p-2.5',
-                      selected ? 'border-accent' : 'border-border',
-                    )}>
-                    <div className='flex items-start justify-between gap-2'>
-                      <div>
-                        <div className='text-[12.5px] font-semibold'>
-                          {entry.label}
-                          {selected && (
-                            <span className='ml-1.5 text-[10px] text-accent-text'>
-                              Selected
-                            </span>
-                          )}
-                        </div>
-                        <p className={PROV_NOTE}>{entry.description}</p>
-                      </div>
-                      <span
-                        className={cn(
-                          NUM,
-                          'text-[10.5px] text-muted-foreground',
-                        )}>
-                        {formatBytes(entry.bytes)}
-                      </span>
-                    </div>
-                    <p className={PROV_NOTE}>
-                      {entry.source} {installed ? 'Installed' : 'Not installed'}
-                    </p>
-                    {currentProgress && (
-                      <div className='mt-2'>
-                        <div className='flex justify-between text-[10px] text-muted-foreground'>
-                          <span>Downloading…</span>
-                          <span className={NUM}>
-                            {formatBytes(currentProgress.received)} /{' '}
-                            {formatBytes(currentProgress.total)}
-                          </span>
-                        </div>
-                        <progress
-                          className='mt-1 h-1.5 w-full accent-accent'
-                          value={currentProgress.received}
-                          max={currentProgress.total}
-                        />
-                      </div>
-                    )}
-                    <div className='mt-2 flex flex-wrap gap-1.5'>
-                      {downloading ? (
-                        <button
-                          type='button'
-                          className={cn(BTN_LG, BTN_OUTLINE)}
-                          onClick={() => void cancelDownload()}>
-                          Cancel
-                        </button>
-                      ) : !installed ? (
-                        <button
-                          type='button'
-                          className={cn(BTN_LG, BTN_PRIMARY)}
-                          disabled={Boolean(activeDownload)}
-                          onClick={() => void startDownload(entry.id)}>
-                          Download
-                        </button>
-                      ) : (
-                        <>
-                          <button
-                            type='button'
-                            className={cn(BTN_LG, BTN_PRIMARY)}
-                            disabled={selected}
-                            onClick={() => save('models.stt_model', entry.id)}>
-                            {selected ? 'Using this model' : 'Use this model'}
-                          </button>
-                          <button
-                            type='button'
-                            className={cn(BTN_LINK_LG, BTN_DANGER)}
-                            disabled={selected}
-                            title={
-                              selected
-                                ? 'The active model cannot be removed'
-                                : undefined
-                            }
-                            onClick={() => void removeModel(entry.id)}>
-                            Remove
-                          </button>
-                        </>
-                      )}
-                    </div>
-                  </div>
+                      item.id === id || item.filename === entry?.filename,
+                  )?.installed ?? false
                 );
-              })}
-            </div>
+              }}
+              isSelected={(id) => {
+                const entry = catalog.find((item) => item.id === id);
+                return (
+                  provider === 'whisper' &&
+                  (model === id || model === entry?.filename)
+                );
+              }}
+              progress={
+                activeDownload
+                  ? { [activeDownload.model]: activeDownload, ...progress }
+                  : progress
+              }
+              activeDownload={activeDownload?.model ?? null}
+              onDownload={(id) => void startDownload(id)}
+              onCancel={() => void cancelDownload()}
+              onSelect={(id) => save('models.stt_model', id)}
+              onRemove={(id) => void removeModel(id)}
+            />
             {whisper && (
               <p className={PROV_NOTE}>
                 {whisperSourceLabel(whisper.binary_status.source)}
@@ -493,6 +536,34 @@ export const VoiceSetup = ({
                 <span className={NUM}>whisper-cli</span> and restart the app.
               </p>
             )}
+          </>
+        ) : (
+          <>
+            <p className={PROV_NOTE}>
+              Download the SenseVoice model below — it runs fully on-device; no
+              separate binary is needed.
+            </p>
+            <VoiceModelGrid
+              entries={sherpa?.models ?? []}
+              isInstalled={(id) =>
+                sherpa?.models.find((item) => item.id === id)?.installed ??
+                false
+              }
+              isSelected={(id) => provider === 'sherpa' && model === id}
+              progress={
+                sherpaActiveDownload
+                  ? {
+                      [sherpaActiveDownload.model]: sherpaActiveDownload,
+                      ...sherpaProgress,
+                    }
+                  : sherpaProgress
+              }
+              activeDownload={sherpaActiveDownload?.model ?? null}
+              onDownload={(id) => void startSherpaDownload(id)}
+              onCancel={() => void cancelSherpaDownload()}
+              onSelect={(id) => save('models.stt_model', id)}
+              onRemove={(id) => void removeSherpaModel(id)}
+            />
           </>
         )}
         {(error || downloadError) && (

@@ -66,7 +66,7 @@ pub const DEFAULT_ACCENT: &str = "#3a7294";
 
 pub(crate) fn validate_stt_provider(value: &str) -> Result<String, String> {
     let value = value.trim();
-    if matches!(value, "deepgram" | "whisper") {
+    if matches!(value, "deepgram" | "whisper" | "sherpa") {
         Ok(value.to_string())
     } else {
         Err(format!("unknown STT provider {value:?}"))
@@ -92,12 +92,20 @@ pub(crate) fn validate_whisper_model(value: &str) -> Result<String, String> {
         .ok_or_else(|| format!("unknown Whisper model {value:?}"))
 }
 
+pub(crate) fn validate_sherpa_model(value: &str) -> Result<String, String> {
+    crate::sherpa_models::entry_for_value(value.trim())
+        .map(|entry| entry.id.as_str().to_string())
+        .ok_or_else(|| format!("unknown Sherpa model {value:?}"))
+}
+
 pub(crate) fn validate_stt_model_for_provider(
     provider: &str,
     value: &str,
 ) -> Result<String, String> {
     if provider == "whisper" {
         validate_whisper_model(value)
+    } else if provider == "sherpa" {
+        validate_sherpa_model(value)
     } else {
         validate_stt_model(value)
     }
@@ -117,11 +125,19 @@ pub(crate) fn apply_stt_config(
                 .ok_or("models.stt_provider must be a string")?;
             let provider = validate_stt_provider(value)?;
             // Provider and model are one transactional preference: never leave
-            // a Whisper catalog name paired with Deepgram (or vice versa).
+            // a Whisper or Sherpa catalog name paired with another provider.
             if provider == "whisper" && entry_for_value(&models.stt_model).is_none() {
                 models.stt_model = "tiny".to_string();
-            } else if provider == "deepgram" && entry_for_value(&models.stt_model).is_some() {
+            } else if provider == "deepgram"
+                && (entry_for_value(&models.stt_model).is_some()
+                    || crate::sherpa_models::entry_for_value(&models.stt_model).is_some())
+            {
                 models.stt_model = "nova-2".to_string();
+            }
+            if provider == "sherpa"
+                && crate::sherpa_models::entry_for_value(&models.stt_model).is_none()
+            {
+                models.stt_model = "sense-voice".to_string();
             }
             models.stt_provider = provider;
             Ok(true)
@@ -524,6 +540,64 @@ mod tests {
         );
     }
 
+    /// Provider and model are one transactional preference: every switch
+    /// must leave `stt_model` valid for the new provider — a foreign catalog
+    /// id (whisper or sherpa) resets to that provider's default, while a
+    /// custom deepgram name survives.
+    #[test]
+    fn stt_provider_switch_never_pairs_a_foreign_catalog_model() {
+        let mut models = ModelPrefs::default();
+        // deepgram → sherpa adopts the sherpa catalog default.
+        assert!(apply_stt_config(
+            &mut models,
+            "models.stt_provider",
+            &serde_json::json!("sherpa"),
+        )
+        .unwrap());
+        assert_eq!(models.stt_model, "sense-voice");
+        // sherpa → deepgram must not send "sense-voice" as a hosted model id.
+        assert!(apply_stt_config(
+            &mut models,
+            "models.stt_provider",
+            &serde_json::json!("deepgram"),
+        )
+        .unwrap());
+        assert_eq!(models.stt_model, "nova-2");
+        // sherpa → whisper resets to the whisper catalog default.
+        assert!(apply_stt_config(
+            &mut models,
+            "models.stt_provider",
+            &serde_json::json!("sherpa"),
+        )
+        .unwrap());
+        assert!(apply_stt_config(
+            &mut models,
+            "models.stt_provider",
+            &serde_json::json!("whisper"),
+        )
+        .unwrap());
+        assert_eq!(models.stt_model, "tiny");
+        // whisper → sherpa resets to the sherpa catalog default.
+        assert!(apply_stt_config(
+            &mut models,
+            "models.stt_provider",
+            &serde_json::json!("sherpa"),
+        )
+        .unwrap());
+        assert_eq!(models.stt_model, "sense-voice");
+        // A custom (non-catalog) deepgram model is the user's own value — a
+        // deepgram reselect keeps it rather than resetting to nova-2.
+        models.stt_provider = "deepgram".into();
+        models.stt_model = "nova-3".into();
+        assert!(apply_stt_config(
+            &mut models,
+            "models.stt_provider",
+            &serde_json::json!("deepgram"),
+        )
+        .unwrap());
+        assert_eq!(models.stt_model, "nova-3");
+    }
+
     #[test]
     fn load_returns_defaults_when_file_missing() {
         let tmp = tempfile_dir();
@@ -782,5 +856,51 @@ mod tests {
             "ggml-base.bin"
         );
         assert!(validate_stt_model("   ").is_err());
+    }
+
+    #[test]
+    fn stt_provider_validation_accepts_sherpa() {
+        assert!(validate_stt_provider("sherpa").is_ok());
+        assert!(validate_stt_provider("assemblyai").is_err());
+    }
+
+    #[test]
+    fn sherpa_model_validation_uses_the_sherpa_catalog() {
+        assert_eq!(
+            validate_sherpa_model(" sense-voice ").unwrap(),
+            "sense-voice"
+        );
+        assert!(validate_sherpa_model("ggml-base.bin").is_err());
+        assert!(validate_sherpa_model("../x").is_err());
+    }
+
+    #[test]
+    fn provider_switch_to_sherpa_defaults_the_model() {
+        let mut models = ModelPrefs {
+            stt_provider: "deepgram".into(),
+            stt_model: "nova-2".into(),
+            ..Default::default()
+        };
+        apply_stt_config(
+            &mut models,
+            "models.stt_provider",
+            &serde_json::json!("sherpa"),
+        )
+        .unwrap();
+        assert_eq!(models.stt_provider, "sherpa");
+        assert_eq!(models.stt_model, "sense-voice");
+    }
+
+    #[test]
+    fn stt_model_write_validates_against_the_active_provider() {
+        let mut models = ModelPrefs {
+            stt_provider: "sherpa".into(),
+            stt_model: "sense-voice".into(),
+            ..Default::default()
+        };
+        assert!(
+            apply_stt_config(&mut models, "models.stt_model", &serde_json::json!("tiny")).is_err()
+        );
+        assert_eq!(models.stt_model, "sense-voice");
     }
 }

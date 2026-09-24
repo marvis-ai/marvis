@@ -295,6 +295,28 @@ export const whisperCancelDownload = () =>
 export const whisperRemoveModel = (model: string) =>
   invoke<WhisperStatus>('whisper_remove_model', { model });
 
+export interface SherpaInstalledModel {
+  id: string;
+  label: string;
+  description: string;
+  bytes: number;
+  source: string;
+  installed: boolean;
+}
+
+export interface SherpaStatus {
+  models: SherpaInstalledModel[];
+  download: WhisperDownload | null;
+}
+
+export const sherpaStatus = () => invoke<SherpaStatus>('sherpa_status');
+export const sherpaDownload = (model: string) =>
+  invoke<void>('sherpa_download', { model });
+export const sherpaCancelDownload = () =>
+  invoke<void>('sherpa_cancel_download');
+export const sherpaRemoveModel = (model: string) =>
+  invoke<SherpaStatus>('sherpa_remove_model', { model });
+
 // ---------------------------------------------------------------------------
 // dictation
 // ---------------------------------------------------------------------------

@@ -129,6 +129,16 @@ pub fn whisper_models_dir() -> PathBuf {
     whisper_dir().join("models")
 }
 
+/// `~/.marvis/models/sherpa` — path only; callers create it when needed.
+pub fn sherpa_dir() -> PathBuf {
+    models_dir().join("sherpa")
+}
+
+/// `~/.marvis/models/sherpa/models` — path only; callers create it when needed.
+pub fn sherpa_models_dir() -> PathBuf {
+    sherpa_dir().join("models")
+}
+
 /// `~/.marvis/tmp` — callers create it when they need it.
 #[allow(dead_code)]
 pub fn audio_tmp_dir() -> PathBuf {
@@ -174,6 +184,13 @@ mod tests {
             ],
             existed
         );
+
+        let sherpa = root.join("models").join("sherpa");
+        let sherpa_models = sherpa.join("models");
+        let existed = [sherpa.exists(), sherpa_models.exists()];
+        assert_eq!(sherpa_dir(), sherpa);
+        assert_eq!(sherpa_models_dir(), sherpa_models);
+        assert_eq!([sherpa.exists(), sherpa_models.exists()], existed);
     }
 
     #[test]

@@ -135,8 +135,8 @@ Signature motions:
 
 ### Floating window (`assets/marvis-floating-window.html`)
 
-Real geometry: bar sits 21px from the docked screen edge; panels drop 8px
-from the bar.
+Real geometry: the bar's default spot is the middle of the work area;
+snapped edges keep a 12px margin; panels drop 8px from the bar.
 
 **2026-09-21 — bar enlarged +25%.** Window 353×47 → 441×59; input pill
 345×39 → 431×49; capsule 104 → 130px wide. Sizes below are the new values.
@@ -160,17 +160,24 @@ from the bar.
 - **Settings entry** — the gear on the input bar, `Cmd+,`, and the tray
   item all open the decorated preferences window (below); there is no
   mini panel beside the chatbox.
-- **Docks** — `data-pos` on the stage: `top | bottom | left | right`.
-  Top/bottom horizontal, left/right vertical rail; panels extend inward and
-  breath direction follows the edge.
+- **Docks** — the bar snaps to a work-area edge (`top | bottom | left |
+  right`). Top/bottom horizontal, left/right vertical rail; panels extend
+  inward and breath direction follows the edge. An open card always pins
+  its bar row to the card's bottom edge (chat/listen rides above it).
 - **Dark** — `is-dark` class on the stage remaps all tokens (§2).
 
 ### Settings window (`assets/marvis-settings-window.html`)
 
-- macOS frame: traffic lights, centered dim title, **sidebar** (settings
-  mode: General / Bar / Providers / Hotkeys / Privacy & data / About,
-  mono credit footer `@2026 Marvis AI made with 💗`), main column of
-  `pref-row`s. "Re-run setup" lives in About → Setup.
+- macOS frame: liquid-glass **AbuttedSidebar** material — the same
+  variant Settings.app uses — with a transparent titlebar; the hidden
+  title + traffic lights overlay the sidebar column. The glass shows
+  only in the
+  sidebar; the content column is opaque `--bg`. The window floats
+  above other apps only while focused; on blur it returns to normal
+  level, while the bar stays always-on-top. **Sidebar** (settings
+  mode: General / Bar / Recording / Providers / Hotkeys / Privacy &
+  data / About, mono credit footer `@2026 Marvis AI made with 💗`),
+  main column of `pref-row`s. "Re-run setup" lives in About → Setup.
 - **Onboarding = step-by-step wizard, no sidebar.** A 4-segment progress
   track across the window top (`ob-seg` fills `--primary`) + mono counter
   `2 / 4 · screen access`; steps centered in a ~480px column with Back /

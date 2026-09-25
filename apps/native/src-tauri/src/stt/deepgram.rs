@@ -193,7 +193,7 @@ async fn run_session(
 ) -> Result<(), SessionFailure> {
     let url = format!(
         "{endpoint}?model={}&encoding=linear16&sample_rate=16000&channels=1&interim_results=true&punctuate=true&smart_format=true",
-        encode_query_component(model)
+        encode_query_component(model),
     );
     let mut request = url.into_client_request().map_err(|_| {
         SessionFailure::Terminal("Deepgram request configuration is invalid".to_string())

@@ -78,8 +78,8 @@ export const Onboarding = ({ data }: { data: PrefsData }) => {
   };
 
   return (
-    <div className='flex min-h-0 flex-1 flex-col'>
-      <div className='flex flex-none items-center gap-3.5 px-6 pt-4.5'>
+    <div className='flex min-h-0 flex-1 flex-col bg-background'>
+      <div className='flex flex-none items-center gap-3.5 px-6 pt-9'>
         <div
           className='flex flex-1 gap-1.25'
           aria-hidden='true'>

@@ -34,11 +34,13 @@ export const BarTab = () => {
     void windowSnapEdge(e).catch(() => {});
   };
 
-  // Re-center always lands top-center on the primary display — the
-  // nearest edge is 'top', so the picker follows without a re-read.
+  // Re-center lands at the work-area center — equidistant, so the
+  // picker re-reads the real edge instead of assuming one.
   const recenter = () => {
-    setEdge('top');
-    void windowRecenter().catch(() => {});
+    void windowRecenter()
+      .then(() => windowBarEdge())
+      .then((e) => setEdge(asEdge(e)))
+      .catch(() => {});
   };
 
   return (
@@ -66,7 +68,7 @@ export const BarTab = () => {
         </PrefRow>
         <PrefRow
           label='Re-center'
-          sub='Back to the default spot — centered under the menu bar.'
+          sub='Back to the default spot — the middle of the screen.'
           last>
           <button
             type='button'

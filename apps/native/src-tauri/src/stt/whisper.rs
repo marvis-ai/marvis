@@ -52,7 +52,6 @@ pub struct WhisperProvider {
     channel: SpeakerChannel,
     binary: Option<PathBuf>,
     diarize: bool,
-    language: String,
     input: Option<mpsc::SyncSender<PcmChunk>>,
     stop: Arc<AtomicBool>,
     child: Arc<Mutex<Option<Child>>>,
@@ -65,14 +64,12 @@ impl WhisperProvider {
         channel: SpeakerChannel,
         bundled: Option<&Path>,
         diarize: bool,
-        language: &str,
     ) -> Self {
         Self {
             model: model.into(),
             channel,
             binary: Self::discover_with_bundled(bundled).map(|(path, _)| path),
             diarize,
-            language: language.to_string(),
             input: None,
             stop: Arc::new(AtomicBool::new(false)),
             child: Arc::new(Mutex::new(None)),
@@ -160,7 +157,6 @@ impl SttProvider for WhisperProvider {
         let child = Arc::clone(&self.child);
         let channel = self.channel;
         let diarize = self.diarize;
-        let language = self.language.clone();
         self.worker = Some(thread::spawn(move || {
             run_chunks(
                 receiver,
@@ -170,7 +166,6 @@ impl SttProvider for WhisperProvider {
                 model,
                 channel,
                 diarize,
-                language,
                 stop,
                 child,
             )
@@ -216,7 +211,6 @@ fn run_chunks(
     model: PathBuf,
     channel: SpeakerChannel,
     diarize: bool,
-    language: String,
     stop: Arc<AtomicBool>,
     child_slot: Arc<Mutex<Option<Child>>>,
 ) {
@@ -244,7 +238,6 @@ fn run_chunks(
                 &binary,
                 &model,
                 channel,
-                &language,
                 &stop,
                 Arc::clone(&child_slot),
             ) {
@@ -281,13 +274,12 @@ fn transcribe_window(
     binary: &Path,
     model: &Path,
     channel: SpeakerChannel,
-    language: &str,
     stop: &AtomicBool,
     child_slot: Arc<Mutex<Option<Child>>>,
 ) -> anyhow::Result<Option<String>> {
     let wav = WavGuard::create(samples, channel)?;
     let mut child = Command::new(binary)
-        .args(whisper_cli_args(model, &wav.path, language))
+        .args(whisper_cli_args(model, &wav.path))
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()?;
@@ -345,32 +337,17 @@ fn transcribe_window(
     Ok(parse_output(&output?))
 }
 
-/// The whisper.cpp `-l` value for an `app.main_language` code — the six
-/// codes are whisper codes verbatim; anything else keeps auto-detect.
-fn whisper_language(code: &str) -> &'static str {
-    match code.trim() {
-        "en" => "en",
-        "zh" => "zh",
-        "ja" => "ja",
-        "ko" => "ko",
-        "fr" => "fr",
-        "es" => "es",
-        _ => "auto",
-    }
-}
-
-/// Per-window whisper-cli arguments. `-l` pins the spoken language to
-/// the configured hint (auto-detect when unset/unknown); without `-l`
-/// the CLI decodes every window as English, so non-English speech comes
-/// out as English-looking text.
-fn whisper_cli_args(model: &Path, wav: &Path, language: &str) -> Vec<String> {
+/// Per-window whisper-cli arguments. `-l auto` detects the spoken language
+/// and transcribes in it; without `-l` the CLI decodes every window as
+/// English, so non-English speech comes out as English-looking text.
+fn whisper_cli_args(model: &Path, wav: &Path) -> Vec<String> {
     vec![
         "-m".into(),
         model.to_string_lossy().into_owned(),
         "-f".into(),
         wav.to_string_lossy().into_owned(),
         "-l".into(),
-        whisper_language(language).into(),
+        "auto".into(),
         "--no-timestamps".into(),
         "--output-txt".into(),
     ]
@@ -631,7 +608,6 @@ mod tests {
             PathBuf::from("/missing/model.bin"),
             SpeakerChannel::Me,
             false,
-            "en".to_string(),
             Arc::new(AtomicBool::new(false)),
             Arc::new(Mutex::new(None)),
         );
@@ -641,24 +617,18 @@ mod tests {
         );
     }
 
-    /// Transcripts must stay in the spoken language: a configured hint
-    /// reaches `-l` verbatim, an unset/unknown one keeps auto-detect —
-    /// and no translate flag may ever reach the CLI.
+    /// Transcripts must stay in the spoken language: `-l auto` runs
+    /// whisper.cpp's language detection per window, and no translate flag
+    /// may ever reach the CLI.
     #[test]
-    fn cli_args_pass_the_language_hint_and_never_translate() {
-        let language_arg = |language: &str| {
-            whisper_cli_args(Path::new("/model.bin"), Path::new("/in.wav"), language)
-        };
-        let extract = |args: &[String]| {
-            args.windows(2)
-                .find(|pair| pair[0] == "-l" || pair[0] == "--language")
-                .map(|pair| pair[1].clone())
-        };
-        assert_eq!(extract(&language_arg("zh")).as_deref(), Some("zh"));
-        assert_eq!(extract(&language_arg("bogus")).as_deref(), Some("auto"));
-        assert!(!language_arg("en")
-            .iter()
-            .any(|arg| arg == "-tr" || arg == "--translate"));
+    fn cli_args_detect_language_and_never_translate() {
+        let args = whisper_cli_args(Path::new("/model.bin"), Path::new("/in.wav"));
+        let language = args
+            .windows(2)
+            .find(|pair| pair[0] == "-l" || pair[0] == "--language")
+            .map(|pair| pair[1].as_str());
+        assert_eq!(language, Some("auto"));
+        assert!(!args.iter().any(|arg| arg == "-tr" || arg == "--translate"));
     }
 
     #[test]

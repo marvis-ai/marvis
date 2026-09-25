@@ -42,8 +42,6 @@ pub struct TranscriptEvent {
 /// `Keystore` and pass it here; this module never accesses the keystore.
 /// `diarize` enables per-segment speaker clustering for the local
 /// providers — it degrades silently when the embedding model is absent.
-/// `language` is the `app.main_language` hint — each provider maps it to
-/// its own code and falls back to auto-detect where unsupported.
 pub fn make_stt_provider(
     provider: &str,
     key: Option<String>,
@@ -51,25 +49,20 @@ pub fn make_stt_provider(
     channel: SpeakerChannel,
     bundled_whisper: Option<&std::path::Path>,
     diarize: bool,
-    language: &str,
 ) -> anyhow::Result<Box<dyn SttProvider>> {
     match provider {
         "deepgram" => Ok(Box::new(DeepgramProvider::new(
             key.ok_or_else(|| anyhow::anyhow!("Deepgram API key is not configured"))?,
             model,
             channel,
-            language,
         ))),
         "whisper" => Ok(Box::new(WhisperProvider::new(
             model,
             channel,
             bundled_whisper,
             diarize,
-            language,
         ))),
-        "sherpa" => Ok(Box::new(SherpaProvider::new(
-            &model, channel, diarize, language,
-        ))),
+        "sherpa" => Ok(Box::new(SherpaProvider::new(&model, channel, diarize))),
         _ => anyhow::bail!("unsupported STT provider: {provider}"),
     }
 }

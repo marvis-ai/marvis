@@ -58,8 +58,8 @@ pub struct AppPrefs {
     /// `auto` | `light` | `dark`; validated by `config_set`.
     pub appearance: String,
     /// `en | zh | ja | ko | fr | es` — the user's main language: the
-    /// chatbox/summary output language and the STT hint whenever a
-    /// request doesn't name one itself. Validated by `config_set`.
+    /// chatbox/summary output language. STT always auto-detects the
+    /// spoken language instead. Validated by `config_set`.
     pub main_language: String,
     /// `#rrggbb` accent — the single hue the whole UI derives from
     /// (`--accent` in index.css; `--primary`, the soft tint, the text

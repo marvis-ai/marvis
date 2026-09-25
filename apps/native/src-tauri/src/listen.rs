@@ -439,7 +439,6 @@ impl ListenService {
                     channel,
                     bundled_whisper,
                     true,
-                    &config.app.main_language,
                 ) {
                     Ok(stt) => stt,
                     Err(error) => {

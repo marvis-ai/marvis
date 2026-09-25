@@ -32,7 +32,6 @@ pub struct DeepgramProvider {
     key: String,
     model: String,
     channel: SpeakerChannel,
-    language: String,
     endpoint: String,
     input: Option<mpsc::Sender<PcmChunk>>,
     stop: Arc<AtomicBool>,
@@ -40,22 +39,20 @@ pub struct DeepgramProvider {
 }
 
 impl DeepgramProvider {
-    pub fn new(key: String, model: String, channel: SpeakerChannel, language: &str) -> Self {
-        Self::with_endpoint(key, model, channel, language, ENDPOINT.to_string())
+    pub fn new(key: String, model: String, channel: SpeakerChannel) -> Self {
+        Self::with_endpoint(key, model, channel, ENDPOINT.to_string())
     }
 
     fn with_endpoint(
         key: String,
         model: String,
         channel: SpeakerChannel,
-        language: &str,
         endpoint: String,
     ) -> Self {
         Self {
             key,
             model,
             channel,
-            language: language.to_string(),
             endpoint,
             input: None,
             stop: Arc::new(AtomicBool::new(false)),
@@ -79,7 +76,6 @@ impl SttProvider for DeepgramProvider {
         let key = self.key.clone();
         let model = self.model.clone();
         let channel = self.channel;
-        let language = self.language.clone();
         let endpoint = self.endpoint.clone();
         let stop = Arc::clone(&self.stop);
         self.worker = Some(thread::spawn(move || {
@@ -98,7 +94,6 @@ impl SttProvider for DeepgramProvider {
                 model,
                 channel,
                 endpoint,
-                language,
                 receiver,
                 callback,
                 error_callback,
@@ -135,7 +130,6 @@ async fn run_worker(
     model: String,
     channel: SpeakerChannel,
     endpoint: String,
-    language: String,
     mut receiver: mpsc::Receiver<PcmChunk>,
     callback: Box<dyn Fn(TranscriptEvent) + Send + Sync>,
     error_callback: Box<dyn Fn(String) + Send + Sync>,
@@ -148,7 +142,6 @@ async fn run_worker(
             &model,
             channel,
             &endpoint,
-            &language,
             &mut receiver,
             &callback,
             &stop,
@@ -194,17 +187,13 @@ async fn run_session(
     model: &str,
     channel: SpeakerChannel,
     endpoint: &str,
-    language: &str,
     receiver: &mut mpsc::Receiver<PcmChunk>,
     callback: &(dyn Fn(TranscriptEvent) + Send + Sync),
     stop: &AtomicBool,
 ) -> Result<(), SessionFailure> {
     let url = format!(
-        "{endpoint}?model={}&encoding=linear16&sample_rate=16000&channels=1&interim_results=true&punctuate=true&smart_format=true{}",
+        "{endpoint}?model={}&encoding=linear16&sample_rate=16000&channels=1&interim_results=true&punctuate=true&smart_format=true",
         encode_query_component(model),
-        deepgram_language(language)
-            .map(|code| format!("&language={code}"))
-            .unwrap_or_default(),
     );
     let mut request = url.into_client_request().map_err(|_| {
         SessionFailure::Terminal("Deepgram request configuration is invalid".to_string())
@@ -294,21 +283,6 @@ struct ChannelResult {
 struct Alternative {
     #[serde(default)]
     transcript: String,
-}
-
-/// The `language` query value for an `app.main_language` code — `zh`
-/// reaches Deepgram as `zh-CN`; unknown values omit the parameter so
-/// the API keeps its default rather than rejecting the connection.
-fn deepgram_language(code: &str) -> Option<&'static str> {
-    match code.trim() {
-        "zh" => Some("zh-CN"),
-        "en" => Some("en"),
-        "ja" => Some("ja"),
-        "ko" => Some("ko"),
-        "fr" => Some("fr"),
-        "es" => Some("es"),
-        _ => None,
-    }
 }
 
 fn encode_query_component(value: &str) -> String {
@@ -429,7 +403,6 @@ mod tests {
             "nova-2",
             SpeakerChannel::Them,
             &endpoint,
-            "en",
             &mut receiver,
             &|event| events_for_callback.lock().unwrap().push(event),
             &stop,
@@ -470,7 +443,6 @@ mod tests {
             "nova-2".to_string(),
             SpeakerChannel::Me,
             endpoint,
-            "en".to_string(),
             receiver,
             Box::new(|_| {}),
             Box::new(move |error| errors_for_callback.lock().unwrap().push(error)),
@@ -496,7 +468,6 @@ mod tests {
             "nova-2".to_string(),
             SpeakerChannel::Me,
             "ws://127.0.0.1:1/v1/listen".to_string(),
-            "en".to_string(),
             receiver,
             Box::new(|_| {}),
             Box::new(move |error| errors_for_callback.lock().unwrap().push(error)),
@@ -513,14 +484,5 @@ mod tests {
     fn provider_implements_shared_interface() {
         fn assert_provider<T: SttProvider>() {}
         assert_provider::<DeepgramProvider>();
-    }
-
-    /// `zh` is the only remap — the API spells Chinese `zh-CN`; unknown
-    /// values omit the parameter entirely (no `language=bogus` on the wire).
-    #[test]
-    fn deepgram_language_maps_the_six_codes() {
-        assert_eq!(deepgram_language("zh"), Some("zh-CN"));
-        assert_eq!(deepgram_language("en"), Some("en"));
-        assert_eq!(deepgram_language("bogus"), None);
     }
 }

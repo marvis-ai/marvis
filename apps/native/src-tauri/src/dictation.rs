@@ -222,7 +222,6 @@ impl DictationService {
             SpeakerChannel::Me,
             bundled_whisper,
             false,
-            &config.app.main_language,
         ) {
             Ok(stt) => stt,
             Err(error) => {

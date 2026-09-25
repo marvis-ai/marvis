@@ -1670,7 +1670,7 @@ fn config_get(state: State<'_, AppState>) -> Config {
 /// `window.bar_y` (number sets, null clears), `app.onboarding_done`
 /// (bool), `app.appearance` (`auto|light|dark`), `app.accent`
 /// (`#rrggbb`, `""` resets to the spec slate), `app.main_language`
-/// (`en|zh|ja|ko|fr|es` — chat/summary output language + STT hint),
+/// (`en|zh|ja|ko|fr|es` — chat/summary output; STT auto-detects),
 /// `compat.name`,
 /// `compat.base_url` (validated http(s) URL; `""` clears),
 /// `models.stt_provider` (`deepgram|whisper|sherpa`), and `models.stt_model`

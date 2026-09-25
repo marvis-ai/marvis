@@ -46,8 +46,8 @@ jobs:
   rust:
     name: Rust tests (src-tauri)
     # macOS-only: src-tauri links AppKit/ScreenCaptureKit/CoreAudio.
-    # macos-15 image: screencapturekit's apple-metal Swift bridge requires the macOS 15 SDK.
-    runs-on: macos-15
+    # macos-26 image: screencapturekit's apple-metal Swift bridge requires the macOS 26 SDK.
+    runs-on: macos-26
     steps:
       - uses: actions/checkout@v4
 

@@ -873,10 +873,11 @@ fn set_glass_radius(app: &AppHandle, win: &WebviewWindow, corner_radius: f64) {
 
 /// The prefs window is deliberately NOT built by [`build_window`]: it's a
 /// real macOS window, not overlay chrome — native decorations, normal
-/// focus — but it IS a liquid-glass surface: `TitleBarStyle::Transparent`
-/// + `hidden_title` push the content under the traffic lights (the
-/// Settings.app look) and `GlassMaterialVariant::Sidebar` paints the
-/// whole window in the sidebar material. It joins the bar's floating
+/// focus — but it IS a liquid-glass surface: `TitleBarStyle::Overlay`
+/// + `hidden_title` make the content full-size so the traffic lights
+/// land inside the sidebar (the Settings.app look) and
+/// `GlassMaterialVariant::Sidebar` paints the whole window in the
+/// sidebar material. It joins the bar's floating
 /// level ONLY while focused (so it can overlap the bar the user keeps
 /// on top) and drops back on blur — focus events keep `always_on_top`
 /// mirroring the window's active state. It stays content-protected
@@ -891,7 +892,7 @@ fn build_prefs_window(app: &AppHandle) -> anyhow::Result<WebviewWindow> {
         .inner_size(PREFS_W, PREFS_H)
         .title("Marvis — Settings")
         .decorations(true)
-        .title_bar_style(tauri::TitleBarStyle::Transparent)
+        .title_bar_style(tauri::TitleBarStyle::Overlay)
         .hidden_title(true)
         .transparent(true)
         .resizable(false)

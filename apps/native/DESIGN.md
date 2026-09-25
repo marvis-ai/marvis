@@ -168,9 +168,10 @@ snapped edges keep a 12px margin; panels drop 8px from the bar.
 
 ### Settings window (`assets/marvis-settings-window.html`)
 
-- macOS frame: liquid-glass **Sidebar** material with a transparent
-  titlebar — the hidden title + traffic lights overlay the sidebar
-  column (the macOS Settings.app look). The glass shows only in the
+- macOS frame: liquid-glass **AbuttedSidebar** material — the same
+  variant Settings.app uses — with a transparent titlebar; the hidden
+  title + traffic lights overlay the sidebar column. The glass shows
+  only in the
   sidebar; the content column is opaque `--bg`. The window floats
   above other apps only while focused; on blur it returns to normal
   level, while the bar stays always-on-top. **Sidebar** (settings

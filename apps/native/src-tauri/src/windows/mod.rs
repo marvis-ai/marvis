@@ -81,8 +81,9 @@ const CHAT_DEFAULT_H: f64 = 480.0;
 /// `rounded-[18px]`; the glass shape follows it while a card is up.
 const CARD_RADIUS: f64 = 18.0;
 /// The preferences window — a decorated macOS window backed by the
-/// Sidebar liquid-glass material (transparent titlebar, traffic lights
-/// overlaying content), not an overlay panel. It floats only while
+/// AbuttedSidebar liquid-glass material (transparent titlebar, traffic
+/// lights overlaying the sidebar column), not an overlay panel. It
+/// floats only while
 /// focused — the bar keeps its global always-on-top level. Label
 /// `prefs`, `?view=prefs`; it hosts both the settings sidebar and
 /// the onboarding wizard, switched by `prefs:mode` emits.
@@ -876,8 +877,9 @@ fn set_glass_radius(app: &AppHandle, win: &WebviewWindow, corner_radius: f64) {
 /// focus — but it IS a liquid-glass surface: `TitleBarStyle::Overlay`
 /// + `hidden_title` make the content full-size so the traffic lights
 /// land inside the sidebar (the Settings.app look) and
-/// `GlassMaterialVariant::Sidebar` paints the whole window in the
-/// sidebar material. It joins the bar's floating
+/// `GlassMaterialVariant::AbuttedSidebar` paints the whole window in
+/// the edge-abutting sidebar material — the same variant Settings.app
+/// uses. It joins the bar's floating
 /// level ONLY while focused (so it can overlap the bar the user keeps
 /// on top) and drops back on blur — focus events keep `always_on_top`
 /// mirroring the window's active state. It stays content-protected
@@ -942,7 +944,7 @@ fn build_prefs_window(app: &AppHandle) -> anyhow::Result<WebviewWindow> {
                 LiquidGlassConfig {
                     corner_radius: 0.0,
                     tint_color: None,
-                    variant: GlassMaterialVariant::Sidebar,
+                    variant: GlassMaterialVariant::AbuttedSidebar,
                     ..Default::default()
                 },
             ) {

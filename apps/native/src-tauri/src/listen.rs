@@ -401,6 +401,12 @@ impl ListenService {
             });
             anyhow::bail!(message)
         }
+        // `stop()` only ends the session this service was running — a row
+        // still open from a killed run or a failed start would otherwise
+        // absorb the new recording, so a Listen press always mints fresh.
+        if let Err(error) = db.session_end_open("listen") {
+            log::warn!("listen: session_end_open before start failed: {error}");
+        }
         let session_id = db.session_get_or_create_active("listen")?;
         let existing = db.transcripts_for(session_id, None)?;
         {
@@ -1153,6 +1159,52 @@ mod tests {
                 "needs_setup": true,
             })
         );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// A row left open by a killed run (`ended_at IS NULL`, no live
+    /// service) must be closed by the next start — never resumed — so new
+    /// turns can't append to the stale session.
+    #[test]
+    fn start_closes_a_stale_open_session_instead_of_appending() {
+        let root =
+            std::env::temp_dir().join(format!("marvis-listen-stale-test-{}", std::process::id()));
+        let db = Arc::new(crate::storage::Db::at(root.join("marvis.db")).unwrap());
+        let stale = db.session_get_or_create_active("listen").unwrap();
+        db.transcript_add(stale, "them", "stale turn", None, None)
+            .unwrap();
+
+        // An unknown provider clears the setup gate and fails later in
+        // `make_stt_provider` — reaching the session logic without needing
+        // a real audio device or network.
+        let keystore = Keystore::at(root.join("keys.json"));
+        let mut config = Config::default();
+        config.models.stt_provider = "bogus".into();
+        let service = ListenService::new();
+
+        let _ = service.start(
+            db.clone(),
+            &keystore,
+            &config,
+            false,
+            None,
+            Arc::new(|_| {}),
+        );
+        service.stop();
+
+        // The stale session was closed rather than adopted: its turns
+        // never entered the live history and nothing appended to its row.
+        assert!(service.current_history().is_empty());
+        assert_ne!(db.session_active_id("listen").unwrap(), Some(stale));
+        assert!(db
+            .session_list()
+            .unwrap()
+            .iter()
+            .find(|session| session.id == stale)
+            .unwrap()
+            .ended_at
+            .is_some());
+        assert_eq!(db.transcripts_for(stale, None).unwrap().len(), 1);
         let _ = std::fs::remove_dir_all(root);
     }
 

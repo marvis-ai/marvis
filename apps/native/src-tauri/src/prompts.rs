@@ -48,6 +48,52 @@ pub fn summary_context(transcript: &str, previous: Option<&str>) -> String {
     context
 }
 
+/// The six `app.main_language` codes as the English name a prompt
+/// instruction uses — the model reads this, so it must be English
+/// text, not the autonym. Unknown/empty reads as English.
+pub fn language_name(code: &str) -> &'static str {
+    match code.trim() {
+        "zh" => "Chinese",
+        "ja" => "Japanese",
+        "ko" => "Korean",
+        "fr" => "French",
+        "es" => "Spanish",
+        _ => "English",
+    }
+}
+
+/// The live prompt plus the main-language directive: the preference is
+/// the standing default, an explicit per-request language still wins.
+pub fn live_system_prompt_for(language: &str) -> String {
+    format!(
+        "{}\n\nThe user's preferred reply language is {}; respond in it unless the current request explicitly asks for a different language.",
+        live_system_prompt(),
+        language_name(language),
+    )
+}
+
+/// The default summary focus — the Meeting template; an empty
+/// `recording.summary_prompt` reads as this.
+pub const DEFAULT_SUMMARY_INSTRUCTION: &str =
+    "Focus on decisions made, action items with owners and deadlines, and open questions.";
+
+/// The summary prompt plus the language directive and the user's focus
+/// instruction — appended AFTER the JSON contract so the output shape
+/// stays mandatory whatever the focus says.
+pub fn summary_system_prompt_for(language: &str, focus: &str) -> String {
+    let focus = if focus.trim().is_empty() {
+        DEFAULT_SUMMARY_INSTRUCTION
+    } else {
+        focus.trim()
+    };
+    format!(
+        "{}\n\nWrite tldr, bullets, follow_ups, and topic in {}.\n\n## Focus\n\n{}",
+        summary_system_prompt(),
+        language_name(language),
+        focus,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -79,6 +125,19 @@ mod tests {
         assert!(prompt.contains("</meeting_context>"));
         assert!(prompt.contains("<screen_context>"));
         assert!(prompt.contains("</screen_context>"));
+    }
+
+    #[test]
+    fn language_directives_join_the_system_prompts() {
+        assert_eq!(language_name("zh"), "Chinese");
+        assert_eq!(language_name("bogus"), "English");
+        let live = live_system_prompt_for("ja");
+        assert!(live.contains("preferred reply language is Japanese"));
+        let summary = summary_system_prompt_for("fr", "Focus on risks.");
+        assert!(summary.contains("Write tldr, bullets, follow_ups, and topic in French."));
+        assert!(summary.contains("## Focus\n\nFocus on risks."));
+        let default = summary_system_prompt_for("en", "   ");
+        assert!(default.contains(DEFAULT_SUMMARY_INSTRUCTION));
     }
 
     #[test]

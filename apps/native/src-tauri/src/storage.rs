@@ -210,6 +210,17 @@ impl Db {
         Ok(())
     }
 
+    /// End every still-open session of `kind` — returns how many rows were
+    /// closed. Start paths that must mint a fresh session sweep with this
+    /// first, since `session_get_or_create_active` would otherwise resume
+    /// a row left open by a killed run or a failed start.
+    pub fn session_end_open(&self, kind: &str) -> anyhow::Result<usize> {
+        Ok(self.conn.lock().execute(
+            "UPDATE sessions SET ended_at = ?1 WHERE type = ?2 AND ended_at IS NULL",
+            params![now(), kind],
+        )?)
+    }
+
     /// Every session, most recently active first.
     pub fn session_list(&self) -> anyhow::Result<Vec<Session>> {
         let conn = self.conn.lock();
@@ -593,8 +604,10 @@ mod tests {
         let sid = db.session_get_or_create_active("listen").unwrap();
 
         db.transcript_add(sid, "me", "hello", None, None).unwrap();
-        db.transcript_add(sid, "them", "hi there", None, None).unwrap();
-        db.transcript_add(sid, "me", "follow-up", None, None).unwrap();
+        db.transcript_add(sid, "them", "hi there", None, None)
+            .unwrap();
+        db.transcript_add(sid, "me", "follow-up", None, None)
+            .unwrap();
 
         let transcripts = db.transcripts_for(sid, None).unwrap();
         assert_eq!(transcripts.len(), 3);

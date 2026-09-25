@@ -41,5 +41,6 @@ export {
   ShieldAlertIcon,
   ShieldCheckIcon,
   SlidersHorizontalIcon,
+  VideoIcon,
   XIcon,
 } from "lucide-react"

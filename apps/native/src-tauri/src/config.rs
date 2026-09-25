@@ -17,6 +17,8 @@ pub struct Config {
     pub models: ModelPrefs,
     /// Provider enable/order/model memory — see [`ProviderPrefs`].
     pub providers: ProviderPrefs,
+    /// Ambient screen capture + voice-summary prefs — see [`RecordingPrefs`].
+    pub recording: RecordingPrefs,
     #[serde(
         default = "default_hotkeys",
         deserialize_with = "merge_default_hotkeys"
@@ -34,6 +36,7 @@ impl Default for Config {
             app: AppPrefs::default(),
             models: ModelPrefs::default(),
             providers: ProviderPrefs::default(),
+            recording: RecordingPrefs::default(),
             hotkeys: default_hotkeys(),
             window: WindowPrefs::default(),
             compat: CompatPrefs::default(),
@@ -54,6 +57,10 @@ pub struct AppPrefs {
     pub onboarding_done: bool,
     /// `auto` | `light` | `dark`; validated by `config_set`.
     pub appearance: String,
+    /// `en | zh | ja | ko | fr | es` — the user's main language: the
+    /// chatbox/summary output language. STT always auto-detects the
+    /// spoken language instead. Validated by `config_set`.
+    pub main_language: String,
     /// `#rrggbb` accent — the single hue the whole UI derives from
     /// (`--accent` in index.css; `--primary`, the soft tint, the text
     /// variant, and the focus ring all `color-mix` off it). Validated by
@@ -151,12 +158,83 @@ pub(crate) fn apply_stt_config(
     }
 }
 
+/// The six `app.main_language` codes (Settings → General).
+pub(crate) fn validate_main_language(value: &str) -> Result<String, String> {
+    let value = value.trim();
+    if matches!(value, "en" | "zh" | "ja" | "ko" | "fr" | "es") {
+        Ok(value.to_string())
+    } else {
+        Err(format!("unknown language {value:?}"))
+    }
+}
+
+/// Apply the `recording.*` config command keys — same handled-shape as
+/// [`apply_stt_config`].
+pub(crate) fn apply_recording_config(
+    recording: &mut RecordingPrefs,
+    key: &str,
+    value: &serde_json::Value,
+) -> Result<bool, String> {
+    match key {
+        "recording.auto_screenshots" => {
+            recording.auto_screenshots = value
+                .as_bool()
+                .ok_or("recording.auto_screenshots must be a bool")?;
+            Ok(true)
+        }
+        "recording.fps" => {
+            let fps = value.as_u64().ok_or("recording.fps must be a number")?;
+            if !matches!(fps, 2 | 4 | 8) {
+                return Err(format!("unknown fps {fps}"));
+            }
+            recording.fps = fps as u32;
+            Ok(true)
+        }
+        "recording.summary_prompt" => {
+            recording.summary_prompt = value
+                .as_str()
+                .ok_or("recording.summary_prompt must be a string")?
+                .trim()
+                .to_string();
+            Ok(true)
+        }
+        _ => Ok(false),
+    }
+}
+
 impl Default for AppPrefs {
     fn default() -> Self {
         Self {
             onboarding_done: false,
             appearance: "auto".into(),
             accent: DEFAULT_ACCENT.into(),
+            main_language: "en".into(),
+        }
+    }
+}
+
+/// `[recording]` — ambient screen capture + voice-summary prefs.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RecordingPrefs {
+    /// `enter_main` auto-starts the ambient screen recorder while the
+    /// gate is `Main`; `false` leaves capture manual-only — the bar's
+    /// record toggle still starts a session.
+    pub auto_screenshots: bool,
+    /// Screen frame-rate cap: 8 | 4 | 2 fps.
+    pub fps: u32,
+    /// The summary focus instruction appended to the summary system
+    /// prompt (template text or custom); `""` reads as Meeting.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub summary_prompt: String,
+}
+
+impl Default for RecordingPrefs {
+    fn default() -> Self {
+        Self {
+            auto_screenshots: true,
+            fps: 4,
+            summary_prompt: String::new(),
         }
     }
 }
@@ -390,6 +468,17 @@ impl Config {
         self.vision
             .models
             .retain(|id, m| vision(id) && !m.is_empty());
+
+        if !matches!(
+            self.app.main_language.as_str(),
+            "en" | "zh" | "ja" | "ko" | "fr" | "es"
+        ) {
+            self.app.main_language = "en".into();
+        }
+        if !matches!(self.recording.fps, 2 | 4 | 8) {
+            self.recording.fps = 4;
+        }
+        self.recording.summary_prompt = self.recording.summary_prompt.trim().to_string();
     }
 
     /// Atomic write: `config.toml.tmp` then rename — the same pattern
@@ -895,5 +984,50 @@ mod tests {
             apply_stt_config(&mut models, "models.stt_model", &serde_json::json!("tiny")).is_err()
         );
         assert_eq!(models.stt_model, "sense-voice");
+    }
+
+    #[test]
+    fn recording_keys_apply_and_validate() {
+        let mut rec = RecordingPrefs::default();
+        assert!(apply_recording_config(
+            &mut rec,
+            "recording.auto_screenshots",
+            &serde_json::json!(false)
+        )
+        .unwrap());
+        assert!(!rec.auto_screenshots);
+        assert!(apply_recording_config(&mut rec, "recording.fps", &serde_json::json!(8)).unwrap());
+        assert_eq!(rec.fps, 8);
+        assert_eq!(
+            apply_recording_config(&mut rec, "recording.fps", &serde_json::json!(5)).unwrap_err(),
+            "unknown fps 5"
+        );
+        assert!(apply_recording_config(
+            &mut rec,
+            "recording.summary_prompt",
+            &serde_json::json!("  custom  ")
+        )
+        .unwrap());
+        assert_eq!(rec.summary_prompt, "custom");
+        assert!(
+            !apply_recording_config(&mut rec, "recording.other", &serde_json::json!(1)).unwrap()
+        );
+        assert_eq!(validate_main_language(" zh ").unwrap(), "zh");
+        assert_eq!(
+            validate_main_language("cn").unwrap_err(),
+            "unknown language \"cn\""
+        );
+    }
+
+    #[test]
+    fn normalize_clamps_language_and_fps() {
+        let mut cfg = Config::default();
+        cfg.app.main_language = "klingon".into();
+        cfg.recording.fps = 60;
+        cfg.recording.summary_prompt = "  pad  ".into();
+        cfg.normalize();
+        assert_eq!(cfg.app.main_language, "en");
+        assert_eq!(cfg.recording.fps, 4);
+        assert_eq!(cfg.recording.summary_prompt, "pad");
     }
 }

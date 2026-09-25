@@ -68,7 +68,8 @@ jobs:
     name: Package Marvis release candidate (arm64)
     if: ${{ inputs.package_app == true }}
     needs: build-arm64
-    runs-on: macos-14
+    # macos-15 image: tauri build compiles apple-metal's Swift bridge, which needs the macOS 15 SDK.
+    runs-on: macos-15
     env:
       APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
     steps:

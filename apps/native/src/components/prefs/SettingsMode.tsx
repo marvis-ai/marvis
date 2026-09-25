@@ -11,6 +11,7 @@ import {
   PanelTopIcon,
   ShieldIcon,
   SlidersHorizontalIcon,
+  VideoIcon,
 } from '@marvis/ui';
 import { AboutTab } from './AboutTab';
 import { BarTab } from './BarTab';
@@ -18,12 +19,14 @@ import { GeneralTab } from './GeneralTab';
 import { HotkeysTab } from './HotkeysTab';
 import { PrivacyTab } from './PrivacyTab';
 import { ProvidersTab } from './ProvidersTab';
+import { RecordingTab } from './RecordingTab';
 import { cn } from '../../lib/classes';
 import type { PrefsData } from './types';
 
 const TABS = [
   { id: 'general', label: 'General', icon: SlidersHorizontalIcon },
   { id: 'bar', label: 'Bar', icon: PanelTopIcon },
+  { id: 'recording', label: 'Recording', icon: VideoIcon },
   { id: 'providers', label: 'Providers', icon: KeyRoundIcon },
   { id: 'hotkeys', label: 'Hotkeys', icon: KeyboardIcon },
   { id: 'privacy', label: 'Privacy & data', icon: ShieldIcon },
@@ -38,7 +41,7 @@ export const SettingsMode = ({ data }: { data: PrefsData }) => {
   return (
     <div className='grid min-h-0 flex-1 grid-cols-[168px_1fr]'>
       <nav
-        className='flex flex-col gap-0.5 border-r border-border bg-[color-mix(in_oklch,var(--bg)_55%,var(--surface))] px-2 py-2.5'
+        className='prefs-side flex flex-col gap-0.5 border-r border-border bg-[color-mix(in_oklch,var(--bg)_55%,var(--surface))] px-2 pt-9 pb-2.5'
         aria-label='Settings sections'>
         {TABS.map(({ id, label, icon: Icon }) => (
           <button
@@ -65,9 +68,10 @@ export const SettingsMode = ({ data }: { data: PrefsData }) => {
           made with 💗
         </span>
       </nav>
-      <div className='min-w-0 overflow-y-auto px-6 pt-5 pb-5.5'>
+      <div className='min-w-0 overflow-y-auto bg-background px-6 pt-8 pb-5.5'>
         {tab === 'general' && <GeneralTab data={data} />}
         {tab === 'bar' && <BarTab />}
+        {tab === 'recording' && <RecordingTab data={data} />}
         {tab === 'providers' && <ProvidersTab data={data} />}
         {tab === 'hotkeys' && <HotkeysTab data={data} />}
         {tab === 'privacy' && <PrivacyTab />}

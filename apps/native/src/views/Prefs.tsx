@@ -1,7 +1,9 @@
 /**
  * `?view=prefs` — the decorated 720×520 settings + onboarding window
- * (`PREFS_LABEL` in windows/mod.rs). Native traffic lights, opaque, not
- * always-on-top: it's an app window, not overlay chrome. The webview
+ * (`PREFS_LABEL` in windows/mod.rs). Native traffic lights overlay the
+ * liquid-glass sidebar; the content column is opaque, and the window
+ * floats only while focused: it's an app window, not overlay chrome.
+ * The webview
  * hosts both modes; the backend pushes `prefs:mode` on every
  * `show_prefs` and this view re-reads `prefs_mode` on mount, so a show
  * that raced the load still lands.

@@ -41,7 +41,7 @@ export const SettingsMode = ({ data }: { data: PrefsData }) => {
   return (
     <div className='grid min-h-0 flex-1 grid-cols-[168px_1fr]'>
       <nav
-        className='flex flex-col gap-0.5 border-r border-border bg-[color-mix(in_oklch,var(--bg)_55%,var(--surface))] px-2 pt-9 pb-2.5'
+        className='prefs-side flex flex-col gap-0.5 border-r border-border bg-[color-mix(in_oklch,var(--bg)_55%,var(--surface))] px-2 pt-9 pb-2.5'
         aria-label='Settings sections'>
         {TABS.map(({ id, label, icon: Icon }) => (
           <button
@@ -68,7 +68,7 @@ export const SettingsMode = ({ data }: { data: PrefsData }) => {
           made with 💗
         </span>
       </nav>
-      <div className='min-w-0 overflow-y-auto px-6 pt-8 pb-5.5'>
+      <div className='min-w-0 overflow-y-auto bg-background px-6 pt-8 pb-5.5'>
         {tab === 'general' && <GeneralTab data={data} />}
         {tab === 'bar' && <BarTab />}
         {tab === 'recording' && <RecordingTab data={data} />}

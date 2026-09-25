@@ -169,13 +169,14 @@ snapped edges keep a 12px margin; panels drop 8px from the bar.
 ### Settings window (`assets/marvis-settings-window.html`)
 
 - macOS frame: liquid-glass **Sidebar** material with a transparent
-  titlebar (hidden title, traffic lights overlaying content — the
-  macOS Settings.app look). The window floats above other apps only
-  while focused; on blur it returns to normal level, while the bar
-  stays always-on-top. **Sidebar** (settings mode: General / Bar /
-  Recording / Providers / Hotkeys / Privacy & data / About, mono
-  credit footer `@2026 Marvis AI made with 💗`), main column of
-  `pref-row`s. "Re-run setup" lives in About → Setup.
+  titlebar — the hidden title + traffic lights overlay the sidebar
+  column (the macOS Settings.app look). The glass shows only in the
+  sidebar; the content column is opaque `--bg`. The window floats
+  above other apps only while focused; on blur it returns to normal
+  level, while the bar stays always-on-top. **Sidebar** (settings
+  mode: General / Bar / Recording / Providers / Hotkeys / Privacy &
+  data / About, mono credit footer `@2026 Marvis AI made with 💗`),
+  main column of `pref-row`s. "Re-run setup" lives in About → Setup.
 - **Onboarding = step-by-step wizard, no sidebar.** A 4-segment progress
   track across the window top (`ob-seg` fills `--primary`) + mono counter
   `2 / 4 · screen access`; steps centered in a ~480px column with Back /

@@ -139,9 +139,16 @@ body,
 
 /* The prefs window's own material: the glass view fills the whole
    window (transparent titlebar), so the webview root goes transparent
-   under a native material just like .glass-stage. */
+   under a native material just like .glass-stage. The material is only
+   meant to show in the sidebar — the sidebar drops its fill (traffic
+   lights sit on the glass), while the content column paints an opaque
+   --bg over it. */
 [data-material='glass'] .prefs-shell,
 [data-material='vibrancy'] .prefs-shell {
+  background: transparent;
+}
+[data-material='glass'] .prefs-side,
+[data-material='vibrancy'] .prefs-side {
   background: transparent;
 }
 body {

@@ -1,0 +1,61 @@
+name: Native CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  frontend:
+    name: Lint, typecheck, test, build (@marvis/native)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Lint
+        run: bunx turbo run lint --filter=@marvis/native...
+
+      - name: Check types
+        run: bunx turbo run check-types --filter=@marvis/native...
+
+      - name: Test
+        run: bunx turbo run test --filter=@marvis/native...
+
+      - name: Build
+        run: bunx turbo run build --filter=@marvis/native...
+
+  rust:
+    name: Rust tests (src-tauri)
+    # macOS-only: src-tauri links AppKit/ScreenCaptureKit/CoreAudio.
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/native/src-tauri
+
+      - name: Test
+        working-directory: apps/native/src-tauri
+        run: cargo test --locked

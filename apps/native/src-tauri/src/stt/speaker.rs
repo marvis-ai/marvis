@@ -72,6 +72,14 @@ pub fn tracker_if_installed(channel: SpeakerChannel) -> Option<SpeakerTracker> {
 pub struct SpeakerClusters {
     references: Vec<Vec<Vec<f32>>>,
     candidates: Vec<Vec<f32>>,
+    /// Index of the voiceprint-seeded cluster (`Some(0)` when enrolled).
+    /// A seeded cluster re-enrolls every match — the voiceprint anchors
+    /// the user's identity, so borderline matches are language/noise
+    /// drift to learn from, not strangers to keep out. Measured on this
+    /// model: the same voice across zh→en scores ≈ 0.56 — above MATCH but
+    /// below ENROLL — so without this, an English-enrolled user speaking
+    /// Chinese (or vice versa) would keep hitting the candidate gate.
+    seeded: Option<usize>,
 }
 
 impl Default for SpeakerClusters {
@@ -85,6 +93,7 @@ impl SpeakerClusters {
         Self {
             references: Vec::new(),
             candidates: Vec::new(),
+            seeded: None,
         }
     }
 
@@ -92,6 +101,7 @@ impl SpeakerClusters {
     pub(crate) fn seed(&mut self, embedding: Vec<f32>) {
         if self.references.is_empty() {
             self.references.push(vec![embedding]);
+            self.seeded = Some(0);
         }
     }
 
@@ -117,7 +127,13 @@ impl SpeakerClusters {
         if best_score >= MATCH_THRESHOLD {
             // Confident repeats enrich the reference set — a slow drift
             // keeps matching without letting marginal matches pile up.
-            if best_score >= ENROLL_THRESHOLD && self.references[best_idx].len() < MAX_REFERENCES {
+            // The seeded cluster trusts every match (see `seeded`).
+            let enroll_gate = if self.seeded == Some(best_idx) {
+                MATCH_THRESHOLD
+            } else {
+                ENROLL_THRESHOLD
+            };
+            if best_score >= enroll_gate && self.references[best_idx].len() < MAX_REFERENCES {
                 self.references[best_idx].push(embedding.to_vec());
             }
             return Some(best_idx as u32);
@@ -295,6 +311,19 @@ mod tests {
         assert_eq!(clusters.references[0].len(), 1);
     }
 
+    /// The seeded "You" cluster trusts every match: a borderline 0.58
+    /// score — where an unseeded cluster refuses to enroll — still joins
+    /// the reference set, so cross-language drift enriches instead of
+    /// spawning guests.
+    #[test]
+    fn seeded_cluster_reenrolls_borderline_matches() {
+        let mut clusters = SpeakerClusters::new();
+        clusters.seed(vec![1.0, 0.0]);
+        // cos ≈ 0.58: above MATCH (0.45), below ENROLL (0.6).
+        assert_eq!(clusters.assign(&vec![0.58, 0.81]), Some(0));
+        assert_eq!(clusters.references[0].len(), 2);
+    }
+
     #[test]
     fn zero_embedding_never_crashes_assignment() {
         let mut clusters = SpeakerClusters::new();
@@ -380,5 +409,60 @@ mod tests {
         assert_eq!(same_voice, Some(0));
         assert_eq!(other, None);
         assert_eq!(other2, Some(1));
+    }
+
+    // Cross-language probe: does a zh-enrolled voiceprint match the same
+    // voice speaking English? Tingting reads zh + English (same identity),
+    // Daniel gives the same-language different-voice control.
+    //   cargo test stt::speaker::tests::cross_language_probe -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn cross_language_probe() {
+        fn wav_f32(path: &str) -> Vec<f32> {
+            let bytes = std::fs::read(path).expect(path);
+            let data_at = bytes
+                .windows(4)
+                .position(|w| w == b"data")
+                .map(|p| p + 8)
+                .expect("data chunk");
+            bytes[data_at..]
+                .chunks_exact(4)
+                .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+                .collect()
+        }
+        let root = crate::paths::sherpa_models_dir();
+        let model = crate::sherpa_models::speaker_embedding_model_path(&root)
+            .expect("speaker-id model installed");
+        let tracker = SpeakerTracker::create(&model).expect("extractor loads");
+        let tt_zh = tracker.embed(&wav_f32("/tmp/tt_zh.wav")).expect("tt_zh");
+        let tt_en = tracker.embed(&wav_f32("/tmp/tt_en.wav")).expect("tt_en");
+        let daniel_en = tracker
+            .embed(&wav_f32("/tmp/daniel_en.wav"))
+            .expect("daniel_en");
+        let daniel_en2 = tracker
+            .embed(&wav_f32("/tmp/daniel_en2.wav"))
+            .expect("daniel_en2");
+        eprintln!(
+            "tt_zh·tt_en      = {:.3}  (same voice, zh→en)",
+            cosine(&tt_zh, &tt_en)
+        );
+        eprintln!(
+            "tt_zh·daniel_en  = {:.3}  (diff voice, en)",
+            cosine(&tt_zh, &daniel_en)
+        );
+        eprintln!(
+            "daniel_en·daniel_en2 = {:.3}  (same voice, en→en)",
+            cosine(&daniel_en, &daniel_en2)
+        );
+        eprintln!("MATCH={MATCH_THRESHOLD} ENROLL={ENROLL_THRESHOLD}");
+
+        // The regression this guards: a zh-enrolled cluster must accept the
+        // same voice's English at ~0.56 AND enroll it — otherwise every
+        // English window rides the candidate gate toward "Guest 1".
+        let mut seeded = SpeakerTracker::create(&model).expect("extractor loads");
+        seeded.seed(tt_zh.clone());
+        let refs_before = seeded.clusters.references[0].len();
+        assert_eq!(seeded.assign(&wav_f32("/tmp/tt_en.wav")), Some(0));
+        assert!(seeded.clusters.references[0].len() > refs_before);
     }
 }

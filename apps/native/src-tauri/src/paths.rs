@@ -30,6 +30,12 @@ pub fn db_file() -> PathBuf {
     root().join("marvis.db")
 }
 
+/// `voiceprint.bin` — the enrolled speaker embedding (little-endian f32
+/// vector) that pins the mic channel's speaker 0 to the user.
+pub fn voiceprint_file() -> PathBuf {
+    root().join("voiceprint.bin")
+}
+
 /// Path only — callers create the directory when they need it.
 #[allow(dead_code)] // Phase 2 models/ directory
 pub fn models_dir() -> PathBuf {

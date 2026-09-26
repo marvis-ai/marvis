@@ -51,6 +51,7 @@ mod storage;
 pub mod stt;
 mod tray;
 pub mod voice_models;
+mod voiceprint;
 mod windows;
 
 use std::sync::Arc;
@@ -150,6 +151,9 @@ pub struct AppState {
     alert: Mutex<Option<serde_json::Value>>,
     voice_models: voice_models::VoiceModelManager,
     sherpa_models: sherpa_models::SherpaModelManager,
+    /// Owns the voice-enrollment recording lifecycle (mic capture +
+    /// voiceprint persistence). Self-contained — no cross-field locking.
+    voice_enroll: voiceprint::VoiceEnroll,
 }
 
 impl AppState {
@@ -224,6 +228,7 @@ impl AppState {
             sherpa_models: sherpa_models::SherpaModelManager::at(
                 root.join("models").join("sherpa").join("models"),
             ),
+            voice_enroll: voiceprint::VoiceEnroll::new(),
         }
     }
 }
@@ -1370,6 +1375,36 @@ fn sherpa_remove_model(
 }
 
 // ---------------------------------------------------------------------------
+// Commands — voice enrollment
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+fn voiceprint_status(state: State<'_, AppState>) -> voiceprint::VoiceprintStatus {
+    state.voice_enroll.status()
+}
+
+#[tauri::command]
+fn voice_enroll_start(state: State<'_, AppState>) -> Result<(), String> {
+    state.voice_enroll.start()
+}
+
+/// Stop returns the saved take's seconds so the UI can confirm "Ns saved".
+#[tauri::command]
+fn voice_enroll_stop(state: State<'_, AppState>) -> Result<voiceprint::VoiceEnrollResult, String> {
+    state.voice_enroll.stop()
+}
+
+#[tauri::command]
+fn voice_enroll_cancel(state: State<'_, AppState>) {
+    state.voice_enroll.cancel();
+}
+
+#[tauri::command]
+fn voiceprint_remove(state: State<'_, AppState>) -> Result<(), String> {
+    state.voice_enroll.remove()
+}
+
+// ---------------------------------------------------------------------------
 // Commands — windows
 // ---------------------------------------------------------------------------
 
@@ -1939,6 +1974,7 @@ pub fn run() {
                 alert: Mutex::new(None),
                 voice_models,
                 sherpa_models,
+                voice_enroll: voiceprint::VoiceEnroll::new(),
             });
             deeplink::init(handle, deeplink_dispatch(handle))?;
             // Warn-and-continue like hotkeys: a missing tray must never
@@ -2001,6 +2037,11 @@ pub fn run() {
             sherpa_download,
             sherpa_cancel_download,
             sherpa_remove_model,
+            voiceprint_status,
+            voice_enroll_start,
+            voice_enroll_stop,
+            voice_enroll_cancel,
+            voiceprint_remove,
             alert_show,
             alert_current,
             alert_dismiss,

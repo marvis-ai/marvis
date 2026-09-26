@@ -25,8 +25,13 @@ describe('hasActiveWork', () => {
 });
 
 describe('barControls', () => {
-  test('shows Listen only while collapsed and dictation only while expanded', () => {
-    expect(barControls(false)).toEqual(['iris', 'capture', 'listen']);
+  test('shows recorders + history only while collapsed and dictation only while expanded', () => {
+    expect(barControls(false)).toEqual([
+      'iris',
+      'capture',
+      'listen',
+      'history',
+    ]);
     expect(barControls(true)).toEqual(['iris', 'dictation', 'settings']);
   });
 });

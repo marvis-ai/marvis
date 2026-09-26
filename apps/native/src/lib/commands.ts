@@ -142,6 +142,8 @@ export interface Session {
   id: number;
   kind: string;
   title: string | null;
+  /** Retained recording path (`~/.marvis/audios/recording_*.wav`) — listen only. */
+  audio_file: string | null;
   started_at: number;
   ended_at: number | null;
   last_active_at: number;
@@ -165,7 +167,6 @@ export interface Transcript {
   speaker_idx: number | null;
   content: string;
   ts: number;
-  audio_file: string | null;
 }
 
 export interface ListenSummary {
@@ -175,7 +176,8 @@ export interface ListenSummary {
   bullets: string[];
   follow_ups: string[];
   topic: string | null;
-  ts: number;
+  created_at: number;
+  updated_at: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -258,12 +260,16 @@ export interface ListenErrorPayload {
 }
 
 export interface ListenStatus {
-  state: 'idle' | 'listening' | 'error';
+  state: 'idle' | 'listening' | 'paused' | 'error';
   provider: string | null;
   session_id: number | null;
   turns: number;
   mic: boolean;
   error: ListenErrorPayload | null;
+  /** Session start epoch — elapsed = (paused_since ?? now) - started_at - paused_secs. */
+  started_at: number | null;
+  paused_secs: number;
+  paused_since: number | null;
 }
 
 export interface VoiceModelCatalogEntry {
@@ -304,6 +310,8 @@ export interface WhisperStatus {
 
 export const listenStart = () => invoke<ListenStatus>('listen_start');
 export const listenStop = () => invoke<void>('listen_stop');
+export const listenPause = () => invoke<void>('listen_pause');
+export const listenResume = () => invoke<void>('listen_resume');
 export const listenStatus = () => invoke<ListenStatus>('listen_status');
 export const voiceModelsCatalog = () =>
   invoke<VoiceModelCatalogEntry[]>('voice_models_catalog');
@@ -471,7 +479,7 @@ export const windowFocusBar = () => invoke<void>('window_focus_bar');
 
 /** The pill⇄input morph resizes the window itself (the capsule IS the
  * window under liquid glass) — report `expanded` so Rust can animate
- * the idle 140 ⇄ expanded 600 width change. */
+ * the idle 172 ⇄ expanded 600 width change. */
 export const windowSetBarExpanded = (expanded: boolean) =>
   invoke<void>('window_set_bar_expanded', { expanded });
 
@@ -523,6 +531,10 @@ export const sessionDelete = (id: number) =>
 /** End the active session of `kind` — ChatSection's "New chat". */
 export const sessionEndActive = (kind: string) =>
   invoke<boolean>('session_end_active', { kind });
+
+/** Resume a past chat session — ends the open one, reopens `id`. */
+export const sessionResume = (id: number) =>
+  invoke<boolean>('session_resume', { id });
 
 // ---------------------------------------------------------------------------
 // config / app

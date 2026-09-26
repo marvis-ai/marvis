@@ -48,10 +48,13 @@ pub struct VoiceEnrollResult {
 
 /// Live session: `buffer` is the shared sink (16 kHz mono i16, the
 /// `PcmChunk` wire format); `cancel` asks the worker to stop the mic and
-/// exit; `worker` is joined by `stop`/`cancel`.
+/// exit; `worker` is joined by `stop`/`cancel`. `source_error` carries a
+/// fatal mic failure so `stop` can report it instead of a misleading
+/// "too short" when the stream died mid-take.
 struct LiveEnrollment {
     cancel: Arc<AtomicBool>,
     buffer: Arc<Mutex<Vec<i16>>>,
+    source_error: Arc<Mutex<Option<String>>>,
     worker: JoinHandle<()>,
 }
 
@@ -91,11 +94,18 @@ impl VoiceEnroll {
         }
         let cancel = Arc::new(AtomicBool::new(false));
         let buffer: Arc<Mutex<Vec<i16>>> = Arc::new(Mutex::new(Vec::new()));
+        let source_error: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
         let worker_cancel = Arc::clone(&cancel);
         let worker_buffer = Arc::clone(&buffer);
+        let worker_error = Arc::clone(&source_error);
         let worker = thread::spawn(move || {
             loop {
                 if worker_cancel.load(Ordering::Acquire) {
+                    break;
+                }
+                if let Some(message) = source.try_recv_status() {
+                    log::warn!("voiceprint: microphone died mid-recording: {message}");
+                    *worker_error.lock() = Some("the microphone stopped working".to_string());
                     break;
                 }
                 match rx.recv_timeout(Duration::from_millis(50)) {
@@ -114,6 +124,7 @@ impl VoiceEnroll {
         *slot = Some(LiveEnrollment {
             cancel,
             buffer,
+            source_error,
             worker,
         });
         Ok(())
@@ -136,7 +147,9 @@ impl VoiceEnroll {
             .collect();
         let seconds = samples.len() as f32 / SAMPLE_RATE as f32;
         if seconds < MIN_SECONDS {
-            return Err("the recording was too short — speak for a few seconds".to_string());
+            return Err(live.source_error.lock().clone().unwrap_or_else(|| {
+                "the recording was too short — speak for a few seconds".into()
+            }));
         }
         if speaker::voiced_fraction(&samples) < MIN_VOICED {
             return Err("no speech was detected — try again in a quieter spot".to_string());

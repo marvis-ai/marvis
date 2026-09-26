@@ -151,6 +151,12 @@ pub fn audio_tmp_dir() -> PathBuf {
     root().join("tmp")
 }
 
+/// `~/.marvis/audios` — retained session recordings (`recording_*.wav`).
+/// Path only; callers create the directory when they need it.
+pub fn audios_dir() -> PathBuf {
+    root().join("audios")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -162,6 +168,7 @@ mod tests {
         assert_eq!(keys_file(), root.join("keys.json"));
         assert_eq!(config_file(), root.join("config.toml"));
         assert_eq!(db_file(), root.join("marvis.db"));
+        assert_eq!(audios_dir(), root.join("audios"));
         // models_dir() must not create the directory eagerly.
         let existed = root.join("models").exists();
         assert_eq!(models_dir(), root.join("models"));

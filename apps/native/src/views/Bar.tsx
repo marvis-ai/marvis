@@ -1,23 +1,25 @@
 /**
  * The always-on-top bar (`?view=bar`) — the UNIFIED window. Two shapes:
  *
- *  - Pill modes (mini | input | permission): the 140⇄600×64 capsule⇄
+ *  - Pill modes (mini | input | permission): the 172⇄600×64 capsule⇄
  *    input morph — the capsule IS the window under liquid glass, so
  *    `expanded` reports to `window_set_bar_expanded` and Rust animates
  *    the width change. Unchanged mechanics.
- *  - Card modes (chat | listen): the same window grown to
+ *  - Card modes (chat | listen | history): the same window grown to
  *    600×(64+content) — the bar row is the card's bottom-anchored
- *    footer under `flex-col-reverse`, with the chat/listen section
- *    above it regardless of which way the window physically grows.
+ *    footer under `flex-col-reverse`, with the section above it
+ *    regardless of which way the window physically grows.
  *
  * `cardOpen` lives in `useCardGeometry` — read off the window
  * itself (`resize` is the only open/close signal).
  * Dictation is `useDictation`; the permission gate is `useGate`; the
  * background-activity mirrors are `useBarActivity`.
  *
- * `data-tauri-drag-region` lives on the bar ROW only in card mode — a
- * stage-level region would intercept text selection in the scrollable
- * conversation. In pill mode it stays on the capsule chrome as before.
+ * `data-tauri-drag-region` lives on the card's chrome in card mode —
+ * the bar ROW and the section CardHeader ('deep', so padding and
+ * non-interactive children drag too) — a stage-level region would
+ * intercept text selection in the scrollable conversation. In pill
+ * mode it stays on the capsule chrome as before.
  *
  * The mic affordance splits by surface: collapsed shows the Listen
  * recorder (`MicAudioLinesIcon`, opens the card into meeting Listen)
@@ -27,9 +29,10 @@
  *
  * Errors go to the `alert` window (`raise`) — the pill has no room.
  */
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { SubmitEvent } from 'react';
 import {
+  HistoryIcon,
   MicAudioLinesIcon,
   MicIcon,
   MonitorDotIcon,
@@ -43,6 +46,7 @@ import {
   captureStart,
   captureStop,
   listenStart,
+  listenStatus,
   listenStop,
   raise,
   windowFocusBar,
@@ -63,8 +67,10 @@ import { DictationWaveform } from '@/components/bar/DictationWaveform';
 import { IrisButton } from '@/components/bar/IrisButton';
 import { PermissionRow } from '@/components/bar/PermissionRow';
 import { ChatSection } from '@/components/ChatSection';
+import { HistorySection } from '@/components/HistorySection';
 import { LaunchIntro } from '@/components/LaunchIntro';
 import { ListenSection } from '@/components/ListenSection';
+import type { ListenViewing } from '@/components/listen/model';
 import { PANEL } from '@/lib/classes';
 
 const Bar = () => {
@@ -93,7 +99,36 @@ const Bar = () => {
    *  mutually exclusive server-side). */
   const speechBusy = useRef(false);
 
-  const { cardOpen } = useCardGeometry(cardRef, stageRef);
+  // Section pin: an explicit user choice (send → chat, listen-start →
+  // listen, stop → the finished doc, history capsule button → the
+  // session list) overrides the `listenWanted` activity mirror.
+  const [pinned, setPinned] = useState<'chat' | 'listen' | 'history' | null>(
+    null,
+  );
+  const [listenViewing, setListenViewing] = useState<ListenViewing | null>(
+    null,
+  );
+
+  /** History is a standalone surface at a fixed 60% of the screen's
+   *  height — re-read per report so moving displays stays correct.
+   *  `useCallback` keeps the identity stable so the geometry effect
+   *  only re-runs when history toggles on/off. */
+  const historyHeight = useCallback(
+    () => Math.round(window.screen.availHeight * 0.6),
+    [],
+  );
+  const { cardOpen } = useCardGeometry(
+    cardRef,
+    stageRef,
+    pinned === 'history' ? historyHeight : null,
+  );
+  /** Live mirror of `cardOpen` for async callbacks — the card can
+   *  collapse while a `listenStop` invoke is in flight, and a
+   *  `viewing`/`pinned` write landing after that would outlive the
+   *  close-time reset (the `cardOpen` effect only refires on
+   *  transitions). */
+  const cardOpenRef = useRef(cardOpen);
+  cardOpenRef.current = cardOpen;
   const {
     listenWanted,
     setListenWanted,
@@ -120,10 +155,14 @@ const Bar = () => {
    *  `!showInputRow` keeps it off every non-idle surface. */
   const showIntro = !introDone && !showInputRow;
   /** Whether the Ask `<input>` is actually mounted: the permission
-   *  card and the boot-error retry replace the whole row while
+   *  card and the boot-error retry replace the whole row, and the
+   *  standalone history surface renders no row at all, while
    *  `showInputRow` stays true — dictation keys off this. */
   const inputRendered =
-    showInputRow && !bootError && gate !== 'needs_permission';
+    showInputRow &&
+    !bootError &&
+    gate !== 'needs_permission' &&
+    pinned !== 'history';
   /** The row's control set for this surface — `bar-state.ts` owns the
    *  contract, the conditionals below consume it so the two can't
    *  drift. */
@@ -137,11 +176,9 @@ const Bar = () => {
     inputRendered,
   });
 
-  const section: 'chat' | 'listen' | null = !cardOpen
+  const section: 'chat' | 'listen' | 'history' | null = !cardOpen
     ? null
-    : listenWanted
-      ? 'listen'
-      : 'chat';
+    : (pinned ?? (listenWanted ? 'listen' : 'chat'));
   /** Any live work pulses the floating shell — specific controls keep
    *  their stronger active affordances on top of it. */
   const activeWork = hasActiveWork({
@@ -180,11 +217,19 @@ const Bar = () => {
     void windowFocusBar().catch(() => {});
   });
 
+  // Every card open starts unpinned with no viewed session.
+  useEffect(() => {
+    if (!cardOpen) {
+      setPinned(null);
+      setListenViewing(null);
+    }
+  }, [cardOpen]);
+
   // Listen is an independent session: collapsing the card must not change
   // which active section is shown when it is reopened.
 
   // The capsule IS the window under liquid glass — the pill⇄input morph
-  // resizes it (idle 140 ⇄ 600). While the card is open the morph is
+  // resizes it (idle 172 ⇄ 600). While the card is open the morph is
   // dormant: the width report is skipped so `bar_rect` (the canonical
   // pill) restores verbatim on collapse.
   useEffect(() => {
@@ -276,6 +321,7 @@ const Bar = () => {
   // expands the window itself — no local collapse needed either way.
   const submitAsk = (e?: SubmitEvent<HTMLFormElement>) => {
     e?.preventDefault();
+    setPinned('chat');
     dictation.submit(sendAsk);
   };
 
@@ -328,7 +374,7 @@ const Bar = () => {
   const micLabel =
     dictation.state === 'listening'
       ? 'Stop dictation'
-      : listenState === 'listening'
+      : listenState === 'listening' || listenState === 'paused'
         ? 'Stop listening'
         : showInputRow
           ? 'Dictate'
@@ -357,8 +403,33 @@ const Bar = () => {
       });
       return;
     }
-    if (listenState === 'listening') {
-      void listenStop()
+    // A paused session is still live (backend `is_listening()`) — the
+    // press stops it rather than resuming. Read the ids BEFORE the stop
+    // clears the session snapshot so the card can swap to the finished
+    // document (the same handoff ListenSection's `onSessionEnded` uses).
+    if (listenState === 'listening' || listenState === 'paused') {
+      void listenStatus()
+        .then((status) =>
+          listenStop().then(() => {
+            // The finished-doc swap presumes an open card — a capsule
+            // stop stays silent (the doc stays reachable via History),
+            // and a write landing while closed would leak the stale
+            // viewing/pin into the next open.
+            if (
+              !cardOpenRef.current ||
+              status.session_id == null ||
+              status.started_at == null
+            ) {
+              return;
+            }
+            setListenViewing({
+              id: status.session_id,
+              startedAt: status.started_at,
+              endedAt: Date.now() / 1000,
+            });
+            setPinned('listen');
+          }),
+        )
         .catch(() => raise('Stop failed'))
         .finally(() => {
           speechBusy.current = false;
@@ -372,6 +443,10 @@ const Bar = () => {
       return;
     }
     setListenWanted(true);
+    setPinned('listen');
+    // A live start must never inherit a viewed doc — drop any stale one
+    // so the section can't mount walled behind a finished session.
+    setListenViewing(null);
     void windowSetChatOpen(true).catch(() => {});
     void listenStart()
       .then((next) => setListenState(next.state))
@@ -410,10 +485,12 @@ const Bar = () => {
       <form
         onSubmit={submitAsk}
         className={rowCls}
-        data-tauri-drag-region>
+        data-tauri-drag-region='deep'>
         <IrisButton
           active={
-            listenState === 'listening' || dictation.state === 'listening'
+            listenState === 'listening' ||
+            listenState === 'paused' ||
+            dictation.state === 'listening'
           }
           label={
             cardOpen ? 'Close chat' : open ? 'Back to capsule' : 'Ask Marvis'
@@ -465,10 +542,23 @@ const Bar = () => {
         {controls.includes('listen') && (
           <BarButton
             label={micLabel}
-            pressed={listenState === 'listening'}
+            pressed={listenState === 'listening' || listenState === 'paused'}
             disabled={gate !== 'main'}
             onPress={pressMic}>
             <MicAudioLinesIcon className='size-5' />
+          </BarButton>
+        )}
+        {/* Collapsed-only history opener — the card opens on the
+            session list. */}
+        {controls.includes('history') && (
+          <BarButton
+            label='History'
+            disabled={gate !== 'main'}
+            onPress={() => {
+              setPinned('history');
+              void windowSetChatOpen(true).catch(() => {});
+            }}>
+            <HistoryIcon className='size-5' />
           </BarButton>
         )}
         {/* Expanded-only dictation (`barControls(true)`) — the same
@@ -528,10 +618,51 @@ const Bar = () => {
         )}
         data-expanded={showInputRow || undefined}
         data-tauri-drag-region={cardOpen ? undefined : 'deep'}>
-        {row()}
+        {/* The standalone history card renders no bottom input row at
+            all — no iris/dictation/settings footer (settings lives in
+            the history header instead). */}
+        {section !== 'history' && row()}
         {showIntro && <LaunchIntro onDone={() => setIntroDone(true)} />}
-        {section === 'chat' && <ChatSection />}
-        {section === 'listen' && <ListenSection />}
+        {section === 'chat' && (
+          <ChatSection
+            onBack={() => void windowSetChatOpen(false).catch(() => {})}
+          />
+        )}
+        {section === 'listen' && (
+          <ListenSection
+            viewing={listenViewing}
+            onSessionEnded={(v) => {
+              if (!cardOpenRef.current) return;
+              setListenViewing(v);
+              setPinned('listen');
+            }}
+            onBack={() => {
+              if (listenViewing) {
+                // A finished doc can only be reached from History —
+                // Back returns to the list.
+                setListenViewing(null);
+                setPinned('history');
+                return;
+              }
+              void windowSetChatOpen(false).catch(() => {});
+            }}
+          />
+        )}
+        {section === 'history' && (
+          <HistorySection
+            askBusy={askState !== 'idle'}
+            onOpenChat={() => setPinned('chat')}
+            onOpenListen={(v) => {
+              setListenViewing(v);
+              setPinned('listen');
+            }}
+            onBack={() => {
+              // History is only entered from the capsule (card
+              // closed) — Back collapses to idle.
+              void windowSetChatOpen(false).catch(() => {});
+            }}
+          />
+        )}
         {/* Capsule shimmer — accent duotone follows light/dark via the
             tokens; masked to the border ring, pointer-events-none. */}
         <ShineBorder

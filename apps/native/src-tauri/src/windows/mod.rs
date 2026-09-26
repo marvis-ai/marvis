@@ -66,9 +66,10 @@ pub enum Dir {
 }
 
 /// The bar window's two widths: the capsule IS the window under liquid
-/// glass, so idle rests at BAR_IDLE_W (the 3-icon row) and any expanded
-/// content — input row, gate cards — uses BAR_W. Height never changes.
-const BAR_IDLE_W: f64 = 140.0;
+/// glass, so idle rests at BAR_IDLE_W (the four capsule controls) and
+/// any expanded content — input row, gate cards — uses BAR_W. Height
+/// never changes.
+const BAR_IDLE_W: f64 = 172.0;
 const BAR_W: f64 = 600.0;
 const BAR_H: f64 = 64.0;
 /// Bar window label — the ask event target now that the chat card lives
@@ -874,8 +875,8 @@ fn set_glass_radius(app: &AppHandle, win: &WebviewWindow, corner_radius: f64) {
 
 /// The prefs window is deliberately NOT built by [`build_window`]: it's a
 /// real macOS window, not overlay chrome — native decorations, normal
-/// focus — but it IS a liquid-glass surface: `TitleBarStyle::Overlay`
-/// + `hidden_title` make the content full-size so the traffic lights
+/// focus — but it IS a liquid-glass surface: `TitleBarStyle::Overlay` +
+/// `hidden_title` make the content full-size so the traffic lights
 /// land inside the sidebar (the Settings.app look) and
 /// `GlassMaterialVariant::AbuttedSidebar` paints the whole window in
 /// the edge-abutting sidebar material — the same variant Settings.app

@@ -100,6 +100,9 @@ export const ListenSection = () => {
     turns: 0,
     mic: false,
     error: null,
+    started_at: null,
+    paused_secs: 0,
+    paused_since: null,
   });
   const [turns, setTurns] = useState<Turn[]>([]);
   const sessionRef = useRef<number | null>(null);

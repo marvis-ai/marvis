@@ -1,5 +1,5 @@
 export type AskActivity = 'idle' | 'loading' | 'streaming';
-export type SpeechActivity = 'idle' | 'listening' | 'error';
+export type SpeechActivity = 'idle' | 'listening' | 'paused' | 'error';
 
 /** The bar row's control set per surface — collapsed shows the
  *  background/Listen recorders, expanded shows dictation + settings.

@@ -258,12 +258,16 @@ export interface ListenErrorPayload {
 }
 
 export interface ListenStatus {
-  state: 'idle' | 'listening' | 'error';
+  state: 'idle' | 'listening' | 'paused' | 'error';
   provider: string | null;
   session_id: number | null;
   turns: number;
   mic: boolean;
   error: ListenErrorPayload | null;
+  /** Session start epoch — elapsed = (paused_since ?? now) - started_at - paused_secs. */
+  started_at: number | null;
+  paused_secs: number;
+  paused_since: number | null;
 }
 
 export interface VoiceModelCatalogEntry {
@@ -304,6 +308,8 @@ export interface WhisperStatus {
 
 export const listenStart = () => invoke<ListenStatus>('listen_start');
 export const listenStop = () => invoke<void>('listen_stop');
+export const listenPause = () => invoke<void>('listen_pause');
+export const listenResume = () => invoke<void>('listen_resume');
 export const listenStatus = () => invoke<ListenStatus>('listen_status');
 export const voiceModelsCatalog = () =>
   invoke<VoiceModelCatalogEntry[]>('voice_models_catalog');
@@ -523,6 +529,10 @@ export const sessionDelete = (id: number) =>
 /** End the active session of `kind` — ChatSection's "New chat". */
 export const sessionEndActive = (kind: string) =>
   invoke<boolean>('session_end_active', { kind });
+
+/** Resume a past chat session — ends the open one, reopens `id`. */
+export const sessionResume = (id: number) =>
+  invoke<boolean>('session_resume', { id });
 
 // ---------------------------------------------------------------------------
 // config / app

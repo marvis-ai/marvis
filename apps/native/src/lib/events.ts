@@ -43,11 +43,14 @@ export const EV_SHERPA_DOWNLOAD_ERROR = 'sherpa:download-error';
 export type SherpaDownloadProgressPayload = WhisperDownloadProgressPayload;
 export type SherpaDownloadErrorPayload = WhisperDownloadErrorPayload;
 export interface ListenStatePayload {
-  state: 'idle' | 'listening' | 'error';
+  state: 'idle' | 'listening' | 'paused' | 'error';
   provider: string | null;
   session_id: number | null;
   mic: boolean;
   error: ListenErrorPayload | null;
+  started_at: number | null;
+  paused_secs: number;
+  paused_since: number | null;
 }
 export interface ListenTurnPayload {
   speaker: 'me' | 'them';

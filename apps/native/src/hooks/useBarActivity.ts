@@ -33,7 +33,11 @@ export const useBarActivity = () => {
     void listenStatus()
       .then((next) => {
         setListenState(next.state);
-        if (next.state === 'listening' || next.state === 'error') {
+        if (
+          next.state === 'listening' ||
+          next.state === 'paused' ||
+          next.state === 'error'
+        ) {
           setListenWanted(true);
         }
       })
@@ -52,7 +56,11 @@ export const useBarActivity = () => {
 
   useTauriEvent<ListenStatePayload>(EV_LISTEN_STATE, (p) => {
     setListenState(p.state);
-    if (p.state === 'listening' || p.state === 'error') {
+    if (
+      p.state === 'listening' ||
+      p.state === 'paused' ||
+      p.state === 'error'
+    ) {
       setListenWanted(true);
     } else if (p.state === 'idle') {
       setListenWanted(false);

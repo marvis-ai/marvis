@@ -1050,6 +1050,9 @@ fn emit_listen_state(app: &AppHandle, state: &listen::ListenStatus) {
             "session_id": state.session_id,
             "mic": state.mic,
             "error": state.error,
+            "started_at": state.started_at,
+            "paused_secs": state.paused_secs,
+            "paused_since": state.paused_since,
         }),
     );
 }
@@ -1126,6 +1129,22 @@ fn listen_stop(app: AppHandle) {
     let state = app.state::<AppState>();
     state.listen.stop();
     emit_listen_state(&app, &state.listen.status());
+}
+
+#[tauri::command]
+fn listen_pause(app: AppHandle) {
+    let state = app.state::<AppState>();
+    if let Some(status) = state.listen.pause() {
+        emit_listen_state(&app, &status);
+    }
+}
+
+#[tauri::command]
+fn listen_resume(app: AppHandle) {
+    let state = app.state::<AppState>();
+    if let Some(status) = state.listen.resume() {
+        emit_listen_state(&app, &status);
+    }
 }
 
 #[tauri::command]
@@ -2032,6 +2051,8 @@ pub fn run() {
             ask_current,
             listen_start,
             listen_stop,
+            listen_pause,
+            listen_resume,
             listen_status,
             dictation_start,
             dictation_stop,
@@ -2125,6 +2146,8 @@ mod tests {
         let source = include_str!("lib.rs");
         assert!(source.contains("listen_start,"));
         assert!(source.contains("listen_stop,"));
+        assert!(source.contains("listen_pause,"));
+        assert!(source.contains("listen_resume,"));
         assert!(source.contains("listen_status,"));
         assert!(source.contains("dictation_start,"));
         assert!(source.contains("dictation_stop,"));
@@ -2256,6 +2279,9 @@ mod tests {
             turns: 0,
             mic: false,
             error: None,
+            started_at: None,
+            paused_secs: 0,
+            paused_since: None,
         }
         .is_listening());
         assert!(listen::ListenStatus {
@@ -2265,6 +2291,23 @@ mod tests {
             turns: 0,
             mic: false,
             error: None,
+            started_at: None,
+            paused_secs: 0,
+            paused_since: None,
+        }
+        .is_listening());
+        // A paused Listen still owns the audio sources — mutual exclusion
+        // must hold through the pause.
+        assert!(listen::ListenStatus {
+            state: "paused".into(),
+            provider: None,
+            session_id: None,
+            turns: 0,
+            mic: false,
+            error: None,
+            started_at: None,
+            paused_secs: 0,
+            paused_since: None,
         }
         .is_listening());
 

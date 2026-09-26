@@ -290,13 +290,18 @@ pub struct ListenStatus {
     pub turns: usize,
     pub mic: bool,
     pub error: Option<ListenError>,
+    /// Session start epoch — the header timer's zero point.
+    pub started_at: Option<i64>,
+    /// Accumulated pause seconds; `paused_since` is Some while paused.
+    pub paused_secs: i64,
+    pub paused_since: Option<i64>,
 }
 
 impl ListenStatus {
     /// `true` while a Listen session owns audio sources — `dictation_start`
     /// reads this for the dictation/Listen mutual-exclusion check.
     pub fn is_listening(&self) -> bool {
-        self.state == "listening"
+        self.state == "listening" || self.state == "paused"
     }
 }
 
@@ -322,6 +327,7 @@ struct SessionContext {
 }
 struct Running {
     cancel: Arc<AtomicBool>,
+    paused: Arc<AtomicBool>,
     workers: Vec<JoinHandle<()>>,
     assembler: Arc<Mutex<TurnAssembler>>,
     context: Arc<SessionContext>,
@@ -346,6 +352,9 @@ impl ListenService {
                 turns: 0,
                 mic: false,
                 error: None,
+                started_at: None,
+                paused_secs: 0,
+                paused_since: None,
             })),
             running: Mutex::new(None),
             db: Mutex::new(None),
@@ -394,6 +403,9 @@ impl ListenService {
                     message: message.to_string(),
                     needs_setup: true,
                 }),
+                started_at: None,
+                paused_secs: 0,
+                paused_since: None,
             };
             emit(ListenEvent::Error {
                 message: message.to_string(),
@@ -417,6 +429,7 @@ impl ListenService {
             }
         }
         let cancel = Arc::new(AtomicBool::new(false));
+        let paused = Arc::new(AtomicBool::new(false));
         let assembler = Arc::new(Mutex::new(TurnAssembler::new()));
         let context = Arc::new(SessionContext {
             db: db.clone(),
@@ -502,6 +515,7 @@ impl ListenService {
                     return Err(error);
                 }
                 let cancel_rx = cancel.clone();
+                let paused_rx = paused.clone();
                 let worker_assembler = assembler.clone();
                 let worker_context = context.clone();
                 workers.push(std::thread::spawn(move || {
@@ -509,6 +523,11 @@ impl ListenService {
                     while !cancel_rx.load(Ordering::Acquire) {
                         match rx.recv_timeout(WORKER_TICK) {
                             Ok(chunk) => {
+                                // Soft-pause: drain the source but starve STT — nothing transcribes
+                                // and nothing persists while paused.
+                                if paused_rx.load(Ordering::Acquire) {
+                                    continue;
+                                }
                                 if !stt.enqueue(chunk) {
                                     dropped_chunks += 1;
                                     if dropped_chunks.is_multiple_of(100) {
@@ -558,6 +577,9 @@ impl ListenService {
                     message: "no audio source available".into(),
                     needs_setup: false,
                 }),
+                started_at: None,
+                paused_secs: 0,
+                paused_since: None,
             };
             emit(ListenEvent::Error {
                 message: "no audio source available".into(),
@@ -565,9 +587,11 @@ impl ListenService {
             });
             anyhow::bail!("no audio source available");
         }
+        let started_at = db.session_started_at(session_id).ok().flatten();
         *self.db.lock() = Some(db);
         *self.running.lock() = Some(Running {
             cancel,
+            paused,
             workers,
             assembler,
             context,
@@ -580,6 +604,7 @@ impl ListenService {
         status.turns = existing.len();
         status.mic = mic_started;
         status.error = None;
+        status.started_at = started_at;
         Ok(())
     }
 
@@ -621,6 +646,9 @@ impl ListenService {
                     turns: 0,
                     mic: false,
                     error: None,
+                    started_at: None,
+                    paused_secs: 0,
+                    paused_since: None,
                 };
                 Some(status.clone())
             }
@@ -651,6 +679,9 @@ impl ListenService {
                 turns: 0,
                 mic: false,
                 error: None,
+                started_at: None,
+                paused_secs: 0,
+                paused_since: None,
             };
             return;
         };
@@ -672,7 +703,42 @@ impl ListenService {
             turns: 0,
             mic: false,
             error: None,
+            started_at: None,
+            paused_secs: 0,
+            paused_since: None,
         };
+    }
+
+    /// Pause without tearing down sources: workers keep draining (and
+    /// dropping) chunks so resume is instant. The open turn flushes first —
+    /// a pause is a clean transcript boundary.
+    pub fn pause(&self) -> Option<ListenStatus> {
+        let running = self.running.lock();
+        let running = running.as_ref()?;
+        if running.paused.swap(true, Ordering::AcqRel) {
+            return Some(self.status());
+        }
+        for turn in running.assembler.lock().flush() {
+            persist_turn(&running.context, turn);
+        }
+        let mut status = self.state.lock();
+        status.state = "paused".into();
+        status.paused_since = Some(now_unix());
+        Some(status.clone())
+    }
+
+    pub fn resume(&self) -> Option<ListenStatus> {
+        let running = self.running.lock();
+        let running = running.as_ref()?;
+        if !running.paused.swap(false, Ordering::AcqRel) {
+            return Some(self.status());
+        }
+        let mut status = self.state.lock();
+        if let Some(since) = status.paused_since.take() {
+            status.paused_secs += now_unix() - since;
+        }
+        status.state = "listening".into();
+        Some(status.clone())
     }
 }
 
@@ -931,6 +997,9 @@ mod tests {
             turns: 3,
             mic: true,
             error: None,
+            started_at: Some(100),
+            paused_secs: 0,
+            paused_since: None,
         };
         let payload = serde_json::to_value(status).unwrap();
         assert_eq!(
@@ -940,9 +1009,27 @@ mod tests {
                 .keys()
                 .cloned()
                 .collect::<Vec<_>>(),
-            vec!["error", "mic", "provider", "session_id", "state", "turns"]
+            vec![
+                "error",
+                "mic",
+                "paused_secs",
+                "paused_since",
+                "provider",
+                "session_id",
+                "started_at",
+                "state",
+                "turns"
+            ]
         );
         assert_eq!(payload["session_id"], 42);
+    }
+
+    #[test]
+    fn pause_freezes_and_resume_accumulates() {
+        let svc = ListenService::new();
+        // No running session → both are no-ops.
+        assert!(svc.pause().is_none());
+        assert!(svc.resume().is_none());
     }
 
     #[test]
@@ -1295,6 +1382,9 @@ mod tests {
                 message: "provider went away".into(),
                 needs_setup: false,
             }),
+            started_at: None,
+            paused_secs: 0,
+            paused_since: None,
         };
         assert!(service
             .revalidate_setup(&keystore, &config, None, &sherpa_root)

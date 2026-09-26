@@ -66,9 +66,10 @@ pub enum Dir {
 }
 
 /// The bar window's two widths: the capsule IS the window under liquid
-/// glass, so idle rests at BAR_IDLE_W (the 3-icon row) and any expanded
-/// content — input row, gate cards — uses BAR_W. Height never changes.
-const BAR_IDLE_W: f64 = 140.0;
+/// glass, so idle rests at BAR_IDLE_W (the four capsule controls) and
+/// any expanded content — input row, gate cards — uses BAR_W. Height
+/// never changes.
+const BAR_IDLE_W: f64 = 172.0;
 const BAR_W: f64 = 600.0;
 const BAR_H: f64 = 64.0;
 /// Bar window label — the ask event target now that the chat card lives

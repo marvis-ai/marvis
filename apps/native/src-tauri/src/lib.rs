@@ -562,7 +562,7 @@ fn deepgram_validation_payload(key: &str) -> serde_json::Value {
 /// Raise the alert toast with `message`.
 ///
 /// The toast is a window of its own because the bar is a fixed-height
-/// capsule (140⇄600 wide) — the old inline error row squeezed the
+/// capsule (172⇄600 wide) — the old inline error row squeezed the
 /// pill's content. It is purely informational and auto-dismisses.
 fn show_alert(app: &AppHandle, message: &str) {
     let state = app.state::<AppState>();
@@ -1528,7 +1528,7 @@ fn window_adjust_height(state: State<'_, AppState>, height: f64) {
 }
 
 /// The webview's pill⇄input morph signal — under liquid glass the
-/// capsule IS the window, so the window resizes to match (idle 140,
+/// capsule IS the window, so the window resizes to match (idle 172,
 /// expanded 600, same 64 height and capsule radius).
 #[tauri::command]
 fn window_set_bar_expanded(state: State<'_, AppState>, expanded: bool) {

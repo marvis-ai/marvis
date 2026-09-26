@@ -1,14 +1,14 @@
 /**
  * The always-on-top bar (`?view=bar`) — the UNIFIED window. Two shapes:
  *
- *  - Pill modes (mini | input | permission): the 140⇄600×64 capsule⇄
+ *  - Pill modes (mini | input | permission): the 172⇄600×64 capsule⇄
  *    input morph — the capsule IS the window under liquid glass, so
  *    `expanded` reports to `window_set_bar_expanded` and Rust animates
  *    the width change. Unchanged mechanics.
- *  - Card modes (chat | listen): the same window grown to
+ *  - Card modes (chat | listen | history): the same window grown to
  *    600×(64+content) — the bar row is the card's bottom-anchored
- *    footer under `flex-col-reverse`, with the chat/listen section
- *    above it regardless of which way the window physically grows.
+ *    footer under `flex-col-reverse`, with the section above it
+ *    regardless of which way the window physically grows.
  *
  * `cardOpen` lives in `useCardGeometry` — read off the window
  * itself (`resize` is the only open/close signal).
@@ -30,6 +30,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { SubmitEvent } from 'react';
 import {
+  HistoryIcon,
   MicAudioLinesIcon,
   MicIcon,
   MonitorDotIcon,
@@ -60,10 +61,12 @@ import { useGate } from '@/hooks/useGate';
 import { AskInput } from '@/components/bar/AskInput';
 import { BarButton } from '@/components/bar/BarButton';
 import { BootErrorRow } from '@/components/bar/BootErrorRow';
+import { CardTabs } from '@/components/bar/CardTabs';
 import { DictationWaveform } from '@/components/bar/DictationWaveform';
 import { IrisButton } from '@/components/bar/IrisButton';
 import { PermissionRow } from '@/components/bar/PermissionRow';
 import { ChatSection } from '@/components/ChatSection';
+import { HistorySection } from '@/components/HistorySection';
 import { LaunchIntro } from '@/components/LaunchIntro';
 import { ListenSection } from '@/components/ListenSection';
 import type { ListenViewing } from '@/components/listen/model';
@@ -140,8 +143,8 @@ const Bar = () => {
   });
 
   // Section pin: an explicit user choice (send → chat, listen-start →
-  // listen, stop → the finished doc) overrides the `listenWanted`
-  // activity mirror. `'history'` joins the union in Task 7.
+  // listen, stop → the finished doc, history button/tab → the session
+  // list) overrides the `listenWanted` activity mirror.
   const [pinned, setPinned] = useState<'chat' | 'listen' | 'history' | null>(
     null,
   );
@@ -509,6 +512,19 @@ const Bar = () => {
             <MicAudioLinesIcon className='size-5' />
           </BarButton>
         )}
+        {/* Collapsed-only history opener — the card opens on the
+            session list. */}
+        {controls.includes('history') && (
+          <BarButton
+            label='History'
+            disabled={gate !== 'main'}
+            onPress={() => {
+              setPinned('history');
+              void windowSetChatOpen(true).catch(() => {});
+            }}>
+            <HistoryIcon className='size-5' />
+          </BarButton>
+        )}
         {/* Expanded-only dictation (`barControls(true)`) — the same
             `pressMic` route, landing on its `showInputRow` branch. */}
         {showInputRow && dictation.state === 'listening' && (
@@ -578,13 +594,36 @@ const Bar = () => {
             }}
           />
         )}
-        {/* section === 'history' renders in Task 7 */}
+        {section === 'history' && (
+          <HistorySection
+            askBusy={askState !== 'idle'}
+            onOpenChat={() => setPinned('chat')}
+            onOpenListen={(v) => {
+              setListenViewing(v);
+              setPinned('listen');
+            }}
+          />
+        )}
         {/* Capsule shimmer — accent duotone follows light/dark via the
             tokens; masked to the border ring, pointer-events-none. */}
         <ShineBorder
           shineColor={['#A07CFE', '#FE8FB5', '#FFBE7B', 'var(--accent)']}
           borderWidth={1.8}
         />
+        {/* Section tabs — the card is `flex-col-reverse`, so this LAST
+            DOM child renders on top. */}
+        {cardOpen && (
+          <CardTabs
+            section={section ?? 'chat'}
+            listenLive={listenState === 'listening' || listenState === 'paused'}
+            onPick={(s) => {
+              setPinned(s);
+              // The Listen tab means "back to live" — drop any viewed
+              // finished doc.
+              if (s === 'listen') setListenViewing(null);
+            }}
+          />
+        )}
       </div>
     </div>
   );

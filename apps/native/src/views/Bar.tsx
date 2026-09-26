@@ -27,7 +27,7 @@
  *
  * Errors go to the `alert` window (`raise`) — the pill has no room.
  */
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { SubmitEvent } from 'react';
 import {
   HistoryIcon,
@@ -98,7 +98,36 @@ const Bar = () => {
    *  mutually exclusive server-side). */
   const speechBusy = useRef(false);
 
-  const { cardOpen } = useCardGeometry(cardRef, stageRef);
+  // Section pin: an explicit user choice (send → chat, listen-start →
+  // listen, stop → the finished doc, history button/tab → the session
+  // list) overrides the `listenWanted` activity mirror.
+  const [pinned, setPinned] = useState<'chat' | 'listen' | 'history' | null>(
+    null,
+  );
+  const [listenViewing, setListenViewing] = useState<ListenViewing | null>(
+    null,
+  );
+  /** Where the standalone history card was entered from: 'idle' (the
+   *  capsule history button — the card was closed, so Back collapses)
+   *  or the `pinned` value it returns to (`null` = the activity-driven
+   *  section). Cleared when the card closes. */
+  const historyFromRef = useRef<'idle' | 'chat' | 'listen' | 'history' | null>(
+    null,
+  );
+
+  /** History is a standalone surface at a fixed 60% of the screen's
+   *  height — re-read per report so moving displays stays correct.
+   *  `useCallback` keeps the identity stable so the geometry effect
+   *  only re-runs when history toggles on/off. */
+  const historyHeight = useCallback(
+    () => Math.round(window.screen.availHeight * 0.6),
+    [],
+  );
+  const { cardOpen } = useCardGeometry(
+    cardRef,
+    stageRef,
+    pinned === 'history' ? historyHeight : null,
+  );
   /** Live mirror of `cardOpen` for async callbacks — the card can
    *  collapse while a `listenStop` invoke is in flight, and a
    *  `viewing`/`pinned` write landing after that would outlive the
@@ -132,10 +161,14 @@ const Bar = () => {
    *  `!showInputRow` keeps it off every non-idle surface. */
   const showIntro = !introDone && !showInputRow;
   /** Whether the Ask `<input>` is actually mounted: the permission
-   *  card and the boot-error retry replace the whole row while
+   *  card and the boot-error retry replace the whole row, and the
+   *  standalone history surface renders no row at all, while
    *  `showInputRow` stays true — dictation keys off this. */
   const inputRendered =
-    showInputRow && !bootError && gate !== 'needs_permission';
+    showInputRow &&
+    !bootError &&
+    gate !== 'needs_permission' &&
+    pinned !== 'history';
   /** The row's control set for this surface — `bar-state.ts` owns the
    *  contract, the conditionals below consume it so the two can't
    *  drift. */
@@ -148,16 +181,6 @@ const Bar = () => {
     inputRef,
     inputRendered,
   });
-
-  // Section pin: an explicit user choice (send → chat, listen-start →
-  // listen, stop → the finished doc, history button/tab → the session
-  // list) overrides the `listenWanted` activity mirror.
-  const [pinned, setPinned] = useState<'chat' | 'listen' | 'history' | null>(
-    null,
-  );
-  const [listenViewing, setListenViewing] = useState<ListenViewing | null>(
-    null,
-  );
 
   const section: 'chat' | 'listen' | 'history' | null = !cardOpen
     ? null
@@ -205,6 +228,7 @@ const Bar = () => {
     if (!cardOpen) {
       setPinned(null);
       setListenViewing(null);
+      historyFromRef.current = null;
     }
   }, [cardOpen]);
 
@@ -538,6 +562,9 @@ const Bar = () => {
             label='History'
             disabled={gate !== 'main'}
             onPress={() => {
+              // The capsule press only fires with the card closed —
+              // Back from this history view collapses to idle.
+              historyFromRef.current = 'idle';
               setPinned('history');
               void windowSetChatOpen(true).catch(() => {});
             }}>
@@ -601,7 +628,10 @@ const Bar = () => {
         )}
         data-expanded={showInputRow || undefined}
         data-tauri-drag-region={cardOpen ? undefined : 'deep'}>
-        {row()}
+        {/* The standalone history card renders no bottom input row at
+            all — no iris/dictation/settings footer (settings lives in
+            the history header instead). */}
+        {section !== 'history' && row()}
         {showIntro && <LaunchIntro onDone={() => setIntroDone(true)} />}
         {section === 'chat' && <ChatSection />}
         {section === 'listen' && (
@@ -622,6 +652,16 @@ const Bar = () => {
               setListenViewing(v);
               setPinned('listen');
             }}
+            onBack={() => {
+              if (historyFromRef.current === 'idle') {
+                // Entered from the capsule — Back collapses the card.
+                void windowSetChatOpen(false).catch(() => {});
+              } else {
+                // Restore the section history was entered from —
+                // `null` falls back to the activity-driven section.
+                setPinned(historyFromRef.current);
+              }
+            }}
           />
         )}
         {/* Capsule shimmer — accent duotone follows light/dark via the
@@ -631,12 +671,16 @@ const Bar = () => {
           borderWidth={1.8}
         />
         {/* Section tabs — the card is `flex-col-reverse`, so this LAST
-            DOM child renders on top. */}
-        {cardOpen && (
+            DOM child renders on top. Hidden on the standalone history
+            surface, whose header carries back + settings instead. */}
+        {cardOpen && section !== 'history' && (
           <CardTabs
             section={section ?? 'chat'}
             listenLive={listenState === 'listening' || listenState === 'paused'}
             onPick={(s) => {
+              // Remember the surface history was entered from so its
+              // Back button can restore it.
+              if (s === 'history') historyFromRef.current = pinned;
               setPinned(s);
               // The Listen tab means "back to live" — drop any viewed
               // finished doc.

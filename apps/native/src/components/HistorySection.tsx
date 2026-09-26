@@ -8,14 +8,17 @@
  */
 import { useEffect, useState } from 'react';
 import {
+  ArrowLeftIcon,
   MessageSquareTextIcon,
   MicAudioLinesIcon,
+  SettingsIcon,
   Trash2Icon,
 } from '@marvis/ui';
 import {
   sessionDelete,
   sessionList,
   sessionResume,
+  windowShowSettings,
   type Session,
 } from '@/lib/commands';
 import {
@@ -40,6 +43,7 @@ export const HistorySection = ({
   askBusy,
   onOpenChat,
   onOpenListen,
+  onBack,
 }: {
   /** An in-flight ask run belongs to the open chat session — ask rows
    *  disable until it settles (resume would end that session). */
@@ -47,6 +51,10 @@ export const HistorySection = ({
   onOpenChat: () => void;
   /** `null` = the live session (still-open listen row) → live view. */
   onOpenListen: (v: ListenViewing | null) => void;
+  /** Leaves the standalone surface — restores the section history was
+   *  entered from, or collapses the card when it came from the
+   *  capsule. */
+  onBack: () => void;
 }) => {
   const [sessions, setSessions] = useState<Session[] | null>(null);
   const refresh = () => {
@@ -88,8 +96,29 @@ export const HistorySection = ({
 
   return (
     <div className='flex min-h-0 flex-1 flex-col'>
-      <header className={PANEL_HEAD}>
+      {/* The standalone surface's own chrome: back on the left,
+          settings on the right — the bottom input row is gone, so the
+          header also carries the card's drag region. */}
+      <header
+        className={PANEL_HEAD}
+        data-tauri-drag-region>
+        <button
+          type='button'
+          className={cn(ICON_BTN, '-mt-0.5 shrink-0')}
+          title='Back'
+          aria-label='Back'
+          onClick={onBack}>
+          <ArrowLeftIcon className='size-4' />
+        </button>
         <p className='min-w-0 flex-1 text-xs font-[550]'>History</p>
+        <button
+          type='button'
+          className={cn(ICON_BTN, '-mt-0.5 shrink-0')}
+          title='Settings'
+          aria-label='Settings'
+          onClick={() => void windowShowSettings().catch(() => {})}>
+          <SettingsIcon className='size-4' />
+        </button>
       </header>
       <div className={PANEL_BODY}>
         {sessions === null ? null : sessions.length === 0 ? (
@@ -105,9 +134,7 @@ export const HistorySection = ({
                 key={s.id}
                 className={cn(
                   'group/row -mx-1.5 flex items-center gap-2 rounded-lg px-1.5 py-1.5 transition-colors',
-                  disabled
-                    ? 'opacity-50'
-                    : 'cursor-pointer hover:bg-fg-soft',
+                  disabled ? 'opacity-50' : 'cursor-pointer hover:bg-fg-soft',
                 )}
                 onClick={() => !disabled && openRow(s)}>
                 {s.kind === 'listen' ? (

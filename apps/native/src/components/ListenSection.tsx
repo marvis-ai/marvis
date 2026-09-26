@@ -35,6 +35,7 @@ import {
 } from './listen/model';
 import { ListenHeader } from './listen/ListenHeader';
 import { SpeakerFilter } from './listen/SpeakerFilter';
+import { SummaryStrip } from './listen/SummaryStrip';
 import { TranscriptBlocks } from './listen/TranscriptBlocks';
 
 const whisperSourceLabel = (source: WhisperBinarySource | null) => {
@@ -425,6 +426,7 @@ export const ListenSection = ({
           </button>
         )}
       </div>
+      <SummaryStrip summary={summary} />
     </div>
   );
 };

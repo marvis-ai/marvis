@@ -10,6 +10,7 @@ use std::path::Path;
 
 use sherpa_onnx::{SpeakerEmbeddingExtractor, SpeakerEmbeddingExtractorConfig};
 
+use super::SpeakerChannel;
 use crate::paths;
 
 const SAMPLE_RATE: i32 = 16_000;
@@ -42,11 +43,18 @@ const VOICED_SAMPLE_FLOOR: f32 = 0.02;
 const MIN_VOICED_FRACTION: f32 = 0.3;
 
 /// Create a tracker when the speaker-embedding model is installed.
-pub fn tracker_if_installed() -> Option<SpeakerTracker> {
+/// On the `Me` channel an enrolled voiceprint pre-seeds cluster 0, so
+/// "You" is a verified identity rather than just the first voice heard.
+pub fn tracker_if_installed(channel: SpeakerChannel) -> Option<SpeakerTracker> {
     let path = crate::sherpa_models::speaker_embedding_model_path(&paths::sherpa_models_dir())?;
-    let tracker = SpeakerTracker::create(&path);
+    let mut tracker = SpeakerTracker::create(&path);
     if tracker.is_none() {
         log::warn!("speaker embedding model failed to load; diarization disabled");
+    }
+    if channel == SpeakerChannel::Me {
+        if let (Some(t), Some(voiceprint)) = (tracker.as_mut(), crate::voiceprint::load()) {
+            t.seed(voiceprint);
+        }
     }
     tracker
 }
@@ -64,6 +72,14 @@ pub fn tracker_if_installed() -> Option<SpeakerTracker> {
 pub struct SpeakerClusters {
     references: Vec<Vec<Vec<f32>>>,
     candidates: Vec<Vec<f32>>,
+    /// Index of the voiceprint-seeded cluster (`Some(0)` when enrolled).
+    /// A seeded cluster re-enrolls every match — the voiceprint anchors
+    /// the user's identity, so borderline matches are language/noise
+    /// drift to learn from, not strangers to keep out. Measured on this
+    /// model: the same voice across zh→en scores ≈ 0.56 — above MATCH but
+    /// below ENROLL — so without this, an English-enrolled user speaking
+    /// Chinese (or vice versa) would keep hitting the candidate gate.
+    seeded: Option<usize>,
 }
 
 impl Default for SpeakerClusters {
@@ -77,6 +93,15 @@ impl SpeakerClusters {
         Self {
             references: Vec::new(),
             candidates: Vec::new(),
+            seeded: None,
+        }
+    }
+
+    /// Born with cluster 0 already formed by an enrolled voiceprint.
+    pub(crate) fn seed(&mut self, embedding: Vec<f32>) {
+        if self.references.is_empty() {
+            self.references.push(vec![embedding]);
+            self.seeded = Some(0);
         }
     }
 
@@ -102,7 +127,13 @@ impl SpeakerClusters {
         if best_score >= MATCH_THRESHOLD {
             // Confident repeats enrich the reference set — a slow drift
             // keeps matching without letting marginal matches pile up.
-            if best_score >= ENROLL_THRESHOLD && self.references[best_idx].len() < MAX_REFERENCES {
+            // The seeded cluster trusts every match (see `seeded`).
+            let enroll_gate = if self.seeded == Some(best_idx) {
+                MATCH_THRESHOLD
+            } else {
+                ENROLL_THRESHOLD
+            };
+            if best_score >= enroll_gate && self.references[best_idx].len() < MAX_REFERENCES {
                 self.references[best_idx].push(embedding.to_vec());
             }
             return Some(best_idx as u32);
@@ -168,14 +199,18 @@ impl SpeakerTracker {
     /// The cluster index for this segment; `None` when the segment is too
     /// short, mostly silence, or embedding extraction fails.
     pub fn assign(&mut self, samples: &[f32]) -> Option<u32> {
+        let embedding = self.embed(samples)?;
+        self.clusters.assign(&embedding)
+    }
+
+    /// The speaker embedding for `samples`, or `None` when the audio is
+    /// too short, mostly silence, or extraction fails. Shared with voice
+    /// enrollment, which embeds a recording without touching clusters.
+    pub fn embed(&self, samples: &[f32]) -> Option<Vec<f32>> {
         if samples.len() < (SAMPLE_RATE as f32 * MIN_SEGMENT_SECONDS) as usize {
             return None;
         }
-        let voiced = samples
-            .iter()
-            .filter(|sample| sample.abs() > VOICED_SAMPLE_FLOOR)
-            .count();
-        if (voiced as f32) < samples.len() as f32 * MIN_VOICED_FRACTION {
+        if voiced_fraction(samples) < MIN_VOICED_FRACTION {
             return None;
         }
         let stream = self.extractor.create_stream()?;
@@ -183,9 +218,37 @@ impl SpeakerTracker {
         if !self.extractor.is_ready(&stream) {
             return None;
         }
-        let embedding = self.extractor.compute(&stream)?;
-        self.clusters.assign(&embedding)
+        self.extractor.compute(&stream)
     }
+
+    /// Pre-seed cluster 0 with an enrolled voiceprint — the first real
+    /// utterance then matches-or-rejects against the user's own voice.
+    /// A dimension mismatch (e.g. enrolled before a model swap) is ignored:
+    /// cosine over a truncated prefix would produce junk scores.
+    pub fn seed(&mut self, embedding: Vec<f32>) {
+        if embedding.len() != self.extractor.dim() as usize {
+            log::warn!(
+                "voiceprint dimension {} does not match model {}; ignoring",
+                embedding.len(),
+                self.extractor.dim()
+            );
+            return;
+        }
+        self.clusters.seed(embedding);
+    }
+}
+
+/// The fraction of samples above the amplitude floor — a mostly-silent
+/// segment embeds as noise, so both tracking and enrollment gate on it.
+pub(crate) fn voiced_fraction(samples: &[f32]) -> f32 {
+    if samples.is_empty() {
+        return 0.0;
+    }
+    let voiced = samples
+        .iter()
+        .filter(|sample| sample.abs() > VOICED_SAMPLE_FLOOR)
+        .count();
+    voiced as f32 / samples.len() as f32
 }
 
 #[cfg(test)]
@@ -248,6 +311,19 @@ mod tests {
         assert_eq!(clusters.references[0].len(), 1);
     }
 
+    /// The seeded "You" cluster trusts every match: a borderline 0.58
+    /// score — where an unseeded cluster refuses to enroll — still joins
+    /// the reference set, so cross-language drift enriches instead of
+    /// spawning guests.
+    #[test]
+    fn seeded_cluster_reenrolls_borderline_matches() {
+        let mut clusters = SpeakerClusters::new();
+        clusters.seed(vec![1.0, 0.0]);
+        // cos ≈ 0.58: above MATCH (0.45), below ENROLL (0.6).
+        assert_eq!(clusters.assign(&vec![0.58, 0.81]), Some(0));
+        assert_eq!(clusters.references[0].len(), 2);
+    }
+
     #[test]
     fn zero_embedding_never_crashes_assignment() {
         let mut clusters = SpeakerClusters::new();
@@ -295,5 +371,98 @@ mod tests {
         // unusually close; real same-gender speakers score lower.
         assert_eq!(c, Some(1));
         assert_eq!(c2, Some(1));
+    }
+
+    // Enrollment smoke check — run explicitly:
+    //   cargo test stt::speaker::tests::enrolled_seed_anchors_the_same_voice -- --ignored
+    // Needs the speaker-id model + /tmp/enroll_{a,a2,b}.wav f32@16k files:
+    // a/a2 are the same voice on different sentences, b is a second voice.
+    #[test]
+    #[ignore]
+    fn enrolled_seed_anchors_the_same_voice() {
+        fn wav_f32(path: &str) -> Vec<f32> {
+            let bytes = std::fs::read(path).expect(path);
+            let data_at = bytes
+                .windows(4)
+                .position(|w| w == b"data")
+                .map(|p| p + 8)
+                .expect("data chunk");
+            bytes[data_at..]
+                .chunks_exact(4)
+                .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+                .collect()
+        }
+        let root = crate::paths::sherpa_models_dir();
+        let model = crate::sherpa_models::speaker_embedding_model_path(&root)
+            .expect("speaker-id model installed");
+        let mut tracker = SpeakerTracker::create(&model).expect("extractor loads");
+        // Enroll from the first clip, then verify a DIFFERENT utterance by
+        // the same voice still lands on cluster 0 — that's the promise.
+        let voiceprint = tracker
+            .embed(&wav_f32("/tmp/enroll_a.wav"))
+            .expect("embeds");
+        tracker.seed(voiceprint);
+        let same_voice = tracker.assign(&wav_f32("/tmp/enroll_a2.wav"));
+        let other = tracker.assign(&wav_f32("/tmp/enroll_b.wav"));
+        let other2 = tracker.assign(&wav_f32("/tmp/enroll_b.wav"));
+        eprintln!("same={same_voice:?} other={other:?}/{other2:?}");
+        assert_eq!(same_voice, Some(0));
+        assert_eq!(other, None);
+        assert_eq!(other2, Some(1));
+    }
+
+    // Cross-language probe: does a zh-enrolled voiceprint match the same
+    // voice speaking English? Tingting reads zh + English (same identity),
+    // Daniel gives the same-language different-voice control.
+    //   cargo test stt::speaker::tests::cross_language_probe -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn cross_language_probe() {
+        fn wav_f32(path: &str) -> Vec<f32> {
+            let bytes = std::fs::read(path).expect(path);
+            let data_at = bytes
+                .windows(4)
+                .position(|w| w == b"data")
+                .map(|p| p + 8)
+                .expect("data chunk");
+            bytes[data_at..]
+                .chunks_exact(4)
+                .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+                .collect()
+        }
+        let root = crate::paths::sherpa_models_dir();
+        let model = crate::sherpa_models::speaker_embedding_model_path(&root)
+            .expect("speaker-id model installed");
+        let tracker = SpeakerTracker::create(&model).expect("extractor loads");
+        let tt_zh = tracker.embed(&wav_f32("/tmp/tt_zh.wav")).expect("tt_zh");
+        let tt_en = tracker.embed(&wav_f32("/tmp/tt_en.wav")).expect("tt_en");
+        let daniel_en = tracker
+            .embed(&wav_f32("/tmp/daniel_en.wav"))
+            .expect("daniel_en");
+        let daniel_en2 = tracker
+            .embed(&wav_f32("/tmp/daniel_en2.wav"))
+            .expect("daniel_en2");
+        eprintln!(
+            "tt_zh·tt_en      = {:.3}  (same voice, zh→en)",
+            cosine(&tt_zh, &tt_en)
+        );
+        eprintln!(
+            "tt_zh·daniel_en  = {:.3}  (diff voice, en)",
+            cosine(&tt_zh, &daniel_en)
+        );
+        eprintln!(
+            "daniel_en·daniel_en2 = {:.3}  (same voice, en→en)",
+            cosine(&daniel_en, &daniel_en2)
+        );
+        eprintln!("MATCH={MATCH_THRESHOLD} ENROLL={ENROLL_THRESHOLD}");
+
+        // The regression this guards: a zh-enrolled cluster must accept the
+        // same voice's English at ~0.56 AND enroll it — otherwise every
+        // English window rides the candidate gate toward "Guest 1".
+        let mut seeded = SpeakerTracker::create(&model).expect("extractor loads");
+        seeded.seed(tt_zh.clone());
+        let refs_before = seeded.clusters.references[0].len();
+        assert_eq!(seeded.assign(&wav_f32("/tmp/tt_en.wav")), Some(0));
+        assert!(seeded.clusters.references[0].len() > refs_before);
     }
 }

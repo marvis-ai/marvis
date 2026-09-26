@@ -341,6 +341,27 @@ export const sherpaRemoveModel = (model: string) =>
   invoke<SherpaStatus>('sherpa_remove_model', { model });
 
 // ---------------------------------------------------------------------------
+// voice enrollment — the stored voiceprint pins mic speaker 0 to "You"
+// ---------------------------------------------------------------------------
+
+export interface VoiceprintStatus {
+  enrolled: boolean;
+  recording: boolean;
+}
+
+export interface VoiceEnrollResult {
+  seconds: number;
+}
+
+export const voiceprintStatus = () =>
+  invoke<VoiceprintStatus>('voiceprint_status');
+export const voiceEnrollStart = () => invoke<void>('voice_enroll_start');
+export const voiceEnrollStop = () =>
+  invoke<VoiceEnrollResult>('voice_enroll_stop');
+export const voiceEnrollCancel = () => invoke<void>('voice_enroll_cancel');
+export const voiceprintRemove = () => invoke<void>('voiceprint_remove');
+
+// ---------------------------------------------------------------------------
 // dictation
 // ---------------------------------------------------------------------------
 

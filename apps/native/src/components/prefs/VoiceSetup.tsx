@@ -8,13 +8,19 @@ import {
   sherpaDownload,
   sherpaRemoveModel,
   sherpaStatus,
+  voiceEnrollCancel,
+  voiceEnrollStart,
+  voiceEnrollStop,
   voiceModelsCatalog,
+  voiceprintRemove,
+  voiceprintStatus,
   whisperCancelDownload,
   whisperDownload,
   whisperRemoveModel,
   whisperStatus,
   type SherpaStatus,
   type VoiceModelCatalogEntry,
+  type VoiceprintStatus,
   type WhisperBinarySource,
   type WhisperStatus,
 } from '../../lib/commands';
@@ -76,6 +82,22 @@ export const whisperSourceLabel = (source: WhisperBinarySource | null) => {
   return 'Whisper CLI unavailable';
 };
 
+/* Enrollment caps the take client-side; the backend still enforces its
+ * own minimum length and voiced-speech check. */
+const ENROLL_MAX_SECONDS = 12;
+const ENROLL_TICK_MS = 500;
+
+/* A short read-aloud prompt per `app.main_language` — the embedding model
+ * is language-agnostic, so this only needs to be natural to speak. */
+const ENROLL_SENTENCES: Record<string, string> = {
+  en: "Good morning everyone — let's quickly run through the launch checklist and see where we stand.",
+  zh: '大家好,我们现在开始开会,先简单过一下今天的议程和上周的进展。',
+  ja: '皆さん、おはようございます。今日の会議を始めて、まず進捗を確認しましょう。',
+  ko: '안녕하세요, 지금부터 회의를 시작하고 지난주 진행 상황부터 확인하겠습니다.',
+  fr: "Bonjour à toutes et à tous, commençons la réunion par un point sur l'avancement du projet.",
+  es: 'Hola a todos, empecemos la reunión repasando el progreso de la semana pasada.',
+};
+
 export interface VoiceSetupProps {
   data: PrefsData;
   showSkip?: boolean;
@@ -107,11 +129,22 @@ export const VoiceSetup = ({
   >({});
   const [deepgramKeyInput, setDeepgramKeyInput] = useState('');
   const [deepgramSaving, setDeepgramSaving] = useState(false);
+  const [voiceprint, setVoiceprint] = useState<VoiceprintStatus | null>(null);
+  const [recording, setRecording] = useState(false);
+  const [elapsed, setElapsed] = useState(0);
+  const [enrollBusy, setEnrollBusy] = useState(false);
+  const [enrollNote, setEnrollNote] = useState<{
+    text: string;
+    error: boolean;
+  } | null>(null);
   const whisperRef = useRef<WhisperStatus | null>(null);
   const sherpaRef = useRef<SherpaStatus | null>(null);
   const pendingDownloadRef = useRef<string | null>(null);
+  const recordingRef = useRef(false);
+  const enrollStartRef = useRef(0);
   whisperRef.current = whisper;
   sherpaRef.current = sherpa;
+  recordingRef.current = recording;
   const config = data.config;
   const deepgramKey =
     data.status?.keys.find(([id]) => id === 'deepgram')?.[1] ?? null;
@@ -172,6 +205,9 @@ export const VoiceSetup = ({
       .catch(() => setError('Could not load voice models'));
     void refreshWhisper();
     void refreshSherpa();
+    void voiceprintStatus()
+      .then(setVoiceprint)
+      .catch(() => {});
   }, [refreshWhisper, refreshSherpa]);
 
   useTauriEvent<WhisperDownloadProgressPayload>(
@@ -236,6 +272,83 @@ export const VoiceSetup = ({
       });
       void refreshSherpa();
     },
+  );
+
+  const stopEnrollment = useCallback(async () => {
+    setEnrollBusy(true);
+    try {
+      const result = await voiceEnrollStop();
+      setVoiceprint(await voiceprintStatus());
+      setEnrollNote({
+        text: `Voiceprint saved · ${Math.round(result.seconds)}s of audio`,
+        error: false,
+      });
+    } catch (e) {
+      setEnrollNote({
+        text: e instanceof Error ? e.message : String(e),
+        error: true,
+      });
+    } finally {
+      setEnrollBusy(false);
+      setRecording(false);
+    }
+  }, []);
+
+  const startEnrollment = async () => {
+    setEnrollNote(null);
+    try {
+      await voiceEnrollStart();
+      setRecording(true);
+      setElapsed(0);
+      enrollStartRef.current = Date.now();
+    } catch (e) {
+      setEnrollNote({
+        text: e instanceof Error ? e.message : String(e),
+        error: true,
+      });
+    }
+  };
+
+  const cancelEnrollment = async () => {
+    try {
+      await voiceEnrollCancel();
+    } catch {
+      // best-effort — the take is discarded either way
+    }
+    setRecording(false);
+  };
+
+  const removeVoiceprint = async () => {
+    setEnrollNote(null);
+    try {
+      await voiceprintRemove();
+      setVoiceprint(await voiceprintStatus());
+      setEnrollNote({ text: 'Voiceprint removed', error: false });
+    } catch (e) {
+      setEnrollNote({
+        text: e instanceof Error ? e.message : String(e),
+        error: true,
+      });
+    }
+  };
+
+  /* Elapsed timer + the client-side take cap while recording. */
+  useEffect(() => {
+    if (!recording) return;
+    const tick = setInterval(() => {
+      const seconds = Math.floor((Date.now() - enrollStartRef.current) / 1000);
+      setElapsed(seconds);
+      if (seconds >= ENROLL_MAX_SECONDS) void stopEnrollment();
+    }, ENROLL_TICK_MS);
+    return () => clearInterval(tick);
+  }, [recording, stopEnrollment]);
+
+  /* Navigating away mid-take must release the microphone. */
+  useEffect(
+    () => () => {
+      if (recordingRef.current) void voiceEnrollCancel().catch(() => {});
+    },
+    [],
   );
 
   useEffect(() => {
@@ -653,6 +766,95 @@ export const VoiceSetup = ({
                 className={cn(BTN_LINK_LG, BTN_DANGER)}
                 onClick={() => void removeSherpaModel(speakerModel.id)}>
                 Remove
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+      {provider !== 'deepgram' && speakerModel && (
+        <div className={cn(PROV_CARD, 'border-border')}>
+          <div className='flex items-center gap-2'>
+            <span
+              className={cn(
+                'size-1.75 flex-none rounded-full',
+                voiceprint?.enrolled
+                  ? 'bg-accent'
+                  : 'bg-[color-mix(in_oklch,var(--fg)_20%,transparent)]',
+              )}
+            />
+            <span className={LBL}>Your voice</span>
+            {recording && (
+              <span
+                className={cn(
+                  NUM,
+                  'ml-auto flex items-center gap-1.5 text-[10.5px] text-muted-foreground',
+                )}>
+                <span className='size-1.5 animate-pulse rounded-full bg-red-500' />
+                {elapsed}s
+              </span>
+            )}
+          </div>
+          <p className={PROV_NOTE}>
+            Record a short sample so Marvis recognizes your voice — your turns
+            always label as You, and someone else on your mic becomes a guest.
+            Applies to new sessions.
+          </p>
+          {recording && (
+            <p className='mt-2 text-[12.5px] leading-[1.6] text-foreground'>
+              “
+              {ENROLL_SENTENCES[config.app.main_language] ??
+                ENROLL_SENTENCES.en}
+              ”
+            </p>
+          )}
+          {enrollNote && (
+            <p className={enrollNote.error ? PROV_ERR : PROV_NOTE}>
+              {enrollNote.text}
+            </p>
+          )}
+          <div className='mt-2 flex items-center gap-1.5'>
+            {!speakerModel.installed ? (
+              <p className={PROV_NOTE}>
+                Download the speaker diarization model above first.
+              </p>
+            ) : recording ? (
+              <>
+                <button
+                  type='button'
+                  className={cn(BTN_LG, BTN_PRIMARY)}
+                  disabled={enrollBusy}
+                  onClick={() => void stopEnrollment()}>
+                  {enrollBusy ? 'Saving…' : 'Stop & save'}
+                </button>
+                <button
+                  type='button'
+                  className={cn(BTN_LG, BTN_OUTLINE)}
+                  disabled={enrollBusy}
+                  onClick={() => void cancelEnrollment()}>
+                  Cancel
+                </button>
+              </>
+            ) : voiceprint?.enrolled ? (
+              <>
+                <button
+                  type='button'
+                  className={cn(BTN_LG, BTN_OUTLINE)}
+                  onClick={() => void startEnrollment()}>
+                  Re-record
+                </button>
+                <button
+                  type='button'
+                  className={cn(BTN_LINK_LG, BTN_DANGER)}
+                  onClick={() => void removeVoiceprint()}>
+                  Remove
+                </button>
+              </>
+            ) : (
+              <button
+                type='button'
+                className={cn(BTN_LG, BTN_PRIMARY)}
+                onClick={() => void startEnrollment()}>
+                Record
               </button>
             )}
           </div>

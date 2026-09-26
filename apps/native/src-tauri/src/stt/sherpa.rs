@@ -254,7 +254,7 @@ fn run_worker(
     // Diarization is progressive enhancement: a missing/unloadable
     // embedding model leaves `speaker_idx` unset rather than failing STT.
     let mut tracker = diarize
-        .then(crate::stt::speaker::tracker_if_installed)
+        .then(|| crate::stt::speaker::tracker_if_installed(channel))
         .flatten();
     // Same terminal-error semantics as deepgram: a failure surfaced during a
     // user-requested stop is not an error worth an event.

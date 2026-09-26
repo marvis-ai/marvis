@@ -562,7 +562,7 @@ fn deepgram_validation_payload(key: &str) -> serde_json::Value {
 /// Raise the alert toast with `message`.
 ///
 /// The toast is a window of its own because the bar is a fixed-height
-/// capsule (140⇄600 wide) — the old inline error row squeezed the
+/// capsule (172⇄600 wide) — the old inline error row squeezed the
 /// pill's content. It is purely informational and auto-dismisses.
 fn show_alert(app: &AppHandle, message: &str) {
     let state = app.state::<AppState>();
@@ -1050,6 +1050,9 @@ fn emit_listen_state(app: &AppHandle, state: &listen::ListenStatus) {
             "session_id": state.session_id,
             "mic": state.mic,
             "error": state.error,
+            "started_at": state.started_at,
+            "paused_secs": state.paused_secs,
+            "paused_since": state.paused_since,
         }),
     );
 }
@@ -1126,6 +1129,22 @@ fn listen_stop(app: AppHandle) {
     let state = app.state::<AppState>();
     state.listen.stop();
     emit_listen_state(&app, &state.listen.status());
+}
+
+#[tauri::command]
+fn listen_pause(app: AppHandle) {
+    let state = app.state::<AppState>();
+    if let Some(status) = state.listen.pause() {
+        emit_listen_state(&app, &status);
+    }
+}
+
+#[tauri::command]
+fn listen_resume(app: AppHandle) {
+    let state = app.state::<AppState>();
+    if let Some(status) = state.listen.resume() {
+        emit_listen_state(&app, &status);
+    }
 }
 
 #[tauri::command]
@@ -1509,7 +1528,7 @@ fn window_adjust_height(state: State<'_, AppState>, height: f64) {
 }
 
 /// The webview's pill⇄input morph signal — under liquid glass the
-/// capsule IS the window, so the window resizes to match (idle 140,
+/// capsule IS the window, so the window resizes to match (idle 172,
 /// expanded 600, same 64 height and capsule radius).
 #[tauri::command]
 fn window_set_bar_expanded(state: State<'_, AppState>, expanded: bool) {
@@ -1690,6 +1709,14 @@ fn session_end_active(state: State<'_, AppState>, kind: String) -> Result<bool, 
         }
         None => Ok(false),
     }
+}
+
+/// Resume a past chat: ends the open `ask` session and reopens `id`
+/// (`session_reopen` kind-guards — non-ask ids change nothing and
+/// return false). The next `ask_send` appends to the reopened session.
+#[tauri::command]
+fn session_resume(state: State<'_, AppState>, id: i64) -> Result<bool, String> {
+    state.db.session_reopen(id, "ask").map_err(|e| e.to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -2024,6 +2051,8 @@ pub fn run() {
             ask_current,
             listen_start,
             listen_stop,
+            listen_pause,
+            listen_resume,
             listen_status,
             dictation_start,
             dictation_stop,
@@ -2070,6 +2099,7 @@ pub fn run() {
             summary_latest,
             session_delete,
             session_end_active,
+            session_resume,
             config_get,
             config_set,
             surface_material,
@@ -2116,6 +2146,8 @@ mod tests {
         let source = include_str!("lib.rs");
         assert!(source.contains("listen_start,"));
         assert!(source.contains("listen_stop,"));
+        assert!(source.contains("listen_pause,"));
+        assert!(source.contains("listen_resume,"));
         assert!(source.contains("listen_status,"));
         assert!(source.contains("dictation_start,"));
         assert!(source.contains("dictation_stop,"));
@@ -2125,6 +2157,7 @@ mod tests {
         assert!(source.contains("sherpa_download,"));
         assert!(source.contains("sherpa_cancel_download,"));
         assert!(source.contains("sherpa_remove_model,"));
+        assert!(source.contains("session_resume,"));
     }
 
     /// Both speech services must route providers through the shared
@@ -2246,6 +2279,9 @@ mod tests {
             turns: 0,
             mic: false,
             error: None,
+            started_at: None,
+            paused_secs: 0,
+            paused_since: None,
         }
         .is_listening());
         assert!(listen::ListenStatus {
@@ -2255,6 +2291,23 @@ mod tests {
             turns: 0,
             mic: false,
             error: None,
+            started_at: None,
+            paused_secs: 0,
+            paused_since: None,
+        }
+        .is_listening());
+        // A paused Listen still owns the audio sources — mutual exclusion
+        // must hold through the pause.
+        assert!(listen::ListenStatus {
+            state: "paused".into(),
+            provider: None,
+            session_id: None,
+            turns: 0,
+            mic: false,
+            error: None,
+            started_at: None,
+            paused_secs: 0,
+            paused_since: None,
         }
         .is_listening());
 

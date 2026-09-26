@@ -44,10 +44,10 @@ import {
   EMPTY,
   ICON_BTN,
   PANEL_BODY,
-  PANEL_HEAD,
   SPIN,
   cn,
 } from '@/lib/classes';
+import { CardHeader } from './shared/CardHeader';
 
 type AskPhase = 'loading' | 'streaming' | 'idle';
 
@@ -108,7 +108,7 @@ const appendTail = (prev: ChatMsg[], text: string): ChatMsg[] => {
   ];
 };
 
-export const ChatSection = () => {
+export const ChatSection = ({ onBack }: { onBack: () => void }) => {
   const [msgs, setMsgs] = useState<ChatMsg[]>([]);
   const [phase, setPhase] = useState<AskPhase>('idle');
   const [model, setModel] = useState<ModelSelection | null>(null);
@@ -231,10 +231,9 @@ export const ChatSection = () => {
 
   return (
     <div className='flex min-h-0 flex-1 flex-col'>
-      <header className={PANEL_HEAD}>
-        <p className='min-w-0 flex-1 text-xs leading-normal font-[550] select-text'>
-          Chat
-        </p>
+      <CardHeader
+        title='Chat'
+        onBack={onBack}>
         <button
           type='button'
           className={cn(BTN_SM, BTN_OUTLINE)}
@@ -257,7 +256,7 @@ export const ChatSection = () => {
           onClick={() => void askClose().catch(() => {})}>
           <XIcon className='size-4' />
         </button>
-      </header>
+      </CardHeader>
       {error && (
         <div className='flex items-center gap-2 border-b border-border bg-[color-mix(in_oklch,var(--destructive)_9%,transparent)] px-3 py-2 text-xs text-destructive'>
           <span className='min-w-0 flex-1 wrap-break-word'>

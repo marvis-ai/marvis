@@ -28,6 +28,10 @@ const HEIGHT_MS = 150;
 export const useCardGeometry = (
   cardRef: RefObject<HTMLDivElement | null>,
   stageRef: RefObject<HTMLDivElement | null>,
+  /** Replaces the scrollHeight read while set — the standalone
+   *  history card's fixed 60%-of-screen height. Called inside
+   *  `report()` so it re-evaluates `screen.availHeight` per report. */
+  heightOverride: (() => number) | null = null,
 ) => {
   const [cardOpen, setCardOpen] = useState(
     () => window.innerHeight > BAR_H + OPEN_EPS,
@@ -67,7 +71,9 @@ export const useCardGeometry = (
       const padY = cs
         ? parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom)
         : 0;
-      const h = Math.ceil(el.scrollHeight + (Number.isFinite(padY) ? padY : 0));
+      const h =
+        heightOverride?.() ??
+        Math.ceil(el.scrollHeight + (Number.isFinite(padY) ? padY : 0));
       if (Math.abs(h - lastValue) <= HEIGHT_EPS) {
         return;
       }
@@ -85,12 +91,18 @@ export const useCardGeometry = (
     };
     const observer = new ResizeObserver(report);
     observer.observe(el);
+    // An override keys off screen geometry, not element size — window
+    // resizes (monitor moves, work-area changes) must re-report too.
+    if (heightOverride) {
+      window.addEventListener('resize', report);
+    }
     report();
     return () => {
       observer.disconnect();
+      window.removeEventListener('resize', report);
       window.clearTimeout(timer);
     };
-  }, [cardOpen, cardRef, stageRef]);
+  }, [cardOpen, cardRef, stageRef, heightOverride]);
 
   return { cardOpen };
 };

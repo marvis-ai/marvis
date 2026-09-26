@@ -379,6 +379,7 @@ impl Default for AskService {
 /// Resolves to the full assistant text. Cancel resolves to a
 /// `status:0`/`"cancelled"` [`LlmError::Http`] sentinel — the events, not
 /// the return value, drive the UI.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn send_chain(
     candidates: Vec<ProviderCandidate>,
     vision: Option<ProviderCandidate>,

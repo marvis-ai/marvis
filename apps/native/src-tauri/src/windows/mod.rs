@@ -875,8 +875,8 @@ fn set_glass_radius(app: &AppHandle, win: &WebviewWindow, corner_radius: f64) {
 
 /// The prefs window is deliberately NOT built by [`build_window`]: it's a
 /// real macOS window, not overlay chrome — native decorations, normal
-/// focus — but it IS a liquid-glass surface: `TitleBarStyle::Overlay`
-/// + `hidden_title` make the content full-size so the traffic lights
+/// focus — but it IS a liquid-glass surface: `TitleBarStyle::Overlay` +
+/// `hidden_title` make the content full-size so the traffic lights
 /// land inside the sidebar (the Settings.app look) and
 /// `GlassMaterialVariant::AbuttedSidebar` paints the whole window in
 /// the edge-abutting sidebar material — the same variant Settings.app

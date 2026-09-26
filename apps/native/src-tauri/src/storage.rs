@@ -251,7 +251,6 @@ impl Db {
     }
 
     /// Session start time — the elapsed-timer epoch for Listen.
-    #[allow(dead_code)] // session-history card resume
     pub fn session_started_at(&self, id: i64) -> anyhow::Result<Option<i64>> {
         Ok(self
             .conn

@@ -477,7 +477,7 @@ export const windowFocusBar = () => invoke<void>('window_focus_bar');
 
 /** The pill⇄input morph resizes the window itself (the capsule IS the
  * window under liquid glass) — report `expanded` so Rust can animate
- * the idle 140 ⇄ expanded 600 width change. */
+ * the idle 172 ⇄ expanded 600 width change. */
 export const windowSetBarExpanded = (expanded: boolean) =>
   invoke<void>('window_set_bar_expanded', { expanded });
 

@@ -205,7 +205,7 @@ const Bar = () => {
   // which active section is shown when it is reopened.
 
   // The capsule IS the window under liquid glass — the pill⇄input morph
-  // resizes it (idle 140 ⇄ 600). While the card is open the morph is
+  // resizes it (idle 172 ⇄ 600). While the card is open the morph is
   // dormant: the width report is skipped so `bar_rect` (the canonical
   // pill) restores verbatim on collapse.
   useEffect(() => {

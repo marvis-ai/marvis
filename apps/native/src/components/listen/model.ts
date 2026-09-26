@@ -4,10 +4,7 @@
  * `TranscriptBlocks`. No React here so the whole pipeline (turn list →
  * speaker blocks → clipboard text) stays unit-testable.
  */
-import type {
-  ListenSummaryPayload,
-  ListenTurnPayload,
-} from '@/lib/events';
+import type { ListenSummaryPayload, ListenTurnPayload } from '@/lib/events';
 
 export type Turn = ListenTurnPayload & { interim?: boolean };
 
@@ -30,8 +27,12 @@ export interface TurnIdentity {
   speaker_idx: number | null;
 }
 
+/** One chip per displayed identity: an unlabeled mic turn (`me` + null)
+ *  joins the "You" cluster (`me:0`) rather than spawning a second
+ *  indistinguishable "you" filter. `them` keeps null distinct —
+ *  "Speaker" (unlabeled) and "Speaker 1" (cluster 0) name differently. */
 export const speakerKey = (turn: TurnIdentity) =>
-  `${turn.speaker}:${turn.speaker_idx ?? ''}`;
+  `${turn.speaker}:${turn.speaker_idx ?? (turn.speaker === 'me' ? 0 : '')}`;
 
 export const speakerName = (turn: TurnIdentity) =>
   turn.speaker === 'me'
@@ -133,7 +134,11 @@ export const transcriptCopyText = (
     return `[${stamp}] ${b.name}: ${blockText(b)}`;
   });
   if (summary) {
-    lines.push('---', `TLDR: ${summary.tldr}`, ...summary.bullets.map((b) => `- ${b}`));
+    lines.push(
+      '---',
+      `TLDR: ${summary.tldr}`,
+      ...summary.bullets.map((b) => `- ${b}`),
+    );
   }
   return lines.join('\n');
 };

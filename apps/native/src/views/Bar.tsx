@@ -623,7 +623,11 @@ const Bar = () => {
             the history header instead). */}
         {section !== 'history' && row()}
         {showIntro && <LaunchIntro onDone={() => setIntroDone(true)} />}
-        {section === 'chat' && <ChatSection />}
+        {section === 'chat' && (
+          <ChatSection
+            onBack={() => void windowSetChatOpen(false).catch(() => {})}
+          />
+        )}
         {section === 'listen' && (
           <ListenSection
             viewing={listenViewing}
@@ -631,6 +635,16 @@ const Bar = () => {
               if (!cardOpenRef.current) return;
               setListenViewing(v);
               setPinned('listen');
+            }}
+            onBack={() => {
+              if (listenViewing) {
+                // A finished doc can only be reached from History —
+                // Back returns to the list.
+                setListenViewing(null);
+                setPinned('history');
+                return;
+              }
+              void windowSetChatOpen(false).catch(() => {});
             }}
           />
         )}

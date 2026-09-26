@@ -3,8 +3,10 @@
 use std::sync::mpsc::Sender;
 
 mod mic;
+mod recorder;
 mod system;
 pub use mic::MicSource;
+pub use recorder::SessionRecorder;
 pub use system::SystemAudioSource;
 
 const TARGET_SAMPLE_RATE: u32 = 16_000;

@@ -142,6 +142,8 @@ export interface Session {
   id: number;
   kind: string;
   title: string | null;
+  /** Retained recording path (`~/.marvis/audios/recording_*.wav`) — listen only. */
+  audio_file: string | null;
   started_at: number;
   ended_at: number | null;
   last_active_at: number;
@@ -165,7 +167,6 @@ export interface Transcript {
   speaker_idx: number | null;
   content: string;
   ts: number;
-  audio_file: string | null;
 }
 
 export interface ListenSummary {
@@ -175,7 +176,8 @@ export interface ListenSummary {
   bullets: string[];
   follow_ups: string[];
   topic: string | null;
-  ts: number;
+  created_at: number;
+  updated_at: number;
 }
 
 // ---------------------------------------------------------------------------

@@ -53,9 +53,11 @@ const whisperSourceLabel = (source: WhisperBinarySource | null) => {
 export const ListenSection = ({
   viewing,
   onSessionEnded,
+  onBack,
 }: {
   viewing: ListenViewing | null;
   onSessionEnded: (v: ListenViewing) => void;
+  onBack: () => void;
 }) => {
   const live = viewing === null;
   /** Live mirror of `viewing` for Tauri event handlers — an event that
@@ -346,6 +348,7 @@ export const ListenSection = ({
   return (
     <div className='flex min-h-0 flex-1 flex-col'>
       <ListenHeader
+        onBack={onBack}
         title={title}
         subtitle={subtitle}
         badge={badge}

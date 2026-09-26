@@ -25,6 +25,7 @@ export const ListenHeader = ({
   onResume,
   onStop,
   onCopyAll,
+  onBack,
 }: {
   title: string;
   subtitle: string;
@@ -38,8 +39,10 @@ export const ListenHeader = ({
   onResume: () => void;
   onStop: () => void;
   onCopyAll: () => void;
+  onBack: () => void;
 }) => (
   <CardHeader
+    onBack={onBack}
     title={title}
     subtitle={subtitle}>
     {badge && (

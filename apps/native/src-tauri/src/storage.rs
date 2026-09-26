@@ -10,11 +10,16 @@
 //! Schema (spec §Persistence):
 //!
 //! ```sql
-//! sessions(id PK, type 'ask'|'listen', title?, started_at, ended_at?, last_active_at)
+//! sessions(id PK, type 'ask'|'listen', title?, audio_file?, started_at, ended_at?, last_active_at)
 //! messages(id PK, session_id FK → sessions.id ON DELETE CASCADE, role, content, ts)
-//! transcripts(id PK, session_id FK → sessions.id ON DELETE CASCADE, speaker, speaker_idx?, content, ts, audio_file?)
-//! summaries(id PK, session_id FK → sessions.id ON DELETE CASCADE, tldr, bullets, follow_ups, topic?, ts)
+//! transcripts(id PK, session_id FK → sessions.id ON DELETE CASCADE, speaker, speaker_idx?, content, ts)
+//! summaries(id PK, session_id FK → sessions.id ON DELETE CASCADE UNIQUE, tldr, bullets, follow_ups, topic?, created_at, updated_at)
 //! ```
+//!
+//! `summaries` holds one row per session — the live summary is an upsert,
+//! not a version history: `created_at` stamps the first write,
+//! `updated_at` the latest. `sessions.title` is persisted (first ask user
+//! message / newest listen summary topic) rather than computed at read.
 //!
 //! All timestamps are unix-epoch seconds (`i64`).
 
@@ -26,7 +31,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::paths;
 
-type SummaryRow = (i64, i64, String, String, String, Option<String>, i64);
+type SummaryRow = (i64, i64, String, String, String, Option<String>, i64, i64);
 
 const SCHEMA: &str = "
     PRAGMA journal_mode = WAL;
@@ -36,6 +41,7 @@ const SCHEMA: &str = "
         id             INTEGER PRIMARY KEY,
         type           TEXT NOT NULL,
         title          TEXT,
+        audio_file     TEXT,
         started_at     INTEGER NOT NULL,
         ended_at       INTEGER,
         last_active_at INTEGER NOT NULL
@@ -57,30 +63,33 @@ const SCHEMA: &str = "
         speaker_idx INTEGER,
         content     TEXT NOT NULL,
         ts          INTEGER NOT NULL,
-        audio_file  TEXT,
         FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
     );
 
     CREATE TABLE IF NOT EXISTS summaries (
         id         INTEGER PRIMARY KEY,
-        session_id INTEGER NOT NULL,
+        session_id INTEGER NOT NULL UNIQUE,
         tldr       TEXT NOT NULL,
         bullets    TEXT NOT NULL,
         follow_ups TEXT NOT NULL,
         topic      TEXT,
-        ts         INTEGER NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
         FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
     );
 ";
 
 /// A row of `sessions`. `kind` maps to the `type` column (`type` is a Rust
-/// keyword); `title`/`ended_at` are `NULL` until set. `Serialize` so the
-/// `session_list` command can return rows to the webview.
+/// keyword); `title`/`ended_at`/`audio_file` are `NULL` until set.
+/// `Serialize` so the `session_list` command can return rows to the webview.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct Session {
     pub id: i64,
     pub kind: String,
     pub title: Option<String>,
+    /// The retained session recording (mixed mic+system WAV under
+    /// `~/.marvis/audios`) — listen sessions only.
+    pub audio_file: Option<String>,
     pub started_at: i64,
     pub ended_at: Option<i64>,
     pub last_active_at: i64,
@@ -96,23 +105,23 @@ pub struct Message {
     pub ts: i64,
 }
 
-/// A persisted speaker turn from a listen session. `audio_file` is the
-/// retained segment recording's path — `NULL` while audio isn't kept
-/// (whisper's wavs are temp files deleted after transcription).
+/// A persisted speaker turn from a listen session.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct Transcript {
     pub id: i64,
     pub session_id: i64,
+    /// The capture channel (`me` = mic, `them` = system audio) — not a
+    /// person. The display name derives from `speaker` + `speaker_idx`.
     pub speaker: String,
     /// Diarized voice cluster within `speaker`'s channel — `NULL` when the
     /// session ran without diarization or the turn was unlabelable.
     pub speaker_idx: Option<i64>,
     pub content: String,
     pub ts: i64,
-    pub audio_file: Option<String>,
 }
 
-/// A persisted structured summary from a listen session.
+/// A persisted structured summary from a listen session — unique per
+/// session: `created_at` stamps the first write, `updated_at` the latest.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct Summary {
     pub id: i64,
@@ -121,7 +130,8 @@ pub struct Summary {
     pub bullets: Vec<String>,
     pub follow_ups: Vec<String>,
     pub topic: Option<String>,
-    pub ts: i64,
+    pub created_at: i64,
+    pub updated_at: i64,
 }
 
 /// The database handle. Cheap to share: all state lives behind the mutex.
@@ -267,7 +277,7 @@ impl Db {
 
     /// Every session, most recently active first. `title` is
     /// COALESCE(stored title, first ask user message, latest listen summary
-    /// topic) — NULL only for content-less sessions.
+    /// topic) — the fallback covers rows written before titles persisted.
     pub fn session_list(&self) -> anyhow::Result<Vec<Session>> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
@@ -281,9 +291,9 @@ impl Db {
                         WHEN 'listen' THEN (
                           SELECT sm.topic FROM summaries sm
                           WHERE sm.session_id = s.id AND sm.topic IS NOT NULL
-                          ORDER BY sm.ts DESC, sm.id DESC LIMIT 1)
+                          ORDER BY sm.updated_at DESC, sm.id DESC LIMIT 1)
                       END),
-                    s.started_at, s.ended_at, s.last_active_at
+                    s.audio_file, s.started_at, s.ended_at, s.last_active_at
              FROM sessions s ORDER BY s.last_active_at DESC, s.id DESC",
         )?;
         let rows = stmt.query_map([], |row| {
@@ -291,19 +301,44 @@ impl Db {
                 id: row.get(0)?,
                 kind: row.get(1)?,
                 title: row.get(2)?,
-                started_at: row.get(3)?,
-                ended_at: row.get(4)?,
-                last_active_at: row.get(5)?,
+                audio_file: row.get(3)?,
+                started_at: row.get(4)?,
+                ended_at: row.get(5)?,
+                last_active_at: row.get(6)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
-    /// Delete a session; its child records cascade away via their FKs.
+    /// Record the session's retained recording path (written once the WAV
+    /// exists, so a crashed run still points at the partial file).
+    pub fn session_set_audio_file(&self, id: i64, path: &str) -> anyhow::Result<()> {
+        self.conn.lock().execute(
+            "UPDATE sessions SET audio_file = ?1 WHERE id = ?2",
+            params![path, id],
+        )?;
+        Ok(())
+    }
+
+    /// Delete a session; its child records cascade away via their FKs and
+    /// the retained recording (if any) is unlinked best-effort.
     pub fn session_delete(&self, id: i64) -> anyhow::Result<()> {
-        self.conn
-            .lock()
-            .execute("DELETE FROM sessions WHERE id = ?1", [id])?;
+        let audio_file = {
+            let conn = self.conn.lock();
+            let audio_file: Option<String> = conn
+                .query_row(
+                    "SELECT audio_file FROM sessions WHERE id = ?1",
+                    [id],
+                    |row| row.get(0),
+                )
+                .optional()?
+                .flatten();
+            conn.execute("DELETE FROM sessions WHERE id = ?1", [id])?;
+            audio_file
+        };
+        if let Some(path) = audio_file {
+            let _ = std::fs::remove_file(path);
+        }
         Ok(())
     }
 
@@ -322,6 +357,15 @@ impl Db {
             "UPDATE sessions SET last_active_at = ?1 WHERE id = ?2",
             params![ts, session_id],
         )?;
+        if role == "user" {
+            // First question becomes the title — `title IS NULL` keeps a
+            // later write (or a user rename) from being clobbered.
+            conn.execute(
+                "UPDATE sessions SET title = substr(?2, 1, 60)
+                 WHERE id = ?1 AND title IS NULL",
+                params![session_id, content],
+            )?;
+        }
         Ok(conn.last_insert_rowid())
     }
 
@@ -345,29 +389,19 @@ impl Db {
     }
 
     /// Append a finalized listen turn; returns the new row id.
-    /// `audio_file` is the retained segment recording's path — `None`
-    /// today (audio isn't kept past transcription).
     pub fn transcript_add(
         &self,
         session_id: i64,
         speaker: &str,
         content: &str,
-        audio_file: Option<&str>,
         speaker_idx: Option<u32>,
     ) -> anyhow::Result<i64> {
         let conn = self.conn.lock();
         let ts = now();
         conn.execute(
-            "INSERT INTO transcripts (session_id, speaker, speaker_idx, content, ts, audio_file)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![
-                session_id,
-                speaker,
-                speaker_idx.map(i64::from),
-                content,
-                ts,
-                audio_file
-            ],
+            "INSERT INTO transcripts (session_id, speaker, speaker_idx, content, ts)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![session_id, speaker, speaker_idx.map(i64::from), content, ts],
         )?;
         conn.execute(
             "UPDATE sessions SET last_active_at = ?1 WHERE id = ?2",
@@ -384,7 +418,7 @@ impl Db {
     ) -> anyhow::Result<Vec<Transcript>> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
-            "SELECT id, session_id, speaker, speaker_idx, content, ts, audio_file FROM transcripts
+            "SELECT id, session_id, speaker, speaker_idx, content, ts FROM transcripts
              WHERE session_id = ?1 ORDER BY ts ASC, id ASC LIMIT ?2",
         )?;
         let rows = stmt.query_map(
@@ -397,7 +431,6 @@ impl Db {
                     speaker_idx: row.get(3)?,
                     content: row.get(4)?,
                     ts: row.get(5)?,
-                    audio_file: row.get(6)?,
                 })
             },
         )?;
@@ -416,7 +449,7 @@ impl Db {
         }
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
-            "SELECT id, session_id, speaker, speaker_idx, content, ts, audio_file FROM transcripts
+            "SELECT id, session_id, speaker, speaker_idx, content, ts FROM transcripts
              WHERE session_id = ?1 ORDER BY ts DESC, id DESC LIMIT ?2",
         )?;
         let rows = stmt.query_map(params![session_id, limit as i64], |row| {
@@ -427,7 +460,6 @@ impl Db {
                 speaker_idx: row.get(3)?,
                 content: row.get(4)?,
                 ts: row.get(5)?,
-                audio_file: row.get(6)?,
             })
         })?;
         let mut rows = rows.collect::<rusqlite::Result<Vec<_>>>()?;
@@ -435,8 +467,12 @@ impl Db {
         Ok(rows)
     }
 
-    /// Persist a structured listen summary; returns the new row id.
-    pub fn summary_add(
+    /// Persist a structured listen summary — one row per session: the
+    /// first write inserts (`created_at`/`updated_at` stamped), later
+    /// writes update in place so the live summary evolves instead of
+    /// accreting versions. A `topic` also refreshes `sessions.title`
+    /// (the newest topic is the best label). Returns the row id.
+    pub fn summary_upsert(
         &self,
         session_id: i64,
         tldr: &str,
@@ -449,25 +485,41 @@ impl Db {
         let conn = self.conn.lock();
         let ts = now();
         conn.execute(
-            "INSERT INTO summaries (session_id, tldr, bullets, follow_ups, topic, ts)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT INTO summaries (session_id, tldr, bullets, follow_ups, topic, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)
+             ON CONFLICT (session_id) DO UPDATE SET
+                tldr = excluded.tldr,
+                bullets = excluded.bullets,
+                follow_ups = excluded.follow_ups,
+                topic = excluded.topic,
+                updated_at = excluded.updated_at",
             params![session_id, tldr, bullets, follow_ups, topic, ts],
         )?;
+        if let Some(topic) = topic {
+            conn.execute(
+                "UPDATE sessions SET title = ?1 WHERE id = ?2",
+                params![topic, session_id],
+            )?;
+        }
         conn.execute(
             "UPDATE sessions SET last_active_at = ?1 WHERE id = ?2",
             params![ts, session_id],
         )?;
-        Ok(conn.last_insert_rowid())
+        Ok(conn.query_row(
+            "SELECT id FROM summaries WHERE session_id = ?1",
+            [session_id],
+            |row| row.get(0),
+        )?)
     }
 
-    /// The newest summary for a session, if one exists.
+    /// The session's summary, if one exists (unique per session).
     pub fn summary_latest(&self, session_id: i64) -> anyhow::Result<Option<Summary>> {
         let conn = self.conn.lock();
         let row: Option<SummaryRow> = conn
             .query_row(
-                "SELECT id, session_id, tldr, bullets, follow_ups, topic, ts
+                "SELECT id, session_id, tldr, bullets, follow_ups, topic, created_at, updated_at
                  FROM summaries WHERE session_id = ?1
-                 ORDER BY ts DESC, id DESC LIMIT 1",
+                 ORDER BY updated_at DESC, id DESC LIMIT 1",
                 [session_id],
                 |row| {
                     Ok((
@@ -478,32 +530,35 @@ impl Db {
                         row.get(4)?,
                         row.get(5)?,
                         row.get(6)?,
+                        row.get(7)?,
                     ))
                 },
             )
             .optional()?;
 
-        row.map(|(id, session_id, tldr, bullets, follow_ups, topic, ts)| {
-            Ok(Summary {
-                id,
-                session_id,
-                tldr,
-                bullets: serde_json::from_str(&bullets)?,
-                follow_ups: serde_json::from_str(&follow_ups)?,
-                topic,
-                ts,
-            })
-        })
+        row.map(
+            |(id, session_id, tldr, bullets, follow_ups, topic, created_at, updated_at)| {
+                Ok(Summary {
+                    id,
+                    session_id,
+                    tldr,
+                    bullets: serde_json::from_str(&bullets)?,
+                    follow_ups: serde_json::from_str(&follow_ups)?,
+                    topic,
+                    created_at,
+                    updated_at,
+                })
+            },
+        )
         .transpose()
     }
 }
 
-/// Upgrade databases created before the `ai_messages`/`transcripts.text`
-/// renames. Runs before `SCHEMA`: `CREATE TABLE IF NOT EXISTS messages`
-/// would otherwise create an empty `messages` table that blocks the
-/// rename, and a table that already exists is never re-created — so an
-/// old `transcripts` would keep `text`/no `audio_file` forever and every
-/// query against the new columns would fail.
+/// Upgrade databases created before the current schema. Runs before
+/// `SCHEMA`: `CREATE TABLE IF NOT EXISTS` never re-creates an existing
+/// table, so renames, added columns, and the summaries single-row
+/// rebuild all have to happen here first or every query against the
+/// new shape would fail.
 fn migrate(conn: &Connection) -> anyhow::Result<()> {
     let table_exists = |name: &str| -> rusqlite::Result<bool> {
         conn.query_row(
@@ -512,6 +567,11 @@ fn migrate(conn: &Connection) -> anyhow::Result<()> {
             [name],
             |row| row.get(0),
         )
+    };
+    let columns = |name: &str| -> rusqlite::Result<Vec<String>> {
+        conn.prepare(&format!("PRAGMA table_info({name})"))?
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect()
     };
     if table_exists("ai_messages")? {
         if table_exists("messages")? {
@@ -528,20 +588,74 @@ fn migrate(conn: &Connection) -> anyhow::Result<()> {
         }
     }
     if table_exists("transcripts")? {
-        let mut stmt = conn.prepare("PRAGMA table_info(transcripts)")?;
-        let columns = stmt
-            .query_map([], |row| row.get::<_, String>(1))?
-            .collect::<rusqlite::Result<Vec<String>>>()?;
+        let columns = columns("transcripts")?;
         let has = |name: &str| columns.iter().any(|c| c == name);
         if has("text") && !has("content") {
             conn.execute_batch("ALTER TABLE transcripts RENAME COLUMN text TO content")?;
         }
-        if !has("audio_file") {
-            conn.execute_batch("ALTER TABLE transcripts ADD COLUMN audio_file TEXT")?;
+        // Per-turn audio retention moved to sessions.audio_file — this
+        // column was never populated.
+        if has("audio_file") {
+            conn.execute_batch("ALTER TABLE transcripts DROP COLUMN audio_file")?;
         }
         if !has("speaker_idx") {
             conn.execute_batch("ALTER TABLE transcripts ADD COLUMN speaker_idx INTEGER")?;
         }
+    }
+    if table_exists("sessions")? && !columns("sessions")?.iter().any(|c| c == "audio_file") {
+        conn.execute_batch("ALTER TABLE sessions ADD COLUMN audio_file TEXT")?;
+    }
+    if table_exists("summaries")? {
+        let columns = columns("summaries")?;
+        let has = |name: &str| columns.iter().any(|c| c == name);
+        // The multi-version layout (`ts`) became one row per session
+        // (`created_at`/`updated_at`): rename, dedupe to the newest row,
+        // then enforce uniqueness so the upsert has a conflict target.
+        if has("ts") && !has("created_at") {
+            conn.execute_batch("ALTER TABLE summaries RENAME COLUMN ts TO created_at")?;
+        }
+        if !has("updated_at") {
+            conn.execute_batch(
+                "ALTER TABLE summaries ADD COLUMN updated_at INTEGER;
+                 UPDATE summaries SET updated_at = created_at WHERE updated_at IS NULL;",
+            )?;
+        }
+        conn.execute_batch(
+            "DELETE FROM summaries WHERE id NOT IN
+               (SELECT MAX(id) FROM summaries GROUP BY session_id);",
+        )?;
+        // Fresh tables get uniqueness from the column's UNIQUE constraint
+        // (an autoindex); migrated ones need an explicit index — either
+        // gives the upsert its conflict target.
+        let indexed: bool = conn
+            .prepare("PRAGMA index_list(summaries)")?
+            .query_map([], |row| row.get::<_, i64>(2))?
+            .any(|unique| unique.is_ok_and(|u| u != 0));
+        if !indexed {
+            conn.execute_batch(
+                "CREATE UNIQUE INDEX summaries_session_id ON summaries(session_id)",
+            )?;
+        }
+        // Titles are now persisted — backfill listen sessions from the
+        // surviving summary's topic.
+        conn.execute_batch(
+            "UPDATE sessions SET title = (
+               SELECT sm.topic FROM summaries sm
+               WHERE sm.session_id = sessions.id AND sm.topic IS NOT NULL
+               ORDER BY sm.updated_at DESC, sm.id DESC LIMIT 1)
+             WHERE sessions.type = 'listen' AND sessions.title IS NULL;",
+        )?;
+    }
+    if table_exists("messages")? {
+        // Ask-session title backfill: first user message, matching the
+        // write-time rule in `message_add`.
+        conn.execute_batch(
+            "UPDATE sessions SET title = (
+               SELECT substr(m.content, 1, 60) FROM messages m
+               WHERE m.session_id = sessions.id AND m.role = 'user'
+               ORDER BY m.ts ASC, m.id ASC LIMIT 1)
+             WHERE sessions.type = 'ask' AND sessions.title IS NULL;",
+        )?;
     }
     Ok(())
 }
@@ -661,17 +775,14 @@ mod tests {
         let db = Db::at(dir.join("marvis.db")).unwrap();
         let sid = db.session_get_or_create_active("listen").unwrap();
 
-        db.transcript_add(sid, "me", "hello", None, None).unwrap();
-        db.transcript_add(sid, "them", "hi there", None, None)
-            .unwrap();
-        db.transcript_add(sid, "me", "follow-up", None, None)
-            .unwrap();
+        db.transcript_add(sid, "me", "hello", None).unwrap();
+        db.transcript_add(sid, "them", "hi there", None).unwrap();
+        db.transcript_add(sid, "me", "follow-up", None).unwrap();
 
         let transcripts = db.transcripts_for(sid, None).unwrap();
         assert_eq!(transcripts.len(), 3);
         assert_eq!(transcripts[0].speaker, "me");
         assert_eq!(transcripts[0].content, "hello");
-        assert!(transcripts[0].audio_file.is_none());
         assert_eq!(transcripts[1].speaker, "them");
         assert_eq!(transcripts[1].content, "hi there");
         assert_eq!(transcripts[2].content, "follow-up");
@@ -692,7 +803,7 @@ mod tests {
         let db = Db::at(dir.join("marvis.db")).unwrap();
         let sid = db.session_get_or_create_active("listen").unwrap();
         for id in 0..25 {
-            db.transcript_add(sid, "me", &format!("turn-{id}"), None, None)
+            db.transcript_add(sid, "me", &format!("turn-{id}"), None)
                 .unwrap();
         }
 
@@ -711,7 +822,7 @@ mod tests {
         let db = Db::at(dir.join("marvis.db")).unwrap();
         let sid = db.session_get_or_create_active("listen").unwrap();
 
-        db.summary_add(
+        db.summary_upsert(
             sid,
             "A useful summary",
             &["First point".to_owned(), "Second point".to_owned()],
@@ -726,7 +837,8 @@ mod tests {
         assert_eq!(summary.bullets, vec!["First point", "Second point"]);
         assert_eq!(summary.follow_ups, vec!["Follow up"]);
         assert_eq!(summary.topic.as_deref(), Some("Planning"));
-        assert!(summary.ts > 0);
+        assert!(summary.created_at > 0);
+        assert!(summary.updated_at >= summary.created_at);
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -739,8 +851,8 @@ mod tests {
         {
             let conn = db.conn.lock();
             conn.execute(
-                "INSERT INTO summaries (session_id, tldr, bullets, follow_ups, topic, ts)
-                 VALUES (?1, 'Summary', 'not-json', '[]', NULL, 1)",
+                "INSERT INTO summaries (session_id, tldr, bullets, follow_ups, topic, created_at, updated_at)
+                 VALUES (?1, 'Summary', 'not-json', '[]', NULL, 1, 1)",
                 [sid],
             )
             .unwrap();
@@ -755,8 +867,8 @@ mod tests {
         let dir = tmp_dir();
         let db = Db::at(dir.join("marvis.db")).unwrap();
         let sid = db.session_get_or_create_active("listen").unwrap();
-        db.transcript_add(sid, "me", "hello", None, None).unwrap();
-        db.summary_add(sid, "Summary", &[], &[], None).unwrap();
+        db.transcript_add(sid, "me", "hello", None).unwrap();
+        db.summary_upsert(sid, "Summary", &[], &[], None).unwrap();
 
         db.session_delete(sid).unwrap();
         assert!(db.transcripts_for(sid, None).unwrap().is_empty());
@@ -895,20 +1007,22 @@ mod tests {
             .unwrap();
         }
         let db = Db::at(&path).unwrap();
-        // The legacy table is gone, its rows live in `messages`.
+        // The legacy table is gone, its rows live in `messages` — and the
+        // ask session's title backfilled from the first user message.
         let messages = db.messages_for(1).unwrap();
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].content, "old question");
-        // `text` became `content`; `audio_file` was added nullable.
+        assert_eq!(
+            db.session_list().unwrap()[0].title.as_deref(),
+            Some("old question")
+        );
+        // `text` became `content`; the unused `audio_file` was dropped.
         let transcripts = db.transcripts_for(1, None).unwrap();
         assert_eq!(transcripts.len(), 1);
         assert_eq!(transcripts[0].content, "old turn");
-        assert!(transcripts[0].audio_file.is_none());
-        // New writes hit the upgraded columns.
-        db.transcript_add(1, "them", "new turn", Some("/tmp/seg.wav"), None)
-            .unwrap();
+        db.transcript_add(1, "them", "new turn", Some(1)).unwrap();
         let transcripts = db.transcripts_for(1, None).unwrap();
-        assert_eq!(transcripts[1].audio_file.as_deref(), Some("/tmp/seg.wav"));
+        assert_eq!(transcripts[1].speaker_idx, Some(1));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -958,7 +1072,7 @@ mod tests {
         db.message_add(ask, "user", "how do I fix the capsule width")
             .unwrap();
         let listen = db.session_get_or_create_active("listen").unwrap();
-        db.summary_add(
+        db.summary_upsert(
             listen,
             "tldr",
             &["b".to_string()],
@@ -996,6 +1110,140 @@ mod tests {
         assert!(db.session_reopen(a, "ask").unwrap());
         assert_eq!(db.session_active_id("ask").unwrap(), Some(a));
         assert_eq!(db.session_active_id("listen").unwrap(), Some(l));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The live summary is one evolving row, not a version history:
+    /// repeated upserts update in place and the newest topic wins the
+    /// session title.
+    #[test]
+    fn summary_upsert_keeps_one_row_and_tracks_title() {
+        let dir = tmp_dir();
+        let db = Db::at(dir.join("marvis.db")).unwrap();
+        let sid = db.session_get_or_create_active("listen").unwrap();
+
+        db.summary_upsert(sid, "v1", &["a".to_string()], &[], Some("early"))
+            .unwrap();
+        let first = db.summary_latest(sid).unwrap().unwrap();
+        db.summary_upsert(sid, "v2", &["b".to_string()], &[], Some("final"))
+            .unwrap();
+        let second = db.summary_latest(sid).unwrap().unwrap();
+
+        assert_eq!(first.id, second.id);
+        assert_eq!(second.tldr, "v2");
+        assert_eq!(second.bullets, vec!["b"]);
+        assert_eq!(second.created_at, first.created_at);
+        assert!(second.updated_at >= first.updated_at);
+        {
+            let conn = db.conn.lock();
+            let count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM summaries WHERE session_id = ?1",
+                    [sid],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(count, 1);
+        }
+        let session = db
+            .session_list()
+            .unwrap()
+            .into_iter()
+            .find(|s| s.id == sid)
+            .unwrap();
+        assert_eq!(session.title.as_deref(), Some("final"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The first user message titles the session once — later messages
+    /// don't rewrite it.
+    #[test]
+    fn first_user_message_sets_the_ask_title() {
+        let dir = tmp_dir();
+        let db = Db::at(dir.join("marvis.db")).unwrap();
+        let sid = db.session_get_or_create_active("ask").unwrap();
+
+        db.message_add(sid, "assistant", "hi").unwrap();
+        db.message_add(sid, "user", "first question").unwrap();
+        db.message_add(sid, "user", "second question").unwrap();
+
+        let session = db
+            .session_list()
+            .unwrap()
+            .into_iter()
+            .find(|s| s.id == sid)
+            .unwrap();
+        assert_eq!(session.title.as_deref(), Some("first question"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `session_set_audio_file` links the recording; `session_delete`
+    /// unlinks the file with the row.
+    #[test]
+    fn session_audio_file_is_stored_and_removed_on_delete() {
+        let dir = tmp_dir();
+        let wav = dir.join("recording_1.wav");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&wav, b"RIFF").unwrap();
+        let db = Db::at(dir.join("marvis.db")).unwrap();
+        let sid = db.session_get_or_create_active("listen").unwrap();
+
+        db.session_set_audio_file(sid, wav.to_str().unwrap())
+            .unwrap();
+        let session = db
+            .session_list()
+            .unwrap()
+            .into_iter()
+            .find(|s| s.id == sid)
+            .unwrap();
+        assert_eq!(session.audio_file.as_deref(), wav.to_str());
+
+        db.session_delete(sid).unwrap();
+        assert!(!wav.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A migrated multi-version summaries table collapses to one row per
+    /// session — the newest — and the upsert conflict target exists.
+    #[test]
+    fn migrate_dedupes_summaries_to_the_newest_row() {
+        let dir = tmp_dir();
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("marvis.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE sessions (
+                    id INTEGER PRIMARY KEY, type TEXT NOT NULL, title TEXT,
+                    started_at INTEGER NOT NULL, ended_at INTEGER,
+                    last_active_at INTEGER NOT NULL);
+                 CREATE TABLE summaries (
+                    id INTEGER PRIMARY KEY, session_id INTEGER NOT NULL,
+                    tldr TEXT NOT NULL, bullets TEXT NOT NULL,
+                    follow_ups TEXT NOT NULL, topic TEXT, ts INTEGER NOT NULL);
+                 INSERT INTO sessions (id, type, started_at, last_active_at)
+                    VALUES (1, 'listen', 1, 1);
+                 INSERT INTO summaries (session_id, tldr, bullets, follow_ups, topic, ts)
+                    VALUES (1, 'old', '[]', '[]', 'early topic', 10),
+                           (1, 'new', '[]', '[]', 'final topic', 20);",
+            )
+            .unwrap();
+        }
+        let db = Db::at(&path).unwrap();
+        let summary = db.summary_latest(1).unwrap().unwrap();
+        assert_eq!(summary.tldr, "new");
+        assert_eq!(summary.created_at, 20);
+        assert_eq!(summary.updated_at, 20);
+        // The write path is now an upsert — no second row appears.
+        db.summary_upsert(1, "v3", &[], &[], Some("newest"))
+            .unwrap();
+        assert_eq!(db.summary_latest(1).unwrap().unwrap().tldr, "v3");
+        // The surviving topic backfilled the session title.
+        assert_eq!(
+            db.session_list().unwrap()[0].title.as_deref(),
+            Some("newest")
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

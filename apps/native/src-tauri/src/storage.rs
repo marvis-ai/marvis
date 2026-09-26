@@ -221,12 +221,70 @@ impl Db {
         )?)
     }
 
-    /// Every session, most recently active first.
+    /// Reopen `id` when it is a `kind` session: every OTHER open `kind`
+    /// session ends and the target's `ended_at` clears, atomically. Returns
+    /// false (no mutation) when `id` isn't a `kind` session.
+    #[allow(dead_code)] // session-history card resume
+    pub fn session_reopen(&self, id: i64, kind: &str) -> anyhow::Result<bool> {
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction()?;
+        let matches: bool = tx
+            .query_row(
+                "SELECT type = ?2 FROM sessions WHERE id = ?1",
+                params![id, kind],
+                |row| row.get(0),
+            )
+            .optional()?
+            .unwrap_or(false);
+        if !matches {
+            return Ok(false);
+        }
+        tx.execute(
+            "UPDATE sessions SET ended_at = ?1 WHERE type = ?2 AND ended_at IS NULL AND id != ?3",
+            params![now(), kind, id],
+        )?;
+        tx.execute(
+            "UPDATE sessions SET ended_at = NULL, last_active_at = ?1 WHERE id = ?2",
+            params![now(), id],
+        )?;
+        tx.commit()?;
+        Ok(true)
+    }
+
+    /// Session start time — the elapsed-timer epoch for Listen.
+    #[allow(dead_code)] // session-history card resume
+    pub fn session_started_at(&self, id: i64) -> anyhow::Result<Option<i64>> {
+        Ok(self
+            .conn
+            .lock()
+            .query_row(
+                "SELECT started_at FROM sessions WHERE id = ?1",
+                [id],
+                |row| row.get(0),
+            )
+            .optional()?)
+    }
+
+    /// Every session, most recently active first. `title` is
+    /// COALESCE(stored title, first ask user message, latest listen summary
+    /// topic) — NULL only for content-less sessions.
     pub fn session_list(&self) -> anyhow::Result<Vec<Session>> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
-            "SELECT id, type, title, started_at, ended_at, last_active_at
-             FROM sessions ORDER BY last_active_at DESC, id DESC",
+            "SELECT s.id, s.type,
+                    COALESCE(s.title,
+                      CASE s.type
+                        WHEN 'ask' THEN (
+                          SELECT substr(m.content, 1, 60) FROM messages m
+                          WHERE m.session_id = s.id AND m.role = 'user'
+                          ORDER BY m.ts ASC, m.id ASC LIMIT 1)
+                        WHEN 'listen' THEN (
+                          SELECT sm.topic FROM summaries sm
+                          WHERE sm.session_id = s.id AND sm.topic IS NOT NULL
+                          ORDER BY sm.ts DESC, sm.id DESC LIMIT 1)
+                      END),
+                    s.started_at, s.ended_at, s.last_active_at
+             FROM sessions s ORDER BY s.last_active_at DESC, s.id DESC",
         )?;
         let rows = stmt.query_map([], |row| {
             Ok(Session {
@@ -889,6 +947,73 @@ mod tests {
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[0].content, "old question");
         assert_eq!(messages[1].content, "new answer");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn session_list_computes_titles() {
+        let dir = tmp_dir();
+        let db = Db::at(dir.join("marvis.db")).unwrap();
+        let ask = db.session_get_or_create_active("ask").unwrap();
+        db.message_add(ask, "user", "how do I fix the capsule width")
+            .unwrap();
+        let listen = db.session_get_or_create_active("listen").unwrap();
+        db.summary_add(
+            listen,
+            "tldr",
+            &["b".to_string()],
+            &[],
+            Some("release review"),
+        )
+        .unwrap();
+        let bare = db.session_get_or_create_active("ask").unwrap_or_else(|_| {
+            db.session_end(ask).unwrap();
+            db.session_get_or_create_active("ask").unwrap()
+        });
+        let list = db.session_list().unwrap();
+        let a = list.iter().find(|s| s.id == ask).unwrap();
+        assert_eq!(a.title.as_deref(), Some("how do I fix the capsule width"));
+        let l = list.iter().find(|s| s.id == listen).unwrap();
+        assert_eq!(l.title.as_deref(), Some("release review"));
+        let _ = bare; // an empty session keeps title NULL — UI falls back
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn session_reopen_swaps_the_active_ask_session() {
+        let dir = tmp_dir();
+        let db = Db::at(dir.join("marvis.db")).unwrap();
+        let a = db.session_get_or_create_active("ask").unwrap();
+        let b = {
+            db.session_end(a).unwrap();
+            db.session_get_or_create_active("ask").unwrap()
+        };
+        // Reopening a listen id is rejected and ends nothing.
+        let l = db.session_get_or_create_active("listen").unwrap();
+        assert!(!db.session_reopen(l, "ask").unwrap());
+        assert_eq!(db.session_active_id("ask").unwrap(), Some(b));
+        // Real resume: b ends, a reopens and becomes the active ask session.
+        assert!(db.session_reopen(a, "ask").unwrap());
+        assert_eq!(db.session_active_id("ask").unwrap(), Some(a));
+        assert_eq!(db.session_active_id("listen").unwrap(), Some(l));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn session_started_at_reads_the_start_epoch() {
+        let dir = tmp_dir();
+        let db = Db::at(dir.join("marvis.db")).unwrap();
+        let sid = db.session_get_or_create_active("ask").unwrap();
+        let expected = db
+            .session_list()
+            .unwrap()
+            .into_iter()
+            .find(|s| s.id == sid)
+            .unwrap()
+            .started_at;
+        assert_eq!(db.session_started_at(sid).unwrap(), Some(expected));
+        // Unknown ids read as None instead of erroring.
+        assert_eq!(db.session_started_at(sid + 1000).unwrap(), None);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

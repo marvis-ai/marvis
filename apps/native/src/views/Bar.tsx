@@ -16,11 +16,10 @@
  * background-activity mirrors are `useBarActivity`.
  *
  * `data-tauri-drag-region` lives on the card's chrome in card mode —
- * the bar ROW, the section CardHeader, and the CardTabs strip (all
- * 'deep', so their padding and non-interactive children drag too) —
- * a stage-level region would intercept text selection in the
- * scrollable conversation. In pill mode it stays on the capsule
- * chrome as before.
+ * the bar ROW and the section CardHeader ('deep', so padding and
+ * non-interactive children drag too) — a stage-level region would
+ * intercept text selection in the scrollable conversation. In pill
+ * mode it stays on the capsule chrome as before.
  *
  * The mic affordance splits by surface: collapsed shows the Listen
  * recorder (`MicAudioLinesIcon`, opens the card into meeting Listen)
@@ -64,7 +63,6 @@ import { useGate } from '@/hooks/useGate';
 import { AskInput } from '@/components/bar/AskInput';
 import { BarButton } from '@/components/bar/BarButton';
 import { BootErrorRow } from '@/components/bar/BootErrorRow';
-import { CardTabs } from '@/components/bar/CardTabs';
 import { DictationWaveform } from '@/components/bar/DictationWaveform';
 import { IrisButton } from '@/components/bar/IrisButton';
 import { PermissionRow } from '@/components/bar/PermissionRow';
@@ -102,19 +100,12 @@ const Bar = () => {
   const speechBusy = useRef(false);
 
   // Section pin: an explicit user choice (send → chat, listen-start →
-  // listen, stop → the finished doc, history button/tab → the session
-  // list) overrides the `listenWanted` activity mirror.
+  // listen, stop → the finished doc, history capsule button → the
+  // session list) overrides the `listenWanted` activity mirror.
   const [pinned, setPinned] = useState<'chat' | 'listen' | 'history' | null>(
     null,
   );
   const [listenViewing, setListenViewing] = useState<ListenViewing | null>(
-    null,
-  );
-  /** Where the standalone history card was entered from: 'idle' (the
-   *  capsule history button — the card was closed, so Back collapses)
-   *  or the `pinned` value it returns to (`null` = the activity-driven
-   *  section). Cleared when the card closes. */
-  const historyFromRef = useRef<'idle' | 'chat' | 'listen' | 'history' | null>(
     null,
   );
 
@@ -231,7 +222,6 @@ const Bar = () => {
     if (!cardOpen) {
       setPinned(null);
       setListenViewing(null);
-      historyFromRef.current = null;
     }
   }, [cardOpen]);
 
@@ -565,9 +555,6 @@ const Bar = () => {
             label='History'
             disabled={gate !== 'main'}
             onPress={() => {
-              // The capsule press only fires with the card closed —
-              // Back from this history view collapses to idle.
-              historyFromRef.current = 'idle';
               setPinned('history');
               void windowSetChatOpen(true).catch(() => {});
             }}>
@@ -656,14 +643,9 @@ const Bar = () => {
               setPinned('listen');
             }}
             onBack={() => {
-              if (historyFromRef.current === 'idle') {
-                // Entered from the capsule — Back collapses the card.
-                void windowSetChatOpen(false).catch(() => {});
-              } else {
-                // Restore the section history was entered from —
-                // `null` falls back to the activity-driven section.
-                setPinned(historyFromRef.current);
-              }
+              // History is only entered from the capsule (card
+              // closed) — Back collapses to idle.
+              void windowSetChatOpen(false).catch(() => {});
             }}
           />
         )}
@@ -673,24 +655,6 @@ const Bar = () => {
           shineColor={['#A07CFE', '#FE8FB5', '#FFBE7B', 'var(--accent)']}
           borderWidth={1.8}
         />
-        {/* Section tabs — the card is `flex-col-reverse`, so this LAST
-            DOM child renders on top. Hidden on the standalone history
-            surface, whose header carries back + settings instead. */}
-        {cardOpen && section !== 'history' && (
-          <CardTabs
-            section={section ?? 'chat'}
-            listenLive={listenState === 'listening' || listenState === 'paused'}
-            onPick={(s) => {
-              // Remember the surface history was entered from so its
-              // Back button can restore it.
-              if (s === 'history') historyFromRef.current = pinned;
-              setPinned(s);
-              // The Listen tab means "back to live" — drop any viewed
-              // finished doc.
-              if (s === 'listen') setListenViewing(null);
-            }}
-          />
-        )}
       </div>
     </div>
   );

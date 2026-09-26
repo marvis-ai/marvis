@@ -224,7 +224,6 @@ impl Db {
     /// Reopen `id` when it is a `kind` session: every OTHER open `kind`
     /// session ends and the target's `ended_at` clears, atomically. Returns
     /// false (no mutation) when `id` isn't a `kind` session.
-    #[allow(dead_code)] // session-history card resume
     pub fn session_reopen(&self, id: i64, kind: &str) -> anyhow::Result<bool> {
         let mut conn = self.conn.lock();
         let tx = conn.transaction()?;

@@ -1692,6 +1692,14 @@ fn session_end_active(state: State<'_, AppState>, kind: String) -> Result<bool, 
     }
 }
 
+/// Resume a past chat: ends the open `ask` session and reopens `id`
+/// (`session_reopen` kind-guards — non-ask ids change nothing and
+/// return false). The next `ask_send` appends to the reopened session.
+#[tauri::command]
+fn session_resume(state: State<'_, AppState>, id: i64) -> Result<bool, String> {
+    state.db.session_reopen(id, "ask").map_err(|e| e.to_string())
+}
+
 // ---------------------------------------------------------------------------
 // Commands — config / app
 // ---------------------------------------------------------------------------
@@ -2070,6 +2078,7 @@ pub fn run() {
             summary_latest,
             session_delete,
             session_end_active,
+            session_resume,
             config_get,
             config_set,
             surface_material,
@@ -2125,6 +2134,7 @@ mod tests {
         assert!(source.contains("sherpa_download,"));
         assert!(source.contains("sherpa_cancel_download,"));
         assert!(source.contains("sherpa_remove_model,"));
+        assert!(source.contains("session_resume,"));
     }
 
     /// Both speech services must route providers through the shared

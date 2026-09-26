@@ -608,6 +608,7 @@ const Bar = () => {
           <ListenSection
             viewing={listenViewing}
             onSessionEnded={(v) => {
+              if (!cardOpenRef.current) return;
               setListenViewing(v);
               setPinned('listen');
             }}

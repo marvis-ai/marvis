@@ -20,12 +20,15 @@ export const TranscriptBlocks = ({
 }) => {
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const copyBlock = (b: TurnBlock) => {
+    // Same-speaker blocks share `b.key` — key the flash by the block's
+    // React key (`key-ts`) so only the copied block shows the check.
+    const key = `${b.key}-${b.ts}`;
     void navigator.clipboard
       .writeText(blockCopyText(b))
       .then(() => {
-        setCopiedKey(b.key);
+        setCopiedKey(key);
         window.setTimeout(
-          () => setCopiedKey((k) => (k === b.key ? null : k)),
+          () => setCopiedKey((k) => (k === key ? null : k)),
           1500,
         );
       })
@@ -62,7 +65,7 @@ export const TranscriptBlocks = ({
                 ICON_BTN,
                 'ml-auto size-5 opacity-0 transition-opacity group-hover/row:opacity-100 focus-visible:opacity-100',
               )}>
-              {copiedKey === block.key ? (
+              {copiedKey === `${block.key}-${block.ts}` ? (
                 <CheckIcon className='size-3 text-accent' />
               ) : (
                 <CopyIcon className='size-3' />

@@ -43,6 +43,7 @@ import {
   captureStart,
   captureStop,
   listenStart,
+  listenStatus,
   listenStop,
   raise,
   windowFocusBar,
@@ -376,9 +377,23 @@ const Bar = () => {
       return;
     }
     // A paused session is still live (backend `is_listening()`) — the
-    // press stops it rather than resuming.
+    // press stops it rather than resuming. Read the ids BEFORE the stop
+    // clears the session snapshot so the card can swap to the finished
+    // document (the same handoff ListenSection's `onSessionEnded` uses).
     if (listenState === 'listening' || listenState === 'paused') {
-      void listenStop()
+      void listenStatus()
+        .then((status) =>
+          listenStop().then(() => {
+            if (status.session_id != null && status.started_at != null) {
+              setListenViewing({
+                id: status.session_id,
+                startedAt: status.started_at,
+                endedAt: Date.now() / 1000,
+              });
+              setPinned('listen');
+            }
+          }),
+        )
         .catch(() => raise('Stop failed'))
         .finally(() => {
           speechBusy.current = false;

@@ -180,6 +180,7 @@ export const ListenSection = ({
           })),
         );
         if (latest) setSummary(latest);
+        else setSummary(null);
       })
       .catch(() => {});
     return () => {
@@ -242,6 +243,9 @@ export const ListenSection = ({
   const ticking = live ? listening : viewing.endedAt == null;
   useEffect(() => {
     if (!ticking) return;
+    // Re-anchor on (re)start — after a pause `now` is stale by the whole
+    // paused span, so the first tick would dip the timer for ~1s.
+    setNow(Date.now() / 1000);
     const id = window.setInterval(() => setNow(Date.now() / 1000), 1000);
     return () => window.clearInterval(id);
   }, [ticking]);
@@ -260,10 +264,20 @@ export const ListenSection = ({
   const stop = () => {
     const id = status.session_id;
     const started = status.started_at;
-    void listenStop().catch(() => {});
-    if (id != null && started != null) {
-      onSessionEnded({ id, startedAt: started, endedAt: Date.now() / 1000 });
-    }
+    // The doc swap waits on the invoke settling (finally, not then) —
+    // even a failed stop leaves the session dead backend-side, so the
+    // finished document is still the right surface.
+    void listenStop()
+      .catch(() => {})
+      .finally(() => {
+        if (id != null && started != null) {
+          onSessionEnded({
+            id,
+            startedAt: started,
+            endedAt: Date.now() / 1000,
+          });
+        }
+      });
   };
 
   const blocks = useMemo(() => buildBlocks(turns), [turns]);

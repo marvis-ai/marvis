@@ -217,7 +217,7 @@ fn run_chunks(
     // Diarization is progressive enhancement: a missing/unloadable
     // embedding model leaves `speaker_idx` unset rather than failing STT.
     let mut tracker = diarize
-        .then(crate::stt::speaker::tracker_if_installed)
+        .then(|| crate::stt::speaker::tracker_if_installed(channel))
         .flatten();
     let mut buffer = Vec::with_capacity(WINDOW_SAMPLES);
     let mut consecutive_failures = 0;

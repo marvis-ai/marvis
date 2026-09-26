@@ -65,6 +65,7 @@ import { PermissionRow } from '@/components/bar/PermissionRow';
 import { ChatSection } from '@/components/ChatSection';
 import { LaunchIntro } from '@/components/LaunchIntro';
 import { ListenSection } from '@/components/ListenSection';
+import type { ListenViewing } from '@/components/listen/model';
 import { PANEL } from '@/lib/classes';
 
 const Bar = () => {
@@ -137,11 +138,19 @@ const Bar = () => {
     inputRendered,
   });
 
-  const section: 'chat' | 'listen' | null = !cardOpen
+  // Section pin: an explicit user choice (send → chat, listen-start →
+  // listen, stop → the finished doc) overrides the `listenWanted`
+  // activity mirror. `'history'` joins the union in Task 7.
+  const [pinned, setPinned] = useState<'chat' | 'listen' | 'history' | null>(
+    null,
+  );
+  const [listenViewing, setListenViewing] = useState<ListenViewing | null>(
+    null,
+  );
+
+  const section: 'chat' | 'listen' | 'history' | null = !cardOpen
     ? null
-    : listenWanted
-      ? 'listen'
-      : 'chat';
+    : (pinned ?? (listenWanted ? 'listen' : 'chat'));
   /** Any live work pulses the floating shell — specific controls keep
    *  their stronger active affordances on top of it. */
   const activeWork = hasActiveWork({
@@ -179,6 +188,14 @@ const Bar = () => {
     // typing lands in whatever app was frontmost.
     void windowFocusBar().catch(() => {});
   });
+
+  // Every card open starts unpinned with no viewed session.
+  useEffect(() => {
+    if (!cardOpen) {
+      setPinned(null);
+      setListenViewing(null);
+    }
+  }, [cardOpen]);
 
   // Listen is an independent session: collapsing the card must not change
   // which active section is shown when it is reopened.
@@ -276,6 +293,7 @@ const Bar = () => {
   // expands the window itself — no local collapse needed either way.
   const submitAsk = (e?: SubmitEvent<HTMLFormElement>) => {
     e?.preventDefault();
+    setPinned('chat');
     dictation.submit(sendAsk);
   };
 
@@ -328,7 +346,7 @@ const Bar = () => {
   const micLabel =
     dictation.state === 'listening'
       ? 'Stop dictation'
-      : listenState === 'listening'
+      : listenState === 'listening' || listenState === 'paused'
         ? 'Stop listening'
         : showInputRow
           ? 'Dictate'
@@ -357,7 +375,9 @@ const Bar = () => {
       });
       return;
     }
-    if (listenState === 'listening') {
+    // A paused session is still live (backend `is_listening()`) — the
+    // press stops it rather than resuming.
+    if (listenState === 'listening' || listenState === 'paused') {
       void listenStop()
         .catch(() => raise('Stop failed'))
         .finally(() => {
@@ -372,6 +392,7 @@ const Bar = () => {
       return;
     }
     setListenWanted(true);
+    setPinned('listen');
     void windowSetChatOpen(true).catch(() => {});
     void listenStart()
       .then((next) => setListenState(next.state))
@@ -413,7 +434,9 @@ const Bar = () => {
         data-tauri-drag-region>
         <IrisButton
           active={
-            listenState === 'listening' || dictation.state === 'listening'
+            listenState === 'listening' ||
+            listenState === 'paused' ||
+            dictation.state === 'listening'
           }
           label={
             cardOpen ? 'Close chat' : open ? 'Back to capsule' : 'Ask Marvis'
@@ -465,7 +488,7 @@ const Bar = () => {
         {controls.includes('listen') && (
           <BarButton
             label={micLabel}
-            pressed={listenState === 'listening'}
+            pressed={listenState === 'listening' || listenState === 'paused'}
             disabled={gate !== 'main'}
             onPress={pressMic}>
             <MicAudioLinesIcon className='size-5' />
@@ -531,7 +554,16 @@ const Bar = () => {
         {row()}
         {showIntro && <LaunchIntro onDone={() => setIntroDone(true)} />}
         {section === 'chat' && <ChatSection />}
-        {section === 'listen' && <ListenSection />}
+        {section === 'listen' && (
+          <ListenSection
+            viewing={listenViewing}
+            onSessionEnded={(v) => {
+              setListenViewing(v);
+              setPinned('listen');
+            }}
+          />
+        )}
+        {/* section === 'history' renders in Task 7 */}
         {/* Capsule shimmer — accent duotone follows light/dark via the
             tokens; masked to the border ring, pointer-events-none. */}
         <ShineBorder

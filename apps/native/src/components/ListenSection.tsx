@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   configGet,
+  listenPause,
+  listenResume,
   listenStatus,
   listenStop,
   transcriptsFor,
@@ -22,69 +24,18 @@ import {
   type ListenErrorPayload,
   type ListenStatePayload,
   type ListenSummaryPayload,
-  type ListenTurnPayload,
 } from '../lib/events';
-import { BTN_OUTLINE, BTN_SM, CHIP, EMPTY, NUM, cn } from '../lib/classes';
-
-type Turn = ListenTurnPayload & {
-  interim?: boolean;
-};
-
-type Summary = ListenSummaryPayload;
-
-const waveformHeights = ['h-2', 'h-3.5', 'h-4.5', 'h-3', 'h-1.75'];
-
-/* ─── transcript document model ──────────────────────────────────
-   Consecutive turns from one speaker identity (channel + diarized
-   voice cluster) merge into a block: one header, a paragraph per
-   turn. A trailing interim rides the open block. */
-
-interface TurnIdentity {
-  speaker: 'me' | 'them';
-  speaker_idx: number | null;
-}
-
-const speakerKey = (turn: TurnIdentity) =>
-  `${turn.speaker}:${turn.speaker_idx ?? ''}`;
-
-const speakerName = (turn: TurnIdentity) =>
-  turn.speaker === 'me'
-    ? turn.speaker_idx != null && turn.speaker_idx > 0
-      ? `Guest ${turn.speaker_idx}`
-      : 'You'
-    : turn.speaker_idx == null
-      ? 'Speaker'
-      : `Speaker ${turn.speaker_idx + 1}`;
-
-const SPEAKER_COLOR_CLASSES = [
-  'text-speaker-1',
-  'text-speaker-2',
-  'text-speaker-3',
-  'text-speaker-4',
-] as const;
-
-const speakerColor = (turn: TurnIdentity) =>
-  turn.speaker === 'me' && !(turn.speaker_idx != null && turn.speaker_idx > 0)
-    ? 'text-accent'
-    : turn.speaker_idx == null
-      ? 'text-fg-2'
-      : SPEAKER_COLOR_CLASSES[turn.speaker_idx % SPEAKER_COLOR_CLASSES.length];
-
-interface TurnBlock {
-  key: string;
-  name: string;
-  color: string;
-  ts: number;
-  finals: Turn[];
-  interim: Turn | null;
-}
-
-const timeLabel = (ts: number) => {
-  const date = new Date(ts * 1000);
-  const hh = String(date.getHours()).padStart(2, '0');
-  const mm = String(date.getMinutes()).padStart(2, '0');
-  return `${hh}:${mm}`;
-};
+import { BTN_OUTLINE, BTN_SM, CHIP, EMPTY, cn } from '../lib/classes';
+import {
+  buildBlocks,
+  sessionDateLabel,
+  transcriptCopyText,
+  type ListenViewing,
+  type Turn,
+} from './listen/model';
+import { ListenHeader } from './listen/ListenHeader';
+import { SpeakerFilter } from './listen/SpeakerFilter';
+import { TranscriptBlocks } from './listen/TranscriptBlocks';
 
 const whisperSourceLabel = (source: WhisperBinarySource | null) => {
   if (source === 'Bundled') return 'Bundled with Marvis';
@@ -92,7 +43,25 @@ const whisperSourceLabel = (source: WhisperBinarySource | null) => {
   return 'Whisper CLI unavailable';
 };
 
-export const ListenSection = () => {
+/** The structured meeting document — header (title, badge, timer,
+ *  controls), speaker filter, timestamped transcript blocks, and the
+ *  jump-to-live scroll affordance. `viewing === null` is the live
+ *  capture; a set `viewing` renders a finished session read off
+ *  `transcripts_for`/`summary_latest` while live events stay walled
+ *  off behind `viewingRef`. */
+export const ListenSection = ({
+  viewing,
+  onSessionEnded,
+}: {
+  viewing: ListenViewing | null;
+  onSessionEnded: (v: ListenViewing) => void;
+}) => {
+  const live = viewing === null;
+  /** Live mirror of `viewing` for Tauri event handlers — an event that
+   *  lands while a finished doc is on screen must never mutate it. */
+  const viewingRef = useRef(viewing);
+  viewingRef.current = viewing;
+
   const [status, setStatus] = useState<ListenStatus>({
     state: 'idle',
     provider: null,
@@ -106,11 +75,13 @@ export const ListenSection = () => {
   });
   const [turns, setTurns] = useState<Turn[]>([]);
   const sessionRef = useRef<number | null>(null);
-  const [summary, setSummary] = useState<Summary | null>(null);
+  const [summary, setSummary] = useState<ListenSummaryPayload | null>(null);
   const [error, setError] = useState<ListenErrorPayload | null>(null);
   const [provider, setProvider] = useState<string | null>(null);
   const [model, setModel] = useState<string | null>(null);
   const [whisper, setWhisper] = useState<WhisperStatus | null>(null);
+  const [copiedAll, setCopiedAll] = useState(false);
+  const [filterKey, setFilterKey] = useState<string | null>(null);
 
   const applyConfig = (config: Config) => {
     setProvider(config.models.stt_provider || null);
@@ -139,11 +110,12 @@ export const ListenSection = () => {
   }, []);
 
   useEffect(() => {
+    if (viewingRef.current) return;
     let cancelled = false;
     void (async () => {
       try {
         const current = await listenStatus();
-        if (cancelled) return;
+        if (cancelled || viewingRef.current) return;
         setStatus(current);
         setError(current.error);
         sessionRef.current = current.session_id;
@@ -152,8 +124,13 @@ export const ListenSection = () => {
           transcriptsFor(current.session_id),
           summaryLatest(current.session_id),
         ]);
-        if (cancelled || sessionRef.current !== current.session_id) return;
-        setTurns((live) => {
+        if (
+          cancelled ||
+          viewingRef.current ||
+          sessionRef.current !== current.session_id
+        )
+          return;
+        setTurns((liveTurns) => {
           // Persisted rows (`content`) fold into the live-turn shape (`text`).
           const persisted: Turn[] = rows.map((row) => ({
             speaker: row.speaker,
@@ -164,13 +141,13 @@ export const ListenSection = () => {
             final: true,
           }));
           const keys = new Set(
-            live.map((turn) => `${turn.speaker}:${turn.ts}:${turn.text}`),
+            liveTurns.map((turn) => `${turn.speaker}:${turn.ts}:${turn.text}`),
           );
           return [
             ...persisted.filter(
               (row) => !keys.has(`${row.speaker}:${row.ts}:${row.text}`),
             ),
-            ...live,
+            ...liveTurns,
           ];
         });
         if (latest) setSummary(latest);
@@ -183,7 +160,41 @@ export const ListenSection = () => {
     };
   }, []);
 
+  // A viewed session re-reads its document — persisted turns plus the
+  // last summary. `turns` wholesale replaces (the live list and the
+  // stored rows can disagree on a still-open interim).
+  useEffect(() => {
+    if (!viewing) return;
+    let cancelled = false;
+    void Promise.all([transcriptsFor(viewing.id), summaryLatest(viewing.id)])
+      .then(([rows, latest]) => {
+        if (cancelled) return;
+        setTurns(
+          rows.map((r) => ({
+            speaker: r.speaker,
+            speaker_idx: r.speaker_idx,
+            text: r.content,
+            ts: r.ts,
+            session_id: r.session_id,
+            final: true,
+          })),
+        );
+        if (latest) setSummary(latest);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [viewing?.id]);
+
+  // The speaker filter is display-only; a new session or a new viewed
+  // document clears it.
+  useEffect(() => {
+    setFilterKey(null);
+  }, [viewing?.id, status.session_id]);
+
   useTauriEvent<ListenStatePayload>(EV_LISTEN_STATE, (next) => {
+    if (viewingRef.current) return;
     if (next.state === 'listening' && next.session_id !== sessionRef.current) {
       sessionRef.current = next.session_id;
       setTurns([]);
@@ -194,6 +205,7 @@ export const ListenSection = () => {
     setStatus((previous) => ({ ...previous, ...next }));
   });
   useTauriEvent<Turn>(EV_LISTEN_TURN, (turn) => {
+    if (viewingRef.current) return;
     if (sessionRef.current !== null && turn.session_id !== sessionRef.current) {
       return;
     }
@@ -208,16 +220,94 @@ export const ListenSection = () => {
     });
   });
   useTauriEvent<ListenSummaryPayload>(EV_LISTEN_SUMMARY, (next) => {
+    if (viewingRef.current) return;
     setSummary(next);
     setError(null);
   });
-  useTauriEvent<ListenErrorPayload>(EV_LISTEN_ERROR, setError);
+  useTauriEvent<ListenErrorPayload>(EV_LISTEN_ERROR, (next) => {
+    if (viewingRef.current) return;
+    setError(next);
+  });
 
-  const stop = () => {
-    void listenStop().catch(() => {});
-  };
   const listening = status.state === 'listening';
+  const paused = status.state === 'paused';
   const activeProvider = provider ?? status.provider ?? 'stt';
+
+  // Elapsed RECORDING time: live = (paused_since ?? now) − started_at −
+  // paused_secs (the interval stops on pause so `now` freezes — but
+  // `paused_since` carries the frozen value anyway); a viewed doc shows
+  // its duration (endedAt ?? now for a still-open session).
+  const [now, setNow] = useState(() => Date.now() / 1000);
+  const startedAt = live ? status.started_at : viewing.startedAt;
+  const ticking = live ? listening : viewing.endedAt == null;
+  useEffect(() => {
+    if (!ticking) return;
+    const id = window.setInterval(() => setNow(Date.now() / 1000), 1000);
+    return () => window.clearInterval(id);
+  }, [ticking]);
+  const elapsed =
+    startedAt == null
+      ? 0
+      : Math.max(
+          0,
+          live
+            ? (status.paused_since ?? now) - startedAt - status.paused_secs
+            : (viewing.endedAt ?? now) - startedAt,
+        );
+
+  // Read the ids BEFORE `listenStop` — the command clears the session
+  // snapshot; the card then stays open on the finished document.
+  const stop = () => {
+    const id = status.session_id;
+    const started = status.started_at;
+    void listenStop().catch(() => {});
+    if (id != null && started != null) {
+      onSessionEnded({ id, startedAt: started, endedAt: Date.now() / 1000 });
+    }
+  };
+
+  const blocks = useMemo(() => buildBlocks(turns), [turns]);
+  const speakers = useMemo(() => {
+    const seen = new Map<
+      string,
+      { key: string; name: string; color: string }
+    >();
+    for (const block of blocks) {
+      if (!seen.has(block.key)) {
+        seen.set(block.key, {
+          key: block.key,
+          name: block.name,
+          color: block.color,
+        });
+      }
+    }
+    return [...seen.values()];
+  }, [blocks]);
+  const shown = filterKey
+    ? blocks.filter((block) => block.key === filterKey)
+    : blocks;
+
+  const copyAll = () => {
+    void navigator.clipboard
+      .writeText(transcriptCopyText(blocks, startedAt, summary))
+      .then(() => {
+        setCopiedAll(true);
+        window.setTimeout(() => setCopiedAll(false), 1500);
+      })
+      .catch(() => {});
+  };
+
+  const badge = live
+    ? paused
+      ? ('PAUSED' as const)
+      : status.session_id != null && listening
+        ? ('LISTENING' as const)
+        : null
+    : ('STOPPED' as const);
+  const title = summary?.topic ?? 'Listen';
+  const subtitle = live
+    ? `${status.mic ? 'mic + system audio' : 'system audio'} · ${provider ?? 'stt'}${model ? ` ${model}` : ''}`
+    : sessionDateLabel(viewing.startedAt);
 
   // Document scroll: follow live output while pinned; scrolling up
   // releases the pin and offers a way back to the live edge.
@@ -227,31 +317,6 @@ export const ListenSection = () => {
     const el = scrollRef.current;
     if (el) setPinned(el.scrollHeight - el.scrollTop - el.clientHeight < 48);
   };
-  const blocks = useMemo(() => {
-    const out: TurnBlock[] = [];
-    for (const turn of turns) {
-      const key = speakerKey(turn);
-      let block = out[out.length - 1];
-      if (!block || block.key !== key) {
-        block = {
-          key,
-          name: speakerName(turn),
-          color: speakerColor(turn),
-          ts: turn.ts,
-          finals: [],
-          interim: null,
-        };
-        out.push(block);
-      }
-      if (turn.interim) {
-        block.interim = turn;
-      } else {
-        block.finals.push(turn);
-        block.interim = null;
-      }
-    }
-    return out;
-  }, [turns]);
   useEffect(() => {
     const el = scrollRef.current;
     if (el && pinned) el.scrollTop = el.scrollHeight;
@@ -259,42 +324,21 @@ export const ListenSection = () => {
 
   return (
     <div className='flex min-h-0 flex-1 flex-col'>
-      <div className='flex items-center justify-between border-b border-border px-3 py-2.25'>
-        <div className='flex min-w-0 items-center gap-2'>
-          <span
-            className={cn(
-              'flex h-4.5 items-center gap-0.75',
-              listening && 'text-accent',
-            )}
-            aria-hidden>
-            {waveformHeights.map((height, index) => (
-              <i
-                key={height}
-                className={cn(
-                  height,
-                  'w-0.75 rounded-xs bg-current',
-                  listening && 'animate-waveform',
-                )}
-                style={
-                  listening ? { animationDelay: `${index * 90}ms` } : undefined
-                }
-              />
-            ))}
-          </span>
-          <span className='text-xs font-[550]'>
-            {listening ? 'Listening' : 'Listen'}
-          </span>
-        </div>
-        {listening && (
-          <button
-            type='button'
-            className={cn(BTN_SM, BTN_OUTLINE)}
-            onClick={stop}>
-            Stop
-          </button>
-        )}
-      </div>
-      {error && (
+      <ListenHeader
+        title={title}
+        subtitle={subtitle}
+        badge={badge}
+        elapsedSecs={elapsed}
+        live={live}
+        listening={live && listening}
+        paused={live && paused}
+        copiedAll={copiedAll}
+        onPause={() => void listenPause().catch(() => {})}
+        onResume={() => void listenResume().catch(() => {})}
+        onStop={stop}
+        onCopyAll={copyAll}
+      />
+      {live && error && (
         <div className='flex items-center gap-2 border-b border-border bg-[color-mix(in_oklch,var(--destructive)_9%,transparent)] px-3 py-2 text-xs text-destructive'>
           <span className='min-w-0 flex-1 wrap-break-word'>
             {error.message}
@@ -309,78 +353,33 @@ export const ListenSection = () => {
           )}
         </div>
       )}
-      {listening && !status.mic && !error && (
+      {live && listening && !status.mic && !error && (
         <div className='border-b border-border px-3 py-2 text-xs text-muted-foreground'>
           Microphone unavailable; system audio only.
         </div>
       )}
+      <SpeakerFilter
+        speakers={speakers}
+        active={filterKey}
+        count={shown.length}
+        onPick={setFilterKey}
+      />
       <div className='relative min-h-0 flex-1'>
         <div
           ref={scrollRef}
           onScroll={handleScroll}
           className='h-full overflow-y-auto px-3.5 py-3 text-[13px] leading-[1.6]'>
-          {blocks.map((block) => (
-            <div
-              key={`${block.key}-${block.ts}`}
-              className='mb-3.5'>
-              <div className={cn('flex items-center gap-1.5', block.color)}>
-                <span
-                  aria-hidden
-                  className='size-1.75 flex-none rounded-full bg-current'
-                />
-                <span className='text-[12px] font-[650] tracking-[-0.005em]'>
-                  {block.name}
-                </span>
-                <span className={cn(NUM, 'text-[10px] text-muted-foreground')}>
-                  {timeLabel(block.ts)}
-                </span>
-              </div>
-              <p className='mt-1 wrap-break-word whitespace-pre-wrap select-text'>
-                {block.finals.map((turn) => turn.text).join(' ')}
-                {block.interim && (
-                  <span className='text-muted-foreground'>
-                    {block.finals.length > 0 ? ' ' : ''}
-                    {block.interim.text}
-                    <span
-                      aria-hidden
-                      className='animate-caret ml-0.5 inline-block h-[0.95em] w-[1.5px] translate-y-[0.15em] bg-current'
-                    />
-                  </span>
-                )}
-              </p>
-            </div>
-          ))}
-          {summary && (
-            <section className='mt-3 border-t border-border pt-2.5'>
-              <p className='text-xs font-semibold'>
-                TLDR{summary.topic ? ` · ${summary.topic}` : ''}
-              </p>
-              <p className='mt-1 select-text'>{summary.tldr}</p>
-              {summary.bullets.slice(0, 5).length > 0 && (
-                <ul className='mt-1 list-disc pl-4'>
-                  {summary.bullets.slice(0, 5).map((bullet) => (
-                    <li key={bullet}>{bullet}</li>
-                  ))}
-                </ul>
-              )}
-              {summary.follow_ups.slice(0, 3).length > 0 && (
-                <div className='mt-2 flex flex-wrap gap-1.5'>
-                  {summary.follow_ups.slice(0, 3).map((followUp) => (
-                    <span
-                      key={followUp}
-                      className={CHIP}>
-                      {followUp}
-                    </span>
-                  ))}
-                </div>
-              )}
-            </section>
-          )}
-          {turns.length === 0 && !summary && !error && (
+          <TranscriptBlocks
+            blocks={shown}
+            startedAt={startedAt}
+          />
+          {turns.length === 0 && !summary && (!error || !live) && (
             <p className={EMPTY}>
-              {listening
-                ? 'Speak naturally — your transcript will appear here.'
-                : 'Start listening to capture a conversation.'}
+              {live
+                ? listening
+                  ? 'Speak naturally — your transcript will appear here.'
+                  : 'Start listening to capture a conversation.'
+                : 'No transcript captured.'}
             </p>
           )}
           <div className='mt-2 flex flex-wrap gap-1.5'>

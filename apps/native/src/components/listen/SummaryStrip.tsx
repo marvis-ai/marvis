@@ -29,7 +29,7 @@ export const SummaryStrip = ({
       </button>
       <p
         className={cn(
-          'mt-0.5 text-[12.5px] leading-[1.5] select-text',
+          'mt-0.5 text-[12.5px] leading-normal select-text',
           !open && 'line-clamp-2',
         )}>
         {summary.tldr}
@@ -37,7 +37,7 @@ export const SummaryStrip = ({
       {open && (
         <>
           {summary.bullets.length > 0 && (
-            <ul className='mt-1 list-disc pl-4 text-[12.5px] leading-[1.5]'>
+            <ul className='mt-1 list-disc pl-4 text-[12.5px] leading-normal'>
               {summary.bullets.map((b) => (
                 <li key={b}>{b}</li>
               ))}
@@ -46,7 +46,9 @@ export const SummaryStrip = ({
           {summary.follow_ups.length > 0 && (
             <div className='mt-2 flex flex-wrap gap-1.5'>
               {summary.follow_ups.map((f) => (
-                <span key={f} className={CHIP}>
+                <span
+                  key={f}
+                  className={CHIP}>
                   {f}
                 </span>
               ))}

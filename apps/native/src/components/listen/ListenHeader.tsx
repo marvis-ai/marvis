@@ -5,7 +5,8 @@ import {
   PlayIcon,
   SquareIcon,
 } from '@marvis/ui';
-import { CHIP, ICON_BTN, META, NUM, PANEL_HEAD, cn } from '@/lib/classes';
+import { CHIP, ICON_BTN, NUM, cn } from '@/lib/classes';
+import { CardHeader } from '../bar/CardHeader';
 import { elapsedLabel } from './model';
 
 /** Document header: title/subtitle on the left; state pill, elapsed
@@ -38,11 +39,9 @@ export const ListenHeader = ({
   onStop: () => void;
   onCopyAll: () => void;
 }) => (
-  <header className={PANEL_HEAD}>
-    <div className='min-w-0 flex-1'>
-      <p className='truncate text-xs font-[550] select-text'>{title}</p>
-      <p className={cn(META, 'truncate text-[10.5px]')}>{subtitle}</p>
-    </div>
+  <CardHeader
+    title={title}
+    subtitle={subtitle}>
     {badge && (
       <span
         className={cn(
@@ -105,5 +104,5 @@ export const ListenHeader = ({
         <CopyIcon className='size-3.5' />
       )}
     </button>
-  </header>
+  </CardHeader>
 );

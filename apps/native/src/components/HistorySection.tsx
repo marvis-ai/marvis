@@ -8,7 +8,6 @@
  */
 import { useEffect, useState } from 'react';
 import {
-  ArrowLeftIcon,
   MessageSquareTextIcon,
   MicAudioLinesIcon,
   SettingsIcon,
@@ -28,15 +27,8 @@ import {
   type ListenStatePayload,
 } from '@/lib/events';
 import type { AskActivity } from '@/lib/bar-state';
-import {
-  CHIP,
-  EMPTY,
-  ICON_BTN,
-  NUM,
-  PANEL_BODY,
-  PANEL_HEAD,
-  cn,
-} from '@/lib/classes';
+import { CHIP, EMPTY, ICON_BTN, NUM, PANEL_BODY, cn } from '@/lib/classes';
+import { CardHeader } from './bar/CardHeader';
 import { relTime, type ListenViewing } from './listen/model';
 
 export const HistorySection = ({
@@ -99,18 +91,10 @@ export const HistorySection = ({
       {/* The standalone surface's own chrome: back on the left,
           settings on the right — the bottom input row is gone, so the
           header also carries the card's drag region. */}
-      <header
-        className={PANEL_HEAD}
-        data-tauri-drag-region>
-        <button
-          type='button'
-          className={cn(ICON_BTN, '-mt-0.5 shrink-0')}
-          title='Back'
-          aria-label='Back'
-          onClick={onBack}>
-          <ArrowLeftIcon className='size-4' />
-        </button>
-        <p className='min-w-0 flex-1 text-xs font-[550]'>History</p>
+      <CardHeader
+        title='History'
+        onBack={onBack}
+        draggable>
         <button
           type='button'
           className={cn(ICON_BTN, '-mt-0.5 shrink-0')}
@@ -119,7 +103,7 @@ export const HistorySection = ({
           onClick={() => void windowShowSettings().catch(() => {})}>
           <SettingsIcon className='size-4' />
         </button>
-      </header>
+      </CardHeader>
       <div className={PANEL_BODY}>
         {sessions === null ? null : sessions.length === 0 ? (
           <p className={EMPTY}>

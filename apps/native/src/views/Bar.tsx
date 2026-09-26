@@ -15,9 +15,12 @@
  * Dictation is `useDictation`; the permission gate is `useGate`; the
  * background-activity mirrors are `useBarActivity`.
  *
- * `data-tauri-drag-region` lives on the bar ROW only in card mode — a
- * stage-level region would intercept text selection in the scrollable
- * conversation. In pill mode it stays on the capsule chrome as before.
+ * `data-tauri-drag-region` lives on the card's chrome in card mode —
+ * the bar ROW, the section CardHeader, and the CardTabs strip (all
+ * 'deep', so their padding and non-interactive children drag too) —
+ * a stage-level region would intercept text selection in the
+ * scrollable conversation. In pill mode it stays on the capsule
+ * chrome as before.
  *
  * The mic affordance splits by surface: collapsed shows the Listen
  * recorder (`MicAudioLinesIcon`, opens the card into meeting Listen)
@@ -492,7 +495,7 @@ const Bar = () => {
       <form
         onSubmit={submitAsk}
         className={rowCls}
-        data-tauri-drag-region>
+        data-tauri-drag-region='deep'>
         <IrisButton
           active={
             listenState === 'listening' ||

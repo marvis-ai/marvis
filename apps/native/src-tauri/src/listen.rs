@@ -495,30 +495,7 @@ impl ListenService {
                     Box::new({
                         let callback_context = context.clone();
                         move |message| {
-                            callback_context.cancel.store(true, Ordering::Release);
-                            let mut status = callback_context.status.lock();
-                            status.state = "error".into();
-                            status.error = Some(ListenError {
-                                message: sanitize_provider_error(&message),
-                                needs_setup: false,
-                            });
-                            let error = status.error.clone().expect("just stored");
-                            drop(status);
-                            // The run is dead — end the session row now so
-                            // History doesn't show it Live until the next
-                            // `stop()`/`start()` sweep. `session_end` only
-                            // writes open rows, so `stop()` settling after
-                            // this can't double-write.
-                            if let Err(db_error) = callback_context
-                                .db
-                                .session_end(callback_context.session_id)
-                            {
-                                log::warn!("listen: session_end on STT error failed: {db_error}");
-                            }
-                            (callback_context.emit)(ListenEvent::Error {
-                                message: error.message,
-                                needs_setup: error.needs_setup,
-                            });
+                            report_terminal_error(&callback_context, &message);
                         }
                     }),
                 ) {
@@ -529,9 +506,21 @@ impl ListenService {
                 let paused_rx = paused.clone();
                 let worker_assembler = assembler.clone();
                 let worker_context = context.clone();
+                let source_error_message = match channel {
+                    SpeakerChannel::Me => "The microphone stopped working",
+                    SpeakerChannel::Them => "System audio capture stopped working",
+                };
                 workers.push(std::thread::spawn(move || {
                     let mut dropped_chunks = 0usize;
                     while !cancel_rx.load(Ordering::Acquire) {
+                        // A fatal backend error means the stream is dead even
+                        // though `is_running` still reads true — end the
+                        // session rather than recording silence.
+                        if let Some(message) = source.try_recv_status() {
+                            log::error!("listen audio source died mid-session: {message}");
+                            report_terminal_error(&worker_context, source_error_message);
+                            break;
+                        }
                         match rx.recv_timeout(WORKER_TICK) {
                             Ok(chunk) => {
                                 // Soft-pause: drain the source but starve STT — nothing transcribes
@@ -751,6 +740,30 @@ impl ListenService {
         status.state = "listening".into();
         Some(status.clone())
     }
+}
+
+/// Shared terminal-failure path for STT-provider and audio-source errors:
+/// cancel the run, mark status `error`, end the open session row (so
+/// History doesn't show it Live until the next `stop()`/`start()` sweep —
+/// `session_end` only writes open rows, so `stop()` settling after this
+/// can't double-write), and emit one sanitized `listen:error`.
+fn report_terminal_error(context: &SessionContext, message: &str) {
+    context.cancel.store(true, Ordering::Release);
+    let mut status = context.status.lock();
+    status.state = "error".into();
+    status.error = Some(ListenError {
+        message: sanitize_provider_error(message),
+        needs_setup: false,
+    });
+    let error = status.error.clone().expect("just stored");
+    drop(status);
+    if let Err(db_error) = context.db.session_end(context.session_id) {
+        log::warn!("listen: session_end on runtime error failed: {db_error}");
+    }
+    (context.emit)(ListenEvent::Error {
+        message: error.message,
+        needs_setup: error.needs_setup,
+    });
 }
 
 fn append_history(history: &mut Vec<Transcript>, transcript: Transcript) {

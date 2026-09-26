@@ -28,8 +28,8 @@ import {
 } from '@/lib/events';
 import type { AskActivity } from '@/lib/bar-state';
 import { CHIP, EMPTY, ICON_BTN, NUM, PANEL_BODY, cn } from '@/lib/classes';
-import { CardHeader } from './bar/CardHeader';
-import { relTime, type ListenViewing } from './listen/model';
+import { CardHeader } from '@/components/shared/CardHeader';
+import { relTime, type ListenViewing } from '@/components/listen/model';
 
 export const HistorySection = ({
   askBusy,
@@ -90,11 +90,10 @@ export const HistorySection = ({
     <div className='flex min-h-0 flex-1 flex-col'>
       {/* The standalone surface's own chrome: back on the left,
           settings on the right — the bottom input row is gone, so the
-          header also carries the card's drag region. */}
+          header is the card's drag region. */}
       <CardHeader
         title='History'
-        onBack={onBack}
-        draggable>
+        onBack={onBack}>
         <button
           type='button'
           className={cn(ICON_BTN, '-mt-0.5 shrink-0')}

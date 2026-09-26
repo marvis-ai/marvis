@@ -6,7 +6,7 @@ import {
   SquareIcon,
 } from '@marvis/ui';
 import { CHIP, ICON_BTN, NUM, cn } from '@/lib/classes';
-import { CardHeader } from '../bar/CardHeader';
+import { CardHeader } from '../shared/CardHeader';
 import { elapsedLabel } from './model';
 
 /** Document header: title/subtitle on the left; state pill, elapsed

@@ -269,7 +269,13 @@ impl DictationService {
             epoch,
             provider_name,
             Running {
-                worker: spawn_pump(rx, stt, source, cancel.clone()),
+                worker: spawn_pump(
+                    rx,
+                    stt,
+                    source,
+                    cancel.clone(),
+                    provider_error_callback(&self.state, &cancel, &self.epoch, epoch, &emit),
+                ),
                 cancel,
                 assembler,
             },
@@ -513,10 +519,18 @@ fn spawn_pump(
     mut stt: Box<dyn SttProvider>,
     mut source: MicSource,
     cancel: Arc<AtomicBool>,
+    report_error: Box<dyn Fn(String) + Send>,
 ) -> JoinHandle<()> {
     std::thread::spawn(move || {
         let mut dropped_chunks = 0usize;
         while !cancel.load(Ordering::Acquire) {
+            // A fatal source error means the stream is dead even though
+            // `is_running` still reads true — fail instead of dictating silence.
+            if let Some(message) = source.try_recv_status() {
+                log::error!("dictation microphone died mid-session: {message}");
+                report_error("The microphone stopped working".to_string());
+                break;
+            }
             match rx.recv_timeout(WORKER_TICK) {
                 Ok(chunk) => {
                     if !stt.enqueue(chunk) {

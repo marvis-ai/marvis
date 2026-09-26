@@ -22,6 +22,12 @@ pub trait AudioSource: Send {
     fn start(&mut self, output: Sender<PcmChunk>) -> anyhow::Result<()>;
     fn stop(&mut self);
     fn is_running(&self) -> bool;
+    /// Fatal backend errors reported since the last poll (the stream is
+    /// dead once one lands). Transient glitches are logged, never queued.
+    /// `None` for sources without a status channel.
+    fn try_recv_status(&self) -> Option<String> {
+        None
+    }
 }
 
 fn interleaved_to_mono(samples: &[f32], channels: u16) -> Vec<f32> {

@@ -1,7 +1,7 @@
 use super::{normalize_pcm, AudioSource, PcmChunk};
 use anyhow::{anyhow, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::{FromSample, Sample, SampleFormat, Stream, StreamConfig};
+use cpal::{ErrorKind, Sample, SampleFormat, Stream, StreamConfig};
 use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
@@ -52,16 +52,12 @@ impl MicSource {
         let worker = thread::spawn(move || forward_chunks(input_rx, output));
         let callback_tx = input_tx.clone();
         let status_tx = self.status_tx.clone();
-        let error_callback = move |error| {
-            let message = format!("microphone stream error: {error}");
-            let _ = status_tx.send(message.clone());
-            log::error!("{message}");
-        };
+        let error_callback = move |error| report_stream_error(&error, &status_tx);
 
         let stream = match sample_format {
             SampleFormat::F32 => device.build_input_stream(
                 config,
-                move |data: &[f32], _| enqueue(data, sample_rate, channels, &callback_tx),
+                move |data: &[f32], _| enqueue(data.to_vec(), sample_rate, channels, &callback_tx),
                 error_callback,
                 None,
             ),
@@ -72,7 +68,7 @@ impl MicSource {
                         .iter()
                         .map(|&sample| f32::from_sample(sample))
                         .collect();
-                    enqueue(&converted, sample_rate, channels, &callback_tx);
+                    enqueue(converted, sample_rate, channels, &callback_tx);
                 },
                 error_callback,
                 None,
@@ -84,7 +80,7 @@ impl MicSource {
                         .iter()
                         .map(|&sample| f32::from_sample(sample))
                         .collect();
-                    enqueue(&converted, sample_rate, channels, &callback_tx);
+                    enqueue(converted, sample_rate, channels, &callback_tx);
                 },
                 error_callback,
                 None,
@@ -102,11 +98,6 @@ impl MicSource {
         self.running
             .store(true, std::sync::atomic::Ordering::Release);
         Ok(())
-    }
-
-    /// Retrieves the next callback status error, if one was reported.
-    pub fn try_recv_status(&self) -> Option<String> {
-        self.status_rx.try_recv().ok()
     }
 }
 
@@ -137,6 +128,10 @@ impl AudioSource for MicSource {
     fn is_running(&self) -> bool {
         self.running.load(std::sync::atomic::Ordering::Acquire)
     }
+
+    fn try_recv_status(&self) -> Option<String> {
+        self.status_rx.try_recv().ok()
+    }
 }
 
 impl Drop for MicSource {
@@ -145,13 +140,21 @@ impl Drop for MicSource {
     }
 }
 
-fn enqueue<T>(data: &[T], sample_rate: u32, channels: u16, sender: &SyncSender<RawChunk>)
-where
-    T: cpal::Sample + Copy,
-    f32: FromSample<T>,
-{
-    let converted: Vec<f32> = data.iter().copied().map(f32::from_sample).collect();
-    match sender.try_send((converted, sample_rate, channels)) {
+/// Routes backend stream errors: an `Xrun` is a transient glitch
+/// notification (the stream keeps running), so it logs at warn and never
+/// touches the status channel — only fatal kinds reach `try_recv_status`.
+fn report_stream_error(error: &cpal::Error, status_tx: &mpsc::Sender<String>) {
+    if error.kind() == ErrorKind::Xrun {
+        log::warn!("microphone audio glitch: buffer underrun/overrun");
+        return;
+    }
+    let message = format!("microphone stream error: {error}");
+    let _ = status_tx.send(message.clone());
+    log::error!("{message}");
+}
+
+fn enqueue(samples: Vec<f32>, sample_rate: u32, channels: u16, sender: &SyncSender<RawChunk>) {
+    match sender.try_send((samples, sample_rate, channels)) {
         Ok(()) => {}
         Err(TrySendError::Full(_)) => {
             log::warn!("dropping microphone audio chunk: input queue is full")
@@ -168,5 +171,31 @@ fn forward_chunks(input: Receiver<RawChunk>, output: mpsc::Sender<PcmChunk>) {
         {
             break;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The status channel exists so pumps can fail loud on a dead stream —
+    /// a transient xrun (the stream is still alive) must not occupy it,
+    /// or every sleep/wake glitch would tear the session down.
+    #[test]
+    fn transient_xrun_stays_off_the_status_channel() {
+        let (tx, rx) = mpsc::channel::<String>();
+        report_stream_error(&cpal::Error::new(ErrorKind::Xrun), &tx);
+        assert!(rx.try_recv().is_err());
+    }
+
+    /// Fatal kinds (device lost, stream invalidated) are what consumers
+    /// poll for — dropping them would leave a dead stream looking live.
+    #[test]
+    fn fatal_stream_errors_reach_the_status_channel() {
+        let (tx, rx) = mpsc::channel::<String>();
+        report_stream_error(&cpal::Error::new(ErrorKind::DeviceNotAvailable), &tx);
+        report_stream_error(&cpal::Error::new(ErrorKind::StreamInvalidated), &tx);
+        assert!(rx.try_recv().is_ok());
+        assert!(rx.try_recv().is_ok());
     }
 }

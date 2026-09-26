@@ -24,7 +24,9 @@ export const CardTabs = ({
     { id: 'history' as const, label: 'History', icon: HistoryIcon },
   ];
   return (
-    <div className='flex flex-none items-center gap-1 border-b border-border px-3 py-1.75'>
+    <div
+      className='flex flex-none items-center gap-1 border-b border-border px-3 py-1.75'
+      data-tauri-drag-region='deep'>
       {tabs.map(({ id, label, icon: Icon }) => (
         <button
           key={id}

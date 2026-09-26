@@ -47,7 +47,7 @@ import {
   SPIN,
   cn,
 } from '@/lib/classes';
-import { CardHeader } from './bar/CardHeader';
+import { CardHeader } from './shared/CardHeader';
 
 type AskPhase = 'loading' | 'streaming' | 'idle';
 

@@ -504,6 +504,17 @@ impl ListenService {
                             });
                             let error = status.error.clone().expect("just stored");
                             drop(status);
+                            // The run is dead — end the session row now so
+                            // History doesn't show it Live until the next
+                            // `stop()`/`start()` sweep. `session_end` only
+                            // writes open rows, so `stop()` settling after
+                            // this can't double-write.
+                            if let Err(db_error) = callback_context
+                                .db
+                                .session_end(callback_context.session_id)
+                            {
+                                log::warn!("listen: session_end on STT error failed: {db_error}");
+                            }
                             (callback_context.emit)(ListenEvent::Error {
                                 message: error.message,
                                 needs_setup: error.needs_setup,

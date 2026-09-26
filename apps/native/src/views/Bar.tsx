@@ -99,6 +99,13 @@ const Bar = () => {
   const speechBusy = useRef(false);
 
   const { cardOpen } = useCardGeometry(cardRef, stageRef);
+  /** Live mirror of `cardOpen` for async callbacks — the card can
+   *  collapse while a `listenStop` invoke is in flight, and a
+   *  `viewing`/`pinned` write landing after that would outlive the
+   *  close-time reset (the `cardOpen` effect only refires on
+   *  transitions). */
+  const cardOpenRef = useRef(cardOpen);
+  cardOpenRef.current = cardOpen;
   const {
     listenWanted,
     setListenWanted,
@@ -387,14 +394,23 @@ const Bar = () => {
       void listenStatus()
         .then((status) =>
           listenStop().then(() => {
-            if (status.session_id != null && status.started_at != null) {
-              setListenViewing({
-                id: status.session_id,
-                startedAt: status.started_at,
-                endedAt: Date.now() / 1000,
-              });
-              setPinned('listen');
+            // The finished-doc swap presumes an open card — a capsule
+            // stop stays silent (the doc stays reachable via History),
+            // and a write landing while closed would leak the stale
+            // viewing/pin into the next open.
+            if (
+              !cardOpenRef.current ||
+              status.session_id == null ||
+              status.started_at == null
+            ) {
+              return;
             }
+            setListenViewing({
+              id: status.session_id,
+              startedAt: status.started_at,
+              endedAt: Date.now() / 1000,
+            });
+            setPinned('listen');
           }),
         )
         .catch(() => raise('Stop failed'))
@@ -411,6 +427,9 @@ const Bar = () => {
     }
     setListenWanted(true);
     setPinned('listen');
+    // A live start must never inherit a viewed doc — drop any stale one
+    // so the section can't mount walled behind a finished session.
+    setListenViewing(null);
     void windowSetChatOpen(true).catch(() => {});
     void listenStart()
       .then((next) => setListenState(next.state))

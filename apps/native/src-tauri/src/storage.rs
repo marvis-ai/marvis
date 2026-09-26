@@ -202,9 +202,11 @@ impl Db {
 
     /// Mark the session ended (`ended_at = now`); a later
     /// `session_get_or_create_active` for the same kind starts a new one.
+    /// Open rows only — a second end is a no-op, so the first `ended_at`
+    /// (e.g. the error path's, before `stop()`) wins.
     pub fn session_end(&self, id: i64) -> anyhow::Result<()> {
         self.conn.lock().execute(
-            "UPDATE sessions SET ended_at = ?1 WHERE id = ?2",
+            "UPDATE sessions SET ended_at = ?1 WHERE id = ?2 AND ended_at IS NULL",
             params![now(), id],
         )?;
         Ok(())

@@ -110,8 +110,14 @@ export const ListenSection = ({
       );
   }, []);
 
+  // Live resync — on mount AND whenever `viewing` returns to null (the
+  // Listen tab's "back to live"). A same-mount viewing→null transition
+  // would otherwise keep the finished doc's turns/status/sessionRef on
+  // screen; clearing first keeps stale rows out of the merge below.
   useEffect(() => {
-    if (viewingRef.current) return;
+    if (!live) return;
+    setTurns([]);
+    setSummary(null);
     let cancelled = false;
     void (async () => {
       try {
@@ -159,7 +165,7 @@ export const ListenSection = ({
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [live]);
 
   // A viewed session re-reads its document — persisted turns plus the
   // last summary. `turns` wholesale replaces (the live list and the
@@ -321,7 +327,7 @@ export const ListenSection = ({
     : ('STOPPED' as const);
   const title = summary?.topic ?? 'Listen';
   const subtitle = live
-    ? `${status.mic ? 'mic + system audio' : 'system audio'} · ${provider ?? 'stt'}${model ? ` ${model}` : ''}`
+    ? `${status.mic ? 'mic + system audio' : 'system audio only'} · ${provider ?? 'stt'}${model ? ` ${model}` : ''}`
     : sessionDateLabel(viewing.startedAt);
 
   // Document scroll: follow live output while pinned; scrolling up

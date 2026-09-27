@@ -7,7 +7,7 @@ single builder serves both.
 
 ## Menu contents
 
-```
+```text
 Start Conversation          ⌘⌥Space
 Start/Stop Screen Recording ⌘⌥R
 Start Listening             ⌘⌥T

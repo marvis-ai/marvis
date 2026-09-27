@@ -381,16 +381,31 @@ pub struct WindowPrefs {
     pub bar_x: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bar_y: Option<f64>,
+    /// `true` freezes the bar's position — pointer drags are suppressed
+    /// webview-side while programmatic moves (snap/re-center) still work.
+    #[serde(skip_serializing_if = "is_false")]
+    pub bar_locked: bool,
 }
 
-/// The one configurable binding (Settings → Hotkeys rebinds it).
-/// Every other key is fixed inside the bar webview: `Cmd+,` opens
-/// settings while the bar is active, and at the input `Enter` sends /
-/// `Shift+Enter` adds a line / `Cmd+Enter` sends with the current
-/// screen frame. Bar movement/snap is pointer-driven, so there are
-/// deliberately no move/scroll/click-through actions.
+fn is_false(v: &bool) -> bool {
+    !*v
+}
+
+/// The configurable bindings (Settings → Hotkeys rebinds each).
+/// `toggle_input` morphs the capsule ⇄ input pill; the rest map to the
+/// shared menu's actions — the screen-recording toggle, meeting Listen,
+/// the history card, and the position lock. Every other key is fixed
+/// inside the bar webview: `Cmd+,` opens settings while the bar is
+/// active, and at the input `Enter` sends / `Shift+Enter` adds a line /
+/// `Cmd+Enter` sends with the current screen frame.
 pub fn default_hotkeys() -> BTreeMap<String, String> {
-    BTreeMap::from([("toggle_input".into(), "Cmd+Alt+Space".into())])
+    BTreeMap::from([
+        ("toggle_input".into(), "Cmd+Alt+Space".into()),
+        ("toggle_capture".into(), "Cmd+Alt+R".into()),
+        ("start_listen".into(), "Cmd+Alt+T".into()),
+        ("show_history".into(), "Cmd+Alt+H".into()),
+        ("toggle_lock".into(), "Cmd+Shift+L".into()),
+    ])
 }
 
 /// A `[hotkeys]` table may list only user overrides; fill in the spec
@@ -912,15 +927,20 @@ mod tests {
         assert_eq!(cfg.hotkeys["toggle_input"], "Ctrl+Alt+J");
         assert!(!cfg.hotkeys.contains_key("toggle_visibility"));
         assert!(!cfg.hotkeys.contains_key("next_step"));
-        assert_eq!(cfg.hotkeys.len(), 1);
+        // The user override lands alongside the defaults it didn't set.
+        assert_eq!(cfg.hotkeys.len(), default_hotkeys().len());
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
     fn default_hotkeys_matches_spec_table() {
         let hk = default_hotkeys();
-        assert_eq!(hk.len(), 1);
+        assert_eq!(hk.len(), 5);
         assert_eq!(hk["toggle_input"], "Cmd+Alt+Space");
+        assert_eq!(hk["toggle_capture"], "Cmd+Alt+R");
+        assert_eq!(hk["start_listen"], "Cmd+Alt+T");
+        assert_eq!(hk["show_history"], "Cmd+Alt+H");
+        assert_eq!(hk["toggle_lock"], "Cmd+Shift+L");
     }
 
     #[test]

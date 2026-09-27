@@ -43,6 +43,7 @@ mod hotkey;
 mod keystore;
 mod listen;
 mod llm;
+mod menus;
 mod paths;
 mod permissions;
 mod prompts;
@@ -333,9 +334,11 @@ fn capture_snapshot(state: &AppState) -> CaptureStatus {
 }
 
 /// Broadcast `capture:state` to every window — fire-and-forget like
-/// `app:state`; a dead webview must never stall a transition.
+/// `app:state`; a dead webview must never stall a transition. Also the
+/// capture label funnel for the tray menu's Start ⇄ Stop item.
 fn emit_capture_state(app: &AppHandle, status: &CaptureStatus) {
     let _ = app.emit("capture:state", status);
+    refresh_tray_menu(app);
 }
 
 /// The one capture-start boundary — `enter_main` and the
@@ -416,6 +419,74 @@ fn stop_capture(app: &AppHandle) -> CaptureStatus {
     status
 }
 
+/// The `menu.capture` item + `toggle_capture` hotkey shared boundary:
+/// stop when live, else the `capture_start` command's gate-checked
+/// start — the check and `start_capture` share `gate_transition` so a
+/// racing leave-transition can't interleave.
+fn toggle_capture(app: &AppHandle) {
+    let state = app.state::<AppState>();
+    let running = state
+        .capture
+        .lock()
+        .as_ref()
+        .is_some_and(MacosCapture::is_running);
+    if running {
+        stop_capture(app);
+        return;
+    }
+    let _transition = state.gate_transition.lock();
+    if *state.gate.lock() != Gate::Main {
+        log::warn!("toggle_capture dropped while gate != Main");
+        return;
+    }
+    start_capture(app);
+}
+
+/// The `window.bar_locked` write shared by the Lock menu item and the
+/// `toggle_lock` hotkey — config save + `config:changed` broadcast,
+/// then the tray menu's check refreshes.
+fn set_bar_locked(app: &AppHandle, locked: bool) {
+    let state = app.state::<AppState>();
+    let updated = {
+        let mut cfg = state.config.lock();
+        cfg.window.bar_locked = locked;
+        if let Err(e) = config::save(&cfg) {
+            log::warn!("persist bar_locked failed: {e}");
+            return;
+        }
+        cfg.clone()
+    };
+    let _ = app.emit("config:changed", &updated);
+    refresh_tray_menu(app);
+}
+
+/// The menu Position snap path — the same as `window_snap_edge` plus
+/// the tray's edge-check refresh.
+fn snap_edge_and_refresh(app: &AppHandle, dir: windows::Dir) {
+    app.state::<AppState>().pool.lock().snap_edge(dir);
+    refresh_tray_menu(app);
+}
+
+/// Rebuild the tray's copy of the shared menu — labels/checks track
+/// live state (recording, listening, nearest edge, lock, hotkey
+/// bindings), so each state-change funnel calls here. NEVER call while
+/// holding `pool`/`config`/`capture`/`hotkeys` locks: `set_menu`
+/// blocks on the main thread, and main-thread window-event handlers
+/// take `pool` (`Resized` → `enforce_bar_bounds`).
+fn refresh_tray_menu(app: &AppHandle) {
+    let Some(tray) = app.tray_by_id("main") else {
+        return;
+    };
+    match menus::build(app) {
+        Ok(menu) => {
+            if let Err(e) = tray.set_menu(Some(menu)) {
+                log::warn!("tray menu refresh failed: {e}");
+            }
+        }
+        Err(e) => log::warn!("tray menu rebuild failed: {e}"),
+    }
+}
+
 /// Delta-swap to the config's current binding set via
 /// [`hotkey::swap_hotkey_set`]: pairs shared with the live set stay
 /// registered untouched (macOS Carbon refuses duplicate registration of
@@ -442,6 +513,9 @@ fn swap_hotkeys(app: &AppHandle) {
             *slot = Some(e.restored);
         }
     }
+    drop(slot);
+    // A rebind rewrites the menu items' accelerator labels.
+    refresh_tray_menu(app);
 }
 
 // ---------------------------------------------------------------------------
@@ -452,6 +526,11 @@ fn swap_hotkeys(app: &AppHandle) {
 /// capsule⇄input morph (and the "open card counts as shown" collapse),
 /// so dispatch only emits — it never touches `chat_open`.
 const EV_BAR_TOGGLE_INPUT: &str = "bar:toggle-input";
+/// Rust→bar events the shared menu and the `start_listen` /
+/// `show_history` hotkeys fire. The webview owns both surfaces —
+/// dispatch only emits.
+const EV_BAR_START_LISTEN: &str = "bar:start-listen";
+const EV_BAR_SHOW_HISTORY: &str = "bar:show-history";
 
 /// Map [`hotkey::Action`]s onto pool calls / bar events. Owns an
 /// `AppHandle` and re-resolves `AppState` per press, so the same
@@ -461,6 +540,17 @@ fn hotkey_dispatch(app: &AppHandle) -> impl Fn(hotkey::Action) + Send + Sync + '
     move |action| match action {
         hotkey::Action::ToggleInput => {
             let _ = app.emit_to(windows::BAR_LABEL, EV_BAR_TOGGLE_INPUT, ());
+        }
+        hotkey::Action::ToggleCapture => toggle_capture(&app),
+        hotkey::Action::StartListen => {
+            let _ = app.emit_to(windows::BAR_LABEL, EV_BAR_START_LISTEN, ());
+        }
+        hotkey::Action::ShowHistory => {
+            let _ = app.emit_to(windows::BAR_LABEL, EV_BAR_SHOW_HISTORY, ());
+        }
+        hotkey::Action::ToggleLock => {
+            let locked = app.state::<AppState>().config.lock().window.bar_locked;
+            set_bar_locked(&app, !locked);
         }
     }
 }
@@ -509,15 +599,37 @@ fn deeplink_dispatch(app: &AppHandle) -> impl Fn(deeplink::Action) + Send + Sync
     }
 }
 
-/// Map tray menu ids onto pool/app calls — same re-resolve-per-event
-/// shape as [`hotkey_dispatch`]. `Toggle` runs `window_toggle_all`'s
-/// collapse/expand of the card, `Settings` mirrors the bar's `Cmd+,`;
-/// `Quit` is `app.exit(0)`.
-fn tray_menu_dispatch() -> impl Fn(&AppHandle, tauri::menu::MenuEvent) + Send + Sync + 'static {
+/// Map `menu.*` item ids (menus.rs — shared by the tray menu and the
+/// bar's right-click popup) onto the same actions the bar buttons,
+/// commands, and hotkeys use. Registered once via `app.on_menu_event`
+/// in `setup`: menu events broadcast to EVERY listener, so this must
+/// be the only handler matching `menu.*` ids.
+fn menu_dispatch() -> impl Fn(&AppHandle, tauri::menu::MenuEvent) + Send + Sync + 'static {
     move |app, event| match event.id().as_ref() {
-        tray::MENU_TOGGLE => app.state::<AppState>().pool.lock().toggle_chat(app),
-        tray::MENU_SETTINGS => show_settings(app),
-        tray::MENU_QUIT => app.exit(0),
+        menus::MENU_ASK => {
+            let _ = app.emit_to(windows::BAR_LABEL, EV_BAR_TOGGLE_INPUT, ());
+        }
+        menus::MENU_CAPTURE => toggle_capture(app),
+        menus::MENU_LISTEN => {
+            let _ = app.emit_to(windows::BAR_LABEL, EV_BAR_START_LISTEN, ());
+        }
+        menus::MENU_HISTORY => {
+            let _ = app.emit_to(windows::BAR_LABEL, EV_BAR_SHOW_HISTORY, ());
+        }
+        menus::MENU_POS_TOP => snap_edge_and_refresh(app, windows::Dir::Up),
+        menus::MENU_POS_BOTTOM => snap_edge_and_refresh(app, windows::Dir::Down),
+        menus::MENU_POS_LEFT => snap_edge_and_refresh(app, windows::Dir::Left),
+        menus::MENU_POS_RIGHT => snap_edge_and_refresh(app, windows::Dir::Right),
+        menus::MENU_POS_CENTER => {
+            app.state::<AppState>().pool.lock().recenter_bar();
+            refresh_tray_menu(app);
+        }
+        menus::MENU_LOCK => {
+            let locked = app.state::<AppState>().config.lock().window.bar_locked;
+            set_bar_locked(app, !locked);
+        }
+        menus::MENU_SETTINGS => show_settings(app),
+        menus::MENU_QUIT => app.exit(0),
         _ => {}
     }
 }
@@ -740,6 +852,9 @@ pub(crate) fn persist_bar_position(app: &AppHandle) {
         cfg.clone()
     };
     let _ = app.emit("config:changed", &updated);
+    // A settled drag may have changed the nearest edge — the Position
+    // submenu's check tracks it.
+    refresh_tray_menu(app);
 }
 
 // ---------------------------------------------------------------------------
@@ -1055,6 +1170,8 @@ fn emit_listen_state(app: &AppHandle, state: &listen::ListenStatus) {
             "paused_since": state.paused_since,
         }),
     );
+    // The shared menu's Start Listening item is disabled while live.
+    refresh_tray_menu(app);
 }
 
 fn emit_listen_event(app: &AppHandle, event: ListenEvent) {
@@ -1539,7 +1656,7 @@ fn window_set_bar_expanded(state: State<'_, AppState>, expanded: bool) {
 /// Snaps (animated) the bar to that work-area edge; the resulting `Moved`
 /// event persists `window.bar_x/y` through the debounced write.
 #[tauri::command]
-fn window_snap_edge(state: State<'_, AppState>, edge: String) -> Result<(), String> {
+fn window_snap_edge(app: AppHandle, edge: String) -> Result<(), String> {
     let dir = match edge.as_str() {
         "top" => windows::Dir::Up,
         "bottom" => windows::Dir::Down,
@@ -1547,7 +1664,7 @@ fn window_snap_edge(state: State<'_, AppState>, edge: String) -> Result<(), Stri
         "right" => windows::Dir::Right,
         _ => return Err(format!("unknown edge {edge:?}")),
     };
-    state.pool.lock().snap_edge(dir);
+    snap_edge_and_refresh(&app, dir);
     Ok(())
 }
 
@@ -1555,8 +1672,9 @@ fn window_snap_edge(state: State<'_, AppState>, edge: String) -> Result<(), Stri
 /// the middle of the primary work area.
 /// Persists through the same `Moved` debounce as a drag.
 #[tauri::command]
-fn window_recenter(state: State<'_, AppState>) {
-    state.pool.lock().recenter_bar();
+fn window_recenter(app: AppHandle) {
+    app.state::<AppState>().pool.lock().recenter_bar();
+    refresh_tray_menu(&app);
 }
 
 /// The edge the bar is currently nearest (`"top"` | `"bottom"` |
@@ -1573,6 +1691,19 @@ fn window_bar_edge(state: State<'_, AppState>) -> String {
         windows::Dir::Right => "right",
     }
     .to_string()
+}
+
+/// The bar webview's right-click entry point: pops the shared menu
+/// (menus.rs) under the cursor, built fresh so labels/checks reflect
+/// live state. The webview gates this to the idle capsule; the same
+/// menu hangs off the tray icon.
+#[tauri::command]
+fn bar_context_menu(app: AppHandle) -> Result<(), String> {
+    let menu = menus::build(&app).map_err(|e| e.to_string())?;
+    let bar = app
+        .get_webview_window(windows::BAR_LABEL)
+        .ok_or("bar window missing")?;
+    bar.popup_menu(&menu).map_err(|e| e.to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -1764,6 +1895,10 @@ fn config_set(app: AppHandle, key: String, value: serde_json::Value) -> Result<C
         match key.as_str() {
             "window.bar_x" => cfg.window.bar_x = window_pref_value(&value)?,
             "window.bar_y" => cfg.window.bar_y = window_pref_value(&value)?,
+            "window.bar_locked" => {
+                cfg.window.bar_locked =
+                    value.as_bool().ok_or("window.bar_locked must be a bool")?;
+            }
             "app.onboarding_done" => {
                 let v = value
                     .as_bool()
@@ -1898,6 +2033,9 @@ fn config_set(app: AppHandle, key: String, value: serde_json::Value) -> Result<C
     if stt_changed {
         refresh_speech_setup(&app);
     }
+    // bar_locked/edge/hotkey writes all show up in the menu's
+    // labels/checks — rebuild unconditionally (writes are user-driven).
+    refresh_tray_menu(&app);
     Ok(updated)
 }
 
@@ -2006,9 +2144,12 @@ pub fn run() {
             deeplink::init(handle, deeplink_dispatch(handle))?;
             // Warn-and-continue like hotkeys: a missing tray must never
             // wedge startup.
-            if let Err(e) = tray::init(handle, tray_menu_dispatch()) {
+            if let Err(e) = tray::init(handle) {
                 log::warn!("tray init failed: {e}");
             }
+            // One global dispatcher for every `menu.*` item — tray menu
+            // and bar popup share both the builder and this listener.
+            handle.on_menu_event(menu_dispatch());
             // The one chrome-level binding is gate-independent; kept in
             // state so a `config_set` rebind delta-swaps against it.
             let binds = handle.state::<AppState>().config.lock().hotkeys.clone();
@@ -2086,6 +2227,7 @@ pub fn run() {
             window_recenter,
             window_bar_edge,
             window_set_bar_expanded,
+            bar_context_menu,
             permissions_status,
             permissions_request_screen,
             permissions_request_mic,

@@ -57,8 +57,8 @@ to the same actions the commands/hotkeys use:
 | id | action |
 | --- | --- |
 | `menu.ask` | emit `bar:toggle-input` to the bar webview |
-| `menu.capture` | `toggle_capture(app)` — stop, or gate-checked start (`gate_transition` + `Gate::Main`, same as the `capture_start` command) |
-| `menu.listen` / `menu.history` | emit `bar:start-listen` / `bar:show-history` |
+| `menu.capture` | `toggle_capture(app)` — stop, or gate-checked start |
+| `menu.listen` / `menu.history` | emit `bar:start-listen`/`bar:show-history` |
 | `menu.pos.*` | `pool.snap_edge(dir)` / `pool.recenter_bar()` |
 | `menu.lock` | `set_bar_locked(app, !locked)` |
 | `menu.settings` / `menu.quit` | `show_settings` / `app.exit(0)` |

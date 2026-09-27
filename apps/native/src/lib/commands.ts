@@ -82,6 +82,8 @@ export interface ModelPrefs {
 export interface WindowPrefs {
   bar_x?: number;
   bar_y?: number;
+  /** `true` freezes the bar's position (pointer drags suppressed). */
+  bar_locked?: boolean;
 }
 
 /** `[app]` section — first-run state + the appearance/accent prefs. */
@@ -461,6 +463,10 @@ export const windowRecenter = () => invoke<void>('window_recenter');
 
 /** Nearest work-area edge of the live bar — the picker's current value. */
 export const windowBarEdge = () => invoke<string>('window_bar_edge');
+
+/** The bar's idle-state right-click — pops the shared native menu
+ * (the same items the tray icon shows) under the cursor. */
+export const barContextMenu = () => invoke<void>('bar_context_menu');
 
 /** Reports the whole card's desired TOTAL window height — expanded
  * mode only; the backend clamps [104, free space]. */

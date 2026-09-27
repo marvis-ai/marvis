@@ -275,63 +275,68 @@ export const ChatSection = ({ onBack }: { onBack: () => void }) => {
       <div
         ref={scrollRef}
         onScroll={onScroll}
+        data-card-scroll
         className={PANEL_BODY}>
-        {msgs.map((m, i) =>
-          m.role === 'user' ? (
-            <div
-              key={i}
-              className='mb-2 flex justify-end'>
-              <p className='max-w-[85%] rounded-2xl rounded-br-sm bg-fg-soft px-3 py-1.5 text-[13px] leading-normal wrap-break-word whitespace-pre-wrap select-text'>
-                {m.content}
-              </p>
-            </div>
-          ) : (
-            m.content && (
+        <div
+          data-card-content
+          className='flow-root'>
+          {msgs.map((m, i) =>
+            m.role === 'user' ? (
               <div
                 key={i}
-                className={cn(ASK_MD, 'mb-2.5')}>
-                <ReactMarkdown
-                  remarkPlugins={[remarkGfm]}
-                  disallowedElements={['img']}
-                  components={{
-                    a: ({ href, children }) => (
-                      <a
-                        href={href}
-                        onClick={(e) => {
-                          e.preventDefault();
-                          if (href) void openUrl(href);
-                        }}>
-                        {children}
-                      </a>
-                    ),
-                  }}>
+                className='mb-2 flex justify-end'>
+                <p className='max-w-[85%] rounded-2xl rounded-br-sm bg-fg-soft px-3 py-1.5 text-[13px] leading-normal wrap-break-word whitespace-pre-wrap select-text'>
                   {m.content}
-                </ReactMarkdown>
+                </p>
               </div>
-            )
-          ),
-        )}
-        {phase === 'loading' && (
-          <div className='flex items-center gap-2 py-0.5 text-xs text-muted-foreground'>
-            <span className={SPIN} />
-            Thinking…
-          </div>
-        )}
-        {phase === 'streaming' && (
-          <span className='ml-0.5 inline-block h-3.25 w-1.75 animate-caret bg-foreground align-[-2px] motion-reduce:animate-none' />
-        )}
-        {msgs.length === 0 && phase === 'idle' && !error && (
-          <p className={EMPTY}>Ask Marvis — the conversation stays here.</p>
-        )}
-        {phase === 'idle' &&
-          model &&
-          msgs.some((m) => m.role === 'assistant' && m.content) && (
-            <div className='mt-2.5 flex flex-wrap gap-1.5'>
-              <span className={CHIP}>
-                {model.model} · {model.provider}
-              </span>
+            ) : (
+              m.content && (
+                <div
+                  key={i}
+                  className={cn(ASK_MD, 'mb-2.5')}>
+                  <ReactMarkdown
+                    remarkPlugins={[remarkGfm]}
+                    disallowedElements={['img']}
+                    components={{
+                      a: ({ href, children }) => (
+                        <a
+                          href={href}
+                          onClick={(e) => {
+                            e.preventDefault();
+                            if (href) void openUrl(href);
+                          }}>
+                          {children}
+                        </a>
+                      ),
+                    }}>
+                    {m.content}
+                  </ReactMarkdown>
+                </div>
+              )
+            ),
+          )}
+          {phase === 'loading' && (
+            <div className='flex items-center gap-2 py-0.5 text-xs text-muted-foreground'>
+              <span className={SPIN} />
+              Thinking…
             </div>
           )}
+          {phase === 'streaming' && (
+            <span className='ml-0.5 inline-block h-3.25 w-1.75 animate-caret bg-foreground align-[-2px] motion-reduce:animate-none' />
+          )}
+          {msgs.length === 0 && phase === 'idle' && !error && (
+            <p className={EMPTY}>Ask Marvis — the conversation stays here.</p>
+          )}
+          {phase === 'idle' &&
+            model &&
+            msgs.some((m) => m.role === 'assistant' && m.content) && (
+              <div className='mt-2.5 flex flex-wrap gap-1.5'>
+                <span className={CHIP}>
+                  {model.model} · {model.provider}
+                </span>
+              </div>
+            )}
+        </div>
       </div>
     </div>
   );

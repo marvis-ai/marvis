@@ -392,30 +392,35 @@ export const ListenSection = ({
         <div
           ref={scrollRef}
           onScroll={handleScroll}
+          data-card-scroll
           className='h-full overflow-y-auto px-3.5 py-3 text-[13px] leading-[1.6]'>
-          <TranscriptBlocks
-            blocks={shown}
-            startedAt={startedAt}
-          />
-          {turns.length === 0 && !summary && (!error || !live) && (
-            <p className={EMPTY}>
-              {live
-                ? listening
-                  ? 'Speak naturally — your transcript will appear here.'
-                  : 'Start listening to capture a conversation.'
-                : 'No transcript captured.'}
-            </p>
-          )}
-          <div className='mt-2 flex flex-wrap gap-1.5'>
-            <span className={CHIP}>
-              {activeProvider}
-              {model ? ` · ${model}` : ' · stt'}
-            </span>
-            {activeProvider === 'whisper' && whisper && (
-              <span className={CHIP}>
-                {whisperSourceLabel(whisper.binary_status.source)}
-              </span>
+          <div
+            data-card-content
+            className='flow-root'>
+            <TranscriptBlocks
+              blocks={shown}
+              startedAt={startedAt}
+            />
+            {turns.length === 0 && !summary && (!error || !live) && (
+              <p className={EMPTY}>
+                {live
+                  ? listening
+                    ? 'Speak naturally — your transcript will appear here.'
+                    : 'Start listening to capture a conversation.'
+                  : 'No transcript captured.'}
+              </p>
             )}
+            <div className='mt-2 flex flex-wrap gap-1.5'>
+              <span className={CHIP}>
+                {activeProvider}
+                {model ? ` · ${model}` : ' · stt'}
+              </span>
+              {activeProvider === 'whisper' && whisper && (
+                <span className={CHIP}>
+                  {whisperSourceLabel(whisper.binary_status.source)}
+                </span>
+              )}
+            </div>
           </div>
         </div>
         {!pinned && turns.length > 0 && (

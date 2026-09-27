@@ -24,7 +24,8 @@ Rust — both are the work-area height of the display holding the bar.
 
 | File | Change |
 | --- | --- |
-| `src/hooks/useCardGeometry.ts` | Drop `heightOverride` param. `report()` returns `clamp(scrollHeight + stagePad, 0.30·availHeight, 0.60·availHeight)`. `resize` listener unconditional (bounds track `availHeight`). |
+| `src/hooks/useCardGeometry.ts` | Drop `heightOverride` param. `report()` returns `clamp(measured, 0.30·availHeight, 0.60·availHeight)` where `measured = card.scrollHeight − body.clientHeight + body.scrollHeight + stagePad` — the card is `flex-1` (window-filling, keeps the ShineBorder edge riding the expand animation) and sections self-constrain via `min-h-0`, so card `scrollHeight` echoes rendered height; the section's `data-card-scroll` body carries the true content height. Triggers: `ResizeObserver` on the card + its direct children (chrome growth like the auto-sizing textarea mutates no DOM), `MutationObserver` on the card subtree (streaming/transcript/list updates), `resize` listener (bounds track `availHeight`). |
+| `src/components/{Chat,Listen,History}Section.tsx` | Add `data-card-scroll` to each section's scroll body so the hook can read real content height; comment updates in HistorySection (no longer standalone). |
 | `src/views/Bar.tsx` | Remove `historyHeight`; `row()` renders for every section; `inputRendered` drops `pinned !== 'history'`; iris label `'Close chat'` → `'Close'`; comment updates. |
 | `src/components/HistorySection.tsx` | Comment updates only (no longer standalone). |
 | `src-tauri/src/windows/layout.rs` | `CARD_MIN_FRACTION = 0.30`, `CARD_MAX_FRACTION = 0.60`; `expanded_rect` caps height at `min(free, 0.60·work.h)`; floor stays `bar.h + MIN_CHAT_H`. Update `expanded_rect_clamps_height_to_free_space` test. |

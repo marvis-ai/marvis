@@ -6,9 +6,11 @@
  *    `expanded` reports to `window_set_bar_expanded` and Rust animates
  *    the width change. Unchanged mechanics.
  *  - Card modes (chat | listen | history): the same window grown to
- *    600×(64+content) — the bar row is the card's bottom-anchored
- *    footer under `flex-col-reverse`, with the section above it
- *    regardless of which way the window physically grows.
+ *    600×clamped(64+content) — one sizing band for every section,
+ *    [30%, 60%] of the screen's available height (useCardGeometry
+ *    reports it; Rust re-clamps). The bar row is the card's
+ *    bottom-anchored footer under `flex-col-reverse`, with the section
+ *    above it regardless of which way the window physically grows.
  *
  * `cardOpen` lives in `useCardGeometry` — read off the window
  * itself (`resize` is the only open/close signal).
@@ -29,7 +31,7 @@
  *
  * Errors go to the `alert` window (`raise`) — the pill has no room.
  */
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { SubmitEvent } from 'react';
 import {
   HistoryIcon,
@@ -118,19 +120,7 @@ const Bar = () => {
     null,
   );
 
-  /** History is a standalone surface at a fixed 60% of the screen's
-   *  height — re-read per report so moving displays stays correct.
-   *  `useCallback` keeps the identity stable so the geometry effect
-   *  only re-runs when history toggles on/off. */
-  const historyHeight = useCallback(
-    () => Math.round(window.screen.availHeight * 0.6),
-    [],
-  );
-  const { cardOpen } = useCardGeometry(
-    cardRef,
-    stageRef,
-    pinned === 'history' ? historyHeight : null,
-  );
+  const { cardOpen } = useCardGeometry(cardRef, stageRef);
   /** Live mirror of `cardOpen` for async callbacks — the card can
    *  collapse while a `listenStop` invoke is in flight, and a
    *  `viewing`/`pinned` write landing after that would outlive the
@@ -164,14 +154,10 @@ const Bar = () => {
    *  `!showInputRow` keeps it off every non-idle surface. */
   const showIntro = !introDone && !showInputRow;
   /** Whether the Ask `<input>` is actually mounted: the permission
-   *  card and the boot-error retry replace the whole row, and the
-   *  standalone history surface renders no row at all, while
+   *  card and the boot-error retry replace the whole row while
    *  `showInputRow` stays true — dictation keys off this. */
   const inputRendered =
-    showInputRow &&
-    !bootError &&
-    gate !== 'needs_permission' &&
-    pinned !== 'history';
+    showInputRow && !bootError && gate !== 'needs_permission';
   /** The row's control set for this surface — `bar-state.ts` owns the
    *  contract, the conditionals below consume it so the two can't
    *  drift. */
@@ -561,9 +547,7 @@ const Bar = () => {
             listenState === 'paused' ||
             dictation.state === 'listening'
           }
-          label={
-            cardOpen ? 'Close chat' : open ? 'Back to capsule' : 'Ask Marvis'
-          }
+          label={cardOpen ? 'Close' : open ? 'Back to capsule' : 'Ask Marvis'}
           onPress={() =>
             cardOpen
               ? void askClose().catch(() => {})
@@ -705,10 +689,9 @@ const Bar = () => {
         )}
         data-expanded={showInputRow || undefined}
         data-tauri-drag-region={cardOpen ? undefined : 'deep'}>
-        {/* The standalone history card renders no bottom input row at
-            all — no iris/dictation/settings footer (settings lives in
-            the history header instead). */}
-        {section !== 'history' && row()}
+        {/* Every section shares the bottom input row — history is a
+            regular card section, not a standalone surface. */}
+        {row()}
         {showIntro && <LaunchIntro onDone={() => setIntroDone(true)} />}
         {section === 'chat' && (
           <ChatSection
@@ -744,8 +727,7 @@ const Bar = () => {
               setPinned('listen');
             }}
             onBack={() => {
-              // History is only entered from the capsule (card
-              // closed) — Back collapses to idle.
+              // Back collapses the card to the idle capsule.
               void windowSetChatOpen(false).catch(() => {});
             }}
           />

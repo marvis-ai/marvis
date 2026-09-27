@@ -43,9 +43,7 @@ export const HistorySection = ({
   onOpenChat: () => void;
   /** `null` = the live session (still-open listen row) → live view. */
   onOpenListen: (v: ListenViewing | null) => void;
-  /** Leaves the standalone surface — restores the section history was
-   *  entered from, or collapses the card when it came from the
-   *  capsule. */
+  /** Leaves the section — collapses the card back to the capsule. */
   onBack: () => void;
 }) => {
   const [sessions, setSessions] = useState<Session[] | null>(null);
@@ -88,9 +86,9 @@ export const HistorySection = ({
 
   return (
     <div className='flex min-h-0 flex-1 flex-col'>
-      {/* The standalone surface's own chrome: back on the left,
-          settings on the right — the bottom input row is gone, so the
-          header is the card's drag region. */}
+      {/* Back on the left, settings on the right — the header doubles
+          as the card's drag region (the shared input row renders at
+          the bottom like every section). */}
       <CardHeader
         title='History'
         onBack={onBack}>
@@ -103,62 +101,68 @@ export const HistorySection = ({
           <SettingsIcon className='size-4' />
         </button>
       </CardHeader>
-      <div className={PANEL_BODY}>
-        {sessions === null ? null : sessions.length === 0 ? (
-          <p className={EMPTY}>
-            No history yet — ask Marvis or start listening.
-          </p>
-        ) : (
-          sessions.map((s) => {
-            const liveRow = s.ended_at === null;
-            const disabled = s.kind === 'ask' && askBusy;
-            return (
-              <div
-                key={s.id}
-                className={cn(
-                  'group/row -mx-1.5 flex items-center gap-2 rounded-lg px-1.5 py-1.5 transition-colors',
-                  disabled ? 'opacity-50' : 'cursor-pointer hover:bg-fg-soft',
-                )}
-                onClick={() => !disabled && openRow(s)}>
-                {s.kind === 'listen' ? (
-                  <MicAudioLinesIcon className='size-3.5 flex-none text-muted-foreground' />
-                ) : (
-                  <MessageSquareTextIcon className='size-3.5 flex-none text-muted-foreground' />
-                )}
-                <span className='min-w-0 flex-1 truncate text-[12.5px]'>
-                  {s.title ?? (s.kind === 'listen' ? 'Meeting' : 'Chat')}
-                </span>
-                {liveRow && (
-                  <span className={cn(CHIP, 'border-accent/40 text-accent')}>
-                    Live
-                  </span>
-                )}
-                <span
+      <div
+        data-card-scroll
+        className={PANEL_BODY}>
+        <div
+          data-card-content
+          className='flow-root'>
+          {sessions === null ? null : sessions.length === 0 ? (
+            <p className={EMPTY}>
+              No history yet — ask Marvis or start listening.
+            </p>
+          ) : (
+            sessions.map((s) => {
+              const liveRow = s.ended_at === null;
+              const disabled = s.kind === 'ask' && askBusy;
+              return (
+                <div
+                  key={s.id}
                   className={cn(
-                    NUM,
-                    'flex-none text-[10px] text-muted-foreground',
-                  )}>
-                  {relTime(s.last_active_at)}
-                </span>
-                {!liveRow && (
-                  <button
-                    type='button'
-                    aria-label='Delete session'
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      removeRow(s);
-                    }}
+                    'group/row -mx-1.5 flex items-center gap-2 rounded-lg px-1.5 py-1.5 transition-colors',
+                    disabled ? 'opacity-50' : 'cursor-pointer hover:bg-fg-soft',
+                  )}
+                  onClick={() => !disabled && openRow(s)}>
+                  {s.kind === 'listen' ? (
+                    <MicAudioLinesIcon className='size-3.5 flex-none text-muted-foreground' />
+                  ) : (
+                    <MessageSquareTextIcon className='size-3.5 flex-none text-muted-foreground' />
+                  )}
+                  <span className='min-w-0 flex-1 truncate text-[12.5px]'>
+                    {s.title ?? (s.kind === 'listen' ? 'Meeting' : 'Chat')}
+                  </span>
+                  {liveRow && (
+                    <span className={cn(CHIP, 'border-accent/40 text-accent')}>
+                      Live
+                    </span>
+                  )}
+                  <span
                     className={cn(
-                      ICON_BTN,
-                      'size-5 opacity-0 group-hover/row:opacity-100 focus-visible:opacity-100',
+                      NUM,
+                      'flex-none text-[10px] text-muted-foreground',
                     )}>
-                    <Trash2Icon className='size-3' />
-                  </button>
-                )}
-              </div>
-            );
-          })
-        )}
+                    {relTime(s.last_active_at)}
+                  </span>
+                  {!liveRow && (
+                    <button
+                      type='button'
+                      aria-label='Delete session'
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        removeRow(s);
+                      }}
+                      className={cn(
+                        ICON_BTN,
+                        'size-5 opacity-0 group-hover/row:opacity-100 focus-visible:opacity-100',
+                      )}>
+                      <Trash2Icon className='size-3' />
+                    </button>
+                  )}
+                </div>
+              );
+            })
+          )}
+        </div>
       </div>
     </div>
   );

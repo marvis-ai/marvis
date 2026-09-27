@@ -753,6 +753,17 @@ impl WindowPool {
     /// geometry.
     pub(crate) fn refresh_bar_rect(&mut self) {
         let Some(bar) = &self.bar else { return };
+        // While an animation drives the bounds the live rect is a
+        // transient lerp — and `window_rect` reads position and size as
+        // two OS calls, so an animator tick landing between them pairs a
+        // stale x with a fresh w. On expansion (x falls while w grows)
+        // that tear is always right-biased, and ratcheting it into
+        // `bar_rect` pushed the anchor — and every recentered target —
+        // gradually right. The committed rect stays authoritative until
+        // the animator lands on it.
+        if movement::is_animating(bar.label()) {
+            return;
+        }
         let Some(r) = window_rect(bar) else { return };
         self.bar_rect = if self.chat_open {
             derive_pill_rect(r, self.bar_rect.w, BAR_H, self.expand_dir)

@@ -32,7 +32,6 @@
  * Errors go to the `alert` window (`raise`) — the pill has no room.
  */
 import { useEffect, useRef, useState } from 'react';
-import type { SubmitEvent } from 'react';
 import {
   HistoryIcon,
   MicAudioLinesIcon,
@@ -46,7 +45,7 @@ import {
   askClose,
   askSend,
   barContextMenu,
-  captureStart,
+  capturePickAndStart,
   captureStop,
   configGet,
   listenStart,
@@ -133,6 +132,8 @@ const Bar = () => {
     setListenState,
     captureRunning,
     setCaptureRunning,
+    captureTarget,
+    setCaptureTarget,
     askState,
   } = useBarActivity();
 
@@ -337,22 +338,24 @@ const Bar = () => {
 
   /** Send the field's current text — read off `textRef` so the Enter
    *  queued behind a settling stop sees the applied final draft, not
-   *  the render-time `text`. */
-  const sendAsk = () => {
+   *  the render-time `text`. `withScreen` (the field's Cmd/Ctrl+Enter)
+   *  forces a screen read even when the text shows no intent. */
+  const sendAsk = (withScreen = false) => {
     const t = textRef.current.trim();
     if (!t) {
       return;
     }
     setText('');
-    void askSend(t).catch(() => raise('Send failed'));
+    void askSend(t, withScreen).catch(() => raise('Send failed'));
   };
 
   // Submit = ask (a follow-up while the card is open). The backend
   // expands the window itself — no local collapse needed either way.
-  const submitAsk = (e?: SubmitEvent<HTMLFormElement>) => {
-    e?.preventDefault();
+  // The flag only rides along when the handshake actually sends — a
+  // live dictation still stops for review first, never auto-submits.
+  const submitAsk = (withScreen = false) => {
     setPinned('chat');
-    dictation.submit(sendAsk);
+    dictation.submit(() => sendAsk(withScreen));
   };
 
   /** Toggle continuous screen capture — a pure recorder switch that
@@ -368,16 +371,23 @@ const Bar = () => {
     const failure = wantRunning
       ? 'Screen recording start failed'
       : 'Screen recording stop failed';
-    const transition = wantRunning ? captureStart() : captureStop();
+    const transition = wantRunning ? capturePickAndStart() : captureStop();
     void transition
       .then((next) => {
-        // The commands resolve `{ running, frames }` rather than
-        // rejecting, so a failed transition comes back short of the
-        // target — surface it, then resync as usual.
+        // The picker resolves once its panel is up — the pick (or
+        // cancel) lands later as `capture:state`, so only the stop arm
+        // has a status to check. `capture_stop` resolves
+        // `{ running, frames, target }` rather than rejecting, so a
+        // failed transition comes back short of the target — surface
+        // it, then resync as usual.
+        if (wantRunning) {
+          return;
+        }
         if (next.running !== wantRunning) {
           raise(failure);
         }
         setCaptureRunning(next.running);
+        setCaptureTarget(next.target);
       })
       .catch(() => raise(failure))
       .finally(() => setBusy(false));
@@ -523,7 +533,10 @@ const Bar = () => {
     // the gate resolves).
     return (
       <form
-        onSubmit={submitAsk}
+        onSubmit={(e) => {
+          e.preventDefault();
+          submitAsk();
+        }}
         className={rowCls}
         data-tauri-drag-region='deep'>
         <IrisButton
@@ -558,6 +571,7 @@ const Bar = () => {
         {controls.includes('capture') && (
           <BarButton
             label={captureLabel}
+            title={captureRunning ? captureTarget?.label : undefined}
             pressed={captureRunning}
             disabled={gate !== 'main'}
             onPress={toggleCapture}

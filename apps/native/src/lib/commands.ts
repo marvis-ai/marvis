@@ -38,11 +38,13 @@ export interface PermissionsStatus {
   mic: PermissionState;
 }
 
-/** `capture_status` return. */
-export interface CaptureStatus {
+/** `capture_status` return — `target` is the picked scope label,
+ *  null on the auto primary-display path. */
+export type CaptureStatus = {
   running: boolean;
   frames: number;
-}
+  target: { kind: 'display' | 'window' | 'app'; label: string } | null;
+};
 
 /** `model_get_selected` / `model_set_selected` return. `null` from
  * `model_get_selected` means no usable provider (all disabled or
@@ -236,8 +238,11 @@ export const providerSetEnabled = (provider: string, enabled: boolean) =>
 // ask
 // ---------------------------------------------------------------------------
 
-/** Fire-and-forget: returns after pre-flight; tokens stream as `ask:*`. */
-export const askSend = (text: string) => invoke<void>('ask_send', { text });
+/** Fire-and-forget: returns after pre-flight; tokens stream as `ask:*`.
+ *  `withScreen` (the bar's Cmd/Ctrl+Enter) is the explicit attach flag —
+ *  a screen read runs even when the text shows no intent. */
+export const askSend = (text: string, withScreen = false) =>
+  invoke<void>('ask_send', { text, withScreen });
 
 /** The bar's camera affordance — a screen-only ask (fixed prompt,
  *  frame required). */
@@ -530,6 +535,13 @@ export const permissionsOpenPrefs = (section: string) =>
 export const captureStart = () => invoke<CaptureStatus>('capture_start');
 export const captureStop = () => invoke<CaptureStatus>('capture_stop');
 export const captureStatus = () => invoke<CaptureStatus>('capture_status');
+
+/** The record button's start path — the native content-sharing picker
+ *  (window / display / application). The Rust command returns `()`, so
+ *  the invoke resolves null — the authoritative snapshot (with `target`)
+ *  lands as the `capture:state` emit; cancel is a silent no-op. */
+export const capturePickAndStart = () =>
+  invoke<CaptureStatus>('capture_pick_and_start');
 
 // ---------------------------------------------------------------------------
 // sessions

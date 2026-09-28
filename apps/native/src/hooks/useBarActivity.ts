@@ -25,6 +25,11 @@ export const useBarActivity = () => {
   /** Continuous screen capture — starts by default in the main gate,
    *  toggled by the collapsed MonitorDot control. */
   const [captureRunning, setCaptureRunning] = useState(false);
+  /** The picker-selected capture scope (`capture:state`'s `target`) —
+   *  the record button's tooltip while running; `null` on the auto
+   *  primary-display path. */
+  const [captureTarget, setCaptureTarget] =
+    useState<CaptureStatePayload['target']>(null);
   /** Local mirror of `ask:state` so loading/streaming count as active
    *  work for the bar pulse. */
   const [askState, setAskState] = useState<AskActivity>('idle');
@@ -45,7 +50,10 @@ export const useBarActivity = () => {
     // A status read isn't user-actionable — sync the toggle silently
     // and let `capture:state` correct it if the read raced a stop.
     void captureStatus()
-      .then((next) => setCaptureRunning(next.running))
+      .then((next) => {
+        setCaptureRunning(next.running);
+        setCaptureTarget(next.target);
+      })
       .catch(() => {});
     // Same resync for the ask tail — an `ask:state` emit that raced
     // this webview's listener would otherwise leave the pulse stale.
@@ -78,6 +86,7 @@ export const useBarActivity = () => {
   // toggle tracks the recorder live.
   useTauriEvent<CaptureStatePayload>(EV_CAPTURE_STATE, (p) => {
     setCaptureRunning(p.running);
+    setCaptureTarget(p.target);
   });
   // A send while in listen mode reasserts chat (`loading` = a run);
   // every snapshot feeds the active-work pulse.
@@ -95,6 +104,8 @@ export const useBarActivity = () => {
     setListenState,
     captureRunning,
     setCaptureRunning,
+    captureTarget,
+    setCaptureTarget,
     askState,
   };
 };

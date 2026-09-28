@@ -141,6 +141,13 @@ export const EV_PREFS_MODE = 'prefs:mode';
  * `listen<T>(name)` with cleanup. Subscribes once per `name`; the callback
  * is held in a ref so a new `cb` identity each render never triggers a
  * re-subscribe (and the ref always points at the latest render's closure).
+ *
+ * `active` neutralizes a Tauri race (tauri-apps/tauri#15799): `unlisten`
+ * throws when called before the registration eval lands, so the backend
+ * listener LEAKS and keeps delivering — under StrictMode's
+ * mount→cleanup→mount every event then fires twice (`ask:chunk` doubling
+ * streamed text). The flag drops the zombie's deliveries; the catch
+ * swallows the racy throw.
  */
 export function useTauriEvent<T>(name: string, cb: (payload: T) => void) {
   const cbRef = useRef(cb);
@@ -149,9 +156,13 @@ export function useTauriEvent<T>(name: string, cb: (payload: T) => void) {
   });
 
   useEffect(() => {
-    const unlisten = listen<T>(name, (event) => cbRef.current(event.payload));
+    let active = true;
+    const unlisten = listen<T>(name, (event) => {
+      if (active) cbRef.current(event.payload);
+    });
     return () => {
-      void unlisten.then((u) => u());
+      active = false;
+      void unlisten.then((u) => u()).catch(() => {});
     };
   }, [name]);
 }

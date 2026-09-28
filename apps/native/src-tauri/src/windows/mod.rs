@@ -102,13 +102,9 @@ const ALERT_H: f64 = 100.0;
 /// The share-picker surface (`?view=picker`) — lazy like `prefs`,
 /// borderless glass via `build_window` (content-protected, so it
 /// never appears in its own candidate list).
-#[allow(dead_code)] // callers land with the picker commands (Task 3)
 pub const PICKER_LABEL: &str = "picker";
-#[allow(dead_code)]
 const PICKER_W: f64 = 760.0;
-#[allow(dead_code)]
 const PICKER_H: f64 = 560.0;
-#[allow(dead_code)]
 const PICKER_RADIUS: f64 = 16.0;
 /// Slide-in distance above the target rect when the alert toast appears.
 const SHOW_OFFSET_Y: f64 = 10.0;
@@ -145,7 +141,6 @@ pub struct WindowPool {
     prefs_mode: String,
     /// The share-picker panel (`?view=picker`) — built lazily on first
     /// `show_picker`, then re-shown; it never joins the gate lifecycle.
-    #[allow(dead_code)] // read once the picker commands land (Task 3)
     picker: Option<WebviewWindow>,
     /// Whether the unified card (chat or listen mode) is open.
     chat_open: bool,
@@ -396,7 +391,6 @@ impl WindowPool {
     /// under the pointer, then announce `picker:open` — the view
     /// refetches `capture_pick_list` on it (first open can race the
     /// still-loading webview; its mount covers that).
-    #[allow(dead_code)] // callers land with the picker commands (Task 3)
     pub fn show_picker(&mut self, app: &AppHandle) {
         if self.picker.is_none() {
             let tint = accent_glass_tint(&app.state::<crate::AppState>().accent());
@@ -417,7 +411,6 @@ impl WindowPool {
         let _ = app.emit_to(PICKER_LABEL, "picker:open", ());
     }
 
-    #[allow(dead_code)]
     pub fn hide_picker(&self) {
         if let Some(win) = &self.picker {
             let _ = win.hide();
@@ -1061,7 +1054,6 @@ fn set_rect(win: &WebviewWindow, r: Rect) {
 /// Center `win` on the monitor containing the pointer — physical px
 /// math (monitor position/size are physical; the window's logical
 /// size scales by `scale_factor`). Primary monitor on any miss.
-#[allow(dead_code)] // callers land with the picker commands (Task 3)
 fn center_on_pointer_display(win: &WebviewWindow) {
     let monitor = win
         .cursor_position()

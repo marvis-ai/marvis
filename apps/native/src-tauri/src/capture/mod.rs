@@ -13,6 +13,7 @@ pub(crate) mod macos;
 pub(crate) use macos::primary_display_filter;
 pub(crate) use macos::shot_fullscreen;
 pub use macos::MacosCapture;
+pub(crate) use macos::{pick_candidates, resolve_candidate, thumb_for};
 
 use std::collections::VecDeque;
 
@@ -47,9 +48,7 @@ pub struct PickResolution {
     pub w: u32,
     pub h: u32,
     /// `"display" | "window" | "app"`
-    #[allow(dead_code)] // read by capture:state wiring in Task 3
     pub kind: &'static str,
-    #[allow(dead_code)] // read by capture:state wiring in Task 3
     pub label: String,
 }
 

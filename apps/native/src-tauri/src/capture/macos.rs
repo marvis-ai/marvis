@@ -184,7 +184,6 @@ fn pick_window_ok(w: &SCWindow, own_pid: i32) -> Option<SCRunningApplication> {
 
 /// Every shareable candidate: displays in order, eligible windows,
 /// then one app entry per distinct window owner.
-#[allow(dead_code)] // wired in Task 3
 pub(crate) fn pick_candidates() -> anyhow::Result<Vec<PickCandidate>> {
     let content = SCShareableContent::get()?;
     let own_pid = std::process::id() as i32;
@@ -261,7 +260,6 @@ pub(crate) fn pick_candidates() -> anyhow::Result<Vec<PickCandidate>> {
 /// Re-resolve a picker id against FRESH shareable content — windows
 /// move/close between list and pick, so a stale id errors rather
 /// than silently capturing the wrong thing.
-#[allow(dead_code)] // wired in Task 3
 pub(crate) fn resolve_candidate(id: &str) -> anyhow::Result<PickResolution> {
     let content = SCShareableContent::get()?;
     let own_pid = std::process::id() as i32;
@@ -375,7 +373,6 @@ pub(crate) fn resolve_candidate(id: &str) -> anyhow::Result<PickResolution> {
 
 /// One ~`THUMB_WIDTH`-wide JPEG for a candidate — the picker card
 /// image, base64 (the emit payload is a string).
-#[allow(dead_code)] // wired in Task 3
 pub(crate) fn thumb_for(id: &str) -> Option<String> {
     let res = resolve_candidate(id).ok()?;
     if res.w == 0 || res.h == 0 {

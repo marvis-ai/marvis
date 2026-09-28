@@ -68,7 +68,7 @@ use tauri_plugin_liquid_glass::LiquidGlassExt;
 
 use ask::AskService;
 use capture::controller::{CaptureLifecycle, StartDecision, StopDecision};
-use capture::{primary_display_filter, FrameSource, MacosCapture, RingBuffer};
+use capture::{primary_display_filter, FrameSource, MacosCapture, PickCandidate, RingBuffer};
 use config::Config;
 use dictation::{DictationEvent, DictationService};
 use hotkey::RegisteredHotkeys;
@@ -2031,6 +2031,116 @@ fn capture_pick_and_start(app: AppHandle) {
     }
 }
 
+/// Idle record button: hide the bar and open the share-picker window.
+/// Gate-guarded like `capture_start` — a crafted invoke outside Main
+/// must not surface the picker (or a capture behind it). The bar is
+/// re-shown by `capture_pick_select`/`capture_pick_cancel`.
+#[tauri::command]
+fn capture_pick_begin(app: AppHandle) {
+    let state = app.state::<AppState>();
+    let _transition = state.gate_transition.lock();
+    if *state.gate.lock() != Gate::Main {
+        log::warn!("capture_pick_begin dropped while gate != Main");
+        return;
+    }
+    let mut pool = state.pool.lock();
+    if let Some(bar) = pool.bar() {
+        let _ = bar.hide();
+    }
+    pool.show_picker(&app);
+}
+
+/// The picker's candidate list — meta only, returned fast; a detached
+/// blocking task then thumbs each candidate and emits `picker:thumb`
+/// to the picker window (SCK calls must not run on the async
+/// executor; `capture_sample_buffer` is a sync Cocoa call).
+/// App cards reuse their largest window's thumb — the map fills as
+/// windows emit, so apps need no extra capture. Gate-guarded: a
+/// crafted invoke outside Main could otherwise enumerate window
+/// titles.
+#[tauri::command]
+fn capture_pick_list(app: AppHandle) -> Result<Vec<PickCandidate>, String> {
+    let state = app.state::<AppState>();
+    let _transition = state.gate_transition.lock();
+    if *state.gate.lock() != Gate::Main {
+        return Err("picker is only available in the main window".into());
+    }
+    let metas = capture::pick_candidates().map_err(|e| e.to_string())?;
+    let app2 = app.clone();
+    let list = metas.clone();
+    tauri::async_runtime::spawn(async move {
+        let _ = tauri::async_runtime::spawn_blocking(move || {
+            let mut thumbs: std::collections::HashMap<String, String> =
+                std::collections::HashMap::new();
+            for m in &list {
+                let jpeg = if m.kind == "app" {
+                    m.thumb_of.as_ref().and_then(|w| thumbs.get(w).cloned())
+                } else {
+                    let j = capture::thumb_for(&m.id);
+                    if let Some(j) = &j {
+                        thumbs.insert(m.id.clone(), j.clone());
+                    }
+                    j
+                };
+                if let Some(jpeg) = jpeg {
+                    let _ = app2.emit_to(
+                        windows::PICKER_LABEL,
+                        "picker:thumb",
+                        json!({ "id": m.id, "jpeg": jpeg }),
+                    );
+                }
+            }
+        })
+        .await;
+    });
+    Ok(metas)
+}
+
+/// Picker card click: re-resolve the id against fresh content, stop a
+/// live capture if one raced in, start scoped, restore the bar.
+/// Errors on stale ids ("no longer available") — the picker shows it
+/// and refetches.
+#[tauri::command]
+fn capture_pick_select(app: AppHandle, id: String) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let _transition = state.gate_transition.lock();
+    if *state.gate.lock() != Gate::Main {
+        return Err("picker is only available in the main window".into());
+    }
+    let res = capture::resolve_candidate(&id).map_err(|e| e.to_string())?;
+    if state
+        .capture
+        .lock()
+        .as_ref()
+        .is_some_and(MacosCapture::is_running)
+    {
+        stop_capture(&app);
+    }
+    let target = CaptureTarget {
+        kind: res.kind,
+        label: res.label,
+    };
+    start_capture(&app, res.filter, res.w, res.h, Some(target));
+    let pool = state.pool.lock();
+    pool.hide_picker();
+    if let Some(bar) = pool.bar() {
+        let _ = bar.show();
+    }
+    Ok(())
+}
+
+/// Esc / Cancel: drop the picker, restore the bar. No gate check —
+/// cancel must always be safe.
+#[tauri::command]
+fn capture_pick_cancel(app: AppHandle) {
+    let state = app.state::<AppState>();
+    let pool = state.pool.lock();
+    pool.hide_picker();
+    if let Some(bar) = pool.bar() {
+        let _ = bar.show();
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Commands — sessions
 // ---------------------------------------------------------------------------
@@ -2488,6 +2598,10 @@ pub fn run() {
             permissions_open_prefs,
             capture_start,
             capture_pick_and_start,
+            capture_pick_begin,
+            capture_pick_list,
+            capture_pick_select,
+            capture_pick_cancel,
             capture_stop,
             capture_status,
             session_list,
@@ -2677,6 +2791,45 @@ mod tests {
             "the picked callback must re-check the gate under gate_transition \
              via try_lock (main-thread callback must never park on it)"
         );
+    }
+
+    /// The custom picker's begin/select share `capture_start`'s
+    /// crafted-invoke guard: `gate_transition` held across the check +
+    /// action so a racing leave-Main can't interleave. `select`
+    /// additionally stops a live capture first — `start_capture` is
+    /// idempotent and would silently keep the old scope.
+    #[test]
+    fn capture_pick_commands_are_gate_guarded() {
+        let source = include_str!("lib.rs");
+        let body = |sig: &str| {
+            source
+                .split(sig)
+                .nth(1)
+                .and_then(|rest| rest.split("\n#[tauri::command]").next())
+                .unwrap_or_else(|| panic!("{sig} body not found"))
+        };
+        for sig in [
+            "fn capture_pick_begin(app: AppHandle)",
+            "fn capture_pick_list(app: AppHandle)",
+            "fn capture_pick_select(app: AppHandle, id: String)",
+        ] {
+            let b = body(sig);
+            let lock = b
+                .find("state.gate_transition.lock()")
+                .unwrap_or_else(|| panic!("{sig} must hold gate_transition"));
+            let check = b
+                .find("*state.gate.lock() != Gate::Main")
+                .unwrap_or_else(|| panic!("{sig} must check Gate::Main"));
+            assert!(lock < check, "{sig}: lock must precede the check");
+        }
+        let select = body("fn capture_pick_select(app: AppHandle, id: String)");
+        let stop = select
+            .find("stop_capture(&app)")
+            .expect("select must stop a live capture before retargeting");
+        let start = select
+            .find("start_capture(&app")
+            .expect("select must start_capture with the resolved filter");
+        assert!(stop < start, "select must stop before starting");
     }
 
     /// `leave_main` must stop dictation: the session is bound to the

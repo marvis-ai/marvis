@@ -55,7 +55,7 @@ use crate::capture::{Frame, RingBuffer};
 use crate::config::Config;
 use crate::keystore::Keystore;
 use crate::llm::{ChatMessage, LlmError, Provider, Role, StreamReply, TokenUsage};
-use crate::prompts::{live_system_prompt_for, live_user_prompt, screen_prompt};
+use crate::prompts::{live_system_prompt_for, live_user_prompt};
 use crate::storage::{Db, MessageMeta, Transcript};
 use crate::windows::{WindowPool, BAR_LABEL};
 use crate::ProviderCandidate;
@@ -475,8 +475,11 @@ pub(crate) async fn send_chain(
     // candidate's usage is unknowable — errors carry none).
     let mut usage = TokenUsage::default();
     if let (Some(f), Some(vis)) = (frame, vision.as_ref()) {
-        match describe_screen(&*vis.provider, f, cancel).await {
-            StreamOutcome::Done(reply) => {
+        let read =
+            crate::screen_read::describe_screen(&*vis.provider, f, cancel)
+                .await;
+        match read {
+            Ok(Some(reply)) => {
                 screen = Some(reply.full);
                 if let Some(u) = reply.usage {
                     usage.add(&u);
@@ -485,14 +488,14 @@ pub(crate) async fn send_chain(
             }
             // Same rule as a mid-stream cancel: the user asked to stop,
             // so no chain attempt may start a new request.
-            StreamOutcome::Cancelled => {
+            Ok(None) => {
                 emit(EV_STATE, json!({"state": "idle"}));
                 return Err(LlmError::Http {
                     status: 0,
                     message: "cancelled".to_string(),
                 });
             }
-            StreamOutcome::Failed(e) => {
+            Err(e) => {
                 log::warn!(
                     "ask: vision read via {} failed ({e}); attaching the frame to the chain",
                     vis.id
@@ -602,29 +605,6 @@ async fn stream_candidate(
                 return CandidateOutcome::Failed(e);
             }
         }
-    }
-}
-
-/// The screen read: one frame → a text description for the chain to
-/// answer over. Silent — these tokens are intermediate, not the reply,
-/// so they never reach the card (the `loading` state already covers
-/// the wait). Races the cancel token like `stream_once` does.
-async fn describe_screen(
-    provider: &dyn Provider,
-    frame: &Frame,
-    cancel: &CancellationToken,
-) -> StreamOutcome {
-    let msgs = vec![ChatMessage::user_with_image(
-        screen_prompt(),
-        frame.jpeg.clone(),
-    )];
-    let mut sink = |_: &str| {};
-    tokio::select! {
-        _ = cancel.cancelled() => StreamOutcome::Cancelled,
-        r = provider.stream_chat(&msgs, &mut sink) => match r {
-            Ok(reply) => StreamOutcome::Done(reply),
-            Err(e) => StreamOutcome::Failed(e),
-        },
     }
 }
 

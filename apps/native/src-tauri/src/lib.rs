@@ -47,6 +47,7 @@ mod menus;
 mod paths;
 mod permissions;
 mod prompts;
+mod screen_read;
 mod sherpa_models;
 mod storage;
 pub mod stt;

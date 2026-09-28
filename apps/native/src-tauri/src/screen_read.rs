@@ -18,7 +18,6 @@ use crate::prompts::screen_prompt;
 /// A cached screen description + unix-seconds stamp — asks annotate age
 /// so stale context is never silently presented as current.
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // populated by ScreenReader::run; the ask-side field reads land in Task 8
 pub(crate) struct ScreenContext {
     pub text: String,
     pub ts: i64,
@@ -37,9 +36,8 @@ const INTENT_KEYWORDS: &[&str] = &[
     "截图",
 ];
 
-/// Deterministic screen-intent heuristic — `Cmd+Enter` bypasses this
-/// entirely (explicit flag on `ask_send`).
-#[allow(dead_code)] // consumed by the ask intent gate (Task 8); tests cover it now
+/// Deterministic screen-intent heuristic — `Cmd+Enter`/`withScreen`
+/// bypasses this entirely (explicit flag on `ask_send`).
 pub(crate) fn looks_like_screen_intent(text: &str) -> bool {
     let t = text.to_lowercase();
     INTENT_KEYWORDS.iter().any(|k| t.contains(k))
@@ -104,8 +102,7 @@ impl ScreenReader {
     }
 
     /// The latest cached read — consumed by the ask pipeline's
-    /// `screen_context` attach in Task 8; tests cover it now.
-    #[allow(dead_code)]
+    /// `resolve_screen` while recording runs.
     pub fn context(&self) -> Option<ScreenContext> {
         self.context.lock().clone()
     }
@@ -121,8 +118,8 @@ impl ScreenReader {
         self.wake.notify_one();
     }
 
-    /// Test hook for seeding the cache without running the loop.
-    /// No caller yet — the ask-side cache tests land in Task 8.
+    /// Test hook for seeding the cache without running the loop — the
+    /// ask-side `resolve_screen` cache tests use it.
     #[cfg(test)]
     #[allow(dead_code)]
     pub(crate) fn seed_context(&self, text: &str) {

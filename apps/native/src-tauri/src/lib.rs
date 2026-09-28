@@ -172,13 +172,21 @@ pub struct AppState {
 }
 
 impl AppState {
-    /// The ask pipeline's borrow bundle: `db` clones the `Arc` (the
-    /// spawned stream outlives the call), the rest are short-lived
-    /// `&Mutex` borrows used only in pre-flight.
+    /// The ask pipeline's borrow bundle: `db`/`ring`/`reader` clone
+    /// their `Arc`s (the spawned stream outlives the call), the rest are
+    /// short-lived `&Mutex` borrows used only in pre-flight.
+    /// `capture_running` snapshots the capture slot so `resolve_screen`
+    /// knows whether ring frames are fresh.
     fn deps(&self) -> ask::Deps<'_> {
         ask::Deps {
             db: Arc::clone(&self.db),
-            ring: &self.ring,
+            ring: Arc::clone(&self.ring),
+            reader: Arc::clone(&self.screen_reader),
+            capture_running: self
+                .capture
+                .lock()
+                .as_ref()
+                .is_some_and(MacosCapture::is_running),
             keystore: &self.keystore,
             config: &self.config,
             pool: &self.pool,
@@ -663,7 +671,7 @@ fn deeplink_dispatch(app: &AppHandle) -> impl Fn(deeplink::Action) + Send + Sync
                 if let Some(bar) = bar {
                     let _ = bar.set_focus();
                 }
-                state.ask.send(&app, &state.deps(), &text);
+                state.ask.send(&app, &state.deps(), &text, false);
             } else {
                 // Not ready yet — if the bar is visible (onboarding done,
                 // permission pending) surface its gate card instead of
@@ -1212,9 +1220,11 @@ async fn model_list_available(app: AppHandle, provider: String) -> Vec<String> {
 // ---------------------------------------------------------------------------
 
 /// Fire an ask; returns after synchronous pre-flight — tokens stream to
-/// the `bar` window as `ask:*` events on a spawned task.
+/// the `bar` window as `ask:*` events on a spawned task. `withScreen`
+/// (optional) is the explicit attach flag — a screen read runs even when
+/// the text shows no intent.
 #[tauri::command]
-fn ask_send(app: AppHandle, text: String) {
+fn ask_send(app: AppHandle, text: String, with_screen: Option<bool>) {
     let state = app.state::<AppState>();
     // Crafted-invoke guard: the shipped UI gates sends behind `Main`,
     // but a crafted invoke during onboarding would otherwise proceed —
@@ -1223,7 +1233,9 @@ fn ask_send(app: AppHandle, text: String) {
         log::warn!("ask_send dropped while gate != Main");
         return;
     }
-    state.ask.send(&app, &state.deps(), &text);
+    state
+        .ask
+        .send(&app, &state.deps(), &text, with_screen.unwrap_or(false));
 }
 
 /// Regenerate the last answer — re-runs the active session's last user

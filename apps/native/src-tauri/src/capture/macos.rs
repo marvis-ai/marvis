@@ -4,7 +4,7 @@
 //!
 //! ```text
 //! SCStream ──dispatch queue──> extract_raw (lock, memcpy BGRA, unlock)
-//!          ──mpsc──> worker: frame_hash → dedupe → resize ≤384h → JPEG q80
+//!          ──mpsc──> worker: frame_hash → dedupe → resize ≤1600w → JPEG q80
 //!          ──> on_frame(Frame)
 //! ```
 //!
@@ -23,6 +23,7 @@ use image::imageops::{self, FilterType};
 use image::{GenericImageView, Rgba};
 use parking_lot::Mutex;
 use screencapturekit::cm::{CMSampleBuffer, CMSampleBufferExt, CMTime};
+use screencapturekit::screenshot_manager::SCScreenshotManager;
 use screencapturekit::shareable_content::SCShareableContent;
 use screencapturekit::shareable_content::SCWindow;
 use screencapturekit::stream::configuration::{PixelFormat, SCStreamConfiguration};
@@ -32,9 +33,11 @@ use screencapturekit::stream::sc_stream::SCStream;
 
 use super::{frame_hash_rows, Frame, FrameSource};
 
-/// Longest edge of the encoded frame: height is capped at 384 px, width
-/// follows aspect.
-const TARGET_HEIGHT: u32 = 384;
+/// Longest-side cap for the encoded frame: width is capped at 1600 px,
+/// height follows aspect. Screen reading needs legible text — the old
+/// 384 px height cap made on-screen text illegible and the vision model
+/// confabulated details. `Frame` widths below the cap pass through.
+const TARGET_WIDTH: u32 = 1600;
 /// fps → `minimum_frame_interval` seconds (8→0.125, 4→0.25, 2→0.5).
 /// The stream is event-driven so this only bounds rate; `fps.max(1)`
 /// guards a 0 write from dividing by zero.
@@ -88,9 +91,10 @@ impl GenericImageView for BgraView<'_> {
     }
 }
 
-/// Screen capture of the primary display. Create with [`MacosCapture::new`]
-/// (enumerates shareable content eagerly so permission failures surface at
-/// construction, not mid-stream), then drive via [`FrameSource`].
+/// Screen capture over a caller-built filter. Create with
+/// [`MacosCapture::for_display`] (primary display — enumerates shareable
+/// content eagerly so permission failures surface at construction, not
+/// mid-stream) or [`MacosCapture::new`], then drive via [`FrameSource`].
 pub struct MacosCapture {
     state: Mutex<CaptureState>,
 }
@@ -134,16 +138,31 @@ pub(crate) fn primary_display_filter() -> anyhow::Result<(SCContentFilter, u32, 
     Ok((filter, width, height))
 }
 
+/// One-shot screenshot of the primary display via
+/// `SCScreenshotManager` — the "read my screen" path when ambient
+/// recording is off. Same filter and encode path as the stream, so a
+/// single-shot `Frame` is indistinguishable from a ring frame.
+/// `Ok(None)` means the call succeeded but delivered no pixels.
+pub(crate) fn shot_fullscreen() -> anyhow::Result<Option<Frame>> {
+    let (filter, width, height) = primary_display_filter()?;
+    let config = SCStreamConfiguration::new()
+        .with_width(width)
+        .with_height(height)
+        .with_pixel_format(PixelFormat::BGRA)
+        .with_shows_cursor(false);
+    let sample = SCScreenshotManager::capture_sample_buffer(&filter, &config)
+        .map_err(|e| anyhow::anyhow!("screenshot failed: {e}"))?;
+    let Some(raw) = extract_raw(&sample) else {
+        return Ok(None);
+    };
+    Ok(encode_frame(&raw, 0))
+}
+
 impl MacosCapture {
-    /// Build the filter (primary display, our own windows excluded) and
+    /// Wrap a caller-built filter (primary display via
+    /// [`primary_display_filter`], or a picker result) with the shared
     /// stream configuration. Does not start capturing.
-    ///
-    /// # Errors
-    ///
-    /// Fails if screen-recording permission is missing or no display is
-    /// shareable.
-    pub fn new(fps: u32) -> anyhow::Result<Self> {
-        let (filter, width, height) = primary_display_filter()?;
+    pub fn new(filter: SCContentFilter, width: u32, height: u32, fps: u32) -> anyhow::Result<Self> {
         let config = SCStreamConfiguration::new()
             .with_width(width)
             .with_height(height)
@@ -153,7 +172,6 @@ impl MacosCapture {
             // Smallest allowed depth (3..=8): prefer dropping stale frames
             // over queueing them when the worker falls behind.
             .with_queue_depth(3);
-
         Ok(Self {
             state: Mutex::new(CaptureState {
                 filter,
@@ -161,6 +179,19 @@ impl MacosCapture {
                 running: None,
             }),
         })
+    }
+
+    /// The auto-start path: whole primary display, Marvis's own windows
+    /// excluded (a picker can't appear without user interaction).
+    ///
+    /// # Errors
+    ///
+    /// Fails if screen-recording permission is missing or no display is
+    /// shareable.
+    #[allow(dead_code)] // callers build filters via `primary_display_filter` + `new`; the manual test drives this
+    pub fn for_display(fps: u32) -> anyhow::Result<Self> {
+        let (filter, width, height) = primary_display_filter()?;
+        Self::new(filter, width, height, fps)
     }
 
     /// Whether the stream + worker are live — false after a failed `start`
@@ -265,6 +296,45 @@ fn extract_raw(sample: &CMSampleBuffer) -> Option<RawFrame> {
     })
 }
 
+/// BGRA → JPEG `Frame`: optional width-cap downscale, q80 encode, stamp.
+/// Shared by the stream worker and the one-shot screenshot so both
+/// produce identical `Frame`s. `hash` is the caller's dedupe hash (0
+/// for single-shots).
+fn encode_frame(raw: &RawFrame, hash: u64) -> Option<Frame> {
+    let view = BgraView {
+        data: &raw.data,
+        width: raw.width,
+        height: raw.height,
+        bytes_per_row: raw.bytes_per_row,
+    };
+    let mut jpeg = Vec::new();
+    let mut encoder = JpegEncoder::new_with_quality(&mut jpeg, JPEG_QUALITY);
+    let (out_w, out_h, encoded) = if raw.width > TARGET_WIDTH {
+        let out_h = (u64::from(raw.height) * u64::from(TARGET_WIDTH) / u64::from(raw.width)) as u32;
+        let out_h = out_h.max(1);
+        let resized = imageops::resize(&view, TARGET_WIDTH, out_h, FilterType::Triangle);
+        (TARGET_WIDTH, out_h, encoder.encode_image(&resized))
+    } else {
+        (raw.width, raw.height, encoder.encode_image(&view))
+    };
+    match encoded {
+        Ok(()) => Some(Frame {
+            jpeg,
+            width: out_w,
+            height: out_h,
+            ts: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0),
+            hash,
+        }),
+        Err(e) => {
+            log::warn!("jpeg encode failed ({out_w}x{out_h}): {e}");
+            None
+        }
+    }
+}
+
 /// Worker loop: dedupe by raw-BGRA hash, downscale, JPEG-encode, emit.
 /// Exits when `stop` is set or the sender disconnects.
 fn run_worker(
@@ -296,40 +366,11 @@ fn run_worker(
             continue; // changed-frames-only: identical screen, drop entirely
         }
 
-        let view = BgraView {
-            data: &raw.data,
-            width: raw.width,
-            height: raw.height,
-            bytes_per_row: raw.bytes_per_row,
-        };
-        let mut jpeg = Vec::new();
-        let mut encoder = JpegEncoder::new_with_quality(&mut jpeg, JPEG_QUALITY);
-        let (out_w, out_h, encoded) = if raw.height > TARGET_HEIGHT {
-            let out_w = ((u64::from(raw.width) * u64::from(TARGET_HEIGHT) / u64::from(raw.height))
-                as u32)
-                .max(1);
-            let resized = imageops::resize(&view, out_w, TARGET_HEIGHT, FilterType::Triangle);
-            (out_w, TARGET_HEIGHT, encoder.encode_image(&resized))
-        } else {
-            (raw.width, raw.height, encoder.encode_image(&view))
-        };
-
-        match encoded {
-            Ok(()) => {
-                last_hash = Some(hash);
-                on_frame(Frame {
-                    jpeg,
-                    width: out_w,
-                    height: out_h,
-                    ts: SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .map(|d| d.as_secs() as i64)
-                        .unwrap_or(0),
-                    hash,
-                });
-            }
-            // Leave last_hash untouched so the next identical frame retries.
-            Err(e) => log::warn!("jpeg encode failed ({out_w}x{out_h}): {e}"),
+        // Leave last_hash untouched on encode failure so the next
+        // identical frame retries (unchanged rule).
+        if let Some(frame) = encode_frame(&raw, hash) {
+            last_hash = Some(hash);
+            on_frame(frame);
         }
     }
 }
@@ -337,7 +378,7 @@ fn run_worker(
 #[cfg(test)]
 mod tests {
     use super::super::FrameSource;
-    use super::MacosCapture;
+    use super::{MacosCapture, RawFrame};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
     use std::time::Duration;
@@ -358,9 +399,39 @@ mod tests {
     }
 
     #[test]
+    fn encode_frame_caps_width_at_target() {
+        // 3200x2000 solid-black BGRA (bytes_per_row == width * 4).
+        let raw = RawFrame {
+            data: vec![0u8; 3200 * 2000 * 4],
+            width: 3200,
+            height: 2000,
+            bytes_per_row: 3200 * 4,
+        };
+        let frame = super::encode_frame(&raw, 0).expect("encode succeeds");
+        assert_eq!(frame.width, 1600);
+        assert_eq!(frame.height, 1000);
+        assert!(!frame.jpeg.is_empty());
+        assert_eq!(frame.hash, 0);
+    }
+
+    #[test]
+    fn encode_frame_passes_small_sources_through() {
+        let raw = RawFrame {
+            data: vec![0u8; 800 * 600 * 4],
+            width: 800,
+            height: 600,
+            bytes_per_row: 800 * 4,
+        };
+        let frame = super::encode_frame(&raw, 7).expect("encode succeeds");
+        assert_eq!((frame.width, frame.height), (800, 600));
+        assert_eq!(frame.hash, 7);
+    }
+
+    #[test]
     #[ignore = "requires screen-recording permission and a GUI session"]
     fn captures_frames_for_three_seconds() {
-        let capture = MacosCapture::new(4).expect("shareable content (screen permission granted?)");
+        let capture =
+            MacosCapture::for_display(4).expect("shareable content (screen permission granted?)");
         let count = Arc::new(AtomicUsize::new(0));
         let reporter = Arc::clone(&count);
         capture.start(Box::new(move |frame| {

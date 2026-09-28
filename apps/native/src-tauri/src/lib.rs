@@ -47,6 +47,7 @@ mod menus;
 mod paths;
 mod permissions;
 mod prompts;
+mod screen_read;
 mod sherpa_models;
 mod storage;
 pub mod stt;
@@ -56,15 +57,18 @@ mod voiceprint;
 mod windows;
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use parking_lot::Mutex;
+use screencapturekit::stream::content_filter::SCContentFilter;
+use serde::Serialize;
 use serde_json::json;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_liquid_glass::LiquidGlassExt;
 
 use ask::AskService;
 use capture::controller::{CaptureLifecycle, StartDecision, StopDecision};
-use capture::{FrameSource, MacosCapture, RingBuffer};
+use capture::{primary_display_filter, FrameSource, MacosCapture, RingBuffer};
 use config::Config;
 use dictation::{DictationEvent, DictationService};
 use hotkey::RegisteredHotkeys;
@@ -117,6 +121,14 @@ pub struct AppState {
     db: Arc<Db>,
     ring: Arc<Mutex<RingBuffer>>,
     capture: Mutex<Option<MacosCapture>>,
+    /// The settled-screen describer — fed by the capture callback and
+    /// started/stopped alongside capture, so the ambient `[vision]`
+    /// read only runs while frames actually flow.
+    screen_reader: Arc<screen_read::ScreenReader>,
+    /// The picker-selected scope reported by `capture:state` (`None` on
+    /// the auto primary-display path). Written under the `capture`
+    /// lock — it nests inside it, never the reverse.
+    capture_target: Mutex<Option<CaptureTarget>>,
     ask: Arc<AskService>,
     listen: Arc<ListenService>,
     dictation: Arc<DictationService>,
@@ -131,10 +143,12 @@ pub struct AppState {
     /// (enter/leave Main), and the `app:state` emit must be one critical
     /// section or two overlapping transitions can interleave (stale
     /// emit landing last, or hotkeys/capture from a dead gate state).
-    /// `capture_start` is the only other holder: its gate check +
-    /// `start_capture` must stay atomic against a concurrent
-    /// leave-transition. Both holders take locks in the order
-    /// `gate_transition` → `gate` → `capture` → `ring`, so they cannot
+    /// The other holders — `capture_start`, `toggle_capture`, and the
+    /// picker's `Picked` callback — keep their gate check + capture
+    /// start/stop atomic against a concurrent leave-transition the same
+    /// way. All holders take locks in the order
+    /// `gate_transition` → `gate` → `capture` → `ring`
+    /// (`capture_target` nests inside `capture`), so they cannot
     /// deadlock.
     gate_transition: Mutex<()>,
     /// Serializes `listen_start`/`dictation_start` end-to-end — the peer
@@ -158,13 +172,21 @@ pub struct AppState {
 }
 
 impl AppState {
-    /// The ask pipeline's borrow bundle: `db` clones the `Arc` (the
-    /// spawned stream outlives the call), the rest are short-lived
-    /// `&Mutex` borrows used only in pre-flight.
+    /// The ask pipeline's borrow bundle: `db`/`ring`/`reader` clone
+    /// their `Arc`s (the spawned stream outlives the call), the rest are
+    /// short-lived `&Mutex` borrows used only in pre-flight.
+    /// `capture_running` snapshots the capture slot so `resolve_screen`
+    /// knows whether ring frames are fresh.
     fn deps(&self) -> ask::Deps<'_> {
         ask::Deps {
             db: Arc::clone(&self.db),
-            ring: &self.ring,
+            ring: Arc::clone(&self.ring),
+            reader: Arc::clone(&self.screen_reader),
+            capture_running: self
+                .capture
+                .lock()
+                .as_ref()
+                .is_some_and(MacosCapture::is_running),
             keystore: &self.keystore,
             config: &self.config,
             pool: &self.pool,
@@ -213,6 +235,8 @@ impl AppState {
             db: Arc::new(Db::at(root.join("marvis.db")).expect("test db")),
             ring: Arc::new(Mutex::new(RingBuffer::new(RING_MAX_FRAMES, RING_MAX_BYTES))),
             capture: Mutex::new(None),
+            screen_reader: Arc::new(screen_read::ScreenReader::new()),
+            capture_target: Mutex::new(None),
             ask: Arc::new(AskService::new()),
             listen: Arc::new(ListenService::new()),
             dictation: Arc::new(DictationService::new()),
@@ -259,9 +283,9 @@ fn transition_gate(app: &AppHandle) {
     let state = app.state::<AppState>();
     // Serialize the whole transition: the gate read+swap, the Main
     // side-effects, and the `app:state` emit are one critical section.
-    // `capture_start` is the other `gate_transition` holder — both
-    // follow the field's documented lock order, so this cannot
-    // deadlock.
+    // `capture_start`, `toggle_capture`, and the picker's `Picked`
+    // callback are the other `gate_transition` holders — all follow
+    // the field's documented lock order, so this cannot deadlock.
     let _transition = state.gate_transition.lock();
     let new_gate = app_gate(&state);
     let old_gate = std::mem::replace(&mut *state.gate.lock(), new_gate);
@@ -282,7 +306,12 @@ fn transition_gate(app: &AppHandle) {
 fn enter_main(app: &AppHandle) {
     let state = app.state::<AppState>();
     if state.config.lock().recording.auto_screenshots {
-        start_capture(app);
+        match primary_display_filter() {
+            Ok((filter, w, h)) => {
+                start_capture(app, filter, w, h, None);
+            }
+            Err(e) => log::warn!("capture: display filter failed: {e}"),
+        }
     } else {
         // Still broadcast — listeners resync on every Main entry.
         let status = capture_snapshot(&state);
@@ -317,20 +346,33 @@ fn leave_main(app: &AppHandle) {
     state.pool.lock().hide_alert();
 }
 
-/// `{"running": bool, "frames": ring.len()}` — the capture status
-/// snapshot returned by the `capture_*` commands and carried by
-/// `capture:state`. Frame bytes are never serialized.
+/// The picker-selected capture scope shown by `capture:state` —
+/// `None` on the auto primary-display path.
+#[derive(Debug, Clone, Serialize)]
+pub struct CaptureTarget {
+    /// "display" | "window" | "app"
+    pub kind: &'static str,
+    pub label: String,
+}
+
+/// `{"running": bool, "frames": ring.len(), "target": CaptureTarget|null}`
+/// — the capture status snapshot returned by the `capture_*` commands
+/// and carried by `capture:state`. Frame bytes are never serialized.
 type CaptureStatus = serde_json::Value;
 
-/// Live `{"running", "frames"}` snapshot — the single serializer for
-/// the status contract.
+/// Live `{"running", "frames", "target"}` snapshot — the single
+/// serializer for the status contract.
 fn capture_snapshot(state: &AppState) -> CaptureStatus {
     let running = state
         .capture
         .lock()
         .as_ref()
         .is_some_and(MacosCapture::is_running);
-    json!({ "running": running, "frames": state.ring.lock().len() })
+    json!({
+        "running": running,
+        "frames": state.ring.lock().len(),
+        "target": state.capture_target.lock().clone(),
+    })
 }
 
 /// Broadcast `capture:state` to every window — fire-and-forget like
@@ -341,18 +383,29 @@ fn emit_capture_state(app: &AppHandle, status: &CaptureStatus) {
     refresh_tray_menu(app);
 }
 
-/// The one capture-start boundary — `enter_main` and the
-/// `capture_start` command share it. Idempotent: a live capture
+/// The one capture-start boundary — `enter_main`, the `capture_start`
+/// command, `toggle_capture`, and the picker's start share it (callers
+/// own filter construction; `target` is the picker-selected scope or
+/// `None` on the auto-display path). Idempotent: a live capture
 /// returns the current status untouched. Otherwise a fresh
-/// [`MacosCapture`] is built and started with the existing ring-push
-/// callback, then stored only when `is_running()` — a silently-failed
-/// start must not block a later retry. Every step warns and continues;
-/// `capture:state` carries the result.
-fn start_capture(app: &AppHandle) -> CaptureStatus {
+/// [`MacosCapture`] is built and started with a callback that feeds
+/// the screen reader ahead of the ring, then stored only when
+/// `is_running()` — a silently-failed start must not block a later
+/// retry. Every step warns and continues; `capture:state` carries the
+/// result.
+fn start_capture(
+    app: &AppHandle,
+    filter: SCContentFilter,
+    width: u32,
+    height: u32,
+    target: Option<CaptureTarget>,
+) -> CaptureStatus {
     let state = app.state::<AppState>();
-    // The configured frame rate is read before the capture lock so the
-    // config mutex is never held while capture state is touched.
-    let fps = state.config.lock().recording.fps;
+    // Config reads precede the capture lock (existing rule).
+    let (fps, read_interval_secs) = {
+        let cfg = state.config.lock();
+        (cfg.recording.fps, cfg.recording.read_interval_secs)
+    };
     {
         let mut slot = state.capture.lock();
         // A stored capture counts as running only while `is_running`
@@ -363,23 +416,64 @@ fn start_capture(app: &AppHandle) -> CaptureStatus {
             lifecycle.mark_running();
         }
         if lifecycle.start_decision() == StartDecision::Create {
-            match MacosCapture::new(fps) {
+            match MacosCapture::new(filter, width, height, fps) {
                 Ok(capture) => {
                     let ring = Arc::clone(&state.ring);
-                    capture.start(Box::new(move |frame| ring.lock().push(frame)));
+                    let reader = Arc::clone(&state.screen_reader);
+                    capture.start(Box::new(move |frame| {
+                        reader.note_frame(frame.clone());
+                        ring.lock().push(frame);
+                    }));
                     // Store only on success (`is_running` is false when
                     // SCStream rejected the handler or `start_capture`
                     // failed).
                     if capture.is_running() {
                         *slot = Some(capture);
+                        *state.capture_target.lock() = target;
                         lifecycle.mark_running();
                     } else {
                         log::warn!("gate: screen capture failed to start");
                     }
                 }
-                Err(e) => log::warn!("gate: screen capture failed to init: {e}"),
+                Err(e) => log::warn!("gate: capture init failed: {e}"),
             }
         }
+    }
+    // Background reader: resolve [vision] per read so provider changes
+    // take effect live; a missing vision config just skips reads.
+    if state
+        .capture
+        .lock()
+        .as_ref()
+        .is_some_and(MacosCapture::is_running)
+    {
+        let app2 = app.clone();
+        let describe: screen_read::Describer = Arc::new(move |frame| {
+            let app = app2.clone();
+            Box::pin(async move {
+                let state = app.state::<AppState>();
+                let vision = {
+                    let cfg = state.config.lock();
+                    let ks = state.keystore.lock();
+                    crate::vision_candidate(&cfg, &ks)
+                };
+                match vision {
+                    Some(v) => crate::screen_read::describe_screen(
+                        &*v.provider,
+                        &frame,
+                        &tokio_util::sync::CancellationToken::new(),
+                    )
+                    .await
+                    .map(|o| o.map(|r| r.full)),
+                    // No [vision] provider — skip the read quietly
+                    // (`Ok(None)` keeps the cache and never warns).
+                    None => Ok(None),
+                }
+            })
+        });
+        state
+            .screen_reader
+            .start(describe, Duration::from_secs(read_interval_secs.max(1)));
     }
     let status = capture_snapshot(&state);
     emit_capture_state(app, &status);
@@ -414,6 +508,8 @@ fn stop_capture(app: &AppHandle) -> CaptureStatus {
     if let Some(capture) = capture {
         capture.stop();
     }
+    state.screen_reader.stop();
+    *state.capture_target.lock() = None;
     let status = capture_snapshot(&state);
     emit_capture_state(app, &status);
     status
@@ -439,7 +535,12 @@ fn toggle_capture(app: &AppHandle) {
         log::warn!("toggle_capture dropped while gate != Main");
         return;
     }
-    start_capture(app);
+    match primary_display_filter() {
+        Ok((filter, w, h)) => {
+            start_capture(app, filter, w, h, None);
+        }
+        Err(e) => log::warn!("capture: display filter failed: {e}"),
+    }
 }
 
 /// The `window.bar_locked` write shared by the Lock menu item and the
@@ -569,7 +670,7 @@ fn deeplink_dispatch(app: &AppHandle) -> impl Fn(deeplink::Action) + Send + Sync
                 if let Some(bar) = bar {
                     let _ = bar.set_focus();
                 }
-                state.ask.send(&app, &state.deps(), &text);
+                state.ask.send(&app, &state.deps(), &text, false);
             } else {
                 // Not ready yet — if the bar is visible (onboarding done,
                 // permission pending) surface its gate card instead of
@@ -1118,9 +1219,11 @@ async fn model_list_available(app: AppHandle, provider: String) -> Vec<String> {
 // ---------------------------------------------------------------------------
 
 /// Fire an ask; returns after synchronous pre-flight — tokens stream to
-/// the `bar` window as `ask:*` events on a spawned task.
+/// the `bar` window as `ask:*` events on a spawned task. `withScreen`
+/// (optional) is the explicit attach flag — a screen read runs even when
+/// the text shows no intent.
 #[tauri::command]
-fn ask_send(app: AppHandle, text: String) {
+fn ask_send(app: AppHandle, text: String, with_screen: Option<bool>) {
     let state = app.state::<AppState>();
     // Crafted-invoke guard: the shipped UI gates sends behind `Main`,
     // but a crafted invoke during onboarding would otherwise proceed —
@@ -1129,7 +1232,9 @@ fn ask_send(app: AppHandle, text: String) {
         log::warn!("ask_send dropped while gate != Main");
         return;
     }
-    state.ask.send(&app, &state.deps(), &text);
+    state
+        .ask
+        .send(&app, &state.deps(), &text, with_screen.unwrap_or(false));
 }
 
 /// Regenerate the last answer — re-runs the active session's last user
@@ -1785,14 +1890,15 @@ fn permissions_open_prefs(section: String) -> Result<(), String> {
     permissions::open_prefs(&section).map_err(|e| e.to_string())
 }
 
-/// `{"running": bool, "frames": ring.len()}` — read-only; no emit.
+/// `{"running": bool, "frames": ring.len(), "target": CaptureTarget|null}`
+/// — read-only; no emit.
 #[tauri::command]
 fn capture_status(state: State<'_, AppState>) -> serde_json::Value {
     capture_snapshot(&state)
 }
 
 /// Idempotent capture start — the same boundary `enter_main` uses.
-/// Emits `capture:state`, then resolves to `{"running", "frames"}`.
+/// Emits `capture:state`, then resolves to `{"running", "frames", "target"}`.
 #[tauri::command]
 fn capture_start(app: AppHandle) -> serde_json::Value {
     let state = app.state::<AppState>();
@@ -1811,15 +1917,118 @@ fn capture_start(app: AppHandle) -> serde_json::Value {
         log::warn!("capture_start dropped while gate != Main");
         return capture_snapshot(&state);
     }
-    start_capture(&app)
+    match primary_display_filter() {
+        Ok((filter, w, h)) => start_capture(&app, filter, w, h, None),
+        Err(e) => {
+            log::warn!("capture: display filter failed: {e}");
+            capture_snapshot(&state)
+        }
+    }
 }
 
 /// Idempotent capture stop — the same boundary `leave_main` and app
 /// teardown use. Deliberately ungated: stopping must always be safe.
-/// Emits `capture:state`, then resolves to `{"running", "frames"}`.
+/// Emits `capture:state`, then resolves to `{"running", "frames", "target"}`.
 #[tauri::command]
 fn capture_stop(app: AppHandle) -> serde_json::Value {
     stop_capture(&app)
+}
+
+/// Idle-state record button: the native macOS content-sharing picker
+/// (window / display / application) — same UI Zoom shows. Marvis's own
+/// bundle id is excluded so it can never offer itself. Cancel is a
+/// silent no-op; `capture:state` reports the picked `target`.
+///
+/// The picker is a main-thread API (its config setters require it), so
+/// the command hops via `run_on_main_thread`; `show` is non-blocking
+/// and its `Send` callback fires later with the outcome.
+#[tauri::command]
+fn capture_pick_and_start(app: AppHandle) {
+    let state = app.state::<AppState>();
+    if *state.gate.lock() != Gate::Main {
+        log::warn!("capture_pick_and_start dropped while gate != Main");
+        return;
+    }
+    let app2 = app.clone();
+    if let Err(e) = app.run_on_main_thread(move || {
+        use screencapturekit::content_sharing_picker::*;
+        let Some(mut cfg) = SCContentSharingPickerConfiguration::try_new() else {
+            log::warn!("capture_pick_and_start: picker unavailable (macOS < 14)");
+            return;
+        };
+        cfg.set_allowed_picker_modes(&[
+            SCContentSharingPickerMode::SingleWindow,
+            SCContentSharingPickerMode::SingleDisplay,
+            SCContentSharingPickerMode::SingleApplication,
+        ]);
+        cfg.set_excluded_bundle_ids(&["com.getmarvis.marvis"]);
+        SCContentSharingPicker::show(&cfg, move |outcome| {
+            match outcome {
+                SCPickerOutcome::Picked(result) => {
+                    let (w, h) = result.pixel_size();
+                    let target = match result.source() {
+                        SCPickedSource::Window(t) => CaptureTarget {
+                            kind: "window",
+                            label: t,
+                        },
+                        SCPickedSource::Display(id) => CaptureTarget {
+                            kind: "display",
+                            label: format!("Display {id}"),
+                        },
+                        SCPickedSource::Application(n) => CaptureTarget {
+                            kind: "app",
+                            label: n,
+                        },
+                        SCPickedSource::Unknown => CaptureTarget {
+                            kind: "app",
+                            label: "Screen".into(),
+                        },
+                    };
+                    // The pick can land after a leave-Main transition ran
+                    // `stop_capture` — the invoke-time check can't see it.
+                    // Re-check under `gate_transition`, the same critical
+                    // section `capture_start` uses (lock order
+                    // `gate_transition` → `gate` → `capture`). try_lock:
+                    // this callback runs on the main thread, and a worker
+                    // holding `gate_transition` blocks on it via
+                    // `tray.set_menu` — parking here is an ABBA deadlock.
+                    // Contention means a transition is in flight, so
+                    // dropping the pick is correct.
+                    let state2 = app2.state::<AppState>();
+                    let Some(_transition) = state2.gate_transition.try_lock() else {
+                        log::warn!(
+                            "capture_pick_and_start: pick dropped — gate transition in flight"
+                        );
+                        return;
+                    };
+                    if *state2.gate.lock() != Gate::Main {
+                        log::warn!(
+                            "capture_pick_and_start: pick landed after gate left Main"
+                        );
+                        return;
+                    }
+                    // `start_capture` is idempotent while a capture lives —
+                    // a pick made over a running session must retarget, so
+                    // stop it first rather than silently keep the old scope.
+                    if state2
+                        .capture
+                        .lock()
+                        .as_ref()
+                        .is_some_and(MacosCapture::is_running)
+                    {
+                        stop_capture(&app2);
+                    }
+                    start_capture(&app2, result.filter(), w, h, Some(target));
+                }
+                SCPickerOutcome::Error(e) => {
+                    log::warn!("capture_pick_and_start: picker error: {e}");
+                }
+                SCPickerOutcome::Cancelled => {}
+            }
+        });
+    }) {
+        log::warn!("capture_pick_and_start: main-thread hop failed: {e}");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1903,7 +2112,9 @@ fn config_get(state: State<'_, AppState>) -> Config {
 /// `models.stt_provider` (`deepgram|whisper|sherpa`), and `models.stt_model`
 /// (a trimmed non-empty identifier), `recording.auto_screenshots` (bool),
 /// `recording.fps` (`8|4|2` — a write during a live capture restarts it
-/// so the new rate applies now), and `recording.summary_prompt` (string).
+/// so the new rate applies now), `recording.read_interval_secs` (u64
+/// ≥1 — minimum seconds between ambient screen reads; applies on the
+/// next capture start), and `recording.summary_prompt` (string).
 /// Provider order/switches/models have
 /// their own commands (`providers_reorder`,
 /// `provider_set_enabled`, `model_set_selected`). Persists `config.toml`
@@ -2054,7 +2265,12 @@ fn config_set(app: AppHandle, key: String, value: serde_json::Value) -> Result<C
         // A live session keeps its old cadence — rebuild it so the new
         // rate applies immediately.
         stop_capture(&app);
-        start_capture(&app);
+        match primary_display_filter() {
+            Ok((filter, w, h)) => {
+                start_capture(&app, filter, w, h, None);
+            }
+            Err(e) => log::warn!("capture: display filter failed: {e}"),
+        }
     }
     if onboarding_changed {
         // Gate first: `enter_main` starts capture while the
@@ -2161,6 +2377,8 @@ pub fn run() {
                 db: Arc::new(db),
                 ring: Arc::new(Mutex::new(RingBuffer::new(RING_MAX_FRAMES, RING_MAX_BYTES))),
                 capture: Mutex::new(None),
+                screen_reader: Arc::new(screen_read::ScreenReader::new()),
+                capture_target: Mutex::new(None),
                 ask: Arc::new(AskService::new()),
                 listen: Arc::new(ListenService::new()),
                 dictation: Arc::new(DictationService::new()),
@@ -2269,6 +2487,7 @@ pub fn run() {
             permissions_request_mic,
             permissions_open_prefs,
             capture_start,
+            capture_pick_and_start,
             capture_stop,
             capture_status,
             session_list,
@@ -2414,7 +2633,9 @@ mod tests {
             .find("state.gate_transition.lock()")
             .expect("capture_start must hold gate_transition across check + start");
         let gate_check = start_body.find("*state.gate.lock() != Gate::Main").unwrap();
-        let start_call = start_body.find("start_capture(&app)").unwrap();
+        let start_call = start_body
+            .find("start_capture(&app, filter, w, h, None)")
+            .expect("capture_start must resolve the display filter into start_capture");
         assert!(
             transition_lock < gate_check && transition_lock < start_call,
             "gate_transition must be taken before the gate check and start_capture"
@@ -2427,6 +2648,34 @@ mod tests {
         assert!(
             !stop_body.contains("Gate::Main"),
             "capture_stop must stay callable at any gate"
+        );
+    }
+
+    /// `capture_pick_and_start` mutates (the picked scope becomes the
+    /// live capture), so it keeps the same crafted-invoke gate guard as
+    /// `capture_start`, and the `Picked` callback re-checks the gate
+    /// under `gate_transition` — a pick must never light capture
+    /// outside `Main`. `try_lock`, not `lock`: the callback runs on the
+    /// main thread and a `gate_transition` holder blocks on it via
+    /// `tray.set_menu`, so parking here deadlocks. The body is bounded
+    /// on the next `fn` so the assertions can't leak into neighbouring
+    /// tests.
+    #[test]
+    fn capture_pick_and_start_is_gate_guarded() {
+        let src = include_str!("lib.rs");
+        let body = src
+            .split("fn capture_pick_and_start")
+            .nth(1)
+            .and_then(|rest| rest.split("\nfn ").next())
+            .expect("command exists");
+        assert!(
+            body.contains("*state.gate.lock() != Gate::Main"),
+            "picker start must be Main-gated"
+        );
+        assert!(
+            body.contains("gate_transition.try_lock()"),
+            "the picked callback must re-check the gate under gate_transition \
+             via try_lock (main-thread callback must never park on it)"
         );
     }
 
@@ -2530,6 +2779,29 @@ mod tests {
         // Fresh dir → onboarding isn't done, so the gate can't be `Main`
         // even if this CI machine happens to have screen permission.
         assert_eq!(app_gate(&state), Gate::NeedsPermission);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// The `capture:state` contract carries the picker-selected scope:
+    /// `target` is `null` on the auto primary-display path and the
+    /// `{"kind","label"}` pair after a picker selection — the picker's
+    /// status UI (Task 7) keys off exactly this shape.
+    #[test]
+    fn capture_snapshot_serializes_the_picker_target() {
+        let tmp = tmp_dir();
+        let state = AppState::for_test(&tmp);
+        let snap = capture_snapshot(&state);
+        assert_eq!(snap["running"], false);
+        assert_eq!(snap["frames"], 0);
+        assert!(snap["target"].is_null(), "auto path reports null target");
+
+        *state.capture_target.lock() = Some(CaptureTarget {
+            kind: "window",
+            label: "Finder".into(),
+        });
+        let snap = capture_snapshot(&state);
+        assert_eq!(snap["target"]["kind"], "window");
+        assert_eq!(snap["target"]["label"], "Finder");
         let _ = std::fs::remove_dir_all(&tmp);
     }
 

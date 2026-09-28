@@ -11,6 +11,7 @@
 pub(crate) mod controller;
 pub(crate) mod macos;
 pub(crate) use macos::primary_display_filter;
+pub(crate) use macos::shot_fullscreen;
 pub use macos::MacosCapture;
 
 use std::collections::VecDeque;

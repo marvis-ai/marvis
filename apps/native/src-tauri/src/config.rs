@@ -190,6 +190,16 @@ pub(crate) fn apply_recording_config(
             recording.fps = fps as u32;
             Ok(true)
         }
+        "recording.read_interval_secs" => {
+            let secs = value
+                .as_u64()
+                .ok_or("recording.read_interval_secs must be a number")?;
+            if secs < 1 {
+                return Err("recording.read_interval_secs must be >= 1".into());
+            }
+            recording.read_interval_secs = secs;
+            Ok(true)
+        }
         "recording.summary_prompt" => {
             recording.summary_prompt = value
                 .as_str()
@@ -223,6 +233,9 @@ pub struct RecordingPrefs {
     pub auto_screenshots: bool,
     /// Screen frame-rate cap: 8 | 4 | 2 fps.
     pub fps: u32,
+    /// Minimum seconds between background screen reads (settle gate is
+    /// fixed at ~1s); min 1.
+    pub read_interval_secs: u64,
     /// The summary focus instruction appended to the summary system
     /// prompt (template text or custom); `""` reads as Meeting.
     #[serde(skip_serializing_if = "String::is_empty")]
@@ -234,6 +247,7 @@ impl Default for RecordingPrefs {
         Self {
             auto_screenshots: true,
             fps: 4,
+            read_interval_secs: 3,
             summary_prompt: String::new(),
         }
     }
@@ -493,6 +507,7 @@ impl Config {
         if !matches!(self.recording.fps, 2 | 4 | 8) {
             self.recording.fps = 4;
         }
+        self.recording.read_interval_secs = self.recording.read_interval_secs.max(1);
         self.recording.summary_prompt = self.recording.summary_prompt.trim().to_string();
     }
 
@@ -1037,6 +1052,26 @@ mod tests {
             validate_main_language("cn").unwrap_err(),
             "unknown language \"cn\""
         );
+    }
+
+    #[test]
+    fn recording_read_interval_defaults_and_sets() {
+        let prefs = RecordingPrefs::default();
+        assert_eq!(prefs.read_interval_secs, 3);
+        let mut cfg = Config::default();
+        assert!(apply_recording_config(
+            &mut cfg.recording,
+            "recording.read_interval_secs",
+            &serde_json::json!(5)
+        )
+        .unwrap());
+        assert_eq!(cfg.recording.read_interval_secs, 5);
+        assert!(apply_recording_config(
+            &mut cfg.recording,
+            "recording.read_interval_secs",
+            &serde_json::json!(0)
+        )
+        .is_err());
     }
 
     #[test]

@@ -103,17 +103,21 @@ export const EV_BAR_START_LISTEN = 'bar:start-listen';
  * shared menu's History item. The webview pins the history section and
  * opens the card. */
 export const EV_BAR_SHOW_HISTORY = 'bar:show-history';
-/** Broadcast when a frame exists but screen permission was revoked
- * mid-session (ask.rs) — the bar flips back to its permission card. */
+/** Emitted to the bar when a frame exists but screen permission was
+ * revoked mid-session (ask.rs) — it flips back to its permission card. */
 export const EV_CAPTURE_PERMISSION_NEEDED = 'capture:permission-needed'; // { permission: 'screen' }
 /** Broadcast to every window after each capture start/stop transition
  * (lib.rs `emit_capture_state` — fired by the `capture_start`/
- * `capture_stop` commands, gate `enter_main`/`leave_main`, and app
- * teardown); payload = `CaptureStatePayload` `{ running, frames }`. */
+ * `capture_stop`/`capture_pick_and_start` commands, gate
+ * `enter_main`/`leave_main`, and app teardown); payload =
+ * `CaptureStatePayload` `{ running, frames, target }`. */
 export const EV_CAPTURE_STATE = 'capture:state';
 export interface CaptureStatePayload {
   running: boolean;
   frames: number;
+  /** The picker-selected capture scope — `null` on the auto
+   *  primary-display path and after a stop. */
+  target: { kind: 'display' | 'window' | 'app'; label: string } | null;
 }
 /** Broadcast after every successful `config_set` — payload is the full
  * `Config`, so windows re-render without a second `config_get`. */

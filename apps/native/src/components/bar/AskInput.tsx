@@ -2,9 +2,10 @@ import type { ChangeEvent, RefObject, SyntheticEvent } from 'react';
 import { cn } from '@/lib/classes';
 
 /** The Ask field — a growing textarea shared by the input pill and the
- *  card header. Enter submits (Cmd+Enter too — the send already attaches
- *  the latest screen frame server-side); Shift+Enter is the textarea's
- *  default newline. `onChange`/`onSelect` feed the dictation tracker. */
+ *  card header. Enter submits; Cmd/Ctrl+Enter submits with a forced
+ *  screen read (plain Enter submits normally); Shift+Enter is the
+ *  textarea's default newline. `onChange`/`onSelect` feed the dictation
+ *  tracker. */
 export const AskInput = ({
   ref,
   value,
@@ -25,7 +26,7 @@ export const AskInput = ({
   onChange: (e: ChangeEvent<HTMLTextAreaElement>) => void;
   onSelect: (e: SyntheticEvent<HTMLTextAreaElement>) => void;
   onFocus: () => void;
-  onSubmit: () => void;
+  onSubmit: (withScreen: boolean) => void;
 }) => (
   <textarea
     ref={ref}
@@ -34,7 +35,7 @@ export const AskInput = ({
     onKeyDown={(e) => {
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
-        onSubmit();
+        onSubmit(e.metaKey || e.ctrlKey);
       }
     }}
     onChange={onChange}

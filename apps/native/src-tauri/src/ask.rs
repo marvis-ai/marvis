@@ -1,15 +1,18 @@
-//! `ask` — question + latest screen frame → streaming LLM → persisted.
+//! `ask` — question + optional screen material → streaming LLM → persisted.
 //!
 //! Pipeline (spec §Ask): [`AskService::send`] expands the card,
 //! resolves the FAILOVER CHAIN (`providers.order` minus disabled/unusable
-//! — see `provider_candidates` in lib.rs), grabs the newest
-//! [`RingBuffer`] frame (`None` → text-only), then tries each candidate
-//! in turn: a failed provider logs and hands off to the next; only when
-//! every candidate fails does `ask:error` fire. When a screen reader is
-//! configured (`[vision]` — see `vision_candidate` in lib.rs), the frame
-//! goes to it FIRST: its text description replaces the image and the
-//! chain answers over a `<screen_context>` block, so chat providers never need
-//! image support; a failed read falls back to attaching the frame.
+//! — see `provider_candidates` in lib.rs), then [`resolve_screen`] picks
+//! the run's screen material by the truth table: recording ON → the
+//! reader's cached description (with `[vision]` — see `vision_candidate`
+//! in lib.rs) or the freshest [`RingBuffer`] frame; recording OFF with
+//! screen intent (`with_screen` flag, `looks_like_screen_intent`, or the
+//! screen-only button) → a one-shot screenshot, described inline when a
+//! reader is configured else attached raw; OFF without intent →
+//! text-only. Each candidate then streams in turn: a failed provider
+//! logs and hands off to the next; only when every candidate fails does
+//! `ask:error` fire. A text description rides a `<screen_context>`
+//! block, so chat providers never need image support.
 //! Both sides of the exchange land in the `ask` session's `messages`
 //! rows (the user row persists once, before the first attempt). A provider
 //! `MultimodalUnsupported` rejection retries once without the image
@@ -29,19 +32,20 @@
 //! - `ask:error` `{"message": ..., "needs_setup": bool?}` on failure —
 //!   `needs_setup` when the chain was empty (no usable provider at all).
 //!
-//! Broadcast (all windows): `capture:permission-needed` when a frame
-//! exists but screen permission was revoked mid-session — the ring's
-//! stale frame is dropped and the ask continues text-only.
+//! Broadcast (to the `bar` window, the toast's only consumer):
+//! `capture:permission-needed` when a ring frame exists but screen
+//! permission was revoked mid-session — the stale frame is dropped and
+//! the ask continues text-only.
 //!
 //! Wiring note for Task 14: `send`/`send_screen_only`/`close` take a
 //! [`Deps`] bundle of `AppState` fields so this module never names the
-//! not-yet-existing `AppState` type. `deps.db` must be an [`Arc`] — the
-//! stream runs on a spawned task that outlives the command call — and
-//! `AppState.ask` must be an `Arc<AskService>` (all fields are
-//! interior-mutable; the spawned task keeps a share). After synchronous
-//! pre-flight, real work runs inside `tauri::async_runtime::spawn` so the
-//! invoking command handler returns immediately instead of blocking on
-//! an LLM stream.
+//! not-yet-existing `AppState` type. `deps.db`/`deps.ring`/`deps.reader`
+//! must be [`Arc`]s — the stream runs on a spawned task that outlives the
+//! command call — and `AppState.ask` must be an `Arc<AskService>` (all
+//! fields are interior-mutable; the spawned task keeps a share). After
+//! synchronous pre-flight, real work runs inside
+//! `tauri::async_runtime::spawn` so the invoking command handler returns
+//! immediately instead of blocking on an LLM stream.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -55,7 +59,8 @@ use crate::capture::{Frame, RingBuffer};
 use crate::config::Config;
 use crate::keystore::Keystore;
 use crate::llm::{ChatMessage, LlmError, Provider, Role, StreamReply, TokenUsage};
-use crate::prompts::{live_system_prompt_for, live_user_prompt, screen_prompt};
+use crate::prompts::{live_system_prompt_for, live_user_prompt};
+use crate::screen_read;
 use crate::storage::{Db, MessageMeta, Transcript};
 use crate::windows::{WindowPool, BAR_LABEL};
 use crate::ProviderCandidate;
@@ -95,12 +100,18 @@ impl AskState {
 }
 
 /// The `AppState` fields the ask pipeline needs, bundled so this module
-/// compiles before `AppState` exists. `db` is an owned `Arc` (the spawned
-/// stream task outlives the call); the rest are locked only during
-/// synchronous pre-flight, so plain `&Mutex` borrows suffice.
+/// compiles before `AppState` exists. `db`/`ring`/`reader` are owned
+/// `Arc`s (the spawned stream task outlives the call); the rest are
+/// locked only during synchronous pre-flight, so plain `&Mutex` borrows
+/// suffice.
 pub struct Deps<'a> {
     pub db: Arc<Db>,
-    pub ring: &'a Mutex<RingBuffer>,
+    pub ring: Arc<Mutex<RingBuffer>>,
+    /// The ambient screen reader — `resolve_screen` serves its cached
+    /// context while recording runs.
+    pub reader: Arc<screen_read::ScreenReader>,
+    /// `state.capture` is live — ring frames are fresh.
+    pub capture_running: bool,
     pub keystore: &'a Mutex<Keystore>,
     pub config: &'a Mutex<Config>,
     pub pool: &'a Mutex<WindowPool>,
@@ -161,20 +172,30 @@ impl AskService {
         })
     }
 
-    /// Ask a free-text question. A send while `Loading`/`Streaming` is
-    /// ignored (warn-logged) rather than cancel-then-send — the in-flight
-    /// stream keeps running.
+    /// Ask a free-text question. `with_screen` is the explicit attach
+    /// flag (`Cmd+Enter`/`withScreen` invoke arg) — it forces a screen
+    /// read regardless of the text's intent heuristic. A send while
+    /// `Loading`/`Streaming` is ignored (warn-logged) rather than
+    /// cancel-then-send — the in-flight stream keeps running.
     ///
     /// Returns after synchronous pre-flight; the stream itself runs on a
     /// `tauri::async_runtime::spawn` task so the calling command handler
     /// never blocks on the LLM.
-    pub fn send(self: &Arc<Self>, app: &AppHandle, deps: &Deps<'_>, text: &str) {
-        self.kick(app, deps, text, false, false);
+    pub fn send(
+        self: &Arc<Self>,
+        app: &AppHandle,
+        deps: &Deps<'_>,
+        text: &str,
+        with_screen: bool,
+    ) {
+        self.kick(app, deps, text, with_screen, false, false);
     }
 
-    /// The camera button's screen-only ask: fixed prompt, frame REQUIRED.
+    /// The camera button's screen-only ask: fixed prompt, screen
+    /// REQUIRED — a failed one-shot errors instead of degrading to
+    /// text-only.
     pub fn send_screen_only(self: &Arc<Self>, app: &AppHandle, deps: &Deps<'_>) {
-        self.kick(app, deps, SCREEN_ONLY_PROMPT, true, false);
+        self.kick(app, deps, SCREEN_ONLY_PROMPT, true, true, false);
     }
 
     /// Regenerate the last answer: re-runs the active ask session's last
@@ -198,7 +219,7 @@ impl AskService {
             log::warn!("ask::retry: no user turn to regenerate");
             return;
         };
-        self.kick(app, deps, &text, false, true);
+        self.kick(app, deps, &text, false, false, true);
     }
 
     /// `ask_close`: cancel the in-flight stream (its `select!` arm emits
@@ -216,14 +237,16 @@ impl AskService {
     }
 
     /// Shared pre-flight + spawn behind `send`/`send_screen_only`/`retry`.
-    /// `frame_required` is the screen-only variant's no-frame→error rule;
-    /// `regenerate` is `retry`'s re-ask-the-last-turn mode.
+    /// `with_screen` is the explicit attach flag; `screen_required` is
+    /// the screen-only variant's failed-shot→error rule; `regenerate` is
+    /// `retry`'s re-ask-the-last-turn mode.
     fn kick(
         self: &Arc<Self>,
         app: &AppHandle,
         deps: &Deps<'_>,
         text: &str,
-        frame_required: bool,
+        with_screen: bool,
+        screen_required: bool,
         regenerate: bool,
     ) {
         let gen = {
@@ -274,31 +297,24 @@ impl AskService {
                 }),
             );
         }
-        let mut frame = deps.ring.lock().latest();
-        // Mid-session screen-permission revocation: SCStream stops
-        // delivering but the ring keeps serving its last frames — a
-        // stale screenshot silently shipped is worse than no image.
-        // Emit the spec'd signal and answer text-only instead.
-        if frame.is_some() && !crate::permissions::screen_status() {
-            let _ = app.emit(
-                "capture:permission-needed",
-                json!({ "permission": "screen" }),
-            );
-            frame = None;
-        }
-        if frame_required && frame.is_none() {
-            return self.pre_spawn_error(
-                app,
-                text,
-                json!({"message": "No frame captured — check screen permission"}),
-            );
-        }
-
         let cancel = self.cancel.lock().clone();
         let svc = Arc::clone(self);
         let app = app.clone();
         let db = Arc::clone(&deps.db);
         let text = text.to_string();
+        // The `resolve_screen` inputs — computed here so the spawned
+        // task owns plain values/`Arc`s (`deps` is a borrow that dies
+        // with this call). `needs_screen` folds every screen trigger:
+        // explicit flag, screen-only, the text's intent heuristic, or a
+        // live recording.
+        let needs_screen = with_screen
+            || screen_required
+            || screen_read::looks_like_screen_intent(&text)
+            || deps.capture_running;
+        let read_interval_secs = deps.config.lock().recording.read_interval_secs;
+        let reader = Arc::clone(&deps.reader);
+        let ring = Arc::clone(&deps.ring);
+        let capture_running = deps.capture_running;
         tauri::async_runtime::spawn(async move {
             // Outgoing events also fold into Rust-side state — but only
             // while this run is the current generation; a cancelled
@@ -326,13 +342,23 @@ impl AskService {
                 svc.observe(name, &payload);
                 let _ = app.emit_to(BAR_LABEL, name, payload);
             };
+            let screen_input = ScreenInput {
+                reader: &reader,
+                ring: &ring,
+                capture_running,
+                needs_screen,
+                required: screen_required,
+                read_interval_secs,
+                screen_permission: crate::permissions::screen_status,
+                shot: crate::capture::shot_fullscreen,
+            };
             let _ = send_chain(
                 candidates,
                 vision,
                 db.as_ref(),
                 &emit,
                 &text,
-                frame.as_ref(),
+                &screen_input,
                 &cancel,
                 fresh_session,
                 regenerate,
@@ -342,7 +368,7 @@ impl AskService {
         });
     }
 
-    /// Early-exit error (empty provider chain, no frame):
+    /// Early-exit error (empty provider chain):
     /// the busy check already flipped state to Loading — emit the same
     /// `ask:state{loading}` → `ask:error` → `ask:state{idle}` sequence
     /// `send_with`'s failure path uses (the `loading` carries the
@@ -421,6 +447,11 @@ impl Default for AskService {
 /// row instead of persisting a new one, and the rejected reply's row is
 /// deleted — the stream's spend (vision read included) lands on the
 /// replacement row, which `ask:done` also reports.
+///
+/// `screen_input` feeds [`resolve_screen`], which runs AFTER the
+/// `loading` emit so the card shows busy during an inline read. Its
+/// `Err` ends the run: `"cancelled"` → `idle` only (no failover may
+/// open a new request), anything else → `ask:error` + `idle`.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn send_chain(
     candidates: Vec<ProviderCandidate>,
@@ -428,7 +459,7 @@ pub(crate) async fn send_chain(
     db: &Db,
     emit: &(dyn Fn(&str, serde_json::Value) + Send + Sync),
     text: &str,
-    frame: Option<&Frame>,
+    screen_input: &ScreenInput<'_>,
     cancel: &CancellationToken,
     fresh_session: bool,
     regenerate: bool,
@@ -464,42 +495,33 @@ pub(crate) async fn send_chain(
     }
     emit(EV_STATE, json!({"state": "loading", "question": text}));
 
-    // A configured screen reader intercepts the frame: it describes the
-    // screen as text and the chain answers over the description — chat
-    // providers that can't see images never receive one. A failed read
-    // falls back to attaching the frame to the chain directly (which
-    // keeps its own text-only retry on a multimodal rejection).
-    let mut frame = frame;
-    let mut screen: Option<String> = None;
-    // The turn's spend = vision read + the answering attempt (a failed
-    // candidate's usage is unknowable — errors carry none).
-    let mut usage = TokenUsage::default();
-    if let (Some(f), Some(vis)) = (frame, vision.as_ref()) {
-        match describe_screen(&*vis.provider, f, cancel).await {
-            StreamOutcome::Done(reply) => {
-                screen = Some(reply.full);
-                if let Some(u) = reply.usage {
-                    usage.add(&u);
-                }
-                frame = None;
-            }
-            // Same rule as a mid-stream cancel: the user asked to stop,
-            // so no chain attempt may start a new request.
-            StreamOutcome::Cancelled => {
+    // The screen-material truth table (spec §Ask flow): cached context /
+    // ring frame / inline one-shot describe / raw frame / none. A failed
+    // REQUIRED read ends the run as ask:error; a cancel stops it cold.
+    let resolved =
+        match resolve_screen(screen_input, vision.as_ref(), emit, cancel).await {
+            Ok(r) => r,
+            Err(msg) if msg == "cancelled" => {
                 emit(EV_STATE, json!({"state": "idle"}));
                 return Err(LlmError::Http {
                     status: 0,
-                    message: "cancelled".to_string(),
+                    message: "cancelled".into(),
                 });
             }
-            StreamOutcome::Failed(e) => {
-                log::warn!(
-                    "ask: vision read via {} failed ({e}); attaching the frame to the chain",
-                    vis.id
-                );
+            Err(msg) => {
+                emit(EV_ERROR, json!({ "message": msg }));
+                emit(EV_STATE, json!({"state": "idle"}));
+                return Err(LlmError::Http { status: 0, message: msg });
             }
-        }
-    }
+        };
+    let (frame, screen) = match resolved.0 {
+        Some(ScreenMaterial::Text(t)) => (None, Some(t)),
+        Some(ScreenMaterial::Frame(f)) => (Some(f), None),
+        None => (None, None),
+    };
+    // The turn's spend = vision read + the answering attempt (a failed
+    // candidate's usage is unknowable — errors carry none).
+    let mut usage = resolved.1;
 
     let mut last_err: Option<LlmError> = None;
     for (i, cand) in candidates.iter().enumerate() {
@@ -514,7 +536,7 @@ pub(crate) async fn send_chain(
             &history,
             &listen_history,
             text,
-            frame,
+            frame.as_ref(),
             screen.as_deref(),
             cancel,
             language,
@@ -569,6 +591,142 @@ pub(crate) async fn send_chain(
     Err(e)
 }
 
+/// What the ask chain attaches: the truth table's three outcomes.
+pub(crate) enum ScreenMaterial {
+    /// Cached or inline-read description → `<screen_context>` text.
+    Text(String),
+    /// Raw JPEG frame → image part (no vision configured, or the
+    /// inline read failed).
+    Frame(Frame),
+}
+
+/// Everything `resolve_screen` needs — bundled so `send_chain` keeps
+/// one param instead of seven. No `AppHandle`: side-effects are injected
+/// seams so the truth table is unit-testable.
+pub(crate) struct ScreenInput<'a> {
+    pub reader: &'a screen_read::ScreenReader,
+    pub ring: &'a Mutex<RingBuffer>,
+    /// `state.capture` is live — ring frames are fresh.
+    pub capture_running: bool,
+    /// with_screen || screen_required || looks_like_screen_intent(text)
+    pub needs_screen: bool,
+    /// screen_only: a failed one-shot errors instead of degrading.
+    pub required: bool,
+    pub read_interval_secs: u64,
+    /// `crate::permissions::screen_status` in prod; stubbed in tests.
+    pub screen_permission: fn() -> bool,
+    /// `crate::capture::shot_fullscreen` in prod; stubbed in tests.
+    pub shot: fn() -> anyhow::Result<Option<Frame>>,
+}
+
+/// Unix seconds — same `SystemTime` pattern as `encode_frame`/
+/// `seed_context`; the cached-context age annotation needs it.
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// The screen-material truth table (spec §Ask flow):
+/// recording ON  → cached context (vision) / ring frame (no vision);
+/// recording OFF + intent → one-shot → inline describe or raw attach;
+/// OFF + no intent → None. `Err` = required shot failed → ask:error.
+/// `emit` is the ask task's gen-guarded sender — reused for the
+/// `capture:permission-needed` broadcast (it targets the bar window,
+/// which is the toast's only consumer).
+pub(crate) async fn resolve_screen(
+    input: &ScreenInput<'_>,
+    vision: Option<&ProviderCandidate>,
+    emit: &(dyn Fn(&str, serde_json::Value) + Send + Sync),
+    cancel: &CancellationToken,
+) -> Result<(Option<ScreenMaterial>, TokenUsage), String> {
+    let mut usage = TokenUsage::default();
+    if input.capture_running {
+        let material = if vision.is_some() {
+            input.reader.context().map(|c| {
+                let age = unix_now() - c.ts;
+                let text = if age > (input.read_interval_secs * 2) as i64 {
+                    format!("{}\n(captured ~{}s ago)", c.text, age)
+                } else {
+                    c.text
+                };
+                ScreenMaterial::Text(text)
+            })
+        } else {
+            // No vision reader: attach the freshest ring frame.
+            // Permission revoked mid-session → drop the stale frame and
+            // warn the UI.
+            let frame = input.ring.lock().latest();
+            if frame.is_some() && !(input.screen_permission)() {
+                emit(
+                    "capture:permission-needed",
+                    json!({ "permission": "screen" }),
+                );
+                None
+            } else {
+                frame.map(ScreenMaterial::Frame)
+            }
+        };
+        // `required` (screen-only) means the ON row MUST produce
+        // material — empty cache / empty or permission-dropped ring is
+        // the pre-redesign "No frame captured" → ask:error.
+        if material.is_none() && input.required {
+            return Err(
+                "No screen material captured — check screen permission"
+                    .into(),
+            );
+        }
+        return Ok((material, usage));
+    }
+    if !input.needs_screen {
+        return Ok((None, usage));
+    }
+    // One-shot: SCScreenshotManager is a sync Cocoa call — keep it off
+    // the async executor.
+    let frame = match tokio::task::spawn_blocking(input.shot).await {
+        Ok(Ok(Some(f))) => f,
+        Ok(Ok(None)) | Ok(Err(_)) | Err(_) => {
+            // A failed shot with revoked permission is what the
+            // pre-redesign pre-flight check surfaced — keep the toast
+            // emit ahead of the error.
+            if !(input.screen_permission)() {
+                emit(
+                    "capture:permission-needed",
+                    json!({ "permission": "screen" }),
+                );
+            }
+            // The ask explicitly wanted the screen — a text-only
+            // fallback would answer blind (the confabulation failure
+            // this redesign exists to kill).
+            return Err(
+                "Screenshot failed — check screen permission".into(),
+            );
+        }
+    };
+    if let Some(vis) = vision {
+        let read = crate::screen_read::describe_screen(
+            &*vis.provider,
+            &frame,
+            cancel,
+        )
+        .await;
+        match read {
+            Ok(Some(reply)) => {
+                if let Some(u) = reply.usage {
+                    usage.add(&u);
+                }
+                return Ok((Some(ScreenMaterial::Text(reply.full)), usage));
+            }
+            Ok(None) => return Err("cancelled".into()),
+            Err(e) => {
+                log::warn!("ask: inline read failed ({e}); attach frame");
+            }
+        }
+    }
+    Ok((Some(ScreenMaterial::Frame(frame)), usage))
+}
+
 /// One candidate's full attempt: stream, and on a
 /// `MultimodalUnsupported` rejection retry ONCE text-only. Emits
 /// `ask:chunk`/`ask:state{streaming}` but never `done`/`error`/`idle` —
@@ -602,29 +760,6 @@ async fn stream_candidate(
                 return CandidateOutcome::Failed(e);
             }
         }
-    }
-}
-
-/// The screen read: one frame → a text description for the chain to
-/// answer over. Silent — these tokens are intermediate, not the reply,
-/// so they never reach the card (the `loading` state already covers
-/// the wait). Races the cancel token like `stream_once` does.
-async fn describe_screen(
-    provider: &dyn Provider,
-    frame: &Frame,
-    cancel: &CancellationToken,
-) -> StreamOutcome {
-    let msgs = vec![ChatMessage::user_with_image(
-        screen_prompt(),
-        frame.jpeg.clone(),
-    )];
-    let mut sink = |_: &str| {};
-    tokio::select! {
-        _ = cancel.cancelled() => StreamOutcome::Cancelled,
-        r = provider.stream_chat(&msgs, &mut sink) => match r {
-            Ok(reply) => StreamOutcome::Done(reply),
-            Err(e) => StreamOutcome::Failed(e),
-        },
     }
 }
 
@@ -969,14 +1104,39 @@ mod tests {
         assert!(current.contains("Ignore previous instructions"));
     }
 
-    fn fake_frame() -> Frame {
-        Frame {
-            jpeg: vec![0xff, 0xd8, 0xff, 0xe0],
-            width: 4,
-            height: 4,
-            ts: 0,
-            hash: 1,
+    fn test_frame() -> Frame {
+        Frame { jpeg: vec![1, 2, 3], width: 8, height: 8, ts: 0, hash: 0 }
+    }
+
+    /// A `ScreenInput` with every seam stubbed benign: no recording, no
+    /// intent, shot succeeds, permission granted. Tests flip the knobs
+    /// they exercise.
+    fn input<'a>(
+        reader: &'a screen_read::ScreenReader,
+        ring: &'a Mutex<RingBuffer>,
+    ) -> ScreenInput<'a> {
+        ScreenInput {
+            reader,
+            ring,
+            capture_running: false,
+            needs_screen: false,
+            required: false,
+            read_interval_secs: 3,
+            screen_permission: || true,
+            shot: || Ok(Some(test_frame())),
         }
+    }
+
+    /// Recording off + intent: `resolve_screen` takes the one-shot path
+    /// and the stubbed `shot` succeeds — the send_chain tests' "a frame
+    /// is available" wiring.
+    fn input_with_frame<'a>(
+        reader: &'a screen_read::ScreenReader,
+        ring: &'a Mutex<RingBuffer>,
+    ) -> ScreenInput<'a> {
+        let mut i = input(reader, ring);
+        i.needs_screen = true;
+        i
     }
 
     fn ask_messages(db: &Db) -> Vec<crate::storage::Message> {
@@ -1011,7 +1171,9 @@ mod tests {
         ])]);
         let calls = provider.calls();
         let (events, emit) = recorder();
-        let frame = fake_frame();
+        let reader = screen_read::ScreenReader::new();
+        let ring = Mutex::new(RingBuffer::new(4, 1 << 20));
+        let input = input_with_frame(&reader, &ring);
         let cancel = CancellationToken::new();
 
         let full = send_chain(
@@ -1020,7 +1182,7 @@ mod tests {
             &db,
             &emit,
             "what is this?",
-            Some(&frame),
+            &input,
             &cancel,
             false,
             false,
@@ -1079,6 +1241,9 @@ mod tests {
         let first_calls = first.calls();
         let second_calls = second.calls();
         let (events, emit) = recorder();
+        let reader = screen_read::ScreenReader::new();
+        let ring = Mutex::new(RingBuffer::new(4, 1 << 20));
+        let input = input(&reader, &ring);
         let cancel = CancellationToken::new();
 
         let full = send_chain(
@@ -1087,7 +1252,7 @@ mod tests {
             &db,
             &emit,
             "q",
-            None,
+            &input,
             &cancel,
             false,
             false,
@@ -1134,6 +1299,9 @@ mod tests {
             message: "boom".into(),
         })]);
         let (events, emit) = recorder();
+        let reader = screen_read::ScreenReader::new();
+        let ring = Mutex::new(RingBuffer::new(4, 1 << 20));
+        let input = input(&reader, &ring);
         let cancel = CancellationToken::new();
 
         let err = send_chain(
@@ -1142,7 +1310,7 @@ mod tests {
             &db,
             &emit,
             "q",
-            None,
+            &input,
             &cancel,
             false,
             false,
@@ -1175,6 +1343,9 @@ mod tests {
         let second = MockProvider::new(vec![Behavior::Tokens(vec!["nope".into()])]);
         let second_calls = second.calls();
         let (events, emit) = recorder();
+        let reader = screen_read::ScreenReader::new();
+        let ring = Mutex::new(RingBuffer::new(4, 1 << 20));
+        let input = input(&reader, &ring);
         let cancel = CancellationToken::new();
 
         let c2 = cancel.clone();
@@ -1188,7 +1359,7 @@ mod tests {
             &db,
             &emit,
             "q",
-            None,
+            &input,
             &cancel,
             false,
             false,
@@ -1213,7 +1384,9 @@ mod tests {
         ]);
         let calls = provider.calls();
         let (events, emit) = recorder();
-        let frame = fake_frame();
+        let reader = screen_read::ScreenReader::new();
+        let ring = Mutex::new(RingBuffer::new(4, 1 << 20));
+        let input = input_with_frame(&reader, &ring);
         let cancel = CancellationToken::new();
 
         let full = send_chain(
@@ -1222,7 +1395,7 @@ mod tests {
             &db,
             &emit,
             "q",
-            Some(&frame),
+            &input,
             &cancel,
             false,
             false,
@@ -1262,7 +1435,9 @@ mod tests {
         ]);
         let calls = provider.calls();
         let (events, emit) = recorder();
-        let frame = fake_frame();
+        let reader = screen_read::ScreenReader::new();
+        let ring = Mutex::new(RingBuffer::new(4, 1 << 20));
+        let input = input_with_frame(&reader, &ring);
         let cancel = CancellationToken::new();
 
         let err = send_chain(
@@ -1271,7 +1446,7 @@ mod tests {
             &db,
             &emit,
             "q",
-            Some(&frame),
+            &input,
             &cancel,
             false,
             false,
@@ -1305,7 +1480,9 @@ mod tests {
         let db = Db::at(dir.join("marvis.db")).unwrap();
         let provider = MockProvider::new(vec![Behavior::Hang]);
         let (events, emit) = recorder();
-        let frame = fake_frame();
+        let reader = screen_read::ScreenReader::new();
+        let ring = Mutex::new(RingBuffer::new(4, 1 << 20));
+        let input = input_with_frame(&reader, &ring);
         let cancel = CancellationToken::new();
 
         // Cancel while the (never-resolving) stream is in-flight — the
@@ -1321,7 +1498,7 @@ mod tests {
             &db,
             &emit,
             "q",
-            Some(&frame),
+            &input,
             &cancel,
             false,
             false,
@@ -1358,6 +1535,9 @@ mod tests {
         let provider = MockProvider::new(vec![Behavior::Tokens(vec!["ok".into()])]);
         let calls = provider.calls();
         let (_events, emit) = recorder();
+        let reader = screen_read::ScreenReader::new();
+        let ring = Mutex::new(RingBuffer::new(4, 1 << 20));
+        let input = input(&reader, &ring);
         let cancel = CancellationToken::new();
 
         send_chain(
@@ -1366,7 +1546,7 @@ mod tests {
             &db,
             &emit,
             "q",
-            None,
+            &input,
             &cancel,
             false,
             false,
@@ -1388,7 +1568,9 @@ mod tests {
         let provider = MockProvider::new(vec![Behavior::Fail(LlmError::Auth)]);
         let calls = provider.calls();
         let (events, emit) = recorder();
-        let frame = fake_frame();
+        let reader = screen_read::ScreenReader::new();
+        let ring = Mutex::new(RingBuffer::new(4, 1 << 20));
+        let input = input_with_frame(&reader, &ring);
         let cancel = CancellationToken::new();
 
         let err = send_chain(
@@ -1397,7 +1579,7 @@ mod tests {
             &db,
             &emit,
             "q",
-            Some(&frame),
+            &input,
             &cancel,
             false,
             false,
@@ -1437,7 +1619,9 @@ mod tests {
         let vision_calls = vision.calls();
         let chat_calls = chat.calls();
         let (events, emit) = recorder();
-        let frame = fake_frame();
+        let reader = screen_read::ScreenReader::new();
+        let ring = Mutex::new(RingBuffer::new(4, 1 << 20));
+        let input = input_with_frame(&reader, &ring);
         let cancel = CancellationToken::new();
 
         let full = send_chain(
@@ -1446,7 +1630,7 @@ mod tests {
             &db,
             &emit,
             "what broke?",
-            Some(&frame),
+            &input,
             &cancel,
             false,
             false,
@@ -1511,7 +1695,9 @@ mod tests {
         let chat = MockProvider::new(vec![Behavior::Tokens(vec!["ok".into()])]);
         let chat_calls = chat.calls();
         let (_events, emit) = recorder();
-        let frame = fake_frame();
+        let reader = screen_read::ScreenReader::new();
+        let ring = Mutex::new(RingBuffer::new(4, 1 << 20));
+        let input = input_with_frame(&reader, &ring);
         let cancel = CancellationToken::new();
 
         let full = send_chain(
@@ -1520,7 +1706,7 @@ mod tests {
             &db,
             &emit,
             "q",
-            Some(&frame),
+            &input,
             &cancel,
             false,
             false,
@@ -1546,6 +1732,9 @@ mod tests {
         let vision_calls = vision.calls();
         let chat_calls = chat.calls();
         let (_events, emit) = recorder();
+        let reader = screen_read::ScreenReader::new();
+        let ring = Mutex::new(RingBuffer::new(4, 1 << 20));
+        let input = input(&reader, &ring);
         let cancel = CancellationToken::new();
 
         send_chain(
@@ -1554,7 +1743,7 @@ mod tests {
             &db,
             &emit,
             "q",
-            None,
+            &input,
             &cancel,
             false,
             false,
@@ -1579,7 +1768,9 @@ mod tests {
         let chat = MockProvider::new(vec![Behavior::Tokens(vec!["nope".into()])]);
         let chat_calls = chat.calls();
         let (events, emit) = recorder();
-        let frame = fake_frame();
+        let reader = screen_read::ScreenReader::new();
+        let ring = Mutex::new(RingBuffer::new(4, 1 << 20));
+        let input = input_with_frame(&reader, &ring);
         let cancel = CancellationToken::new();
 
         let c2 = cancel.clone();
@@ -1593,7 +1784,7 @@ mod tests {
             &db,
             &emit,
             "q",
-            Some(&frame),
+            &input,
             &cancel,
             false,
             false,
@@ -1627,7 +1818,9 @@ mod tests {
         let provider = MockProvider::new(vec![Behavior::Tokens(vec!["ok".into()])]);
         let calls = provider.calls();
         let (_events, emit) = recorder();
-        let frame = fake_frame();
+        let reader = screen_read::ScreenReader::new();
+        let ring = Mutex::new(RingBuffer::new(4, 1 << 20));
+        let input = input_with_frame(&reader, &ring);
         let cancel = CancellationToken::new();
 
         send_chain(
@@ -1636,7 +1829,7 @@ mod tests {
             &db,
             &emit,
             "follow-up",
-            Some(&frame),
+            &input,
             &cancel,
             false,
             false,
@@ -1675,6 +1868,9 @@ mod tests {
         let provider = MockProvider::new(vec![Behavior::Tokens(vec!["ok".into()])]);
         let calls = provider.calls();
         let (_events, emit) = recorder();
+        let reader = screen_read::ScreenReader::new();
+        let ring = Mutex::new(RingBuffer::new(4, 1 << 20));
+        let input = input(&reader, &ring);
         let cancel = CancellationToken::new();
 
         send_chain(
@@ -1683,7 +1879,7 @@ mod tests {
             &db,
             &emit,
             "new conversation",
-            None,
+            &input,
             &cancel,
             true,
             false,
@@ -1717,6 +1913,9 @@ mod tests {
         let provider = MockProvider::new(vec![Behavior::Tokens(vec!["ok".into()])]);
         let calls = provider.calls();
         let (_events, emit) = recorder();
+        let reader = screen_read::ScreenReader::new();
+        let ring = Mutex::new(RingBuffer::new(4, 1 << 20));
+        let input = input(&reader, &ring);
         let cancel = CancellationToken::new();
 
         send_chain(
@@ -1725,7 +1924,7 @@ mod tests {
             &db,
             &emit,
             "new q",
-            None,
+            &input,
             &cancel,
             false,
             false,
@@ -1765,6 +1964,9 @@ mod tests {
         )]);
         let calls = provider.calls();
         let (events, emit) = recorder();
+        let reader = screen_read::ScreenReader::new();
+        let ring = Mutex::new(RingBuffer::new(4, 1 << 20));
+        let input = input(&reader, &ring);
         let cancel = CancellationToken::new();
 
         let full = send_chain(
@@ -1773,7 +1975,7 @@ mod tests {
             &db,
             &emit,
             "second q",
-            None,
+            &input,
             &cancel,
             false,
             true,
@@ -1822,6 +2024,9 @@ mod tests {
         let db = Db::at(dir.join("marvis.db")).unwrap();
         let provider = MockProvider::new(vec![Behavior::Tokens(vec!["ok".into()])]);
         let (_events, emit) = recorder();
+        let reader = screen_read::ScreenReader::new();
+        let ring = Mutex::new(RingBuffer::new(4, 1 << 20));
+        let input = input(&reader, &ring);
         let cancel = CancellationToken::new();
 
         send_chain(
@@ -1830,7 +2035,7 @@ mod tests {
             &db,
             &emit,
             "q",
-            None,
+            &input,
             &cancel,
             false,
             true,
@@ -1868,5 +2073,192 @@ mod tests {
         assert_eq!(payload["error"]["needs_setup"], true);
         svc.observe(EV_STATE, &json!({"state": "loading"}));
         assert!(svc.current_payload()["error"].is_null());
+    }
+
+    // ------------------------------------------------------------------
+    // resolve_screen truth table (spec §Ask flow)
+    // ------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn recording_on_with_vision_uses_cached_context() {
+        let reader = screen_read::ScreenReader::new();
+        reader.seed_context("ide with errors");
+        let ring = Mutex::new(RingBuffer::new(4, 1 << 20));
+        let mut input = input(&reader, &ring);
+        input.capture_running = true;
+        let (_ev, emit) = recorder();
+        let vis = candidate("vis", MockProvider::new(vec![]));
+        let (mat, _u) =
+            resolve_screen(&input, Some(&vis), &emit, &CancellationToken::new())
+                .await
+                .unwrap();
+        let Some(ScreenMaterial::Text(t)) = mat else {
+            panic!("expected cached text");
+        };
+        assert!(t.contains("ide with errors"));
+    }
+
+    #[tokio::test]
+    async fn recording_on_without_vision_attaches_ring_frame() {
+        let reader = screen_read::ScreenReader::new();
+        let ring = Mutex::new(RingBuffer::new(4, 1 << 20));
+        ring.lock().push(test_frame());
+        let mut input = input(&reader, &ring);
+        input.capture_running = true;
+        let (_ev, emit) = recorder();
+        let (mat, _u) =
+            resolve_screen(&input, None, &emit, &CancellationToken::new())
+                .await
+                .unwrap();
+        assert!(matches!(mat, Some(ScreenMaterial::Frame(_))));
+    }
+
+    #[tokio::test]
+    async fn recording_off_no_intent_is_text_only() {
+        let reader = screen_read::ScreenReader::new();
+        let ring = Mutex::new(RingBuffer::new(4, 1 << 20));
+        let input = input(&reader, &ring);
+        let (_ev, emit) = recorder();
+        let (mat, _u) =
+            resolve_screen(&input, None, &emit, &CancellationToken::new())
+                .await
+                .unwrap();
+        assert!(mat.is_none(), "no intent + no recording → nothing attached");
+    }
+
+    #[tokio::test]
+    async fn recording_off_intent_shot_describes_inline() {
+        let reader = screen_read::ScreenReader::new();
+        let ring = Mutex::new(RingBuffer::new(4, 1 << 20));
+        let mut input = input(&reader, &ring);
+        input.needs_screen = true;
+        let (_ev, emit) = recorder();
+        let vis = candidate(
+            "vis",
+            MockProvider::new(vec![Behavior::Tokens(vec![
+                "screen text".into(),
+            ])]),
+        );
+        let (mat, _u) =
+            resolve_screen(&input, Some(&vis), &emit, &CancellationToken::new())
+                .await
+                .unwrap();
+        let Some(ScreenMaterial::Text(t)) = mat else {
+            panic!("expected inline read text");
+        };
+        assert_eq!(t, "screen text");
+    }
+
+    #[tokio::test]
+    async fn recording_off_required_shot_failure_errors() {
+        let reader = screen_read::ScreenReader::new();
+        let ring = Mutex::new(RingBuffer::new(4, 1 << 20));
+        let mut input = input(&reader, &ring);
+        input.needs_screen = true;
+        input.required = true;
+        input.shot = || Err(anyhow::anyhow!("denied"));
+        let (_ev, emit) = recorder();
+        let result = resolve_screen(
+            &input,
+            None,
+            &emit,
+            &CancellationToken::new(),
+        )
+        .await;
+        assert!(result.is_err());
+    }
+
+    /// Recording on + no vision + permission revoked mid-session: the
+    /// stale ring frame is dropped and the UI gets the toast broadcast.
+    #[tokio::test]
+    async fn recording_on_revoked_permission_drops_frame_and_warns() {
+        let reader = screen_read::ScreenReader::new();
+        let ring = Mutex::new(RingBuffer::new(4, 1 << 20));
+        ring.lock().push(test_frame());
+        let mut input = input(&reader, &ring);
+        input.capture_running = true;
+        input.screen_permission = || false;
+        let (events, emit) = recorder();
+        let (mat, _u) =
+            resolve_screen(&input, None, &emit, &CancellationToken::new())
+                .await
+                .unwrap();
+        assert!(mat.is_none(), "revoked permission drops the stale frame");
+        assert!(events
+            .lock()
+            .iter()
+            .any(|(n, _)| n == "capture:permission-needed"));
+    }
+
+    /// OFF + intent, shot fails → ask:error. An explicit screen ask
+    /// never degrades to a blind text-only answer.
+    #[tokio::test]
+    async fn recording_off_shot_failure_errors() {
+        let reader = screen_read::ScreenReader::new();
+        let ring = Mutex::new(RingBuffer::new(4, 1 << 20));
+        let mut input = input(&reader, &ring);
+        input.needs_screen = true;
+        input.shot = || Err(anyhow::anyhow!("x"));
+        let (_ev, emit) = recorder();
+        let result =
+            resolve_screen(&input, None, &emit, &CancellationToken::new())
+                .await;
+        assert!(result.is_err(), "failed intent shot must error");
+    }
+
+    /// Recording on + vision configured but no cached read yet → no
+    /// material, no error (the reader just hasn't produced one).
+    #[tokio::test]
+    async fn recording_on_with_vision_empty_cache_is_none() {
+        let reader = screen_read::ScreenReader::new();
+        let ring = Mutex::new(RingBuffer::new(4, 1 << 20));
+        let mut input = input(&reader, &ring);
+        input.capture_running = true;
+        let (_ev, emit) = recorder();
+        let vis = candidate("vis", MockProvider::new(vec![]));
+        let (mat, _u) =
+            resolve_screen(&input, Some(&vis), &emit, &CancellationToken::new())
+                .await
+                .unwrap();
+        assert!(mat.is_none());
+    }
+
+    /// Recording on + required + nothing to attach → the run errors
+    /// (send_chain's error arm emits ask:error) — required means the
+    /// screen material is the whole question.
+    #[tokio::test]
+    async fn recording_on_required_empty_ring_errors() {
+        let reader = screen_read::ScreenReader::new();
+        let ring = Mutex::new(RingBuffer::new(4, 1 << 20));
+        let mut input = input(&reader, &ring);
+        input.capture_running = true;
+        input.required = true;
+        let (_ev, emit) = recorder();
+        let result =
+            resolve_screen(&input, None, &emit, &CancellationToken::new())
+                .await;
+        assert!(result.is_err(), "required + empty ON material must error");
+    }
+
+    /// OFF + intent, shot fails AND permission is revoked → the UI
+    /// still gets the permission-needed broadcast (restores the
+    /// pre-redesign pre-flight signal).
+    #[tokio::test]
+    async fn recording_off_shot_failure_without_permission_warns_ui() {
+        let reader = screen_read::ScreenReader::new();
+        let ring = Mutex::new(RingBuffer::new(4, 1 << 20));
+        let mut input = input(&reader, &ring);
+        input.needs_screen = true;
+        input.shot = || Err(anyhow::anyhow!("x"));
+        input.screen_permission = || false;
+        let (events, emit) = recorder();
+        let result =
+            resolve_screen(&input, None, &emit, &CancellationToken::new())
+                .await;
+        assert!(result.is_err());
+        assert!(events
+            .lock()
+            .iter()
+            .any(|(n, _)| n == "capture:permission-needed"));
     }
 }

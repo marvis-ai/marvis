@@ -2047,7 +2047,13 @@ fn capture_pick_begin(app: AppHandle) {
     if let Some(bar) = pool.bar() {
         let _ = bar.hide();
     }
-    pool.show_picker(&app);
+    if !pool.show_picker(&app) {
+        // A failed build can't be cancelled from a picker that never
+        // opened — restore the bar so the UI isn't left hidden.
+        if let Some(bar) = pool.bar() {
+            let _ = bar.show();
+        }
+    }
 }
 
 /// The picker's candidate list — meta only, returned fast; a detached

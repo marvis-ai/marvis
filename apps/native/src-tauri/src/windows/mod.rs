@@ -391,24 +391,25 @@ impl WindowPool {
     /// under the pointer, then announce `picker:open` — the view
     /// refetches `capture_pick_list` on it (first open can race the
     /// still-loading webview; its mount covers that).
-    pub fn show_picker(&mut self, app: &AppHandle) {
+    pub fn show_picker(&mut self, app: &AppHandle) -> bool {
         if self.picker.is_none() {
             let tint = accent_glass_tint(&app.state::<crate::AppState>().accent());
             match build_window(app, PICKER_LABEL, PICKER_W, PICKER_H, PICKER_RADIUS, tint) {
                 Ok(win) => self.picker = Some(win),
                 Err(e) => {
                     log::warn!("windows: picker build failed: {e}");
-                    return;
+                    return false;
                 }
             }
         }
         let Some(win) = self.picker.clone() else {
-            return;
+            return false;
         };
         center_on_pointer_display(&win);
         let _ = win.show();
         let _ = win.set_focus();
         let _ = app.emit_to(PICKER_LABEL, "picker:open", ());
+        true
     }
 
     pub fn hide_picker(&self) {

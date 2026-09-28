@@ -9,8 +9,7 @@
  * Stale ids reject — show the error and refetch.
  */
 import { useCallback, useEffect, useState, type ReactNode } from 'react';
-import { MonitorIcon, AppWindowIcon, LayoutGridIcon, XIcon }
-  from '@marvis/ui';
+import { MonitorIcon, AppWindowIcon, LayoutGridIcon, XIcon } from '@marvis/ui';
 import {
   capturePickCancel,
   capturePickList,
@@ -59,18 +58,18 @@ const Picker = () => {
 
   const pick = (id: string) => {
     void capturePickSelect(id).catch((e) => {
-      setError(typeof e === 'string' ? e : 'Pick failed');
+      // refresh() clears error synchronously — refetch first, then set
+      // so the stale-id message actually paints.
       refresh();
+      setError(
+        typeof e === 'string' ? `${e} — pick again` : 'Pick failed — try again',
+      );
     });
   };
   const cancel = () => void capturePickCancel().catch(() => {});
 
   const groups = groupCandidates(cands);
-  const section = (
-    title: string,
-    icon: ReactNode,
-    items: PickCandidate[],
-  ) =>
+  const section = (title: string, icon: ReactNode, items: PickCandidate[]) =>
     items.length > 0 && (
       <section className='mb-3'>
         <header className='mb-1.5 flex items-center gap-1.5 px-0.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground'>
@@ -155,9 +154,7 @@ const Picker = () => {
             </p>
           )}
           {error && (
-            <p className='py-3 text-center text-xs text-destructive'>
-              {error}
-            </p>
+            <p className='py-3 text-center text-xs text-destructive'>{error}</p>
           )}
         </div>
       </div>

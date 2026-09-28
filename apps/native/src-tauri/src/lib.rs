@@ -343,7 +343,11 @@ fn leave_main(app: &AppHandle) {
     // the mutex before `stop()` joins the worker, then `capture:state`
     // broadcasts the result.
     stop_capture(app);
-    state.pool.lock().hide_alert();
+    // The picker is part of Main too — a gate leave mid-pick would
+    // otherwise strand it visible over a hidden bar.
+    let pool = state.pool.lock();
+    pool.hide_alert();
+    pool.hide_picker();
 }
 
 /// The picker-selected capture scope shown by `capture:state` —

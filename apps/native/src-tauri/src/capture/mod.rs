@@ -3,7 +3,9 @@
 //! Privacy boundary: captured pixels are reduced to JPEG [`Frame`]s held in
 //! an in-memory [`RingBuffer`]. Frame bytes are never written to disk and
 //! never serialized to JavaScript — only the local LLM pipeline consumes
-//! them.
+//! them. The one deliberate exception is the share picker: small JPEG
+//! thumbs go to Marvis's own content-protected `picker` window so the
+//! user can see what they're choosing.
 //!
 //! [`MacosCapture`] (ScreenCaptureKit) is the production [`FrameSource`];
 //! `RingBuffer` and [`frame_hash`] are platform-pure and unit-tested here.

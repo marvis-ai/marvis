@@ -207,15 +207,16 @@ pub(crate) fn pick_candidates() -> anyhow::Result<Vec<PickCandidate>> {
             continue;
         };
         let f = w.frame();
-        let label = w
-            .title()
-            .filter(|t| !t.trim().is_empty())
-            .unwrap_or_else(|| app.application_name());
+        // Untitled windows fall back to the app name as the label —
+        // then the sub would repeat it, so only subtitle titled ones.
+        let title = w.title().filter(|t| !t.trim().is_empty());
+        let label = title.clone().unwrap_or_else(|| app.application_name());
+        let sub = title.map(|_| app.application_name());
         out.push(PickCandidate {
             id: format!("w:{}", w.window_id()),
             kind: "window",
             label,
-            sub: Some(app.application_name()),
+            sub,
             w: f.size.width as u32,
             h: f.size.height as u32,
             thumb_of: None,

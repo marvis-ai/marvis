@@ -119,6 +119,17 @@ export interface CaptureStatePayload {
    *  primary-display path and after a stop. */
   target: { kind: 'display' | 'window' | 'app'; label: string } | null;
 }
+/** Emitted to the picker window by `show_picker` — the view refetches
+ * `capture_pick_list` on it. The view ALSO fetches on mount: first
+ * open can emit before this webview's listener exists. */
+export const EV_PICKER_OPEN = 'picker:open';
+/** Per-candidate thumbnail, emitted to the picker as each renders —
+ * `{ id, jpeg }` where jpeg is base64 (pick-list background task). */
+export const EV_PICKER_THUMB = 'picker:thumb';
+export interface PickerThumbPayload {
+  id: string;
+  jpeg: string;
+}
 /** Broadcast after every successful `config_set` — payload is the full
  * `Config`, so windows re-render without a second `config_get`. */
 export const EV_CONFIG_CHANGED = 'config:changed';

@@ -542,6 +542,32 @@ export const captureStatus = () => invoke<CaptureStatus>('capture_status');
  *  lands as the `capture:state` emit; cancel is a silent no-op. */
 export const capturePickAndStart = () => invoke<void>('capture_pick_and_start');
 
+/** One shareable target offered by the picker — meta only; thumbs
+ *  arrive over `picker:thumb`. `id` is the opaque `"d:"/"w:"/"a:"`
+ *  resolver key `capturePickSelect` echoes back. */
+export interface PickCandidate {
+  id: string;
+  kind: 'display' | 'window' | 'app';
+  label: string;
+  sub: string | null;
+  w: number;
+  h: number;
+  /** "app" only — the window id whose thumb this card reuses. */
+  thumb_of: string | null;
+}
+
+/** Idle record button — hides the bar, opens the picker window. */
+export const capturePickBegin = () => invoke<void>('capture_pick_begin');
+/** Meta list for the picker grid; thumbs follow on `picker:thumb`. */
+export const capturePickList = () =>
+  invoke<PickCandidate[]>('capture_pick_list');
+/** Card click — resolves void; rejects with a string error on
+ *  stale ids. */
+export const capturePickSelect = (id: string) =>
+  invoke<void>('capture_pick_select', { id });
+/** Esc / Cancel — drops the picker, restores the bar. */
+export const capturePickCancel = () => invoke<void>('capture_pick_cancel');
+
 // ---------------------------------------------------------------------------
 // sessions
 // ---------------------------------------------------------------------------

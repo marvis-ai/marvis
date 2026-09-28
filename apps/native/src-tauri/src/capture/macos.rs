@@ -23,6 +23,7 @@ use image::imageops::{self, FilterType};
 use image::{GenericImageView, Rgba};
 use parking_lot::Mutex;
 use screencapturekit::cm::{CMSampleBuffer, CMSampleBufferExt, CMTime};
+use screencapturekit::screenshot_manager::SCScreenshotManager;
 use screencapturekit::shareable_content::SCShareableContent;
 use screencapturekit::shareable_content::SCWindow;
 use screencapturekit::stream::configuration::{PixelFormat, SCStreamConfiguration};
@@ -134,6 +135,26 @@ pub(crate) fn primary_display_filter() -> anyhow::Result<(SCContentFilter, u32, 
         .with_excluding_windows(&own)
         .build();
     Ok((filter, width, height))
+}
+
+/// One-shot screenshot of the primary display via
+/// `SCScreenshotManager` — the "read my screen" path when ambient
+/// recording is off. Same filter and encode path as the stream, so a
+/// single-shot `Frame` is indistinguishable from a ring frame.
+/// `Ok(None)` means the call succeeded but delivered no pixels.
+pub(crate) fn shot_fullscreen() -> anyhow::Result<Option<Frame>> {
+    let (filter, width, height) = primary_display_filter()?;
+    let config = SCStreamConfiguration::new()
+        .with_width(width)
+        .with_height(height)
+        .with_pixel_format(PixelFormat::BGRA)
+        .with_shows_cursor(false);
+    let sample = SCScreenshotManager::capture_sample_buffer(&filter, &config)
+        .map_err(|e| anyhow::anyhow!("screenshot failed: {e}"))?;
+    let Some(raw) = extract_raw(&sample) else {
+        return Ok(None);
+    };
+    Ok(encode_frame(&raw, 0))
 }
 
 impl MacosCapture {

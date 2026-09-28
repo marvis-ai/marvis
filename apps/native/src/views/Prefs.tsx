@@ -22,6 +22,7 @@ import {
   configGet,
   keystoreStatus,
   modelGetSelected,
+  openDevTools,
   prefsMode,
   type Config,
   type KeystoreStatus,
@@ -99,7 +100,16 @@ const Prefs = () => {
   };
 
   return (
-    <div className='prefs-shell relative flex h-full flex-col overflow-hidden bg-background text-foreground'>
+    <div
+      className='prefs-shell relative flex h-full flex-col overflow-hidden bg-background text-foreground'
+      onContextMenu={(e) => {
+        // Dev-only: this window has no native menu — right-click opens
+        // its own web inspector. Production leaves right-click dead.
+        if (import.meta.env.DEV) {
+          e.preventDefault();
+          void openDevTools().catch(() => {});
+        }
+      }}>
       {bootError ? (
         <div className='grid flex-1 place-items-center p-5'>
           <RetryCard onRetry={() => void bootstrap()} />

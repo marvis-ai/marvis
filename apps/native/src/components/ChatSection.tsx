@@ -18,16 +18,15 @@ import { useEffect, useRef, useState } from 'react';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { SettingsIcon, XIcon } from '@marvis/ui';
+import { CheckIcon, CopyIcon, SettingsIcon, XIcon } from '@marvis/ui';
 import {
   askClose,
   askCurrent,
-  modelGetSelected,
+  askRetry,
   sessionEndActive,
   sessionGet,
   sessionList,
   windowShowSettings,
-  type ModelSelection,
 } from '@/lib/commands';
 import {
   EV_ASK_CHUNK,
@@ -37,10 +36,8 @@ import {
   useTauriEvent,
 } from '@/lib/events';
 import {
-  ASK_MD,
   BTN_OUTLINE,
   BTN_SM,
-  CHIP,
   EMPTY,
   ICON_BTN,
   PANEL_BODY,
@@ -48,6 +45,7 @@ import {
   cn,
 } from '@/lib/classes';
 import { CardHeader } from './shared/CardHeader';
+import { ChatMsgMenu, type ChatMsgMeta } from './ChatMsgMenu';
 
 type AskPhase = 'loading' | 'streaming' | 'idle';
 
@@ -57,7 +55,9 @@ interface AskStatePayload {
   question?: string;
 }
 
-interface ChatMsg {
+/** Meta fields surface in the ⋯ menu, not inline; absent while the
+ *  reply is in flight. */
+interface ChatMsg extends ChatMsgMeta {
   role: 'user' | 'assistant';
   content: string;
 }
@@ -87,13 +87,18 @@ const applyLoading = (prev: ChatMsg[], q: string): ChatMsg[] => {
   ];
 };
 
-/** Set the tail assistant bubble's content (`done.full` / resync buffer). */
-const setTail = (prev: ChatMsg[], content: string): ChatMsg[] => {
+/** Set the tail assistant bubble's content (`done.full` / resync
+ *  buffer); `meta` lands the persisted provider/model/usage row data. */
+const setTail = (
+  prev: ChatMsg[],
+  content: string,
+  meta?: ChatMsgMeta,
+): ChatMsg[] => {
   const last = prev[prev.length - 1];
   if (last?.role !== 'assistant') {
-    return [...prev, { role: 'assistant', content }];
+    return [...prev, { role: 'assistant', content, ...meta }];
   }
-  return [...prev.slice(0, -1), { role: 'assistant', content }];
+  return [...prev.slice(0, -1), { role: 'assistant', content, ...meta }];
 };
 
 /** Append a streamed token to the tail assistant bubble. */
@@ -102,20 +107,19 @@ const appendTail = (prev: ChatMsg[], text: string): ChatMsg[] => {
   if (last?.role !== 'assistant') {
     return [...prev, { role: 'assistant', content: text }];
   }
-  return [
-    ...prev.slice(0, -1),
-    { role: 'assistant', content: last.content + text },
-  ];
+  return [...prev.slice(0, -1), { ...last, content: last.content + text }];
 };
 
 export const ChatSection = ({ onBack }: { onBack: () => void }) => {
   const [msgs, setMsgs] = useState<ChatMsg[]>([]);
   const [phase, setPhase] = useState<AskPhase>('idle');
-  const [model, setModel] = useState<ModelSelection | null>(null);
   const [error, setError] = useState<{
     message: string;
     needsSetup: boolean;
   } | null>(null);
+  /** Row index showing the copy check-flash / the open ⋯ menu. */
+  const [copiedIdx, setCopiedIdx] = useState<number | null>(null);
+  const [menuIdx, setMenuIdx] = useState<number | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   /** Autoscroll is on until the user scrolls away from the bottom. */
   const pinnedRef = useRef(true);
@@ -140,6 +144,10 @@ export const ChatSection = ({ onBack }: { onBack: () => void }) => {
                 .map((r) => ({
                   role: r.role as ChatMsg['role'],
                   content: r.content,
+                  provider: r.provider,
+                  model: r.model,
+                  tokensIn: r.tokens_in,
+                  tokensOut: r.tokens_out,
                 })),
             );
           }
@@ -169,13 +177,6 @@ export const ChatSection = ({ onBack }: { onBack: () => void }) => {
     };
   }, []);
 
-  // The model chip is honest metadata — the active provider+model pair.
-  useEffect(() => {
-    void modelGetSelected()
-      .then(setModel)
-      .catch(() => {});
-  }, []);
-
   useTauriEvent<AskStatePayload>(EV_ASK_STATE, (p) => {
     if (p.state === 'loading') {
       setError(null);
@@ -187,17 +188,23 @@ export const ChatSection = ({ onBack }: { onBack: () => void }) => {
   useTauriEvent<{ text: string }>(EV_ASK_CHUNK, (p) => {
     setMsgs((prev) => appendTail(prev, p.text));
   });
-  useTauriEvent<{ full: string; provider?: string; model?: string }>(
-    EV_ASK_DONE,
-    (p) => {
-      // `full` is authoritative — covers a dropped/duplicated chunk;
-      // `provider`/`model` report who ACTUALLY answered under failover.
-      setMsgs((prev) => setTail(prev, p.full));
-      if (p.provider && p.model) {
-        setModel({ provider: p.provider, model: p.model });
-      }
-    },
-  );
+  useTauriEvent<{
+    full: string;
+    provider?: string;
+    model?: string;
+    usage?: { input?: number | null; output?: number | null } | null;
+  }>(EV_ASK_DONE, (p) => {
+    // `full` is authoritative — covers a dropped/duplicated chunk;
+    // provider/model/usage name who ACTUALLY answered under failover.
+    setMsgs((prev) =>
+      setTail(prev, p.full, {
+        provider: p.provider ?? null,
+        model: p.model ?? null,
+        tokensIn: p.usage?.input ?? null,
+        tokensOut: p.usage?.output ?? null,
+      }),
+    );
+  });
   useTauriEvent<{ message: string; needs_setup?: boolean }>(
     EV_ASK_ERROR,
     (p) => {
@@ -226,8 +233,34 @@ export const ChatSection = ({ onBack }: { onBack: () => void }) => {
     setMsgs([]);
     setError(null);
     setPhase('idle');
+    setMenuIdx(null);
     pinnedRef.current = true;
   };
+
+  const copyMsg = (i: number, text: string) => {
+    void navigator.clipboard
+      .writeText(text)
+      .then(() => {
+        setCopiedIdx(i);
+        window.setTimeout(
+          () => setCopiedIdx((k) => (k === i ? null : k)),
+          1500,
+        );
+      })
+      .catch(() => {});
+  };
+
+  /** The ⋯ menu's regenerate — `ask_retry` re-asks the session's LAST
+   * user turn, so it's only meaningful on the last assistant reply. */
+  const retry = () => {
+    setMenuIdx(null);
+    void askRetry().catch(() => {});
+  };
+
+  const lastAssistant = msgs.reduce(
+    (acc, m, i) => (m.role === 'assistant' && m.content ? i : acc),
+    -1,
+  );
 
   return (
     <div className='flex min-h-0 flex-1 flex-col'>
@@ -279,13 +312,27 @@ export const ChatSection = ({ onBack }: { onBack: () => void }) => {
         className={PANEL_BODY}>
         <div
           data-card-content
-          className='flow-root'>
+          className='flex flex-col gap-y-4'>
           {msgs.map((m, i) =>
             m.role === 'user' ? (
               <div
                 key={i}
-                className='mb-2 flex justify-end'>
-                <p className='max-w-[85%] rounded-2xl rounded-br-sm bg-fg-soft px-3 py-1.5 text-[13px] leading-normal wrap-break-word whitespace-pre-wrap select-text'>
+                className='group/row flex items-start justify-end gap-1'>
+                <button
+                  type='button'
+                  onClick={() => copyMsg(i, m.content)}
+                  aria-label='Copy message'
+                  className={cn(
+                    ICON_BTN,
+                    'mt-1 size-5 opacity-0 transition-opacity group-hover/row:opacity-100 focus-visible:opacity-100',
+                  )}>
+                  {copiedIdx === i ? (
+                    <CheckIcon className='size-3 text-accent' />
+                  ) : (
+                    <CopyIcon className='size-3' />
+                  )}
+                </button>
+                <p className='max-w-[85%] rounded-2xl rounded-br-sm bg-accent/10 px-4 py-2 text-[14px] leading-normal wrap-break-word whitespace-pre-wrap select-text text-accent'>
                   {m.content}
                 </p>
               </div>
@@ -293,24 +340,52 @@ export const ChatSection = ({ onBack }: { onBack: () => void }) => {
               m.content && (
                 <div
                   key={i}
-                  className={cn(ASK_MD, 'mb-2.5')}>
-                  <ReactMarkdown
-                    remarkPlugins={[remarkGfm]}
-                    disallowedElements={['img']}
-                    components={{
-                      a: ({ href, children }) => (
-                        <a
-                          href={href}
-                          onClick={(e) => {
-                            e.preventDefault();
-                            if (href) void openUrl(href);
-                          }}>
-                          {children}
-                        </a>
-                      ),
-                    }}>
-                    {m.content}
-                  </ReactMarkdown>
+                  className='group/row'>
+                  <div className='prose prose-sm'>
+                    <ReactMarkdown
+                      remarkPlugins={[remarkGfm]}
+                      disallowedElements={['img']}
+                      components={{
+                        a: ({ href, children }) => (
+                          <a
+                            href={href}
+                            onClick={(e) => {
+                              e.preventDefault();
+                              if (href) void openUrl(href);
+                            }}>
+                            {children}
+                          </a>
+                        ),
+                      }}>
+                      {m.content}
+                    </ReactMarkdown>
+                  </div>
+                  <div
+                    className={cn(
+                      'mt-0.5 flex items-center gap-0.5 transition-opacity',
+                      menuIdx === i
+                        ? 'opacity-100'
+                        : 'opacity-0 group-hover/row:opacity-100 group-focus-within/row:opacity-100',
+                    )}>
+                    <button
+                      type='button'
+                      onClick={() => copyMsg(i, m.content)}
+                      aria-label='Copy response'
+                      className={cn(ICON_BTN, 'size-5')}>
+                      {copiedIdx === i ? (
+                        <CheckIcon className='size-3 text-accent' />
+                      ) : (
+                        <CopyIcon className='size-3' />
+                      )}
+                    </button>
+                    <ChatMsgMenu
+                      open={menuIdx === i}
+                      onOpenChange={(o) => setMenuIdx(o ? i : null)}
+                      canRetry={i === lastAssistant && phase === 'idle'}
+                      onRetry={retry}
+                      meta={m}
+                    />
+                  </div>
                 </div>
               )
             ),
@@ -327,15 +402,6 @@ export const ChatSection = ({ onBack }: { onBack: () => void }) => {
           {msgs.length === 0 && phase === 'idle' && !error && (
             <p className={EMPTY}>Ask Marvis — the conversation stays here.</p>
           )}
-          {phase === 'idle' &&
-            model &&
-            msgs.some((m) => m.role === 'assistant' && m.content) && (
-              <div className='mt-2.5 flex flex-wrap gap-1.5'>
-                <span className={CHIP}>
-                  {model.model} · {model.provider}
-                </span>
-              </div>
-            )}
         </div>
       </div>
     </div>

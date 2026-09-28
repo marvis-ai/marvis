@@ -157,6 +157,12 @@ export interface Message {
   session_id: number;
   role: string;
   content: string;
+  /** Answering-provider metadata — assistant rows only; `null` on rows
+   * written before the columns existed and on user rows. */
+  provider: string | null;
+  model: string | null;
+  tokens_in: number | null;
+  tokens_out: number | null;
   ts: number;
 }
 
@@ -236,6 +242,10 @@ export const askSend = (text: string) => invoke<void>('ask_send', { text });
 /** The bar's camera affordance — a screen-only ask (fixed prompt,
  *  frame required). */
 export const askSendScreenOnly = () => invoke<void>('ask_send_screen_only');
+
+/** Regenerate the last reply — re-asks the session's last user turn
+ *  without persisting a duplicate user row. */
+export const askRetry = () => invoke<void>('ask_retry');
 
 export const askClose = () => invoke<void>('ask_close');
 
@@ -467,6 +477,11 @@ export const windowBarEdge = () => invoke<string>('window_bar_edge');
 /** The bar's idle-state right-click — pops the shared native menu
  * (the same items the tray icon shows) under the cursor. */
 export const barContextMenu = () => invoke<void>('bar_context_menu');
+
+/** Dev-only (`import.meta.env.DEV`): open THIS window's web inspector —
+ * the right-click path for windows with no shared menu (prefs, alert).
+ * The Rust side no-ops in release builds. */
+export const openDevTools = () => invoke<void>('open_devtools');
 
 /** Reports the whole card's desired TOTAL window height — expanded
  * mode only; the backend clamps [104, free space]. */

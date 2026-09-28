@@ -11,7 +11,8 @@
 //!
 //! ```sql
 //! sessions(id PK, type 'ask'|'listen', title?, audio_file?, started_at, ended_at?, last_active_at)
-//! messages(id PK, session_id FK → sessions.id ON DELETE CASCADE, role, content, ts)
+//! messages(id PK, session_id FK → sessions.id ON DELETE CASCADE, role, content,
+//!          provider?, model?, tokens_in?, tokens_out?, ts)
 //! transcripts(id PK, session_id FK → sessions.id ON DELETE CASCADE, speaker, speaker_idx?, content, ts)
 //! summaries(id PK, session_id FK → sessions.id ON DELETE CASCADE UNIQUE, tldr, bullets, follow_ups, topic?, created_at, updated_at)
 //! ```
@@ -52,6 +53,10 @@ const SCHEMA: &str = "
         session_id INTEGER NOT NULL,
         role       TEXT NOT NULL,
         content    TEXT NOT NULL,
+        provider   TEXT,
+        model      TEXT,
+        tokens_in  INTEGER,
+        tokens_out INTEGER,
         ts         INTEGER NOT NULL,
         FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
     );
@@ -102,7 +107,24 @@ pub struct Message {
     pub session_id: i64,
     pub role: String,
     pub content: String,
+    /// Assistant-row provenance + spend — NULL on user turns and on rows
+    /// written before the columns existed.
+    pub provider: Option<String>,
+    pub model: Option<String>,
+    pub tokens_in: Option<i64>,
+    pub tokens_out: Option<i64>,
     pub ts: i64,
+}
+
+/// Optional provenance + token spend recorded on an assistant
+/// `messages` row — the card's ⋯ menu reads it back. `Default` leaves
+/// the columns NULL, which is what every non-reply write wants.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct MessageMeta {
+    pub provider: Option<String>,
+    pub model: Option<String>,
+    pub tokens_in: Option<i64>,
+    pub tokens_out: Option<i64>,
 }
 
 /// A persisted speaker turn from a listen session.
@@ -344,12 +366,32 @@ impl Db {
 
     /// Append a message to a session; returns the new row id.
     pub fn message_add(&self, session_id: i64, role: &str, content: &str) -> anyhow::Result<i64> {
+        self.message_add_meta(session_id, role, content, &MessageMeta::default())
+    }
+
+    /// `message_add` + the assistant-row provenance/spend columns.
+    pub fn message_add_meta(
+        &self,
+        session_id: i64,
+        role: &str,
+        content: &str,
+        meta: &MessageMeta,
+    ) -> anyhow::Result<i64> {
         let conn = self.conn.lock();
         let ts = now();
         conn.execute(
-            "INSERT INTO messages (session_id, role, content, ts)
-             VALUES (?1, ?2, ?3, ?4)",
-            params![session_id, role, content, ts],
+            "INSERT INTO messages (session_id, role, content, provider, model, tokens_in, tokens_out, ts)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                session_id,
+                role,
+                content,
+                meta.provider,
+                meta.model,
+                meta.tokens_in,
+                meta.tokens_out,
+                ts
+            ],
         )?;
         // Activity bumps the session to the top of `session_list` — done
         // here rather than via `session_touch` so writers can't forget it.
@@ -369,11 +411,21 @@ impl Db {
         Ok(conn.last_insert_rowid())
     }
 
+    /// Remove one message row — `ask_retry` drops the rejected reply
+    /// this way before streaming the replacement.
+    pub fn message_delete(&self, id: i64) -> anyhow::Result<()> {
+        self.conn
+            .lock()
+            .execute("DELETE FROM messages WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
     /// A session's messages, oldest first; `id` breaks same-second ties.
     pub fn messages_for(&self, session_id: i64) -> anyhow::Result<Vec<Message>> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
-            "SELECT id, session_id, role, content, ts FROM messages
+            "SELECT id, session_id, role, content, provider, model, tokens_in, tokens_out, ts
+             FROM messages
              WHERE session_id = ?1 ORDER BY ts ASC, id ASC",
         )?;
         let rows = stmt.query_map([session_id], |row| {
@@ -382,7 +434,11 @@ impl Db {
                 session_id: row.get(1)?,
                 role: row.get(2)?,
                 content: row.get(3)?,
-                ts: row.get(4)?,
+                provider: row.get(4)?,
+                model: row.get(5)?,
+                tokens_in: row.get(6)?,
+                tokens_out: row.get(7)?,
+                ts: row.get(8)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -647,6 +703,19 @@ fn migrate(conn: &Connection) -> anyhow::Result<()> {
         )?;
     }
     if table_exists("messages")? {
+        let columns = columns("messages")?;
+        // Assistant-row provenance + spend (the card's ⋯ menu) — added
+        // after the fact, so pre-meta rows keep NULLs.
+        for (col, ty) in [
+            ("provider", "TEXT"),
+            ("model", "TEXT"),
+            ("tokens_in", "INTEGER"),
+            ("tokens_out", "INTEGER"),
+        ] {
+            if !columns.iter().any(|c| c == col) {
+                conn.execute_batch(&format!("ALTER TABLE messages ADD COLUMN {col} {ty}"))?;
+            }
+        }
         // Ask-session title backfill: first user message, matching the
         // write-time rule in `message_add`.
         conn.execute_batch(

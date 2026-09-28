@@ -1242,7 +1242,6 @@ import {
   useTauriEvent,
 } from '../lib/events';
 import {
-  ASK_MD,
   BTN_OUTLINE,
   BTN_SM,
   CHIP,
@@ -1486,7 +1485,7 @@ export const ChatSection = () => {
             m.content && (
               <div
                 key={i}
-                className={cn(ASK_MD, 'mb-2.5')}>
+                className={cn('prose prose-sm')}>
                 <ReactMarkdown
                   remarkPlugins={[remarkGfm]}
                   disallowedElements={['img']}

@@ -16,7 +16,12 @@
  */
 import { useCallback, useEffect, useState } from 'react';
 import { ShieldAlertIcon, XIcon } from '@marvis/ui';
-import { alertCurrent, alertDismiss, type AlertPayload } from '../lib/commands';
+import {
+  alertCurrent,
+  alertDismiss,
+  openDevTools,
+  type AlertPayload,
+} from '../lib/commands';
 import { EV_ALERT_SHOW, useTauriEvent } from '../lib/events';
 import { ICON_BTN, cn } from '../lib/classes';
 
@@ -52,7 +57,16 @@ const AlertToast = () => {
   }
 
   return (
-    <div className='glass-stage h-full p-1'>
+    <div
+      className='glass-stage h-full p-1'
+      onContextMenu={(e) => {
+        // Dev-only: this window has no native menu — right-click opens
+        // its own web inspector. Production leaves right-click dead.
+        if (import.meta.env.DEV) {
+          e.preventDefault();
+          void openDevTools().catch(() => {});
+        }
+      }}>
       <div className='glass-surface flex min-h-full flex-col justify-center gap-1.5 rounded-[14px] border border-[color-mix(in_oklch,var(--destructive)_28%,var(--border))] bg-[color-mix(in_oklch,var(--surface)_92%,transparent)] px-2.75 pt-2.25 pb-2.5 shadow-[0_18px_40px_-16px_color-mix(in_oklch,var(--fg)_34%,transparent)] backdrop-blur-lg'>
         <header className='flex items-center gap-1.75'>
           <ShieldAlertIcon className='size-3.75 flex-none text-destructive' />

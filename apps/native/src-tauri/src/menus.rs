@@ -32,6 +32,10 @@ pub const MENU_POS_RIGHT: &str = "menu.pos.right";
 pub const MENU_POS_CENTER: &str = "menu.pos.center";
 pub const MENU_LOCK: &str = "menu.lock";
 pub const MENU_SETTINGS: &str = "menu.settings";
+/// Debug builds only — `menu_dispatch` and this item both compile out
+/// in release.
+#[cfg(debug_assertions)]
+pub const MENU_DEVTOOLS: &str = "menu.devtools";
 pub const MENU_QUIT: &str = "menu.quit";
 
 /// Build the shared menu against live state. The pill rect is refreshed
@@ -132,21 +136,31 @@ pub fn build(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
     // Display-only accelerator (same caveat as the retired tray item) —
     // the real `Cmd+,` binding is the bar webview's keydown handler.
     let settings = MenuItem::with_id(app, MENU_SETTINGS, "Settings", true, Some("CmdOrCtrl+,"))?;
+    // Debug builds only: web-inspector entry in the bar's right-click
+    // popup (and the tray copy). No accelerator — popup/tray menus
+    // never fire one, so a shortcut label would lie.
+    #[cfg(debug_assertions)]
+    let dev_sep = PredefinedMenuItem::separator(app)?;
+    #[cfg(debug_assertions)]
+    let inspect = MenuItem::with_id(app, MENU_DEVTOOLS, "Inspect Element", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, MENU_QUIT, "Quit Marvis", true, None::<&str>)?;
 
-    Menu::with_items(
-        app,
-        &[
-            &ask as &dyn IsMenuItem<Wry>,
-            &capture,
-            &listen,
-            &history,
-            &sep1,
-            &position,
-            &lock,
-            &sep2,
-            &settings,
-            &quit,
-        ],
-    )
+    let mut items: Vec<&dyn IsMenuItem<Wry>> = vec![
+        &ask as &dyn IsMenuItem<Wry>,
+        &capture,
+        &listen,
+        &history,
+        &sep1,
+        &position,
+        &lock,
+        &sep2,
+        &settings,
+    ];
+    #[cfg(debug_assertions)]
+    {
+        items.push(&dev_sep);
+        items.push(&inspect);
+    }
+    items.push(&quit);
+    Menu::with_items(app, &items)
 }

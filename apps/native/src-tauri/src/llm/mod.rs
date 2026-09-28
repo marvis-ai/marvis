@@ -9,7 +9,7 @@
 //! ```ignore
 //! fn stream_chat<'a>(&'a self, msgs: &'a [ChatMessage],
 //!                    on_token: &'a mut (dyn FnMut(&str) + Send))
-//!     -> Pin<Box<dyn Future<Output = Result<String, LlmError>> + Send + 'a>>
+//!     -> Pin<Box<dyn Future<Output = Result<StreamReply, LlmError>> + Send + 'a>>
 //! {
 //!     Box::pin(async move { self.stream_chat_inner(msgs, on_token).await })
 //! }
@@ -176,6 +176,74 @@ impl ChatMessage {
     }
 }
 
+/// Token spend reported by a provider stream — either side may be
+/// absent (a backend may report only one direction, or nothing).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TokenUsage {
+    pub input: Option<u64>,
+    pub output: Option<u64>,
+}
+
+impl TokenUsage {
+    /// Fold one event's report into the stream's tally: the newest
+    /// non-null value per field wins (Anthropic/Gemini emit cumulative
+    /// counters per event, so overwriting — not summing — is correct).
+    fn merge(&mut self, other: &TokenUsage) {
+        if other.input.is_some() {
+            self.input = other.input;
+        }
+        if other.output.is_some() {
+            self.output = other.output;
+        }
+    }
+
+    /// Add another call's spend — separate requests (the vision read, a
+    /// regenerated answer) each cost their own tokens.
+    pub(crate) fn add(&mut self, other: &TokenUsage) {
+        let sum = |a: Option<u64>, b: Option<u64>| match (a, b) {
+            (None, None) => None,
+            (a, b) => Some(a.unwrap_or(0) + b.unwrap_or(0)),
+        };
+        self.input = sum(self.input, other.input);
+        self.output = sum(self.output, other.output);
+    }
+
+    /// Nothing was reported — emitted/persisted as `null` upstream.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.input.is_none() && self.output.is_none()
+    }
+}
+
+/// A finished `stream_chat`: the full reply plus provider-reported
+/// token spend (`None` when the backend never reported it).
+#[derive(Debug, Clone, PartialEq)]
+pub struct StreamReply {
+    pub full: String,
+    pub usage: Option<TokenUsage>,
+}
+
+/// One drained line's yield — a text token and/or a usage report (a
+/// Gemini chunk can carry BOTH `candidates` text and `usageMetadata`).
+#[derive(Debug)]
+pub(crate) struct ParsedLine {
+    pub token: Option<String>,
+    pub usage: Option<TokenUsage>,
+}
+
+impl ParsedLine {
+    pub(crate) const NONE: Self = Self {
+        token: None,
+        usage: None,
+    };
+
+    pub(crate) fn usage(usage: TokenUsage) -> Self {
+        Self {
+            token: None,
+            usage: Some(usage),
+        }
+    }
+}
+
 /// Everything that can go wrong on a provider call.
 #[derive(Debug, Error)]
 pub enum LlmError {
@@ -240,14 +308,15 @@ impl LlmError {
 /// A streaming LLM backend.
 ///
 /// `stream_chat` invokes `on_token` with each decoded text delta as it
-/// arrives and resolves to the full accumulated reply; `validate` performs
-/// a cheap authenticated call so settings can verify key + model.
+/// arrives and resolves to the full reply plus its reported token
+/// spend; `validate` performs a cheap authenticated call so settings
+/// can verify key + model.
 pub trait Provider: Send + Sync {
     fn stream_chat<'a>(
         &'a self,
         msgs: &'a [ChatMessage],
         on_token: &'a mut (dyn FnMut(&str) + Send),
-    ) -> Pin<Box<dyn Future<Output = Result<String, LlmError>> + Send + 'a>>;
+    ) -> Pin<Box<dyn Future<Output = Result<StreamReply, LlmError>> + Send + 'a>>;
 
     fn validate<'a>(&'a self) -> Pin<Box<dyn Future<Output = Result<(), LlmError>> + Send + 'a>>;
 }
@@ -323,10 +392,10 @@ pub(crate) fn vision_default_model(kind: ProviderKind) -> Option<&'static str> {
 /// Bytes of an error response body kept for `LlmError::Http::message`.
 const ERROR_BODY_CAP: usize = 4096;
 
-/// A line parser: one drained line → a token (`Ok(Some)`), a non-token line
-/// (`Ok(None)`), or a stream-aborting failure (`Err`) — e.g. a `data:`
-/// payload carrying an `error` field, or malformed JSON.
-type LineParser = fn(&str) -> Result<Option<String>, LlmError>;
+/// A line parser: one drained line → a [`ParsedLine`] (token, usage
+/// report, both, or neither), or a stream-aborting failure (`Err`) —
+/// e.g. a `data:` payload carrying an `error` field, or malformed JSON.
+type LineParser = fn(&str) -> Result<ParsedLine, LlmError>;
 
 /// Send `req` as an SSE stream (`\n\n` / `\r\n\r\n` event boundaries) and
 /// fold parsed tokens into `on_token` + the returned full reply.
@@ -334,7 +403,7 @@ pub(crate) async fn stream_sse(
     req: reqwest::RequestBuilder,
     parse: LineParser,
     on_token: &mut (dyn FnMut(&str) + Send),
-) -> Result<String, LlmError> {
+) -> Result<StreamReply, LlmError> {
     stream_lines(req, drain_sse_lines, parse, on_token).await
 }
 
@@ -343,7 +412,7 @@ pub(crate) async fn stream_ndjson(
     req: reqwest::RequestBuilder,
     parse: LineParser,
     on_token: &mut (dyn FnMut(&str) + Send),
-) -> Result<String, LlmError> {
+) -> Result<StreamReply, LlmError> {
     stream_lines(req, drain_ndjson_lines, parse, on_token).await
 }
 
@@ -353,30 +422,42 @@ async fn stream_lines(
     drain: fn(&mut Vec<u8>) -> Vec<String>,
     parse: LineParser,
     on_token: &mut (dyn FnMut(&str) + Send),
-) -> Result<String, LlmError> {
+) -> Result<StreamReply, LlmError> {
     let resp = check_status(req.send().await?).await?;
     let mut stream = resp.bytes_stream();
     let mut buf: Vec<u8> = Vec::new();
     let mut full = String::new();
+    let mut usage = TokenUsage::default();
     while let Some(chunk) = stream.next().await {
         let chunk = chunk?;
         buf.extend_from_slice(&chunk);
         for line in drain(&mut buf) {
-            if let Some(token) = parse(&line)? {
+            let parsed = parse(&line)?;
+            if let Some(token) = parsed.token {
                 on_token(&token);
                 full.push_str(&token);
+            }
+            if let Some(u) = parsed.usage {
+                usage.merge(&u);
             }
         }
     }
     // Flush an unterminated tail — a final event/line without a trailing
     // delimiter still gets parsed.
     for line in take_tail_lines(&mut buf) {
-        if let Some(token) = parse(&line)? {
+        let parsed = parse(&line)?;
+        if let Some(token) = parsed.token {
             on_token(&token);
             full.push_str(&token);
         }
+        if let Some(u) = parsed.usage {
+            usage.merge(&u);
+        }
     }
-    Ok(full)
+    Ok(StreamReply {
+        full,
+        usage: (!usage.is_empty()).then_some(usage),
+    })
 }
 
 /// Drain every complete SSE event in `buf` into its constituent lines.
@@ -754,11 +835,11 @@ mod tests {
         );
         let mut tokens: Vec<String> = Vec::new();
         let mut on_token = |t: &str| tokens.push(t.to_string());
-        let full = provider
+        let reply = provider
             .stream_chat(&[ChatMessage::text(Role::User, "hi")], &mut on_token)
             .await
             .unwrap();
-        assert_eq!(full, "Hey");
+        assert_eq!(reply.full, "Hey");
         assert_eq!(tokens, vec!["He", "y"]);
     }
 
@@ -875,10 +956,10 @@ mod tests {
         let req = reqwest::Client::new().get(&url);
         let mut tokens: Vec<String> = Vec::new();
         let mut on_token = |t: &str| tokens.push(t.to_string());
-        let full = stream_sse(req, openai::OpenAiProvider::parse_event, &mut on_token)
+        let reply = stream_sse(req, openai::OpenAiProvider::parse_event, &mut on_token)
             .await
             .unwrap();
-        assert_eq!(full, "héllo");
+        assert_eq!(reply.full, "héllo");
         assert_eq!(tokens, vec!["héllo"]);
     }
 
@@ -911,10 +992,10 @@ mod tests {
         let req = reqwest::Client::new().get(&url);
         let mut tokens: Vec<String> = Vec::new();
         let mut on_token = |t: &str| tokens.push(t.to_string());
-        let full = stream_ndjson(req, ollama::OllamaProvider::parse_event, &mut on_token)
+        let reply = stream_ndjson(req, ollama::OllamaProvider::parse_event, &mut on_token)
             .await
             .unwrap();
-        assert_eq!(full, "Hello");
+        assert_eq!(reply.full, "Hello");
         assert_eq!(tokens, vec!["Hel", "lo"]);
     }
 }

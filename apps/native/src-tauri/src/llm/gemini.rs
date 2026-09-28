@@ -11,8 +11,8 @@ use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 use serde_json::{json, Value};
 
 use super::{
-    check_status, stream_sse, ChatMessage, CONNECT_TIMEOUT, ContentPart, LlmError, Provider,
-    Role, VALIDATE_TIMEOUT,
+    check_status, stream_sse, ChatMessage, CONNECT_TIMEOUT, ContentPart, LlmError, ParsedLine,
+    Provider, Role, StreamReply, TokenUsage, VALIDATE_TIMEOUT,
 };
 
 const MODELS_URL: &str = "https://generativelanguage.googleapis.com/v1beta/models";
@@ -37,16 +37,17 @@ impl GeminiProvider {
         }
     }
 
-    /// One SSE line → a token. `data:` payloads carrying an `error` field
-    /// (and malformed `data:` JSON) abort via `Err`; metadata-only chunks
-    /// and non-`data:` lines are `Ok(None)`.
-    pub(crate) fn parse_event(line: &str) -> Result<Option<String>, LlmError> {
+    /// One SSE line → a token and/or a usage report — a chunk can carry
+    /// both candidate text and `usageMetadata` (cumulative; the last
+    /// one wins). `data:` payloads carrying an `error` field (and
+    /// malformed `data:` JSON) abort via `Err`.
+    pub(crate) fn parse_event(line: &str) -> Result<ParsedLine, LlmError> {
         let Some(data) = line.strip_prefix("data:") else {
-            return Ok(None);
+            return Ok(ParsedLine::NONE);
         };
         let data = data.trim_start();
         if data.is_empty() {
-            return Ok(None);
+            return Ok(ParsedLine::NONE);
         }
         let v: Value =
             serde_json::from_str(data).map_err(|e| super::malformed_stream("gemini", e))?;
@@ -63,14 +64,20 @@ impl GeminiProvider {
                     .collect::<String>()
             })
             .unwrap_or_default();
-        Ok(if text.is_empty() { None } else { Some(text) })
+        Ok(ParsedLine {
+            token: (!text.is_empty()).then_some(text),
+            usage: v.get("usageMetadata").map(|u| TokenUsage {
+                input: u["promptTokenCount"].as_u64(),
+                output: u["candidatesTokenCount"].as_u64(),
+            }),
+        })
     }
 
     /// Test seam per the task brief — same decode as [`Self::parse_event`]
     /// but errors collapse to `None`.
     #[allow(dead_code)] // test-only seam
     pub fn parse_stream_line(line: &str) -> Option<String> {
-        Self::parse_event(line).ok().flatten()
+        Self::parse_event(line).ok().and_then(|p| p.token)
     }
 
     /// The model lives in the URL path; the key NEVER does — see module
@@ -129,7 +136,7 @@ impl GeminiProvider {
         &self,
         msgs: &[ChatMessage],
         on_token: &mut (dyn FnMut(&str) + Send),
-    ) -> Result<String, LlmError> {
+    ) -> Result<StreamReply, LlmError> {
         let key = self.api_key.as_deref().ok_or(LlmError::Auth)?;
         let req = self
             .client
@@ -168,7 +175,7 @@ impl Provider for GeminiProvider {
         &'a self,
         msgs: &'a [ChatMessage],
         on_token: &'a mut (dyn FnMut(&str) + Send),
-    ) -> Pin<Box<dyn Future<Output = Result<String, LlmError>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Result<StreamReply, LlmError>> + Send + 'a>> {
         Box::pin(async move { self.stream_chat_inner(msgs, on_token).await })
     }
 
@@ -189,6 +196,18 @@ mod tests {
             ),
             Some("Yo".into())
         );
+    }
+
+    #[test]
+    fn gemini_reads_usage_metadata() {
+        // `usageMetadata` can ride the same chunk as candidate text.
+        let parsed = GeminiProvider::parse_event(
+            r#"data: {"candidates":[{"content":{"parts":[{"text":"Yo"}]}}],"usageMetadata":{"promptTokenCount":11,"candidatesTokenCount":4}}"#,
+        )
+        .unwrap();
+        assert_eq!(parsed.token.as_deref(), Some("Yo"));
+        assert_eq!(parsed.usage.unwrap().input, Some(11));
+        assert_eq!(parsed.usage.unwrap().output, Some(4));
     }
 
     #[test]

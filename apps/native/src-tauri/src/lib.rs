@@ -629,6 +629,17 @@ fn menu_dispatch() -> impl Fn(&AppHandle, tauri::menu::MenuEvent) + Send + Sync 
             set_bar_locked(app, !locked);
         }
         menus::MENU_SETTINGS => show_settings(app),
+        // The item is built only in debug builds (menus.rs), so this
+        // arm compiles out in release — `menu.devtools` can't fire
+        // there anyway. Menu events carry no window identity: the bar
+        // owns the only popup, so it's the target (the tray copy
+        // inspects the bar too).
+        #[cfg(debug_assertions)]
+        menus::MENU_DEVTOOLS => {
+            if let Some(bar) = app.get_webview_window(windows::BAR_LABEL) {
+                bar.open_devtools();
+            }
+        }
         menus::MENU_QUIT => app.exit(0),
         _ => {}
     }
@@ -1119,6 +1130,18 @@ fn ask_send(app: AppHandle, text: String) {
         return;
     }
     state.ask.send(&app, &state.deps(), &text);
+}
+
+/// Regenerate the last answer — re-runs the active session's last user
+/// turn (ask.rs `AskService::retry`). Same gate guard as `ask_send`.
+#[tauri::command]
+fn ask_retry(app: AppHandle) {
+    let state = app.state::<AppState>();
+    if *state.gate.lock() != Gate::Main {
+        log::warn!("ask_retry dropped while gate != Main");
+        return;
+    }
+    state.ask.retry(&app, &state.deps());
 }
 
 /// Cancel the in-flight stream and collapse the card.
@@ -1706,6 +1729,17 @@ fn bar_context_menu(app: AppHandle) -> Result<(), String> {
     bar.popup_menu(&menu).map_err(|e| e.to_string())
 }
 
+/// Dev-only inspector for webviews without the shared menu (prefs,
+/// alert): opens the CALLING window's devtools — their right-click
+/// invokes this under `import.meta.env.DEV`. No-op in release, where
+/// the frontend never calls it anyway.
+#[tauri::command]
+#[allow(unused_variables)]
+fn open_devtools(webview: tauri::WebviewWindow) {
+    #[cfg(debug_assertions)]
+    webview.open_devtools();
+}
+
 // ---------------------------------------------------------------------------
 // Commands — permissions / capture
 // ---------------------------------------------------------------------------
@@ -2187,6 +2221,7 @@ pub fn run() {
             providers_reorder,
             provider_set_enabled,
             ask_send,
+            ask_retry,
             ask_close,
             ask_send_screen_only,
             ask_current,
@@ -2228,6 +2263,7 @@ pub fn run() {
             window_bar_edge,
             window_set_bar_expanded,
             bar_context_menu,
+            open_devtools,
             permissions_status,
             permissions_request_screen,
             permissions_request_mic,

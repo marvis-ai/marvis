@@ -69,15 +69,12 @@ pub(crate) async fn describe_screen(
         }
         r = provider.stream_chat(&msgs, &mut sink) => match r {
             Ok(reply) => {
+                let first = reply.full.trim().lines().next().unwrap_or("");
                 match &reply.usage {
                     Some(u) => log::info!(
-                        "screen_read: vision result ({u:?}): {}",
-                        reply.full.trim()
+                        "screen_read: vision result ({u:?}): {first}"
                     ),
-                    None => log::info!(
-                        "screen_read: vision result: {}",
-                        reply.full.trim()
-                    ),
+                    None => log::info!("screen_read: vision result: {first}"),
                 }
                 Ok(Some(reply))
             }

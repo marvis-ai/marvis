@@ -1922,6 +1922,72 @@ fn capture_stop(app: AppHandle) -> serde_json::Value {
     stop_capture(&app)
 }
 
+/// Idle-state record button: the native macOS content-sharing picker
+/// (window / display / application) — same UI Zoom shows. Marvis's own
+/// bundle id is excluded so it can never offer itself. Cancel is a
+/// silent no-op; `capture:state` reports the picked `target`.
+///
+/// The picker is a main-thread API (its config setters require it), so
+/// the command hops via `run_on_main_thread`; `show` is non-blocking
+/// and its `Send` callback fires later with the outcome.
+#[tauri::command]
+fn capture_pick_and_start(app: AppHandle) {
+    let state = app.state::<AppState>();
+    if *state.gate.lock() != Gate::Main {
+        log::warn!("capture_pick_and_start dropped while gate != Main");
+        return;
+    }
+    let app2 = app.clone();
+    if let Err(e) = app.run_on_main_thread(move || {
+        use screencapturekit::content_sharing_picker::*;
+        let mut cfg = SCContentSharingPickerConfiguration::new();
+        cfg.set_allowed_picker_modes(&[
+            SCContentSharingPickerMode::SingleWindow,
+            SCContentSharingPickerMode::SingleDisplay,
+            SCContentSharingPickerMode::SingleApplication,
+        ]);
+        cfg.set_excluded_bundle_ids(&["com.getmarvis.marvis"]);
+        SCContentSharingPicker::show(&cfg, move |outcome| {
+            if let SCPickerOutcome::Picked(result) = outcome {
+                let (w, h) = result.pixel_size();
+                let target = match result.source() {
+                    SCPickedSource::Window(t) => CaptureTarget {
+                        kind: "window",
+                        label: t,
+                    },
+                    SCPickedSource::Display(id) => CaptureTarget {
+                        kind: "display",
+                        label: format!("Display {id}"),
+                    },
+                    SCPickedSource::Application(n) => CaptureTarget {
+                        kind: "app",
+                        label: n,
+                    },
+                    SCPickedSource::Unknown => CaptureTarget {
+                        kind: "app",
+                        label: "Screen".into(),
+                    },
+                };
+                // `start_capture` is idempotent while a capture lives —
+                // a pick made over a running session must retarget, so
+                // stop it first rather than silently keep the old scope.
+                if app2
+                    .state::<AppState>()
+                    .capture
+                    .lock()
+                    .as_ref()
+                    .is_some_and(MacosCapture::is_running)
+                {
+                    stop_capture(&app2);
+                }
+                start_capture(&app2, result.filter(), w, h, Some(target));
+            }
+        });
+    }) {
+        log::warn!("capture_pick_and_start: main-thread hop failed: {e}");
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Commands — sessions
 // ---------------------------------------------------------------------------
@@ -2376,6 +2442,7 @@ pub fn run() {
             permissions_request_mic,
             permissions_open_prefs,
             capture_start,
+            capture_pick_and_start,
             capture_stop,
             capture_status,
             session_list,
@@ -2536,6 +2603,22 @@ mod tests {
         assert!(
             !stop_body.contains("Gate::Main"),
             "capture_stop must stay callable at any gate"
+        );
+    }
+
+    /// `capture_pick_and_start` mutates (the picked scope becomes the
+    /// live capture), so it keeps the same crafted-invoke gate guard as
+    /// `capture_start` — a pick must never light capture outside `Main`.
+    #[test]
+    fn capture_pick_and_start_is_gate_guarded() {
+        let src = include_str!("lib.rs");
+        let body = src
+            .split("fn capture_pick_and_start")
+            .nth(1)
+            .expect("command exists");
+        assert!(
+            body.contains("Gate::Main"),
+            "picker start must be Main-gated"
         );
     }
 

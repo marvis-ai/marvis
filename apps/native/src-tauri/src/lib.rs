@@ -1977,9 +1977,19 @@ fn capture_pick_and_start(app: AppHandle) {
                     // `stop_capture` — the invoke-time check can't see it.
                     // Re-check under `gate_transition`, the same critical
                     // section `capture_start` uses (lock order
-                    // `gate_transition` → `gate` → `capture`).
+                    // `gate_transition` → `gate` → `capture`). try_lock:
+                    // this callback runs on the main thread, and a worker
+                    // holding `gate_transition` blocks on it via
+                    // `tray.set_menu` — parking here is an ABBA deadlock.
+                    // Contention means a transition is in flight, so
+                    // dropping the pick is correct.
                     let state2 = app2.state::<AppState>();
-                    let _transition = state2.gate_transition.lock();
+                    let Some(_transition) = state2.gate_transition.try_lock() else {
+                        log::warn!(
+                            "capture_pick_and_start: pick dropped — gate transition in flight"
+                        );
+                        return;
+                    };
                     if *state2.gate.lock() != Gate::Main {
                         log::warn!(
                             "capture_pick_and_start: pick landed after gate left Main"
@@ -2632,8 +2642,11 @@ mod tests {
     /// live capture), so it keeps the same crafted-invoke gate guard as
     /// `capture_start`, and the `Picked` callback re-checks the gate
     /// under `gate_transition` — a pick must never light capture
-    /// outside `Main`. The body is bounded on the next `fn` so the
-    /// assertions can't leak into neighbouring tests.
+    /// outside `Main`. `try_lock`, not `lock`: the callback runs on the
+    /// main thread and a `gate_transition` holder blocks on it via
+    /// `tray.set_menu`, so parking here deadlocks. The body is bounded
+    /// on the next `fn` so the assertions can't leak into neighbouring
+    /// tests.
     #[test]
     fn capture_pick_and_start_is_gate_guarded() {
         let src = include_str!("lib.rs");
@@ -2647,8 +2660,9 @@ mod tests {
             "picker start must be Main-gated"
         );
         assert!(
-            body.contains("gate_transition.lock()"),
-            "the picked callback must re-check the gate under gate_transition"
+            body.contains("gate_transition.try_lock()"),
+            "the picked callback must re-check the gate under gate_transition \
+             via try_lock (main-thread callback must never park on it)"
         );
     }
 

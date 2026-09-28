@@ -371,18 +371,20 @@ const Bar = () => {
     const failure = wantRunning
       ? 'Screen recording start failed'
       : 'Screen recording stop failed';
-    const transition = wantRunning ? capturePickAndStart() : captureStop();
-    void transition
+    if (wantRunning) {
+      // The picker resolves once its panel is up — the pick (or
+      // cancel) lands later as `capture:state`, so there's no status
+      // to check on the start arm.
+      void capturePickAndStart()
+        .catch(() => raise(failure))
+        .finally(() => setBusy(false));
+      return;
+    }
+    // `capture_stop` resolves `{ running, frames, target }` rather than
+    // rejecting, so a failed transition comes back short of the target
+    // — surface it, then resync as usual.
+    void captureStop()
       .then((next) => {
-        // The picker resolves once its panel is up — the pick (or
-        // cancel) lands later as `capture:state`, so only the stop arm
-        // has a status to check. `capture_stop` resolves
-        // `{ running, frames, target }` rather than rejecting, so a
-        // failed transition comes back short of the target — surface
-        // it, then resync as usual.
-        if (wantRunning) {
-          return;
-        }
         if (next.running !== wantRunning) {
           raise(failure);
         }

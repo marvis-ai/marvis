@@ -540,8 +540,7 @@ export const captureStatus = () => invoke<CaptureStatus>('capture_status');
  *  (window / display / application). The Rust command returns `()`, so
  *  the invoke resolves null — the authoritative snapshot (with `target`)
  *  lands as the `capture:state` emit; cancel is a silent no-op. */
-export const capturePickAndStart = () =>
-  invoke<CaptureStatus>('capture_pick_and_start');
+export const capturePickAndStart = () => invoke<void>('capture_pick_and_start');
 
 // ---------------------------------------------------------------------------
 // sessions

@@ -18,7 +18,7 @@ use crate::prompts::screen_prompt;
 /// A cached screen description + unix-seconds stamp — asks annotate age
 /// so stale context is never silently presented as current.
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // populated by ScreenReader::run; the ask-side reader lands in Task 8
+#[allow(dead_code)] // populated by ScreenReader::run; the ask-side field reads land in Task 8
 pub(crate) struct ScreenContext {
     pub text: String,
     pub ts: i64,
@@ -68,18 +68,18 @@ pub(crate) async fn describe_screen(
 }
 
 /// Quiet period before the screen counts as settled.
-#[allow(dead_code)] // consumed by run(); the reader itself is wired in Task 6
 pub(crate) const SETTLE: Duration = Duration::from_millis(1000);
 
 /// Injected describe seam — production wiring passes a closure that
 /// resolves `[vision]` and calls [`describe_screen`]; tests pass fakes.
-#[allow(dead_code)] // same — the only caller is run(), wired in Task 6
 pub(crate) type Describer =
     Arc<dyn Fn(Frame) -> BoxFuture<'static, Result<Option<String>, LlmError>>
         + Send
         + Sync>;
 
-#[allow(dead_code)] // wired into AppState/capture by Task 6 — tests are the only callers now
+/// Background screen-describer — `note_frame` feeds it from the capture
+/// callback, `start`/`stop` follow the capture lifecycle. The cached
+/// context survives stops (a fresh start reads forward from it).
 pub(crate) struct ScreenReader {
     /// Latest good read — survives a failed read (stale beats empty).
     context: Mutex<Option<ScreenContext>>,
@@ -92,7 +92,6 @@ pub(crate) struct ScreenReader {
     running: AtomicBool,
 }
 
-#[allow(dead_code)] // see the struct — only tests reach these until Task 6
 impl ScreenReader {
     pub fn new() -> Self {
         Self {
@@ -104,6 +103,9 @@ impl ScreenReader {
         }
     }
 
+    /// The latest cached read — consumed by the ask pipeline's
+    /// `screen_context` attach in Task 8; tests cover it now.
+    #[allow(dead_code)]
     pub fn context(&self) -> Option<ScreenContext> {
         self.context.lock().clone()
     }
@@ -120,7 +122,9 @@ impl ScreenReader {
     }
 
     /// Test hook for seeding the cache without running the loop.
+    /// No caller yet — the ask-side cache tests land in Task 8.
     #[cfg(test)]
+    #[allow(dead_code)]
     pub(crate) fn seed_context(&self, text: &str) {
         *self.context.lock() = Some(ScreenContext {
             text: text.to_string(),

@@ -91,9 +91,10 @@ impl GenericImageView for BgraView<'_> {
     }
 }
 
-/// Screen capture of the primary display. Create with [`MacosCapture::new`]
-/// (enumerates shareable content eagerly so permission failures surface at
-/// construction, not mid-stream), then drive via [`FrameSource`].
+/// Screen capture over a caller-built filter. Create with
+/// [`MacosCapture::for_display`] (primary display — enumerates shareable
+/// content eagerly so permission failures surface at construction, not
+/// mid-stream) or [`MacosCapture::new`], then drive via [`FrameSource`].
 pub struct MacosCapture {
     state: Mutex<CaptureState>,
 }
@@ -158,15 +159,10 @@ pub(crate) fn shot_fullscreen() -> anyhow::Result<Option<Frame>> {
 }
 
 impl MacosCapture {
-    /// Build the filter (primary display, our own windows excluded) and
+    /// Wrap a caller-built filter (primary display via
+    /// [`primary_display_filter`], or a picker result) with the shared
     /// stream configuration. Does not start capturing.
-    ///
-    /// # Errors
-    ///
-    /// Fails if screen-recording permission is missing or no display is
-    /// shareable.
-    pub fn new(fps: u32) -> anyhow::Result<Self> {
-        let (filter, width, height) = primary_display_filter()?;
+    pub fn new(filter: SCContentFilter, width: u32, height: u32, fps: u32) -> anyhow::Result<Self> {
         let config = SCStreamConfiguration::new()
             .with_width(width)
             .with_height(height)
@@ -176,7 +172,6 @@ impl MacosCapture {
             // Smallest allowed depth (3..=8): prefer dropping stale frames
             // over queueing them when the worker falls behind.
             .with_queue_depth(3);
-
         Ok(Self {
             state: Mutex::new(CaptureState {
                 filter,
@@ -184,6 +179,19 @@ impl MacosCapture {
                 running: None,
             }),
         })
+    }
+
+    /// The auto-start path: whole primary display, Marvis's own windows
+    /// excluded (a picker can't appear without user interaction).
+    ///
+    /// # Errors
+    ///
+    /// Fails if screen-recording permission is missing or no display is
+    /// shareable.
+    #[allow(dead_code)] // callers build filters via `primary_display_filter` + `new`; the manual test drives this
+    pub fn for_display(fps: u32) -> anyhow::Result<Self> {
+        let (filter, width, height) = primary_display_filter()?;
+        Self::new(filter, width, height, fps)
     }
 
     /// Whether the stream + worker are live — false after a failed `start`
@@ -422,7 +430,8 @@ mod tests {
     #[test]
     #[ignore = "requires screen-recording permission and a GUI session"]
     fn captures_frames_for_three_seconds() {
-        let capture = MacosCapture::new(4).expect("shareable content (screen permission granted?)");
+        let capture =
+            MacosCapture::for_display(4).expect("shareable content (screen permission granted?)");
         let count = Arc::new(AtomicUsize::new(0));
         let reporter = Arc::clone(&count);
         capture.start(Box::new(move |frame| {

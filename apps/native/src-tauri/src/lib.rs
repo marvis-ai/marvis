@@ -143,9 +143,10 @@ pub struct AppState {
     /// (enter/leave Main), and the `app:state` emit must be one critical
     /// section or two overlapping transitions can interleave (stale
     /// emit landing last, or hotkeys/capture from a dead gate state).
-    /// `capture_start` is the only other holder: its gate check +
-    /// `start_capture` must stay atomic against a concurrent
-    /// leave-transition. Both holders take locks in the order
+    /// The other holders — `capture_start`, `toggle_capture`, and the
+    /// picker's `Picked` callback — keep their gate check + capture
+    /// start/stop atomic against a concurrent leave-transition the same
+    /// way. All holders take locks in the order
     /// `gate_transition` → `gate` → `capture` → `ring`
     /// (`capture_target` nests inside `capture`), so they cannot
     /// deadlock.
@@ -274,9 +275,9 @@ fn transition_gate(app: &AppHandle) {
     let state = app.state::<AppState>();
     // Serialize the whole transition: the gate read+swap, the Main
     // side-effects, and the `app:state` emit are one critical section.
-    // `capture_start` is the other `gate_transition` holder — both
-    // follow the field's documented lock order, so this cannot
-    // deadlock.
+    // `capture_start`, `toggle_capture`, and the picker's `Picked`
+    // callback are the other `gate_transition` holders — all follow
+    // the field's documented lock order, so this cannot deadlock.
     let _transition = state.gate_transition.lock();
     let new_gate = app_gate(&state);
     let old_gate = std::mem::replace(&mut *state.gate.lock(), new_gate);
@@ -1940,7 +1941,10 @@ fn capture_pick_and_start(app: AppHandle) {
     let app2 = app.clone();
     if let Err(e) = app.run_on_main_thread(move || {
         use screencapturekit::content_sharing_picker::*;
-        let mut cfg = SCContentSharingPickerConfiguration::new();
+        let Some(mut cfg) = SCContentSharingPickerConfiguration::try_new() else {
+            log::warn!("capture_pick_and_start: picker unavailable (macOS < 14)");
+            return;
+        };
         cfg.set_allowed_picker_modes(&[
             SCContentSharingPickerMode::SingleWindow,
             SCContentSharingPickerMode::SingleDisplay,
@@ -1948,39 +1952,57 @@ fn capture_pick_and_start(app: AppHandle) {
         ]);
         cfg.set_excluded_bundle_ids(&["com.getmarvis.marvis"]);
         SCContentSharingPicker::show(&cfg, move |outcome| {
-            if let SCPickerOutcome::Picked(result) = outcome {
-                let (w, h) = result.pixel_size();
-                let target = match result.source() {
-                    SCPickedSource::Window(t) => CaptureTarget {
-                        kind: "window",
-                        label: t,
-                    },
-                    SCPickedSource::Display(id) => CaptureTarget {
-                        kind: "display",
-                        label: format!("Display {id}"),
-                    },
-                    SCPickedSource::Application(n) => CaptureTarget {
-                        kind: "app",
-                        label: n,
-                    },
-                    SCPickedSource::Unknown => CaptureTarget {
-                        kind: "app",
-                        label: "Screen".into(),
-                    },
-                };
-                // `start_capture` is idempotent while a capture lives —
-                // a pick made over a running session must retarget, so
-                // stop it first rather than silently keep the old scope.
-                if app2
-                    .state::<AppState>()
-                    .capture
-                    .lock()
-                    .as_ref()
-                    .is_some_and(MacosCapture::is_running)
-                {
-                    stop_capture(&app2);
+            match outcome {
+                SCPickerOutcome::Picked(result) => {
+                    let (w, h) = result.pixel_size();
+                    let target = match result.source() {
+                        SCPickedSource::Window(t) => CaptureTarget {
+                            kind: "window",
+                            label: t,
+                        },
+                        SCPickedSource::Display(id) => CaptureTarget {
+                            kind: "display",
+                            label: format!("Display {id}"),
+                        },
+                        SCPickedSource::Application(n) => CaptureTarget {
+                            kind: "app",
+                            label: n,
+                        },
+                        SCPickedSource::Unknown => CaptureTarget {
+                            kind: "app",
+                            label: "Screen".into(),
+                        },
+                    };
+                    // The pick can land after a leave-Main transition ran
+                    // `stop_capture` — the invoke-time check can't see it.
+                    // Re-check under `gate_transition`, the same critical
+                    // section `capture_start` uses (lock order
+                    // `gate_transition` → `gate` → `capture`).
+                    let state2 = app2.state::<AppState>();
+                    let _transition = state2.gate_transition.lock();
+                    if *state2.gate.lock() != Gate::Main {
+                        log::warn!(
+                            "capture_pick_and_start: pick landed after gate left Main"
+                        );
+                        return;
+                    }
+                    // `start_capture` is idempotent while a capture lives —
+                    // a pick made over a running session must retarget, so
+                    // stop it first rather than silently keep the old scope.
+                    if state2
+                        .capture
+                        .lock()
+                        .as_ref()
+                        .is_some_and(MacosCapture::is_running)
+                    {
+                        stop_capture(&app2);
+                    }
+                    start_capture(&app2, result.filter(), w, h, Some(target));
                 }
-                start_capture(&app2, result.filter(), w, h, Some(target));
+                SCPickerOutcome::Error(e) => {
+                    log::warn!("capture_pick_and_start: picker error: {e}");
+                }
+                SCPickerOutcome::Cancelled => {}
             }
         });
     }) {
@@ -2608,17 +2630,25 @@ mod tests {
 
     /// `capture_pick_and_start` mutates (the picked scope becomes the
     /// live capture), so it keeps the same crafted-invoke gate guard as
-    /// `capture_start` — a pick must never light capture outside `Main`.
+    /// `capture_start`, and the `Picked` callback re-checks the gate
+    /// under `gate_transition` — a pick must never light capture
+    /// outside `Main`. The body is bounded on the next `fn` so the
+    /// assertions can't leak into neighbouring tests.
     #[test]
     fn capture_pick_and_start_is_gate_guarded() {
         let src = include_str!("lib.rs");
         let body = src
             .split("fn capture_pick_and_start")
             .nth(1)
+            .and_then(|rest| rest.split("\nfn ").next())
             .expect("command exists");
         assert!(
-            body.contains("Gate::Main"),
+            body.contains("*state.gate.lock() != Gate::Main"),
             "picker start must be Main-gated"
+        );
+        assert!(
+            body.contains("gate_transition.lock()"),
+            "the picked callback must re-check the gate under gate_transition"
         );
     }
 

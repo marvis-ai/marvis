@@ -40,11 +40,13 @@ import {
   BTN_SM,
   EMPTY,
   ICON_BTN,
+  NUM,
   PANEL_BODY,
   SPIN,
   cn,
 } from '@/lib/classes';
-import { CardHeader } from './shared/CardHeader';
+import { sessionDateLabel } from '@/components/listen/model';
+import { CardHeader } from '@/components/shared/CardHeader';
 import { ChatMsgMenu, type ChatMsgMeta } from './ChatMsgMenu';
 
 type AskPhase = 'loading' | 'streaming' | 'idle';
@@ -60,10 +62,15 @@ interface AskStatePayload {
 interface ChatMsg extends ChatMsgMeta {
   role: 'user' | 'assistant';
   content: string;
+  /** Epoch seconds — persisted `messages.ts`, or a local stamp for live
+   *  rows (send time on user turns, finish time on replies). */
+  ts?: number;
 }
 
 /** Distance from the bottom that still counts as pinned for autoscroll. */
 const PIN_PX = 24;
+
+const nowSecs = () => Math.floor(Date.now() / 1000);
 
 /** Fold a `loading` boundary into the message list (see file doc). */
 const applyLoading = (prev: ChatMsg[], q: string): ChatMsg[] => {
@@ -82,7 +89,7 @@ const applyLoading = (prev: ChatMsg[], q: string): ChatMsg[] => {
   }
   return [
     ...prev,
-    { role: 'user', content: q },
+    { role: 'user', content: q, ts: nowSecs() },
     { role: 'assistant', content: '' },
   ];
 };
@@ -92,13 +99,16 @@ const applyLoading = (prev: ChatMsg[], q: string): ChatMsg[] => {
 const setTail = (
   prev: ChatMsg[],
   content: string,
-  meta?: ChatMsgMeta,
+  meta?: ChatMsgMeta & { ts?: number },
 ): ChatMsg[] => {
   const last = prev[prev.length - 1];
   if (last?.role !== 'assistant') {
     return [...prev, { role: 'assistant', content, ...meta }];
   }
-  return [...prev.slice(0, -1), { role: 'assistant', content, ...meta }];
+  return [
+    ...prev.slice(0, -1),
+    { role: 'assistant', ts: last.ts, content, ...meta },
+  ];
 };
 
 /** Append a streamed token to the tail assistant bubble. */
@@ -144,6 +154,7 @@ export const ChatSection = ({ onBack }: { onBack: () => void }) => {
                 .map((r) => ({
                   role: r.role as ChatMsg['role'],
                   content: r.content,
+                  ts: r.ts,
                   provider: r.provider,
                   model: r.model,
                   tokensIn: r.tokens_in,
@@ -198,6 +209,7 @@ export const ChatSection = ({ onBack }: { onBack: () => void }) => {
     // provider/model/usage name who ACTUALLY answered under failover.
     setMsgs((prev) =>
       setTail(prev, p.full, {
+        ts: nowSecs(),
         provider: p.provider ?? null,
         model: p.model ?? null,
         tokensIn: p.usage?.input ?? null,
@@ -317,24 +329,35 @@ export const ChatSection = ({ onBack }: { onBack: () => void }) => {
             m.role === 'user' ? (
               <div
                 key={i}
-                className='group/row flex items-start justify-end gap-1'>
-                <button
-                  type='button'
-                  onClick={() => copyMsg(i, m.content)}
-                  aria-label='Copy message'
-                  className={cn(
-                    ICON_BTN,
-                    'mt-1 size-5 opacity-0 transition-opacity group-hover/row:opacity-100 focus-visible:opacity-100',
-                  )}>
-                  {copiedIdx === i ? (
-                    <CheckIcon className='size-3 text-accent' />
-                  ) : (
-                    <CopyIcon className='size-3' />
-                  )}
-                </button>
+                className='group/row flex flex-col items-end gap-1'>
                 <p className='max-w-[85%] rounded-2xl rounded-br-sm bg-accent/10 px-4 py-2 text-[14px] leading-normal wrap-break-word whitespace-pre-wrap select-text text-accent'>
                   {m.content}
                 </p>
+                <div className='flex items-center justify-end gap-1'>
+                  {m.ts != null && (
+                    <span
+                      className={cn(
+                        NUM,
+                        'text-[10px] text-muted-foreground opacity-0 transition-opacity group-hover/row:opacity-100',
+                      )}>
+                      {sessionDateLabel(m.ts)}
+                    </span>
+                  )}
+                  <button
+                    type='button'
+                    onClick={() => copyMsg(i, m.content)}
+                    aria-label='Copy message'
+                    className={cn(
+                      ICON_BTN,
+                      'mt-1 size-4 opacity-0 transition-opacity group-hover/row:opacity-100 focus-visible:opacity-100',
+                    )}>
+                    {copiedIdx === i ? (
+                      <CheckIcon className='size-3 text-accent' />
+                    ) : (
+                      <CopyIcon className='size-3' />
+                    )}
+                  </button>
+                </div>
               </div>
             ) : (
               m.content && (
@@ -385,6 +408,15 @@ export const ChatSection = ({ onBack }: { onBack: () => void }) => {
                       onRetry={retry}
                       meta={m}
                     />
+                    {m.ts != null && (
+                      <span
+                        className={cn(
+                          NUM,
+                          'text-[10px] text-muted-foreground',
+                        )}>
+                        {sessionDateLabel(m.ts)}
+                      </span>
+                    )}
                   </div>
                 </div>
               )

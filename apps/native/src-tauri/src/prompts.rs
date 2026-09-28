@@ -27,12 +27,17 @@ fn data_block(tag: &str, value: &str) -> String {
     format!("<{tag}>\n{value}\n</{tag}>")
 }
 
+/// The new user turn: the request plus whatever context exists — a
+/// `<meeting_context>` block only when the listen transcript tail is
+/// non-empty, a `<screen_context>` block only when the vision reader
+/// described a frame. A bare request is a standalone question.
 pub fn live_user_prompt(request: &str, history: &str, screen: Option<&str>) -> String {
-    let mut prompt = format!(
-        "{request}\n\n{}",
-        data_block("meeting_context", context_or_fallback(history))
-    );
-    if let Some(screen) = screen {
+    let mut prompt = request.to_string();
+    if !history.trim().is_empty() {
+        prompt.push_str("\n\n");
+        prompt.push_str(&data_block("meeting_context", history));
+    }
+    if let Some(screen) = screen.filter(|s| !s.trim().is_empty()) {
         prompt.push_str("\n\n");
         prompt.push_str(&data_block("screen_context", screen));
     }
@@ -125,6 +130,18 @@ mod tests {
         assert!(prompt.contains("</meeting_context>"));
         assert!(prompt.contains("<screen_context>"));
         assert!(prompt.contains("</screen_context>"));
+    }
+
+    #[test]
+    fn live_user_prompt_omits_empty_context_blocks() {
+        // No transcript and no screen read → the bare request; the
+        // model must not see an empty-conversation placeholder.
+        assert_eq!(live_user_prompt("如何投简历？", "", None), "如何投简历？");
+        assert_eq!(live_user_prompt("q", "  ", Some("  ")), "q");
+        assert_eq!(
+            live_user_prompt("q", "", Some("A browser is open.")),
+            "q\n\n<screen_context>\nA browser is open.\n</screen_context>"
+        );
     }
 
     #[test]

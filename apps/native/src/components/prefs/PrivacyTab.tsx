@@ -97,7 +97,7 @@ export const PrivacyTab = () => {
       <div className={PRF_ROWS}>
         <PrefRow
           label='Session history'
-          sub='ask and listen sessions in marvis.db. Deletes are permanent.'
+          sub='Clear all in marvis.db. Deletes are permanent.'
           last>
           <button
             type='button'

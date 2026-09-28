@@ -75,8 +75,9 @@ const BAR_H: f64 = 64.0;
 /// Bar window label — the ask event target now that the chat card lives
 /// inside the bar window (`emit_to(BAR_LABEL, "ask:*", …)`).
 pub const BAR_LABEL: &str = "bar";
-/// Card content height until the webview's first `window_adjust_height`
-/// report (spec default).
+/// Card content height's initial field value — `set_chat_open` resets
+/// it to the 30% floor on every expand, so this only exists before the
+/// first open.
 const CHAT_DEFAULT_H: f64 = 480.0;
 /// The expanded card's corner radius — matches the CSS card's
 /// `rounded-[18px]`; the glass shape follows it while a card is up.
@@ -134,6 +135,8 @@ pub struct WindowPool {
     /// Whether the unified card (chat or listen mode) is open.
     chat_open: bool,
     /// Last reported card CONTENT height — window = `BAR_H + this`.
+    /// Reset to the 30% floor on every expand; `window_adjust_height`
+    /// then tracks content inside the [30%, 60%] band.
     chat_height: f64,
     /// Which way the card grows — computed at expand time from free
     /// space (`Up` toward the top edge, `Down` toward the bottom).
@@ -419,6 +422,11 @@ impl WindowPool {
         if open {
             let work = self.bar_work_area();
             self.expand_dir = expand_dir_for(self.bar_rect, work);
+            // Every open starts at the card band's floor — 30% of the
+            // work area — regardless of the last session's height; the
+            // webview's first `window_adjust_height` report then grows
+            // it to fit content (capped at 60% inside `expanded_rect`).
+            self.chat_height = (work.h * layout::CARD_MIN_FRACTION - BAR_H).max(layout::MIN_CHAT_H);
             self.chat_open = true;
             let target = self.target_rect();
             movement::animate(&bar, target, ANIM_DUR);
@@ -537,9 +545,10 @@ impl WindowPool {
 
     /// `window_adjust_height(px)`: `px` is the desired TOTAL window
     /// height (the frontend measures the whole card). Expanded-only —
-    /// ignored when the card is closed. `expanded_rect` clamps to
-    /// `[BAR_H + 40, free space]` keeping the anchored edge
-    /// fixed; the clamped result is recorded for later expands.
+    /// ignored when the card is closed. `expanded_rect` clamps to the
+    /// card band — `[floor, min(free space, 60% of the work area)]` —
+    /// keeping the anchored edge fixed; the clamped result is recorded
+    /// for later expands.
     pub fn adjust_height(&mut self, px: f64) {
         if !px.is_finite() {
             log::warn!("windows::adjust_height: non-finite height {px}");
@@ -668,10 +677,12 @@ impl WindowPool {
     /// cursor still appears on the side edges. Pinning min == max on
     /// the width axis makes AppKit drop the horizontal affordance and
     /// clamps the drag itself (`enforce_bar_bounds` stays as the
-    /// backstop). An open card keeps a free height axis within
-    /// `[BAR_H + MIN_CHAT_H, free space in the grow direction]` — the
-    /// same bound `expanded_rect` applies, so an edge-drag can't pull
-    /// the card past the work-area edge it grows toward. Programmatic
+    /// backstop). An open card keeps a free height axis inside the
+    /// card band — `[30% of the work area (absolute floor
+    /// BAR_H + MIN_CHAT_H), min(free space in the grow direction, 60%
+    /// of the work area)]`, the same bounds `expanded_rect` applies —
+    /// so an edge-drag can't leave the band and snap back on the next
+    /// `window_adjust_height`. Programmatic
     /// `set_size` ignores these limits, so the morph animations are
     /// unaffected.
     fn sync_bar_size_limits(&self) {
@@ -689,11 +700,9 @@ impl WindowPool {
             } else {
                 work.bottom() - self.bar_rect.y
             };
-            (
-                layout::EXPANDED_W,
-                BAR_H + layout::MIN_CHAT_H,
-                free.max(BAR_H + layout::MIN_CHAT_H),
-            )
+            let min_h = (work.h * layout::CARD_MIN_FRACTION).max(BAR_H + layout::MIN_CHAT_H);
+            let max_h = free.min(work.h * layout::CARD_MAX_FRACTION).max(min_h);
+            (layout::EXPANDED_W, min_h, max_h)
         } else {
             (self.bar_rect.w, BAR_H, BAR_H)
         };
@@ -706,9 +715,9 @@ impl WindowPool {
     /// `resizable(false)`. The pill is fixed-size and restores whole;
     /// the open card restores x/width and re-pins the anchored edge
     /// (an edge-drag always changes `w`, and a corner drag can move
-    /// `y` too), keeping the dragged height the webview adopts through
-    /// `window_adjust_height`. Called on `Resized` when no animation is
-    /// in flight.
+    /// `y` too), keeping the dragged height — the webview's next
+    /// report then settles it to content-fit inside the card band.
+    /// Called on `Resized` when no animation is in flight.
     fn enforce_bar_bounds(&self) {
         let Some(bar) = &self.bar else { return };
         // `bar_rect` still holds the DEFAULT_WORK sentinel until
@@ -753,6 +762,17 @@ impl WindowPool {
     /// geometry.
     pub(crate) fn refresh_bar_rect(&mut self) {
         let Some(bar) = &self.bar else { return };
+        // While an animation drives the bounds the live rect is a
+        // transient lerp — and `window_rect` reads position and size as
+        // two OS calls, so an animator tick landing between them pairs a
+        // stale x with a fresh w. On expansion (x falls while w grows)
+        // that tear is always right-biased, and ratcheting it into
+        // `bar_rect` pushed the anchor — and every recentered target —
+        // gradually right. The committed rect stays authoritative until
+        // the animator lands on it.
+        if movement::is_animating(bar.label()) {
+            return;
+        }
         let Some(r) = window_rect(bar) else { return };
         self.bar_rect = if self.chat_open {
             derive_pill_rect(r, self.bar_rect.w, BAR_H, self.expand_dir)

@@ -77,27 +77,3 @@ export const PR_SUB = 'mt-0.5 max-w-[40ch] text-[11.5px] text-muted-foreground';
 export const PR_CTL = 'inline-flex flex-none items-center gap-2';
 export const H2 = 'mb-1 text-[17px] font-[650] tracking-[-0.01em]';
 export const SUB = 'mb-4 text-[12.5px] leading-normal text-muted-foreground';
-
-/* react-markdown output can't take classNames, so the sheet styles
-   every element as a descendant of this wrapper (was `.ask-md`). */
-export const ASK_MD = cn(
-  'leading-normal',
-  '[&_h1]:mt-[0.6em] [&_h1]:mb-[0.3em] [&_h1]:text-[1.05rem] [&_h1]:font-semibold',
-  '[&_h2]:mt-[0.6em] [&_h2]:mb-[0.3em] [&_h2]:text-[1rem] [&_h2]:font-semibold',
-  '[&_h3]:mt-[0.6em] [&_h3]:mb-[0.3em] [&_h3]:text-[0.92rem] [&_h3]:font-semibold',
-  '[&_h4]:mt-[0.6em] [&_h4]:mb-[0.3em] [&_h4]:text-[0.92rem] [&_h4]:font-semibold',
-  '[&_p]:my-[0.45em]',
-  '[&_ul]:my-[0.45em] [&_ul]:list-disc [&_ul]:pl-[1.4em]',
-  '[&_ol]:my-[0.45em] [&_ol]:list-decimal [&_ol]:pl-[1.4em]',
-  '[&_li]:my-[0.15em] [&_li>p]:my-[0.15em]',
-  '[&_code]:rounded [&_code]:bg-fg-soft [&_code]:px-[0.3em] [&_code]:py-[0.1em] [&_code]:font-mono [&_code]:text-[0.82em]',
-  '[&_pre]:my-2 [&_pre]:overflow-x-auto [&_pre]:rounded-lg [&_pre]:bg-fg-soft [&_pre]:px-[0.75em] [&_pre]:py-[0.55em]',
-  '[&_pre_code]:bg-transparent [&_pre_code]:p-0',
-  '[&_a]:text-accent-text [&_a]:underline',
-  '[&_blockquote]:my-2 [&_blockquote]:border-l-3 [&_blockquote]:border-border [&_blockquote]:pl-3 [&_blockquote]:text-muted-foreground',
-  '[&_table]:my-2 [&_table]:border-collapse',
-  '[&_th]:border [&_th]:border-border [&_th]:px-[0.6em] [&_th]:py-1',
-  '[&_td]:border [&_td]:border-border [&_td]:px-[0.6em] [&_td]:py-1',
-  '[&_hr]:my-[0.6em] [&_hr]:border-border',
-  '[&>:first-child]:mt-0 [&>:last-child]:mb-0',
-);

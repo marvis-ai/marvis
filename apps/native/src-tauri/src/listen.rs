@@ -986,7 +986,7 @@ pub async fn generate_summary(
     for candidate in candidates {
         let mut sink = |_token: &str| {};
         match candidate.provider.stream_chat(&messages, &mut sink).await {
-            Ok(raw) => match parse_summary(&raw) {
+            Ok(reply) => match parse_summary(&reply.full) {
                 Ok(summary) => {
                     if let Err(error) = db.summary_upsert(
                         session_id,

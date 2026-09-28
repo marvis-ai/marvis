@@ -1,6 +1,16 @@
-# Marvis
+<p align="center">
+  <img src="assets/marvis-logo.svg" alt="Marvis" width="260">
+</p>
 
-**Private / Personal AI for All** — a privacy-first AI co-pilot that lives on your desktop.
+<p align="center">
+  <strong>Private / Personal AI for All</strong> — a privacy-first AI co-pilot that lives on your desktop.
+</p>
+
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
+  <img src="https://img.shields.io/badge/platform-macOS-lightgrey.svg" alt="Platform: macOS">
+  <a href="https://github.com/MarvisLLC/marvis/stargazers"><img src="https://img.shields.io/github/stars/MarvisLLC/marvis" alt="GitHub stars"></a>
+</p>
 
 Marvis is an always-available assistant that floats above your workspace as a
 small translucent bar. It can see your screen (with your permission), hear
@@ -154,14 +164,16 @@ no encryption in the current build. Keys are never serialized to the UI
 
 - **Done** — overlay bar, provider failover chain, screen-aware Ask,
   hotkey rebinding, deep links, tray icon, onboarding wizard.
-- **Done (this branch)** — Listen: mic + system-audio transcription
+- **Done** — Listen: mic + system-audio transcription
   (Deepgram / bundled whisper.cpp), live transcript, rolling summaries.
 - **Next** — session history UI, prompt presets, Ollama model management,
   Gemini search grounding toggle.
 
 ## Contributing
 
-Contributions are welcome. A few conventions that keep the codebase
+Contributions are welcome — bug reports and feature requests go to
+[GitHub issues](https://github.com/MarvisLLC/marvis/issues), and pull
+requests are appreciated. A few conventions that keep the codebase
 consistent:
 
 - **bun** for all package management and scripts.
@@ -176,9 +188,15 @@ consistent:
   `apps/native/src/lib/commands.ts` / `events.ts` and the Rust emits
   together.
 
+## Security
+
+Marvis handles screen captures, microphone audio, and provider API keys. If
+you find a vulnerability, please report it privately to
+<chenillen@gmail.com> instead of opening a public issue.
+
 ## License
 
-MIT
+Marvis is open source under the [MIT License](LICENSE) © 2026 Marvis AI.
 
 ---
 

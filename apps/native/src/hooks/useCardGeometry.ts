@@ -8,7 +8,10 @@
  *
  * While the card is open the hook also reports its desired TOTAL window
  * height back to Rust (`window_adjust_height`) so streaming content
- * grows/shrinks the window live. The bar row is always the card's
+ * grows/shrinks the window live. The report is clamped to the unified
+ * card band — [30%, 60%] of `screen.availHeight` — so every section
+ * (chat | listen | history) opens at the floor, grows with content, and
+ * scrolls its own body past the cap. The bar row is always the card's
  * bottom-anchored footer (Bar.tsx lays out `flex-col-reverse`), so no
  * grow-direction detection is needed here.
  */
@@ -24,14 +27,15 @@ const OPEN_EPS = 2;
 /** Reported-height deadband + invoke throttle (was AskPanel's). */
 const HEIGHT_EPS = 4;
 const HEIGHT_MS = 150;
+/** Unified card band as fractions of the screen's available height —
+ *  the window floor on open, the cap where the section body takes over
+ *  with its own scroll. */
+const CARD_MIN_FRAC = 0.3;
+const CARD_MAX_FRAC = 0.6;
 
 export const useCardGeometry = (
   cardRef: RefObject<HTMLDivElement | null>,
   stageRef: RefObject<HTMLDivElement | null>,
-  /** Replaces the scrollHeight read while set — the standalone
-   *  history card's fixed 60%-of-screen height. Called inside
-   *  `report()` so it re-evaluates `screen.availHeight` per report. */
-  heightOverride: (() => number) | null = null,
 ) => {
   const [cardOpen, setCardOpen] = useState(
     () => window.innerHeight > BAR_H + OPEN_EPS,
@@ -48,15 +52,25 @@ export const useCardGeometry = (
 
   // Report the card's desired TOTAL window height: leading + trailing
   // throttle, only on a real (>EPS) change — `adjust_height` animates
-  // per call. The observer watches the CARD element — NOT the
-  // window-fixed `h-full` stage, whose box only changes on real window
-  // resizes, so streaming content growth/shrink actually triggers
-  // reports. `scrollHeight` reads the uncapped content height (overflow
-  // counts — and a user-stretched window reads as its rendered height,
-  // so a manual resize sticks); the backend clamps to the work area's
-  // free space. The stage's vertical padding is added back (frost keeps
-  // `p-1`, glass strips it) so the report is total window height under
-  // both materials.
+  // per call. The card is `flex-1` — it fills the window so its bottom
+  // edge rides the expand animation — and each section's scroll body
+  // (`data-card-scroll`) is `min-h-0`, so the card's `scrollHeight`
+  // only ever echoes its rendered height. The real content height
+  // lives on `data-card-content` — a `flow-root` wrapper inside the
+  // scroll body whose own box is exactly the content (scrollHeight
+  // can't read content smaller than the scroller's box, so shrinking
+  // — cleared chat, a shorter section — would go unreported without
+  // it). Desired = chrome + padded content:
+  // `card.scrollHeight − body.clientHeight + bodyPad + content`, then
+  // clamped to the [30%, 60%] band of `screen.availHeight`; the backend
+  // re-clamps to the work area's free space. Observing the wrapper's
+  // box catches content changes that resize no watched element
+  // (streamed tokens, transcript turns); the card's direct children
+  // are observed for chrome growth that mutates no DOM (the
+  // auto-sizing textarea); a MutationObserver re-resolves the marked
+  // elements after section swaps. The stage's vertical padding is
+  // added back (frost keeps `p-1`, glass strips it) so the report is
+  // total window height under both materials.
   useEffect(() => {
     const el = cardRef.current;
     const stage = stageRef.current;
@@ -66,14 +80,41 @@ export const useCardGeometry = (
     let lastValue = -1;
     let lastSentAt = 0;
     let timer: number | undefined;
+    const watched = new Set<Element>();
+    const watch = (node: Element | null) => {
+      if (node && !watched.has(node)) {
+        watched.add(node);
+        observer.observe(node);
+      }
+    };
     const report = () => {
+      // Re-resolve the measured elements — section swaps replace them.
+      for (const child of el.children) {
+        watch(child);
+      }
+      const body = el.querySelector<HTMLElement>('[data-card-scroll]');
+      const content = el.querySelector<HTMLElement>('[data-card-content]');
+      watch(content);
       const cs = stage ? getComputedStyle(stage) : null;
       const padY = cs
         ? parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom)
         : 0;
-      const h =
-        heightOverride?.() ??
-        Math.ceil(el.scrollHeight + (Number.isFinite(padY) ? padY : 0));
+      const bcs = body ? getComputedStyle(body) : null;
+      const bodyPadY = bcs
+        ? parseFloat(bcs.paddingTop) + parseFloat(bcs.paddingBottom)
+        : 0;
+      const measured = Math.ceil(
+        (body && content
+          ? el.scrollHeight -
+            body.clientHeight +
+            (Number.isFinite(bodyPadY) ? bodyPadY : 0) +
+            content.offsetHeight
+          : el.scrollHeight) + (Number.isFinite(padY) ? padY : 0),
+      );
+      const h = Math.min(
+        Math.max(measured, window.screen.availHeight * CARD_MIN_FRAC),
+        window.screen.availHeight * CARD_MAX_FRAC,
+      );
       if (Math.abs(h - lastValue) <= HEIGHT_EPS) {
         return;
       }
@@ -91,18 +132,23 @@ export const useCardGeometry = (
     };
     const observer = new ResizeObserver(report);
     observer.observe(el);
-    // An override keys off screen geometry, not element size — window
-    // resizes (monitor moves, work-area changes) must re-report too.
-    if (heightOverride) {
-      window.addEventListener('resize', report);
-    }
+    const mutations = new MutationObserver(report);
+    mutations.observe(el, {
+      childList: true,
+      characterData: true,
+      subtree: true,
+    });
+    // The clamp bounds key off screen geometry — window resizes
+    // (monitor moves, work-area changes) must re-report too.
+    window.addEventListener('resize', report);
     report();
     return () => {
       observer.disconnect();
+      mutations.disconnect();
       window.removeEventListener('resize', report);
       window.clearTimeout(timer);
     };
-  }, [cardOpen, cardRef, stageRef, heightOverride]);
+  }, [cardOpen, cardRef, stageRef]);
 
   return { cardOpen };
 };

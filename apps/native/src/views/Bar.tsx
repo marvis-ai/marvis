@@ -6,9 +6,11 @@
  *    `expanded` reports to `window_set_bar_expanded` and Rust animates
  *    the width change. Unchanged mechanics.
  *  - Card modes (chat | listen | history): the same window grown to
- *    600×(64+content) — the bar row is the card's bottom-anchored
- *    footer under `flex-col-reverse`, with the section above it
- *    regardless of which way the window physically grows.
+ *    600×clamped(64+content) — one sizing band for every section,
+ *    [30%, 60%] of the screen's available height (useCardGeometry
+ *    reports it; Rust re-clamps). The bar row is the card's
+ *    bottom-anchored footer under `flex-col-reverse`, with the section
+ *    above it regardless of which way the window physically grows.
  *
  * `cardOpen` lives in `useCardGeometry` — read off the window
  * itself (`resize` is the only open/close signal).
@@ -29,7 +31,7 @@
  *
  * Errors go to the `alert` window (`raise`) — the pill has no room.
  */
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { SubmitEvent } from 'react';
 import {
   HistoryIcon,
@@ -43,8 +45,10 @@ import {
 import {
   askClose,
   askSend,
+  barContextMenu,
   captureStart,
   captureStop,
+  configGet,
   listenStart,
   listenStatus,
   listenStop,
@@ -53,8 +57,15 @@ import {
   windowSetBarExpanded,
   windowSetChatOpen,
   windowShowSettings,
+  type Config,
 } from '@/lib/commands';
-import { EV_BAR_TOGGLE_INPUT, useTauriEvent } from '@/lib/events';
+import {
+  EV_BAR_SHOW_HISTORY,
+  EV_BAR_START_LISTEN,
+  EV_BAR_TOGGLE_INPUT,
+  EV_CONFIG_CHANGED,
+  useTauriEvent,
+} from '@/lib/events';
 import { barControls, hasActiveWork } from '@/lib/bar-state';
 import { useBarActivity } from '@/hooks/useBarActivity';
 import { useCardGeometry } from '@/hooks/useCardGeometry';
@@ -109,19 +120,7 @@ const Bar = () => {
     null,
   );
 
-  /** History is a standalone surface at a fixed 60% of the screen's
-   *  height — re-read per report so moving displays stays correct.
-   *  `useCallback` keeps the identity stable so the geometry effect
-   *  only re-runs when history toggles on/off. */
-  const historyHeight = useCallback(
-    () => Math.round(window.screen.availHeight * 0.6),
-    [],
-  );
-  const { cardOpen } = useCardGeometry(
-    cardRef,
-    stageRef,
-    pinned === 'history' ? historyHeight : null,
-  );
+  const { cardOpen } = useCardGeometry(cardRef, stageRef);
   /** Live mirror of `cardOpen` for async callbacks — the card can
    *  collapse while a `listenStop` invoke is in flight, and a
    *  `viewing`/`pinned` write landing after that would outlive the
@@ -154,15 +153,18 @@ const Bar = () => {
    *  `expanded` is already true for the gate cards and boot error, so
    *  `!showInputRow` keeps it off every non-idle surface. */
   const showIntro = !introDone && !showInputRow;
+  const section: 'chat' | 'listen' | 'history' | null = !cardOpen
+    ? null
+    : (pinned ?? (listenWanted ? 'listen' : 'chat'));
   /** Whether the Ask `<input>` is actually mounted: the permission
-   *  card and the boot-error retry replace the whole row, and the
-   *  standalone history surface renders no row at all, while
-   *  `showInputRow` stays true — dictation keys off this. */
+   *  card and the boot-error retry replace the whole row while
+   *  `showInputRow` stays true, and the history card drops the row —
+   *  dictation keys off this. */
   const inputRendered =
     showInputRow &&
+    section !== 'history' &&
     !bootError &&
-    gate !== 'needs_permission' &&
-    pinned !== 'history';
+    gate !== 'needs_permission';
   /** The row's control set for this surface — `bar-state.ts` owns the
    *  contract, the conditionals below consume it so the two can't
    *  drift. */
@@ -175,10 +177,6 @@ const Bar = () => {
     inputRef,
     inputRendered,
   });
-
-  const section: 'chat' | 'listen' | 'history' | null = !cardOpen
-    ? null
-    : (pinned ?? (listenWanted ? 'listen' : 'chat'));
   /** Any live work pulses the floating shell — specific controls keep
    *  their stronger active affordances on top of it. */
   const activeWork = hasActiveWork({
@@ -215,6 +213,40 @@ const Bar = () => {
     // A global-hotkey show must focus the window too, or the user's
     // typing lands in whatever app was frontmost.
     void windowFocusBar().catch(() => {});
+  });
+
+  // The `start_listen` hotkey and the shared menu's Start Listening
+  // item (lib.rs emits `bar:start-listen`). Start-only — the menu
+  // disables the item while a session is live; a racing press no-ops.
+  useTauriEvent(EV_BAR_START_LISTEN, () => {
+    if (gate !== 'main') {
+      return;
+    }
+    startListenSession();
+  });
+
+  // The `show_history` hotkey and the shared menu's History item —
+  // the same surface as the capsule's History button.
+  useTauriEvent(EV_BAR_SHOW_HISTORY, () => {
+    if (gate !== 'main') {
+      return;
+    }
+    setPinned('history');
+    void windowSetChatOpen(true).catch(() => {});
+  });
+
+  // `window.bar_locked` — the persisted position lock. The Lock menu
+  // item and the `toggle_lock` hotkey write it through
+  // `set_bar_locked`, which broadcasts `config:changed`; read once on
+  // mount for emits that raced the webview's load.
+  const [barLocked, setBarLocked] = useState(false);
+  useEffect(() => {
+    void configGet()
+      .then((cfg) => setBarLocked(cfg.window.bar_locked ?? false))
+      .catch(() => {});
+  }, []);
+  useTauriEvent<Config>(EV_CONFIG_CHANGED, (cfg) => {
+    setBarLocked(cfg.window.bar_locked ?? false);
   });
 
   // Every card open starts unpinned with no viewed session.
@@ -386,6 +418,48 @@ const Bar = () => {
     ? 'Stop screen recording'
     : 'Start screen recording';
 
+  /** Begin a meeting-Listen session — the tail of `pressMic`'s collapsed
+   *  branch and `startListenSession`'s start path. The caller holds
+   *  `speechBusy`; this chain releases it. */
+  const beginListen = () => {
+    setListenWanted(true);
+    setPinned('listen');
+    // A live start must never inherit a viewed doc — drop any stale one
+    // so the section can't mount walled behind a finished session.
+    setListenViewing(null);
+    void windowSetChatOpen(true).catch(() => {});
+    void listenStart()
+      .then((next) => setListenState(next.state))
+      .catch((e: unknown) =>
+        // The invoke message is already curated ('no audio source
+        // available', a needs_setup reason) — surface it like
+        // useDictation does instead of a bare 'Listen failed'.
+        raise(typeof e === 'string' && e ? e : 'Listen failed'),
+      )
+      .finally(() => {
+        speechBusy.current = false;
+      });
+  };
+
+  /** Meeting-Listen start shared by the capsule's mic button and the
+   *  `bar:start-listen` event (the hotkey + the shared menu item).
+   *  Start-only — a live or paused session is left alone. Live
+   *  dictation owns the mic, so it is stopped first rather than left
+   *  to reject the start server-side. */
+  const startListenSession = () => {
+    if (speechBusy.current) return;
+    if (listenState === 'listening' || listenState === 'paused') return;
+    speechBusy.current = true;
+    const stopping = dictation.stopIfActive();
+    if (stopping !== null) {
+      void stopping.then(beginListen).catch(() => {
+        speechBusy.current = false;
+      });
+      return;
+    }
+    beginListen();
+  };
+
   /** Shared press route for the split mic controls — collapsed Listen
    *  (`MicAudioLinesIcon`) and expanded dictation (`MicIcon`). A live
    *  session always stops first under `speechBusy` serialization; the
@@ -442,23 +516,7 @@ const Bar = () => {
       });
       return;
     }
-    setListenWanted(true);
-    setPinned('listen');
-    // A live start must never inherit a viewed doc — drop any stale one
-    // so the section can't mount walled behind a finished session.
-    setListenViewing(null);
-    void windowSetChatOpen(true).catch(() => {});
-    void listenStart()
-      .then((next) => setListenState(next.state))
-      .catch((e: unknown) =>
-        // The invoke message is already curated ('no audio source
-        // available', a needs_setup reason) — surface it like
-        // useDictation does instead of a bare 'Listen failed'.
-        raise(typeof e === 'string' && e ? e : 'Listen failed'),
-      )
-      .finally(() => {
-        speechBusy.current = false;
-      });
+    beginListen();
   };
 
   const row = () => {
@@ -492,9 +550,7 @@ const Bar = () => {
             listenState === 'paused' ||
             dictation.state === 'listening'
           }
-          label={
-            cardOpen ? 'Close chat' : open ? 'Back to capsule' : 'Ask Marvis'
-          }
+          label={cardOpen ? 'Close' : open ? 'Back to capsule' : 'Ask Marvis'}
           onPress={() =>
             cardOpen
               ? void askClose().catch(() => {})
@@ -596,6 +652,24 @@ const Bar = () => {
   return (
     <div
       ref={stageRef}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        // The shared menu is the idle capsule's surface — expanded
+        // rows and open cards have their own chrome.
+        if (gate === 'main' && !showInputRow) {
+          void barContextMenu().catch(() => {});
+        }
+      }}
+      onMouseDown={(e) => {
+        // Locked bar: Tauri drags on a document-level `mousedown`
+        // bubble listener (src/window/scripts/drag.js) — stopping the
+        // event here keeps it from reaching that handler, covering
+        // every drag region at once. Children see the mousedown first,
+        // so buttons and text selection are unaffected.
+        if (barLocked) {
+          e.stopPropagation();
+        }
+      }}
       className={cn(
         'group/stage glass-stage flex h-full flex-col justify-end p-1',
       )}>
@@ -618,9 +692,9 @@ const Bar = () => {
         )}
         data-expanded={showInputRow || undefined}
         data-tauri-drag-region={cardOpen ? undefined : 'deep'}>
-        {/* The standalone history card renders no bottom input row at
-            all — no iris/dictation/settings footer (settings lives in
-            the history header instead). */}
+        {/* The expanded sections share the bottom input row — history
+            is a pure picker, so its card drops the row (its own header
+            carries Back + Settings). */}
         {section !== 'history' && row()}
         {showIntro && <LaunchIntro onDone={() => setIntroDone(true)} />}
         {section === 'chat' && (
@@ -657,8 +731,7 @@ const Bar = () => {
               setPinned('listen');
             }}
             onBack={() => {
-              // History is only entered from the capsule (card
-              // closed) — Back collapses to idle.
+              // Back collapses the card to the idle capsule.
               void windowSetChatOpen(false).catch(() => {});
             }}
           />

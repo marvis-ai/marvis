@@ -8,8 +8,8 @@ use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 use serde_json::{json, Value};
 
 use super::{
-    check_status, stream_ndjson, ChatMessage, CONNECT_TIMEOUT, ContentPart, LlmError, Provider,
-    VALIDATE_TIMEOUT,
+    check_status, stream_ndjson, ChatMessage, CONNECT_TIMEOUT, ContentPart, LlmError, ParsedLine,
+    Provider, StreamReply, TokenUsage, VALIDATE_TIMEOUT,
 };
 
 const CHAT_URL: &str = "http://localhost:11434/api/chat";
@@ -36,30 +36,38 @@ impl OllamaProvider {
         }
     }
 
-    /// One NDJSON line → a token. `{"error":"…"}` lines (and malformed
-    /// JSON) abort via `Err`; the terminating `done:true` line carries no
-    /// text and maps to `Ok(None)` — Ollama closes the body after it.
-    pub(crate) fn parse_event(line: &str) -> Result<Option<String>, LlmError> {
+    /// One NDJSON line → a token; the terminating `done:true` line also
+    /// reports `prompt_eval_count`/`eval_count`. `{"error":"…"}` lines
+    /// (and malformed JSON) abort via `Err` — Ollama closes the body
+    /// after the done line.
+    pub(crate) fn parse_event(line: &str) -> Result<ParsedLine, LlmError> {
         let line = line.trim();
         if line.is_empty() {
-            return Ok(None);
+            return Ok(ParsedLine::NONE);
         }
         let v: Value =
             serde_json::from_str(line).map_err(|e| super::malformed_stream("ollama", e))?;
         if let Some(err) = v.get("error") {
             return Err(super::stream_error(err));
         }
-        Ok(v["message"]["content"]
-            .as_str()
-            .filter(|s| !s.is_empty())
-            .map(String::from))
+        Ok(ParsedLine {
+            token: v["message"]["content"]
+                .as_str()
+                .filter(|s| !s.is_empty())
+                .map(String::from),
+            usage: (v.get("prompt_eval_count").is_some() || v.get("eval_count").is_some())
+                .then(|| TokenUsage {
+                    input: v["prompt_eval_count"].as_u64(),
+                    output: v["eval_count"].as_u64(),
+                }),
+        })
     }
 
     /// Test seam per the task brief — same decode as [`Self::parse_event`]
     /// but errors collapse to `None`.
     #[allow(dead_code)] // test-only seam
     pub fn parse_stream_line(line: &str) -> Option<String> {
-        Self::parse_event(line).ok().flatten()
+        Self::parse_event(line).ok().and_then(|p| p.token)
     }
 
     /// Wire body: `{model, stream, messages}` — plain string content,
@@ -99,7 +107,7 @@ impl OllamaProvider {
         &self,
         msgs: &[ChatMessage],
         on_token: &mut (dyn FnMut(&str) + Send),
-    ) -> Result<String, LlmError> {
+    ) -> Result<StreamReply, LlmError> {
         // No api_key — Ollama is a local daemon with no auth header.
         let req = self.client.post(CHAT_URL).json(&self.request_body(msgs));
         stream_ndjson(req, Self::parse_event, on_token).await
@@ -129,7 +137,7 @@ impl Provider for OllamaProvider {
         &'a self,
         msgs: &'a [ChatMessage],
         on_token: &'a mut (dyn FnMut(&str) + Send),
-    ) -> Pin<Box<dyn Future<Output = Result<String, LlmError>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Result<StreamReply, LlmError>> + Send + 'a>> {
         Box::pin(async move { self.stream_chat_inner(msgs, on_token).await })
     }
 
@@ -151,6 +159,17 @@ mod tests {
             ),
             Some("Hey".into())
         );
+    }
+
+    #[test]
+    fn ollama_done_line_reports_eval_counts() {
+        let parsed = OllamaProvider::parse_event(
+            r#"{"message":{"role":"assistant","content":""},"done":true,"prompt_eval_count":26,"eval_count":8}"#,
+        )
+        .unwrap();
+        assert_eq!(parsed.token, None);
+        assert_eq!(parsed.usage.unwrap().input, Some(26));
+        assert_eq!(parsed.usage.unwrap().output, Some(8));
     }
 
     #[test]

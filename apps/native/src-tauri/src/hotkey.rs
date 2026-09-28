@@ -1,7 +1,11 @@
-//! Global hotkeys: the only OS-level binding is config-driven
-//! (`config.hotkeys.toggle_input`) — Settings → Hotkeys rebinds
-//! it, and the bar's movement/snap is pointer-driven so there are no
-//! fixed-position shortcuts at all. Every other key is fixed inside
+//! Global hotkeys: every OS-level binding is config-driven
+//! (`config.hotkeys.*`) — Settings → Hotkeys rebinds them, and the
+//! bar's movement/snap is pointer-driven so there are no
+//! fixed-position shortcuts. The bound actions mirror the shared
+//! menu's items (`menus.rs`): `toggle_input` morphs the input pill,
+//! `toggle_capture` the recorder, `start_listen` a meeting Listen,
+//! `show_history` the session list, `toggle_lock` the position lock.
+//! Every other key is fixed inside
 //! the bar webview: `Cmd+,` opens settings while the bar is active,
 //! and at the input `Enter` sends, `Shift+Enter` adds a line, and
 //! `Cmd+Enter` sends with the current screen frame.
@@ -25,6 +29,21 @@ pub enum Action {
     /// default). The webview owns the morph; dispatch emits
     /// `bar:toggle-input` to it.
     ToggleInput,
+    /// `toggle_capture` — start/stop ambient screen recording
+    /// (`Cmd+Alt+R` by default). Dispatched Rust-side to the shared
+    /// capture start/stop boundary.
+    ToggleCapture,
+    /// `start_listen` — begin a meeting Listen session (`Cmd+Alt+T` by
+    /// default). Start-only; dispatch emits `bar:start-listen` and the
+    /// webview no-ops while a session is live.
+    StartListen,
+    /// `show_history` — open the card on the session list
+    /// (`Cmd+Alt+H` by default). Dispatch emits `bar:show-history`.
+    ShowHistory,
+    /// `toggle_lock` — freeze/unfreeze the bar's position
+    /// (`Cmd+Shift+L` by default). Dispatched Rust-side to the
+    /// `window.bar_locked` write.
+    ToggleLock,
 }
 
 /// Config action name (`[hotkeys]` table key) → `Action`.
@@ -36,6 +55,10 @@ pub enum Action {
 fn action_for(name: &str) -> Option<Action> {
     match name {
         "toggle_input" => Some(Action::ToggleInput),
+        "toggle_capture" => Some(Action::ToggleCapture),
+        "start_listen" => Some(Action::StartListen),
+        "show_history" => Some(Action::ShowHistory),
+        "toggle_lock" => Some(Action::ToggleLock),
         _ => None,
     }
 }
@@ -94,7 +117,7 @@ fn parse_accelerator(accel: &str) -> Option<Shortcut> {
 }
 
 /// Every `(shortcut, action)` pair to register — the whole set is the
-/// single `[hotkeys]` config action; nothing is hardcoded. Unknown
+/// `[hotkeys]` config actions; nothing is hardcoded. Unknown
 /// action names and accelerators that don't parse are warned and
 /// skipped rather than failing the whole set.
 fn bindings(binds: &BTreeMap<String, String>) -> Vec<(Shortcut, Action)> {
@@ -157,8 +180,8 @@ impl RegisteredHotkeys {
     }
 }
 
-/// Register every binding — the recognized `[hotkeys]` config actions
-/// (just `toggle_input`). Called at startup; the set is
+/// Register every binding — the recognized `[hotkeys]` config actions.
+/// Called at startup; the set is
 /// gate-independent, so gate transitions never re-register.
 ///
 /// **Re-registration contract:** on any register error this call
@@ -357,7 +380,7 @@ mod tests {
         // Regression net: a default that fails to parse silently loses a
         // core binding at registration time.
         let binds = config::default_hotkeys();
-        assert_eq!(binds.len(), 1);
+        assert_eq!(binds.len(), 5);
         for (action, accel) in &binds {
             let s = accelerator_for(accel)
                 .unwrap_or_else(|| panic!("default {action} = {accel:?} must parse"));
@@ -369,6 +392,10 @@ mod tests {
     #[test]
     fn action_for_maps_config_names() {
         assert_eq!(action_for("toggle_input"), Some(Action::ToggleInput));
+        assert_eq!(action_for("toggle_capture"), Some(Action::ToggleCapture));
+        assert_eq!(action_for("start_listen"), Some(Action::StartListen));
+        assert_eq!(action_for("show_history"), Some(Action::ShowHistory));
+        assert_eq!(action_for("toggle_lock"), Some(Action::ToggleLock));
         // The retired actions (now fixed in-webview keys) and other
         // stale names no longer bind.
         assert_eq!(action_for("toggle_visibility"), None);
@@ -382,14 +409,22 @@ mod tests {
     }
 
     #[test]
-    fn bindings_returns_the_single_toggle_pair() {
+    fn bindings_returns_the_default_set() {
+        // BTreeMap iterates alphabetically: show_history, start_listen,
+        // toggle_capture, toggle_input, toggle_lock.
         let got = bindings(&config::default_hotkeys());
         assert_eq!(
             got,
-            vec![(
-                accelerator_for("Cmd+Alt+Space").unwrap(),
-                Action::ToggleInput
-            )]
+            vec![
+                (accelerator_for("Cmd+Alt+H").unwrap(), Action::ShowHistory),
+                (accelerator_for("Cmd+Alt+T").unwrap(), Action::StartListen),
+                (accelerator_for("Cmd+Alt+R").unwrap(), Action::ToggleCapture),
+                (
+                    accelerator_for("Cmd+Alt+Space").unwrap(),
+                    Action::ToggleInput
+                ),
+                (accelerator_for("Cmd+Shift+L").unwrap(), Action::ToggleLock),
+            ]
         );
     }
 
@@ -418,6 +453,8 @@ mod tests {
         let rebound = accelerator_for("Ctrl+Alt+J").unwrap();
         assert_eq!(add, vec![(rebound, Action::ToggleInput)]);
         assert_eq!(drop, vec![(old, Action::ToggleInput)]);
-        assert!(keep.is_empty());
+        // The untouched four stay registered — no churn on their chords.
+        assert_eq!(keep.len(), prev.len() - 1);
+        assert!(keep.iter().all(|(a, _)| *a != old));
     }
 }

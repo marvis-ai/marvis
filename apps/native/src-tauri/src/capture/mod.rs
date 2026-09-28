@@ -16,6 +16,43 @@ pub use macos::MacosCapture;
 
 use std::collections::VecDeque;
 
+use serde::Serialize;
+
+/// One shareable target offered by the picker window — meta only;
+/// thumbnails arrive over `picker:thumb` emits.
+#[derive(Debug, Clone, Serialize)]
+pub struct PickCandidate {
+    /// Opaque resolver key: `"d:<display_id>"`, `"w:<window_id>"`,
+    /// `"a:<bundle_id>"` — re-resolved against fresh content on pick.
+    pub id: String,
+    /// `"display" | "window" | "app"` — matches `CaptureTarget.kind`.
+    pub kind: &'static str,
+    /// Primary card text — `"Screen N"`, window title, or app name.
+    pub label: String,
+    /// Secondary line — owning app name for window cards.
+    pub sub: Option<String>,
+    /// Aspect hint (points/pixels) for the card's thumbnail frame.
+    pub w: u32,
+    pub h: u32,
+    /// `"app"` only: the `"w:..."` id whose thumbnail this card reuses
+    /// — an app capture composites at display size, so a real app
+    /// thumb would be a mostly-empty display shot.
+    pub thumb_of: Option<String>,
+}
+
+/// A picker id resolved against fresh `SCShareableContent` — the
+/// filter, stream dims, and `capture:state` target fields.
+pub struct PickResolution {
+    pub filter: screencapturekit::stream::content_filter::SCContentFilter,
+    pub w: u32,
+    pub h: u32,
+    /// `"display" | "window" | "app"`
+    #[allow(dead_code)] // read by capture:state wiring in Task 3
+    pub kind: &'static str,
+    #[allow(dead_code)] // read by capture:state wiring in Task 3
+    pub label: String,
+}
+
 /// One captured screen moment: a JPEG-encoded downscale plus the content
 /// hash that deduplicated it against the previous frame.
 #[derive(Debug, Clone)]

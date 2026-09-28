@@ -12,26 +12,29 @@
 //! can never stall `ScreenCaptureKit`'s delivery queue; everything expensive
 //! runs on our worker thread.
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use base64::{engine::general_purpose, Engine as _};
 use image::codecs::jpeg::JpegEncoder;
 use image::imageops::{self, FilterType};
 use image::{GenericImageView, Rgba};
 use parking_lot::Mutex;
 use screencapturekit::cm::{CMSampleBuffer, CMSampleBufferExt, CMTime};
 use screencapturekit::screenshot_manager::SCScreenshotManager;
-use screencapturekit::shareable_content::SCShareableContent;
-use screencapturekit::shareable_content::SCWindow;
+use screencapturekit::shareable_content::{
+    SCRunningApplication, SCShareableContent, SCShareableContentInfo, SCWindow,
+};
 use screencapturekit::stream::configuration::{PixelFormat, SCStreamConfiguration};
 use screencapturekit::stream::content_filter::SCContentFilter;
 use screencapturekit::stream::output_type::SCStreamOutputType;
 use screencapturekit::stream::sc_stream::SCStream;
 
-use super::{frame_hash_rows, Frame, FrameSource};
+use super::{frame_hash_rows, Frame, FrameSource, PickCandidate, PickResolution};
 
 /// Longest-side cap for the encoded frame: width is capped at 1600 px,
 /// height follows aspect. Screen reading needs legible text — the old
@@ -156,6 +159,239 @@ pub(crate) fn shot_fullscreen() -> anyhow::Result<Option<Frame>> {
         return Ok(None);
     };
     Ok(encode_frame(&raw, 0))
+}
+
+/// Smallest window worth listing — drops palette/tooling slivers.
+const PICK_MIN_W: f64 = 140.0;
+const PICK_MIN_H: f64 = 100.0;
+/// Picker thumbnail width — cards are ~360 CSS px; 480 stays crisp
+/// on 2x displays without multi-hundred-KB payloads.
+const THUMB_WIDTH: u32 = 480;
+
+/// Window eligibility shared by `pick_candidates` passes: on-screen,
+/// normal layer, reasonable size, not ours.
+fn pick_window_ok(w: &SCWindow, own_pid: i32) -> Option<SCRunningApplication> {
+    if !w.is_on_screen() || w.window_layer() != 0 {
+        return None;
+    }
+    let f = w.frame();
+    if f.size.width < PICK_MIN_W || f.size.height < PICK_MIN_H {
+        return None;
+    }
+    let app = w.owning_application()?;
+    (app.process_id() != own_pid).then_some(app)
+}
+
+/// Every shareable candidate: displays in order, eligible windows,
+/// then one app entry per distinct window owner.
+#[allow(dead_code)] // wired in Task 3
+pub(crate) fn pick_candidates() -> anyhow::Result<Vec<PickCandidate>> {
+    let content = SCShareableContent::get()?;
+    let own_pid = std::process::id() as i32;
+    let mut out = Vec::new();
+    for (i, d) in content.displays().iter().enumerate() {
+        out.push(PickCandidate {
+            id: format!("d:{}", d.display_id()),
+            kind: "display",
+            label: format!("Screen {}", i + 1),
+            sub: None,
+            w: d.width(),
+            h: d.height(),
+            thumb_of: None,
+        });
+    }
+    let windows = content.windows();
+    // bundle_id → (app_name, largest window id, its area, w, h)
+    let mut apps: HashMap<String, (String, u32, f64, u32, u32)> = HashMap::new();
+    for w in &windows {
+        let Some(app) = pick_window_ok(w, own_pid) else {
+            continue;
+        };
+        let f = w.frame();
+        let label = w
+            .title()
+            .filter(|t| !t.trim().is_empty())
+            .unwrap_or_else(|| app.application_name());
+        out.push(PickCandidate {
+            id: format!("w:{}", w.window_id()),
+            kind: "window",
+            label,
+            sub: Some(app.application_name()),
+            w: f.size.width as u32,
+            h: f.size.height as u32,
+            thumb_of: None,
+        });
+        let area = f.size.width * f.size.height;
+        let entry = apps.entry(app.bundle_identifier()).or_insert_with(|| {
+            (
+                app.application_name(),
+                w.window_id(),
+                area,
+                f.size.width as u32,
+                f.size.height as u32,
+            )
+        });
+        if area > entry.2 {
+            *entry = (
+                app.application_name(),
+                w.window_id(),
+                area,
+                f.size.width as u32,
+                f.size.height as u32,
+            );
+        }
+    }
+    // Stable order: sort apps by name so the section doesn't jitter.
+    let mut apps: Vec<_> = apps.into_iter().collect();
+    apps.sort_by(|a, b| a.1 .0.cmp(&b.1 .0));
+    for (bundle, (name, win_id, _area, w, h)) in apps {
+        out.push(PickCandidate {
+            id: format!("a:{bundle}"),
+            kind: "app",
+            label: name,
+            sub: None,
+            w,
+            h,
+            thumb_of: Some(format!("w:{win_id}")),
+        });
+    }
+    Ok(out)
+}
+
+/// Re-resolve a picker id against FRESH shareable content — windows
+/// move/close between list and pick, so a stale id errors rather
+/// than silently capturing the wrong thing.
+#[allow(dead_code)] // wired in Task 3
+pub(crate) fn resolve_candidate(id: &str) -> anyhow::Result<PickResolution> {
+    let content = SCShareableContent::get()?;
+    let own_pid = std::process::id() as i32;
+    // Borrow Marvis's own windows the same way primary_display_filter
+    // does — `windows()` returns an owned Vec, so bind it first
+    // (`displays()` likewise: borrowing `.iter()` off a temporary
+    // Vec would not live past the statement).
+    let windows = content.windows();
+    let displays = content.displays();
+    let own: Vec<&SCWindow> = windows
+        .iter()
+        .filter(|w| {
+            w.owning_application()
+                .is_some_and(|a| a.process_id() == own_pid)
+        })
+        .collect();
+    let (filter, kind, label) = if let Some(did) = id.strip_prefix("d:") {
+        let did: u32 = did.parse().map_err(|_| anyhow::anyhow!("bad display id"))?;
+        let idx = displays
+            .iter()
+            .position(|x| x.display_id() == did)
+            .unwrap_or(0);
+        let d = displays
+            .iter()
+            .find(|d| d.display_id() == did)
+            .ok_or_else(|| anyhow::anyhow!("display no longer available"))?;
+        (
+            SCContentFilter::create()
+                .with_display(d)
+                .with_excluding_windows(&own)
+                .build(),
+            "display",
+            format!("Screen {}", idx + 1),
+        )
+    } else if let Some(wid) = id.strip_prefix("w:") {
+        let wid: u32 = wid.parse().map_err(|_| anyhow::anyhow!("bad window id"))?;
+        let win = windows
+            .iter()
+            .find(|w| w.window_id() == wid)
+            .ok_or_else(|| anyhow::anyhow!("window no longer available"))?;
+        let label = win
+            .title()
+            .filter(|t| !t.trim().is_empty())
+            .or_else(|| win.owning_application().map(|a| a.application_name()))
+            .unwrap_or_else(|| "Window".into());
+        (
+            SCContentFilter::create().with_window(win).build(),
+            "window",
+            label,
+        )
+    } else if let Some(bundle) = id.strip_prefix("a:") {
+        let app = content
+            .applications()
+            .into_iter()
+            .find(|a| a.bundle_identifier() == bundle)
+            .ok_or_else(|| anyhow::anyhow!("app no longer running"))?;
+        // Display containing the app's largest eligible window's
+        // center; first display as fallback.
+        let mut best: Option<(f64, u32)> = None; // (area, display_id)
+        for w in &windows {
+            let Some(owner) = pick_window_ok(w, own_pid) else {
+                continue;
+            };
+            if owner.bundle_identifier() != bundle {
+                continue;
+            }
+            let f = w.frame();
+            let (cx, cy) = (f.mid_x(), f.mid_y());
+            let Some(d) = displays.iter().find(|d| {
+                d.frame()
+                    .contains_point(screencapturekit::cg::CGPoint { x: cx, y: cy })
+            }) else {
+                continue;
+            };
+            let area = f.size.width * f.size.height;
+            if best.is_none_or(|(a, _)| area > a) {
+                best = Some((area, d.display_id()));
+            }
+        }
+        let did = best
+            .map(|(_, d)| d)
+            .unwrap_or_else(|| displays.first().map(|d| d.display_id()).unwrap_or(0));
+        let d = displays
+            .iter()
+            .find(|d| d.display_id() == did)
+            .ok_or_else(|| anyhow::anyhow!("no shareable display"))?;
+        (
+            SCContentFilter::create()
+                .with_display(d)
+                .with_including_applications(&[&app], &[])
+                .build(),
+            "app",
+            app.application_name(),
+        )
+    } else {
+        return Err(anyhow::anyhow!("unrecognized picker id"));
+    };
+    // Zero dims would build a broken MacosCapture — the info lookup
+    // is required (it populated for the native picker path).
+    let (w, h) = SCShareableContentInfo::for_filter(&filter)
+        .map(|i| i.pixel_size())
+        .ok_or_else(|| anyhow::anyhow!("filter info unavailable"))?;
+    Ok(PickResolution {
+        filter,
+        w,
+        h,
+        kind,
+        label,
+    })
+}
+
+/// One ~`THUMB_WIDTH`-wide JPEG for a candidate — the picker card
+/// image, base64 (the emit payload is a string).
+#[allow(dead_code)] // wired in Task 3
+pub(crate) fn thumb_for(id: &str) -> Option<String> {
+    let res = resolve_candidate(id).ok()?;
+    if res.w == 0 || res.h == 0 {
+        return None;
+    }
+    let tw = THUMB_WIDTH.min(res.w);
+    let th = ((u64::from(res.h) * u64::from(tw)) / u64::from(res.w)).max(1) as u32;
+    let config = SCStreamConfiguration::new()
+        .with_width(tw)
+        .with_height(th)
+        .with_pixel_format(PixelFormat::BGRA)
+        .with_shows_cursor(false);
+    let sample = SCScreenshotManager::capture_sample_buffer(&res.filter, &config).ok()?;
+    let raw = extract_raw(&sample)?;
+    let (jpeg, _, _) = jpeg_at(&raw, tw)?;
+    Some(general_purpose::STANDARD.encode(jpeg))
 }
 
 impl MacosCapture {
@@ -296,11 +532,10 @@ fn extract_raw(sample: &CMSampleBuffer) -> Option<RawFrame> {
     })
 }
 
-/// BGRA → JPEG `Frame`: optional width-cap downscale, q80 encode, stamp.
-/// Shared by the stream worker and the one-shot screenshot so both
-/// produce identical `Frame`s. `hash` is the caller's dedupe hash (0
-/// for single-shots).
-fn encode_frame(raw: &RawFrame, hash: u64) -> Option<Frame> {
+/// BGRA → `(jpeg, out_w, out_h)` width-capped to `target_w`,
+/// aspect preserved, q80 — shared by the stream/shot path
+/// (`TARGET_WIDTH`) and picker thumbnails (`THUMB_WIDTH`).
+fn jpeg_at(raw: &RawFrame, target_w: u32) -> Option<(Vec<u8>, u32, u32)> {
     let view = BgraView {
         data: &raw.data,
         width: raw.width,
@@ -309,30 +544,38 @@ fn encode_frame(raw: &RawFrame, hash: u64) -> Option<Frame> {
     };
     let mut jpeg = Vec::new();
     let mut encoder = JpegEncoder::new_with_quality(&mut jpeg, JPEG_QUALITY);
-    let (out_w, out_h, encoded) = if raw.width > TARGET_WIDTH {
-        let out_h = (u64::from(raw.height) * u64::from(TARGET_WIDTH) / u64::from(raw.width)) as u32;
+    let (out_w, out_h, encoded) = if raw.width > target_w {
+        let out_h = (u64::from(raw.height) * u64::from(target_w) / u64::from(raw.width)) as u32;
         let out_h = out_h.max(1);
-        let resized = imageops::resize(&view, TARGET_WIDTH, out_h, FilterType::Triangle);
-        (TARGET_WIDTH, out_h, encoder.encode_image(&resized))
+        let resized = imageops::resize(&view, target_w, out_h, FilterType::Triangle);
+        (target_w, out_h, encoder.encode_image(&resized))
     } else {
         (raw.width, raw.height, encoder.encode_image(&view))
     };
     match encoded {
-        Ok(()) => Some(Frame {
-            jpeg,
-            width: out_w,
-            height: out_h,
-            ts: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map(|d| d.as_secs() as i64)
-                .unwrap_or(0),
-            hash,
-        }),
+        Ok(()) => Some((jpeg, out_w, out_h)),
         Err(e) => {
             log::warn!("jpeg encode failed ({out_w}x{out_h}): {e}");
             None
         }
     }
+}
+
+/// BGRA → JPEG `Frame` at `TARGET_WIDTH` — stream worker + one-shot
+/// share this so both produce identical `Frame`s. `hash` is the
+/// caller's dedupe hash (0 for single-shots).
+fn encode_frame(raw: &RawFrame, hash: u64) -> Option<Frame> {
+    let (jpeg, width, height) = jpeg_at(raw, TARGET_WIDTH)?;
+    Some(Frame {
+        jpeg,
+        width,
+        height,
+        ts: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0),
+        hash,
+    })
 }
 
 /// Worker loop: dedupe by raw-BGRA hash, downscale, JPEG-encode, emit.
@@ -378,7 +621,7 @@ fn run_worker(
 #[cfg(test)]
 mod tests {
     use super::super::FrameSource;
-    use super::{MacosCapture, RawFrame};
+    use super::{jpeg_at, MacosCapture, RawFrame};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
     use std::time::Duration;
@@ -425,6 +668,52 @@ mod tests {
         let frame = super::encode_frame(&raw, 7).expect("encode succeeds");
         assert_eq!((frame.width, frame.height), (800, 600));
         assert_eq!(frame.hash, 7);
+    }
+
+    #[test]
+    fn jpeg_at_caps_width_at_target() {
+        // 800x400 BGRA → 480 wide must produce a 480x240 jpeg.
+        let raw = RawFrame {
+            data: vec![0u8; 800 * 400 * 4],
+            width: 800,
+            height: 400,
+            bytes_per_row: 800 * 4,
+        };
+        let (_jpeg, w, h) = jpeg_at(&raw, 480).expect("encode failed");
+        assert_eq!((w, h), (480, 240));
+    }
+
+    #[test]
+    fn jpeg_at_passes_small_sources_through() {
+        let raw = RawFrame {
+            data: vec![0u8; 320 * 200 * 4],
+            width: 320,
+            height: 200,
+            bytes_per_row: 320 * 4,
+        };
+        let (_jpeg, w, h) = jpeg_at(&raw, 480).expect("encode failed");
+        assert_eq!((w, h), (320, 200));
+    }
+
+    /// `pick_candidates` can never run in tests (needs real
+    /// `SCShareableContent`), so guard the exclusion logic at source:
+    /// `pick_window_ok` must drop own-pid windows AND filter by
+    /// layer/screen/size.
+    #[test]
+    fn pick_window_ok_excludes_own_pid_and_nonstandard_windows() {
+        let source = include_str!("macos.rs");
+        let body = source
+            .split("fn pick_window_ok(")
+            .nth(1)
+            .and_then(|rest| rest.split("\npub(crate) fn ").next())
+            .expect("pick_window_ok body not found");
+        for needle in [
+            "is_on_screen()",
+            "window_layer() != 0",
+            "app.process_id() != own_pid",
+        ] {
+            assert!(body.contains(needle), "pick_window_ok must check {needle}");
+        }
     }
 
     #[test]

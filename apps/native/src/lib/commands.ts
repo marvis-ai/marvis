@@ -347,8 +347,9 @@ export interface SherpaInstalledModel {
   bytes: number;
   source: string;
   /** What the model is for — only `stt` entries may be selected as the
-   * transcription model; `speaker-embedding` feeds diarization. */
-  kind: 'stt' | 'speaker-embedding';
+   * transcription model; `speaker-embedding` feeds diarization and
+   * `punctuation` restores casing/punctuation in sherpa transcripts. */
+  kind: 'stt' | 'speaker-embedding' | 'punctuation';
   installed: boolean;
 }
 

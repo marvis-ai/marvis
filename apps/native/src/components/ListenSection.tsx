@@ -410,17 +410,6 @@ export const ListenSection = ({
                   : 'No transcript captured.'}
               </p>
             )}
-            <div className='mt-2 flex flex-wrap gap-1.5'>
-              <span className={CHIP}>
-                {activeProvider}
-                {model ? ` · ${model}` : ' · stt'}
-              </span>
-              {activeProvider === 'whisper' && whisper && (
-                <span className={CHIP}>
-                  {whisperSourceLabel(whisper.binary_status.source)}
-                </span>
-              )}
-            </div>
           </div>
         </div>
         {!pinned && turns.length > 0 && (

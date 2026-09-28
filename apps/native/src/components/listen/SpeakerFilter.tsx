@@ -38,9 +38,8 @@ export const SpeakerFilter = ({
         </button>
       ),
     )}
-    <span
-      className={cn(NUM, 'ml-auto text-[10px] text-muted-foreground')}>
-      {count} rows
+    <span className={cn(NUM, 'ml-auto text-[10px] text-muted-foreground')}>
+      {count} lines
     </span>
   </div>
 );

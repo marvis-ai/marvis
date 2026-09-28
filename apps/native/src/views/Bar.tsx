@@ -153,11 +153,18 @@ const Bar = () => {
    *  `expanded` is already true for the gate cards and boot error, so
    *  `!showInputRow` keeps it off every non-idle surface. */
   const showIntro = !introDone && !showInputRow;
+  const section: 'chat' | 'listen' | 'history' | null = !cardOpen
+    ? null
+    : (pinned ?? (listenWanted ? 'listen' : 'chat'));
   /** Whether the Ask `<input>` is actually mounted: the permission
    *  card and the boot-error retry replace the whole row while
-   *  `showInputRow` stays true — dictation keys off this. */
+   *  `showInputRow` stays true, and the history card drops the row —
+   *  dictation keys off this. */
   const inputRendered =
-    showInputRow && !bootError && gate !== 'needs_permission';
+    showInputRow &&
+    section !== 'history' &&
+    !bootError &&
+    gate !== 'needs_permission';
   /** The row's control set for this surface — `bar-state.ts` owns the
    *  contract, the conditionals below consume it so the two can't
    *  drift. */
@@ -170,10 +177,6 @@ const Bar = () => {
     inputRef,
     inputRendered,
   });
-
-  const section: 'chat' | 'listen' | 'history' | null = !cardOpen
-    ? null
-    : (pinned ?? (listenWanted ? 'listen' : 'chat'));
   /** Any live work pulses the floating shell — specific controls keep
    *  their stronger active affordances on top of it. */
   const activeWork = hasActiveWork({
@@ -689,9 +692,10 @@ const Bar = () => {
         )}
         data-expanded={showInputRow || undefined}
         data-tauri-drag-region={cardOpen ? undefined : 'deep'}>
-        {/* Every section shares the bottom input row — history is a
-            regular card section, not a standalone surface. */}
-        {row()}
+        {/* The expanded sections share the bottom input row — history
+            is a pure picker, so its card drops the row (its own header
+            carries Back + Settings). */}
+        {section !== 'history' && row()}
         {showIntro && <LaunchIntro onDone={() => setIntroDone(true)} />}
         {section === 'chat' && (
           <ChatSection

@@ -87,8 +87,8 @@ export const HistorySection = ({
   return (
     <div className='flex min-h-0 flex-1 flex-col'>
       {/* Back on the left, settings on the right — the header doubles
-          as the card's drag region (the shared input row renders at
-          the bottom like every section). */}
+          as the card's drag region. This section drops the shared
+          input row: it's a picker, not a chat surface. */}
       <CardHeader
         title='History'
         onBack={onBack}>

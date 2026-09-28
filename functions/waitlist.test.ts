@@ -2,37 +2,19 @@ import { describe, expect, test } from 'bun:test';
 import app, { clientIp, validateSignup } from './waitlist';
 
 describe('validateSignup', () => {
-  test('accepts a valid signup and normalizes it', () => {
-    expect(
-      validateSignup({ name: '  Ada  ', email: ' Ada@Example.COM ' }),
-    ).toEqual({
-      name: 'Ada',
+  test('accepts a valid signup and normalizes the email', () => {
+    expect(validateSignup({ email: ' Ada@Example.COM ' })).toEqual({
       email: 'ada@example.com',
-    });
-  });
-
-  // Name is optional — the form collects email only. A missing, blank, or
-  // non-string name normalizes to '' (the DB column is NOT NULL, so '' keeps
-  // the insert honest; the welcome email falls back to "Hi there").
-  test.each([
-    ['missing name', { email: 'a@b.co' }],
-    ['blank name', { name: '   ', email: 'a@b.co' }],
-    ['non-string name', { name: 1, email: 'a@b.co' }],
-  ])('accepts an email-only signup (%s)', (_label, input) => {
-    expect(validateSignup(input)).toEqual({
-      name: '',
-      email: 'a@b.co',
     });
   });
 
   test.each([
     ['null', null],
     ['non-object', 'x'],
-    ['missing email', { name: 'Ada' }],
-    ['non-string email', { name: 'Ada', email: 1 }],
-    ['bad email', { name: 'Ada', email: 'nope' }],
-    ['too-long name', { name: 'x'.repeat(121), email: 'a@b.co' }],
-    ['too-long email', { name: 'Ada', email: `${'a'.repeat(250)}@b.co` }],
+    ['missing email', {}],
+    ['non-string email', { email: 1 }],
+    ['bad email', { email: 'nope' }],
+    ['too-long email', { email: `${'a'.repeat(250)}@b.co` }],
   ])('rejects %s', (_label: string, input: unknown) => {
     expect(validateSignup(input)).toBeNull();
   });
@@ -74,7 +56,7 @@ describe('POST / honeypot', () => {
       const res = await app.request('/', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: 'Bot', email: 'bot@x.co', company }),
+        body: JSON.stringify({ email: 'bot@x.co', company }),
       });
       expect(res.status).toBe(200);
       expect(await res.json()).toEqual({ ok: true });

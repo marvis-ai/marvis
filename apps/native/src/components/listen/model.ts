@@ -111,7 +111,7 @@ export const elapsedLabel = (secs: number) => {
 /** `"Sep 26 · 14:32"` — the viewed-session header subtitle. */
 export const sessionDateLabel = (ts: number) => {
   const d = new Date(ts * 1000);
-  return `${d.toLocaleString('en', { month: 'short' })} ${d.getDate()} · ${timeLabel(ts)}`;
+  return `${d.toLocaleString('en', { month: 'short' })} ${d.getDate()} ${timeLabel(ts)}`;
 };
 
 /** Plain-text block content (finals + interim) — for the clipboard;

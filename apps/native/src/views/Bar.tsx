@@ -50,8 +50,6 @@ import {
   captureStop,
   configGet,
   listenStart,
-  listenStatus,
-  listenStop,
   raise,
   windowFocusBar,
   windowSetBarExpanded,
@@ -399,7 +397,8 @@ const Bar = () => {
         : 'justify-center px-1.75',
   );
 
-  /** The mic affordance's next action: stop the live mode first,
+  /** The mic affordance's next action: stop the live dictation first,
+   *  return to a live Listen's view (the section header owns Stop),
    *  dictate into the visible Ask input, or start meeting Listen from
    *  the collapsed capsule. Labels the collapsed Listen control and
    *  the expanded dictation control alike. */
@@ -407,10 +406,15 @@ const Bar = () => {
     dictation.state === 'listening'
       ? 'Stop dictation'
       : listenState === 'listening' || listenState === 'paused'
-        ? 'Stop listening'
+        ? 'Show live listen'
         : showInputRow
           ? 'Dictate'
           : 'Listen';
+  /** The capsule Listen control's "recording" mark — a paused session
+   *  is still open (it resumes), so it stays lit too. The expanded
+   *  dictation control shows the inverse: Listen owns the mic, so it
+   *  greys out instead of marking itself live. */
+  const micLive = listenState === 'listening' || listenState === 'paused';
 
   /** The collapsed screen-capture toggle's label — the control flips
    *  between starting and stopping the recorder. */
@@ -462,12 +466,14 @@ const Bar = () => {
 
   /** Shared press route for the split mic controls — collapsed Listen
    *  (`MicAudioLinesIcon`) and expanded dictation (`MicIcon`). A live
-   *  session always stops first under `speechBusy` serialization; the
-   *  `showInputRow` branch then lands on whichever control is mounted. */
+   *  dictation stops first under `speechBusy` serialization; a live
+   *  Listen session navigates back to its view instead of stopping —
+   *  leaving the section never stopped the recorder, so the button is
+   *  the way back in (Stop stays on the listen header). */
   const pressMic = () => {
     if (speechBusy.current) return;
     speechBusy.current = true;
-    // An active session stops first — `speechBusy` stays held
+    // An active dictation stops first — `speechBusy` stays held
     // until it settles so a follow-up press can't start the
     // other mode mid-teardown.
     const stopping = dictation.stopIfActive();
@@ -477,37 +483,13 @@ const Bar = () => {
       });
       return;
     }
-    // A paused session is still live (backend `is_listening()`) — the
-    // press stops it rather than resuming. Read the ids BEFORE the stop
-    // clears the session snapshot so the card can swap to the finished
-    // document (the same handoff ListenSection's `onSessionEnded` uses).
     if (listenState === 'listening' || listenState === 'paused') {
-      void listenStatus()
-        .then((status) =>
-          listenStop().then(() => {
-            // The finished-doc swap presumes an open card — a capsule
-            // stop stays silent (the doc stays reachable via History),
-            // and a write landing while closed would leak the stale
-            // viewing/pin into the next open.
-            if (
-              !cardOpenRef.current ||
-              status.session_id == null ||
-              status.started_at == null
-            ) {
-              return;
-            }
-            setListenViewing({
-              id: status.session_id,
-              startedAt: status.started_at,
-              endedAt: Date.now() / 1000,
-            });
-            setPinned('listen');
-          }),
-        )
-        .catch(() => raise('Stop failed'))
-        .finally(() => {
-          speechBusy.current = false;
-        });
+      // A paused session is still live (backend `is_listening()`) —
+      // `null` viewing lands the card on the live session, not a doc.
+      setListenViewing(null);
+      setPinned('listen');
+      void windowSetChatOpen(true).catch(() => {});
+      speechBusy.current = false;
       return;
     }
     if (showInputRow) {
@@ -598,10 +580,20 @@ const Bar = () => {
         {controls.includes('listen') && (
           <BarButton
             label={micLabel}
-            pressed={listenState === 'listening' || listenState === 'paused'}
+            pressed={micLive}
             disabled={gate !== 'main'}
-            onPress={pressMic}>
+            onPress={pressMic}
+            className={cn('relative', micLive && 'bg-accent-soft text-accent')}>
             <MicAudioLinesIcon className='size-5' />
+            {/* Same corner-ping idiom as the capture badge — a live
+                session keeps recording after the card collapses, so
+                the idle pill must still show it. */}
+            {listenState === 'listening' && (
+              <span
+                aria-hidden
+                className='animate-capture-ping absolute -top-0.5 -right-0.5 size-1.5 rounded-full bg-accent/50'
+              />
+            )}
           </BarButton>
         )}
         {/* Collapsed-only history opener — the card opens on the
@@ -625,11 +617,26 @@ const Bar = () => {
 
         {controls.includes('dictation') && (
           <BarButton
-            label={micLabel}
+            label={
+              dictation.state === 'listening' ? 'Stop dictation' : 'Dictate'
+            }
+            title={
+              micLive ? 'Dictate — a listen session owns the mic' : undefined
+            }
             pressed={dictation.state === 'listening'}
-            disabled={gate !== 'main'}
-            onPress={pressMic}>
+            disabled={gate !== 'main' || micLive}
+            onPress={pressMic}
+            className={cn(
+              'relative',
+              dictation.state === 'listening' && 'bg-accent-soft text-accent',
+            )}>
             <MicIcon className='size-5' />
+            {dictation.state === 'listening' && (
+              <span
+                aria-hidden
+                className='animate-capture-ping absolute -top-0.5 -right-0.5 size-1.5 rounded-full bg-accent/50'
+              />
+            )}
           </BarButton>
         )}
 

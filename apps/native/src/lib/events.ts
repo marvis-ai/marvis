@@ -95,6 +95,14 @@ export const EV_ALERT_SHOW = 'alert:show';
  * (lib.rs `hotkey_dispatch`). The webview morphs capsule ⇄ input pill;
  * an open card counts as "shown" and collapses. */
 export const EV_BAR_TOGGLE_INPUT = 'bar:toggle-input';
+/** Emitted to the `bar` window only — the `start_listen` hotkey and the
+ * shared menu's Start Listening item. The webview starts a Listen
+ * session (a no-op while one is live). */
+export const EV_BAR_START_LISTEN = 'bar:start-listen';
+/** Emitted to the `bar` window only — the `show_history` hotkey and the
+ * shared menu's History item. The webview pins the history section and
+ * opens the card. */
+export const EV_BAR_SHOW_HISTORY = 'bar:show-history';
 /** Broadcast when a frame exists but screen permission was revoked
  * mid-session (ask.rs) — the bar flips back to its permission card. */
 export const EV_CAPTURE_PERMISSION_NEEDED = 'capture:permission-needed'; // { permission: 'screen' }

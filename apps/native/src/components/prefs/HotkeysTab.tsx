@@ -1,10 +1,10 @@
 /**
- * Hotkeys — the one rebindable action (`hotkeys.toggle_input` in
- * config.toml) plus the fixed keys the bar webview owns. Click the
- * global binding to rebind it: the row arms, the next chord becomes
- * the accelerator (a modifier is required — a bare key would hijack
- * normal typing), Esc cancels. Writes go through `config_set`, which
- * delta-swaps the registered set.
+ * Hotkeys — the rebindable global actions (`hotkeys.*` in config.toml)
+ * plus the fixed keys the bar webview owns. Click a global binding to
+ * rebind it: the row arms, the next chord becomes the accelerator (a
+ * modifier is required — a bare key would hijack normal typing), Esc
+ * cancels. Writes go through `config_set`, which delta-swaps the
+ * registered set.
  */
 import { useEffect, useState } from 'react';
 import { configSet } from '@/lib/commands';
@@ -13,7 +13,11 @@ import { Kbd, PrefRow } from './bits';
 import type { PrefsData } from './types';
 
 const ACTIONS: { id: string; label: string }[] = [
-  { id: 'toggle_input', label: 'Start to ask Marvis' },
+  { id: 'toggle_input', label: 'Start conversation' },
+  { id: 'toggle_capture', label: 'Start / stop screen recording' },
+  { id: 'start_listen', label: 'Start listening' },
+  { id: 'show_history', label: 'History' },
+  { id: 'toggle_lock', label: 'Lock bar position' },
 ];
 
 /** The bar webview's fixed bindings — displayed, never rebindable. */
@@ -128,8 +132,8 @@ export const HotkeysTab = ({ data }: { data: PrefsData }) => {
     <>
       <h2 className={H2}>Hotkeys</h2>
       <p className={SUB}>
-        Show / hide the input is the only global chord — click its binding, then
-        press the new one; Esc cancels. The rest are fixed keys inside the bar.
+        These chords work anywhere — click a binding, then press the new one;
+        Esc cancels. The rest are fixed keys inside the bar.
       </p>
 
       <div className={PRF_ROWS}>

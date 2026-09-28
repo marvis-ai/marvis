@@ -7,8 +7,8 @@ use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 use serde_json::{json, Value};
 
 use super::{
-    check_status, stream_sse, ChatMessage, CONNECT_TIMEOUT, ContentPart, LlmError, Provider,
-    VALIDATE_TIMEOUT,
+    check_status, stream_sse, ChatMessage, CONNECT_TIMEOUT, ContentPart, LlmError, ParsedLine,
+    Provider, StreamReply, TokenUsage, VALIDATE_TIMEOUT,
 };
 
 const CHAT_URL: &str = "https://api.openai.com/v1/chat/completions";
@@ -42,6 +42,9 @@ pub(crate) fn request_body(model: &str, msgs: &[ChatMessage]) -> Value {
     json!({
         "model": model,
         "stream": true,
+        // The terminal `choices: []` chunk then carries `usage` —
+        // endpoints that ignore the option simply never send one.
+        "stream_options": {"include_usage": true},
         "temperature": 0.7,
         "max_tokens": 2048,
         "messages": messages,
@@ -68,34 +71,42 @@ impl OpenAiProvider {
         }
     }
 
-    /// One SSE line → a token. `data:` payloads carrying an `error` field
-    /// (and malformed `data:` JSON) abort via `Err`; `[DONE]`, keepalives
-    /// and non-`data:` lines are `Ok(None)`. `pub(crate)` so the shared
-    /// stream tests can drive it.
-    pub(crate) fn parse_event(line: &str) -> Result<Option<String>, LlmError> {
+    /// One SSE line → a token and/or a usage report (`include_usage`
+    /// sends a terminal `choices: []` chunk carrying `usage`). `data:`
+    /// payloads carrying an `error` field (and malformed `data:` JSON)
+    /// abort via `Err`; `[DONE]`, keepalives and non-`data:` lines are
+    /// `ParsedLine::NONE`. `pub(crate)` so the shared stream tests can
+    /// drive it.
+    pub(crate) fn parse_event(line: &str) -> Result<ParsedLine, LlmError> {
         let Some(data) = line.strip_prefix("data:") else {
-            return Ok(None);
+            return Ok(ParsedLine::NONE);
         };
         let data = data.trim_start();
         if data.is_empty() || data == "[DONE]" {
-            return Ok(None);
+            return Ok(ParsedLine::NONE);
         }
         let v: Value =
             serde_json::from_str(data).map_err(|e| super::malformed_stream("openai", e))?;
         if let Some(err) = v.get("error") {
             return Err(super::stream_error(err));
         }
-        Ok(v["choices"][0]["delta"]["content"]
-            .as_str()
-            .filter(|s| !s.is_empty())
-            .map(String::from))
+        Ok(ParsedLine {
+            token: v["choices"][0]["delta"]["content"]
+                .as_str()
+                .filter(|s| !s.is_empty())
+                .map(String::from),
+            usage: v.get("usage").map(|u| TokenUsage {
+                input: u["prompt_tokens"].as_u64(),
+                output: u["completion_tokens"].as_u64(),
+            }),
+        })
     }
 
     /// Test seam per the task brief — same decode as [`Self::parse_event`]
     /// but errors collapse to `None`.
     #[allow(dead_code)] // test-only seam
     pub fn parse_stream_line(line: &str) -> Option<String> {
-        Self::parse_event(line).ok().flatten()
+        Self::parse_event(line).ok().and_then(|p| p.token)
     }
 
     fn request_body(&self, msgs: &[ChatMessage]) -> Value {
@@ -106,7 +117,7 @@ impl OpenAiProvider {
         &self,
         msgs: &[ChatMessage],
         on_token: &mut (dyn FnMut(&str) + Send),
-    ) -> Result<String, LlmError> {
+    ) -> Result<StreamReply, LlmError> {
         let key = self.api_key.as_deref().ok_or(LlmError::Auth)?;
         let req = self
             .client
@@ -145,7 +156,7 @@ impl Provider for OpenAiProvider {
         &'a self,
         msgs: &'a [ChatMessage],
         on_token: &'a mut (dyn FnMut(&str) + Send),
-    ) -> Pin<Box<dyn Future<Output = Result<String, LlmError>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Result<StreamReply, LlmError>> + Send + 'a>> {
         Box::pin(async move { self.stream_chat_inner(msgs, on_token).await })
     }
 
@@ -158,6 +169,25 @@ impl Provider for OpenAiProvider {
 mod tests {
     use super::*;
     use crate::llm::Role;
+
+    #[test]
+    fn openai_parses_usage_chunk() {
+        // `include_usage`'s terminal chunk: empty choices, usage object.
+        let parsed = OpenAiProvider::parse_event(
+            r#"data: {"choices":[],"usage":{"prompt_tokens":12,"completion_tokens":7}}"#,
+        )
+        .unwrap();
+        assert_eq!(parsed.token, None);
+        assert_eq!(parsed.usage.unwrap().input, Some(12));
+        assert_eq!(parsed.usage.unwrap().output, Some(7));
+        // `"usage": null` on content chunks reports nothing.
+        let parsed = OpenAiProvider::parse_event(
+            r#"data: {"choices":[{"delta":{"content":"Hi"}}],"usage":null}"#,
+        )
+        .unwrap();
+        assert_eq!(parsed.token.as_deref(), Some("Hi"));
+        assert!(parsed.usage.unwrap().is_empty());
+    }
 
     #[test]
     fn openai_parses_delta() {

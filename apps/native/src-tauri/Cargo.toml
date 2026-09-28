@@ -46,7 +46,7 @@ anyhow = "1"
 parking_lot = "0.12"
 log = "0.4"
 env_logger = "0.11"
-tauri-plugin-liquid-glass = "0.1.6"
+tauri-plugin-liquid-glass = { git = "https://github.com/chenillen/tauri-plugin-liquid-glass", tag = "v0.1.7" }
 cpal = "0.18.2"
 tokio-tungstenite = { version = "0.30.0", features = ["rustls-tls-native-roots"] }
 

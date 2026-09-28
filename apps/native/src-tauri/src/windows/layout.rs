@@ -13,6 +13,11 @@ pub const EDGE_MARGIN: f64 = 12.0;
 pub const EXPANDED_W: f64 = 600.0;
 /// Minimum chat content height (spec: 40 → window ≥ pill + 40).
 pub const MIN_CHAT_H: f64 = 40.0;
+/// The unified card band as fractions of the work area's height —
+/// every section (chat | listen | history) opens at the floor and
+/// never grows past the cap; its body scrolls instead.
+pub const CARD_MIN_FRACTION: f64 = 0.30;
+pub const CARD_MAX_FRACTION: f64 = 0.60;
 
 /// Which side the expanded card grows toward — the larger free side of
 /// the bar's work area (top-docked grows down, bottom-docked grows up;
@@ -27,10 +32,11 @@ pub fn expand_dir_for(bar: Rect, work: Rect) -> Dir {
 
 /// The live window rect while expanded: `EXPANDED_W` wide, recentred on
 /// the pill's center-x and clamped inside `work`; total height
-/// `bar.h + chat_h` clamped to `[bar.h + MIN_CHAT_H, free space in
-/// `dir`]` — no fixed ceiling, the card may fill the work area. The
-/// anchored edge is fixed — grow-down keeps `bar.y`, grow-up keeps
-/// `bar.bottom()`.
+/// `bar.h + chat_h` clamped to `[bar.h + MIN_CHAT_H, min(free space in
+/// `dir`, CARD_MAX_FRACTION · work.h)]` — the card band's 60% cap keeps
+/// the window from swallowing the screen; the section body scrolls
+/// instead. The anchored edge is fixed — grow-down keeps `bar.y`,
+/// grow-up keeps `bar.bottom()`.
 pub fn expanded_rect(bar: Rect, dir: Dir, chat_h: f64, work: Rect) -> Rect {
     let min = bar.h + MIN_CHAT_H;
     let free = if dir == Dir::Up {
@@ -38,7 +44,7 @@ pub fn expanded_rect(bar: Rect, dir: Dir, chat_h: f64, work: Rect) -> Rect {
     } else {
         work.bottom() - bar.y
     };
-    let max = free.max(min);
+    let max = free.min(work.h * CARD_MAX_FRACTION).max(min);
     let h = (bar.h + chat_h).clamp(min, max);
     let y = if dir == Dir::Up {
         bar.bottom() - h
@@ -233,8 +239,8 @@ mod tests {
     }
 
     #[test]
-    fn expanded_rect_clamps_height_to_free_space() {
-        // No fixed ceiling — the grow direction's free space is the cap.
+    fn expanded_rect_clamps_height_to_band_and_free_space() {
+        // Even a huge free space can't beat the 60% cap: 1200 → 720.
         let tall = Rect {
             x: 0.0,
             y: 0.0,
@@ -242,10 +248,10 @@ mod tests {
             h: 1200.0,
         };
         let r = expanded_rect(PILL, Dir::Down, 5000.0, tall);
-        assert_eq!(r.h, tall.bottom() - PILL.y); // 1200 − 33 = 1167
-                                                 // In WORK the free space below PILL caps: 900 − 33 = 867.
+        assert_eq!(r.h, tall.h * CARD_MAX_FRACTION);
+        // In WORK the cap is min(867 free, 525) → 525.
         let r = expanded_rect(PILL, Dir::Down, 5000.0, WORK);
-        assert_eq!(r.h, WORK.bottom() - PILL.y);
+        assert_eq!(r.h, WORK.h * CARD_MAX_FRACTION);
         // Bar near the work bottom growing down: 300 px free.
         let low = Rect {
             y: WORK.bottom() - 300.0,

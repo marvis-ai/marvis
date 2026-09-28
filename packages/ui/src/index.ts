@@ -30,6 +30,7 @@ export {
   ChevronRightIcon,
   ChevronUpIcon,
   CopyIcon,
+  EllipsisIcon,
   GripVerticalIcon,
   HistoryIcon,
   InfoIcon,

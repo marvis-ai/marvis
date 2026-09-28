@@ -7,8 +7,8 @@ use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 use serde_json::{json, Value};
 
 use super::{
-    check_status, stream_sse, ChatMessage, CONNECT_TIMEOUT, ContentPart, LlmError, Provider,
-    Role, VALIDATE_TIMEOUT,
+    check_status, stream_sse, ChatMessage, CONNECT_TIMEOUT, ContentPart, LlmError, ParsedLine,
+    Provider, Role, StreamReply, TokenUsage, VALIDATE_TIMEOUT,
 };
 
 const MESSAGES_URL: &str = "https://api.anthropic.com/v1/messages";
@@ -35,26 +35,39 @@ impl AnthropicProvider {
         }
     }
 
-    /// One SSE line → a token. Only `content_block_delta` events carry
-    /// text; `{"type":"error",…}` events (and malformed `data:` JSON)
-    /// abort via `Err`; every other event type is `Ok(None)`.
-    pub(crate) fn parse_event(line: &str) -> Result<Option<String>, LlmError> {
+    /// One SSE line → a token or a usage report. Only
+    /// `content_block_delta` events carry text; `message_start` reports
+    /// input spend and `message_delta` the cumulative output count;
+    /// `{"type":"error",…}` events (and malformed `data:` JSON) abort
+    /// via `Err`; every other event type is `ParsedLine::NONE`.
+    pub(crate) fn parse_event(line: &str) -> Result<ParsedLine, LlmError> {
         let Some(data) = line.strip_prefix("data:") else {
-            return Ok(None);
+            return Ok(ParsedLine::NONE);
         };
         let data = data.trim_start();
         if data.is_empty() {
-            return Ok(None);
+            return Ok(ParsedLine::NONE);
         }
         let v: Value =
             serde_json::from_str(data).map_err(|e| super::malformed_stream("anthropic", e))?;
         match v["type"].as_str() {
-            Some("content_block_delta") => Ok(v["delta"]["text"]
-                .as_str()
-                .filter(|s| !s.is_empty())
-                .map(String::from)),
+            Some("content_block_delta") => Ok(ParsedLine {
+                token: v["delta"]["text"]
+                    .as_str()
+                    .filter(|s| !s.is_empty())
+                    .map(String::from),
+                usage: None,
+            }),
+            Some("message_start") => Ok(ParsedLine::usage(TokenUsage {
+                input: v["message"]["usage"]["input_tokens"].as_u64(),
+                output: v["message"]["usage"]["output_tokens"].as_u64(),
+            })),
+            Some("message_delta") => Ok(ParsedLine::usage(TokenUsage {
+                input: None,
+                output: v["usage"]["output_tokens"].as_u64(),
+            })),
             Some("error") => Err(super::stream_error(&v["error"])),
-            _ => Ok(None),
+            _ => Ok(ParsedLine::NONE),
         }
     }
 
@@ -62,7 +75,7 @@ impl AnthropicProvider {
     /// but errors collapse to `None`.
     #[allow(dead_code)] // test-only seam
     pub fn parse_stream_line(line: &str) -> Option<String> {
-        Self::parse_event(line).ok().flatten()
+        Self::parse_event(line).ok().and_then(|p| p.token)
     }
 
     /// Wire body: `{model, max_tokens, stream, system?, messages}` — system
@@ -117,7 +130,7 @@ impl AnthropicProvider {
         &self,
         msgs: &[ChatMessage],
         on_token: &mut (dyn FnMut(&str) + Send),
-    ) -> Result<String, LlmError> {
+    ) -> Result<StreamReply, LlmError> {
         let key = self.api_key.as_deref().ok_or(LlmError::Auth)?;
         let req = self
             .client
@@ -158,7 +171,7 @@ impl Provider for AnthropicProvider {
         &'a self,
         msgs: &'a [ChatMessage],
         on_token: &'a mut (dyn FnMut(&str) + Send),
-    ) -> Pin<Box<dyn Future<Output = Result<String, LlmError>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Result<StreamReply, LlmError>> + Send + 'a>> {
         Box::pin(async move { self.stream_chat_inner(msgs, on_token).await })
     }
 
@@ -179,6 +192,22 @@ mod tests {
             ),
             Some("Hi".into())
         );
+    }
+
+    #[test]
+    fn anthropic_reads_usage_off_the_message_events() {
+        // input lands on message_start; output accumulates on
+        // message_delta (the last one's cumulative count wins).
+        let start = AnthropicProvider::parse_event(
+            r#"data: {"type":"message_start","message":{"usage":{"input_tokens":25,"output_tokens":1}}}"#,
+        )
+        .unwrap();
+        assert_eq!(start.usage.unwrap().input, Some(25));
+        let delta = AnthropicProvider::parse_event(
+            r#"data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":9}}"#,
+        )
+        .unwrap();
+        assert_eq!(delta.usage.unwrap().output, Some(9));
     }
 
     #[test]

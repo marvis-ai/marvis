@@ -24,7 +24,7 @@ use std::future::Future;
 use std::pin::Pin;
 
 use super::openai::{request_body, OpenAiProvider};
-use super::{ChatMessage, LlmError, Provider, CONNECT_TIMEOUT, VALIDATE_TIMEOUT};
+use super::{ChatMessage, LlmError, Provider, StreamReply, CONNECT_TIMEOUT, VALIDATE_TIMEOUT};
 
 /// Statuses on `{base}/models` that mean "reachable, but no listing here".
 const MODELS_OPTIONAL_STATUSES: [u16; 2] = [404, 405];
@@ -112,7 +112,7 @@ impl CompatProvider {
         &self,
         msgs: &[ChatMessage],
         on_token: &mut (dyn FnMut(&str) + Send),
-    ) -> Result<String, LlmError> {
+    ) -> Result<StreamReply, LlmError> {
         self.preflight()?;
         let req = self
             .authed(self.client.post(self.url("chat/completions")?))
@@ -153,7 +153,7 @@ impl Provider for CompatProvider {
         &'a self,
         msgs: &'a [ChatMessage],
         on_token: &'a mut (dyn FnMut(&str) + Send),
-    ) -> Pin<Box<dyn Future<Output = Result<String, LlmError>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Result<StreamReply, LlmError>> + Send + 'a>> {
         Box::pin(async move { self.stream_chat_inner(msgs, on_token).await })
     }
 

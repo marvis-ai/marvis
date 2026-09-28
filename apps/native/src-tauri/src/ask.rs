@@ -23,8 +23,9 @@
 //!   per failover retry (pre-flight errors emit `loading` → `error` →
 //!   `idle` too).
 //! - `ask:chunk` `{"text": token}` per token.
-//! - `ask:done` `{"full": full_reply, "provider": id, "model": id}` on
-//!   success — the pair that actually answered, for the card's chip.
+//! - `ask:done` `{"full": full_reply, "provider": id, "model": id,
+//!   "usage": {"input": n?, "output": n?} | null}` on success — the pair
+//!   that actually answered plus the run's reported token spend.
 //! - `ask:error` `{"message": ..., "needs_setup": bool?}` on failure —
 //!   `needs_setup` when the chain was empty (no usable provider at all).
 //!
@@ -53,9 +54,9 @@ use tokio_util::sync::CancellationToken;
 use crate::capture::{Frame, RingBuffer};
 use crate::config::Config;
 use crate::keystore::Keystore;
-use crate::llm::{ChatMessage, LlmError, Provider, Role};
+use crate::llm::{ChatMessage, LlmError, Provider, Role, StreamReply, TokenUsage};
 use crate::prompts::{live_system_prompt_for, live_user_prompt, screen_prompt};
-use crate::storage::{Db, Transcript};
+use crate::storage::{Db, MessageMeta, Transcript};
 use crate::windows::{WindowPool, BAR_LABEL};
 use crate::ProviderCandidate;
 
@@ -168,12 +169,36 @@ impl AskService {
     /// `tauri::async_runtime::spawn` task so the calling command handler
     /// never blocks on the LLM.
     pub fn send(self: &Arc<Self>, app: &AppHandle, deps: &Deps<'_>, text: &str) {
-        self.kick(app, deps, text, false);
+        self.kick(app, deps, text, false, false);
     }
 
     /// The camera button's screen-only ask: fixed prompt, frame REQUIRED.
     pub fn send_screen_only(self: &Arc<Self>, app: &AppHandle, deps: &Deps<'_>) {
-        self.kick(app, deps, SCREEN_ONLY_PROMPT, true);
+        self.kick(app, deps, SCREEN_ONLY_PROMPT, true, false);
+    }
+
+    /// Regenerate the last answer: re-runs the active ask session's last
+    /// user turn — `send_chain`'s `regenerate` path skips persisting a
+    /// second user row and drops the rejected reply's row, so a reload
+    /// never replays it. A retry with no prior user turn is a no-op.
+    pub fn retry(self: &Arc<Self>, app: &AppHandle, deps: &Deps<'_>) {
+        let text = deps
+            .db
+            .session_active_id("ask")
+            .ok()
+            .flatten()
+            .and_then(|sid| deps.db.messages_for(sid).ok())
+            .and_then(|rows| {
+                rows.iter()
+                    .rev()
+                    .find(|r| r.role == "user")
+                    .map(|r| r.content.clone())
+            });
+        let Some(text) = text else {
+            log::warn!("ask::retry: no user turn to regenerate");
+            return;
+        };
+        self.kick(app, deps, &text, false, true);
     }
 
     /// `ask_close`: cancel the in-flight stream (its `select!` arm emits
@@ -190,9 +215,17 @@ impl AskService {
         pool.lock().set_chat_open(app, false);
     }
 
-    /// Shared pre-flight + spawn behind `send`/`send_screen_only`.
-    /// `frame_required` is the screen-only variant's no-frame→error rule.
-    fn kick(self: &Arc<Self>, app: &AppHandle, deps: &Deps<'_>, text: &str, frame_required: bool) {
+    /// Shared pre-flight + spawn behind `send`/`send_screen_only`/`retry`.
+    /// `frame_required` is the screen-only variant's no-frame→error rule;
+    /// `regenerate` is `retry`'s re-ask-the-last-turn mode.
+    fn kick(
+        self: &Arc<Self>,
+        app: &AppHandle,
+        deps: &Deps<'_>,
+        text: &str,
+        frame_required: bool,
+        regenerate: bool,
+    ) {
         let gen = {
             let mut state = self.state.lock();
             if *state != AskState::Idle {
@@ -212,7 +245,9 @@ impl AskService {
         *self.last_error.lock() = None;
         // A send arriving with the card closed starts a NEW conversation —
         // the pill input isn't a follow-up field. Read before the flag flips.
-        let fresh_session = !deps.pool.lock().is_chat_open();
+        // A regenerate never mints a session — there'd be nothing in it
+        // to re-ask.
+        let fresh_session = !regenerate && !deps.pool.lock().is_chat_open();
         // Expand first so any pre-flight error still renders in the card.
         deps.pool.lock().set_chat_open(app, true);
 
@@ -300,6 +335,7 @@ impl AskService {
                 frame.as_ref(),
                 &cancel,
                 fresh_session,
+                regenerate,
                 &language,
             )
             .await;
@@ -364,7 +400,8 @@ impl Default for AskService {
 ///    be recorded even when every candidate later errors or is cancelled.
 /// 2. `ask:state{loading}` once (the chain is one run).
 /// 3. Each [`ProviderCandidate`] streams via [`stream_candidate`]:
-///    `Done` → persist assistant + `ask:done{full, provider, model}` +
+///    `Done` → persist assistant + `ask:done{full, provider, model,
+///    usage}` +
 ///    `ask:state{idle}`; `Failed` → warn-log, re-emit `loading` (the
 ///    card resets its buffer — a dead provider's partial chunks must
 ///    not bleed into the next attempt), and try the NEXT candidate;
@@ -379,6 +416,11 @@ impl Default for AskService {
 /// Resolves to the full assistant text. Cancel resolves to a
 /// `status:0`/`"cancelled"` [`LlmError::Http`] sentinel — the events, not
 /// the return value, drive the UI.
+///
+/// `regenerate` (ask_retry): the run re-asks the session's last user
+/// row instead of persisting a new one, and the rejected reply's row is
+/// deleted — the stream's spend (vision read included) lands on the
+/// replacement row, which `ask:done` also reports.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn send_chain(
     candidates: Vec<ProviderCandidate>,
@@ -389,6 +431,7 @@ pub(crate) async fn send_chain(
     frame: Option<&Frame>,
     cancel: &CancellationToken,
     fresh_session: bool,
+    regenerate: bool,
     language: &str,
 ) -> Result<String, LlmError> {
     // A send that arrived with the card closed is a new conversation:
@@ -401,11 +444,24 @@ pub(crate) async fn send_chain(
         }
     }
     // Order matters: history is read BEFORE the new user row persists —
-    // the new turn is appended separately so it can carry the frame.
+    // the new turn is appended separately so it can carry the frame. A
+    // regenerate skips the write: its question is the session's last
+    // user row, and history ends BEFORE it (a missing tail — shouldn't
+    // happen, `retry` resolved the question from that row — degrades
+    // to a normal send).
     let session_id = open_ask_session(db);
-    let history = load_history(db, session_id);
+    let (history, re_asked) = if regenerate {
+        match regenerate_tail(db, session_id) {
+            Some(h) => (h, true),
+            None => (load_history(db, session_id), false),
+        }
+    } else {
+        (load_history(db, session_id), false)
+    };
     let listen_history = load_listen_context(db);
-    persist_user_message(db, session_id, text);
+    if !re_asked {
+        persist_user_message(db, session_id, text);
+    }
     emit(EV_STATE, json!({"state": "loading", "question": text}));
 
     // A configured screen reader intercepts the frame: it describes the
@@ -415,10 +471,16 @@ pub(crate) async fn send_chain(
     // keeps its own text-only retry on a multimodal rejection).
     let mut frame = frame;
     let mut screen: Option<String> = None;
+    // The turn's spend = vision read + the answering attempt (a failed
+    // candidate's usage is unknowable — errors carry none).
+    let mut usage = TokenUsage::default();
     if let (Some(f), Some(vis)) = (frame, vision.as_ref()) {
         match describe_screen(&*vis.provider, f, cancel).await {
-            StreamOutcome::Done(desc) => {
-                screen = Some(desc);
+            StreamOutcome::Done(reply) => {
+                screen = Some(reply.full);
+                if let Some(u) = reply.usage {
+                    usage.add(&u);
+                }
                 frame = None;
             }
             // Same rule as a mid-stream cancel: the user asked to stop,
@@ -459,14 +521,31 @@ pub(crate) async fn send_chain(
         )
         .await
         {
-            CandidateOutcome::Done(full) => {
-                persist_assistant_message(db, session_id, &full);
+            CandidateOutcome::Done(reply) => {
+                if let Some(u) = reply.usage {
+                    usage.add(&u);
+                }
+                let usage = (!usage.is_empty()).then_some(usage);
+                persist_assistant_message(
+                    db,
+                    session_id,
+                    &reply.full,
+                    &cand.id,
+                    &cand.model,
+                    usage,
+                );
                 emit(
                     EV_DONE,
-                    json!({"full": full, "provider": cand.id, "model": cand.model}),
+                    json!({
+                        "full": reply.full,
+                        "provider": cand.id,
+                        "model": cand.model,
+                        "usage": usage
+                            .map(|u| json!({"input": u.input, "output": u.output})),
+                    }),
                 );
                 emit(EV_STATE, json!({"state": "idle"}));
-                return Ok(full);
+                return Ok(reply.full);
             }
             // User row stays — it was already sent. Never fall over on
             // cancel: the user asked to stop, so the chain stops here.
@@ -511,7 +590,7 @@ async fn stream_candidate(
     let mut retried = false;
     loop {
         match stream_once(provider, &msgs, emit, cancel, &mut streaming).await {
-            StreamOutcome::Done(full) => return CandidateOutcome::Done(full),
+            StreamOutcome::Done(reply) => return CandidateOutcome::Done(reply),
             StreamOutcome::Cancelled => return CandidateOutcome::Cancelled,
             StreamOutcome::Failed(e) => {
                 // Vision-incapable model gets ONE retry without the frame.
@@ -543,7 +622,7 @@ async fn describe_screen(
     tokio::select! {
         _ = cancel.cancelled() => StreamOutcome::Cancelled,
         r = provider.stream_chat(&msgs, &mut sink) => match r {
-            Ok(full) => StreamOutcome::Done(full),
+            Ok(reply) => StreamOutcome::Done(reply),
             Err(e) => StreamOutcome::Failed(e),
         },
     }
@@ -552,14 +631,14 @@ async fn describe_screen(
 /// One provider's result within the chain — `Failed` hands off to the
 /// next candidate; `Cancelled`/`Done` end the run.
 enum CandidateOutcome {
-    Done(String),
+    Done(StreamReply),
     Cancelled,
     Failed(LlmError),
 }
 
 /// One `stream_chat` attempt's result.
 enum StreamOutcome {
-    Done(String),
+    Done(StreamReply),
     /// `cancel` fired — the request future was dropped mid-flight.
     Cancelled,
     Failed(LlmError),
@@ -590,7 +669,7 @@ async fn stream_once(
     tokio::select! {
         _ = cancel.cancelled() => StreamOutcome::Cancelled,
         r = provider.stream_chat(msgs, &mut on_token) => match r {
-            Ok(full) => StreamOutcome::Done(full),
+            Ok(reply) => StreamOutcome::Done(reply),
             Err(e) => StreamOutcome::Failed(e),
         },
     }
@@ -660,13 +739,18 @@ fn load_history(db: &Db, session_id: Option<i64>) -> Vec<ChatMessage> {
     let Some(sid) = session_id else {
         return Vec::new();
     };
-    let rows = match db.messages_for(sid) {
-        Ok(rows) => rows,
+    match db.messages_for(sid) {
+        Ok(rows) => rows_to_history(&rows),
         Err(e) => {
             log::warn!("ask: history load failed: {e}");
-            return Vec::new();
+            Vec::new()
         }
-    };
+    }
+}
+
+/// Rows → the trailing text-only `ChatMessage` tail [`load_history`]
+/// describes.
+fn rows_to_history(rows: &[crate::storage::Message]) -> Vec<ChatMessage> {
     rows.iter()
         .skip(rows.len().saturating_sub(HISTORY_TAIL))
         .filter_map(|m| match m.role.as_str() {
@@ -675,6 +759,22 @@ fn load_history(db: &Db, session_id: Option<i64>) -> Vec<ChatMessage> {
             _ => None,
         })
         .collect()
+}
+
+/// `regenerate` history: rows BEFORE the session's last user turn — the
+/// row being re-asked — with every later row (the rejected reply)
+/// deleted so a reload never replays it. `None` when the session has no
+/// user turn to re-ask or the lookup failed.
+fn regenerate_tail(db: &Db, session_id: Option<i64>) -> Option<Vec<ChatMessage>> {
+    let sid = session_id?;
+    let rows = db.messages_for(sid).ok()?;
+    let cut = rows.iter().rposition(|r| r.role == "user")?;
+    for row in &rows[cut + 1..] {
+        if let Err(e) = db.message_delete(row.id) {
+            log::warn!("ask: failed to drop rejected reply {}: {e}", row.id);
+        }
+    }
+    Some(rows_to_history(&rows[..cut]))
 }
 
 /// The new user row, next to its session. `None` session (lookup
@@ -689,12 +789,26 @@ fn persist_user_message(db: &Db, session_id: Option<i64>, text: &str) {
     }
 }
 
-/// The completed assistant reply, next to its user row.
-fn persist_assistant_message(db: &Db, session_id: Option<i64>, full: &str) {
+/// The completed assistant reply, next to its user row — provenance and
+/// token spend ride along for the card's per-message ⋯ menu.
+fn persist_assistant_message(
+    db: &Db,
+    session_id: Option<i64>,
+    full: &str,
+    provider: &str,
+    model: &str,
+    usage: Option<TokenUsage>,
+) {
     let Some(sid) = session_id else {
         return;
     };
-    if let Err(e) = db.message_add(sid, "assistant", full) {
+    let meta = MessageMeta {
+        provider: Some(provider.to_string()),
+        model: Some(model.to_string()),
+        tokens_in: usage.and_then(|u| u.input.map(|n| n as i64)),
+        tokens_out: usage.and_then(|u| u.output.map(|n| n as i64)),
+    };
+    if let Err(e) = db.message_add_meta(sid, "assistant", full, &meta) {
         log::warn!("ask: failed to persist assistant message: {e}");
     }
 }
@@ -717,6 +831,8 @@ mod tests {
     enum Behavior {
         /// Emit these tokens, then resolve `Ok(concat)`.
         Tokens(Vec<String>),
+        /// Same, plus a usage report on the reply.
+        TokensUsage(Vec<String>, TokenUsage),
         /// Resolve with this error immediately.
         Fail(LlmError),
         /// Never resolve — exercises cancellation.
@@ -756,7 +872,7 @@ mod tests {
             &'a self,
             msgs: &'a [ChatMessage],
             on_token: &'a mut (dyn FnMut(&str) + Send),
-        ) -> Pin<Box<dyn Future<Output = Result<String, LlmError>> + Send + 'a>> {
+        ) -> Pin<Box<dyn Future<Output = Result<StreamReply, LlmError>> + Send + 'a>> {
             self.calls.lock().push(msgs.to_vec());
             let behavior = self
                 .script
@@ -771,7 +887,21 @@ mod tests {
                             on_token(t);
                             full.push_str(t);
                         }
-                        Ok(full)
+                        Ok(StreamReply {
+                            full,
+                            usage: None,
+                        })
+                    }
+                    Behavior::TokensUsage(tokens, usage) => {
+                        let mut full = String::new();
+                        for t in &tokens {
+                            on_token(t);
+                            full.push_str(t);
+                        }
+                        Ok(StreamReply {
+                            full,
+                            usage: Some(usage),
+                        })
                     }
                     Behavior::Fail(e) => Err(e),
                     Behavior::Hang => std::future::pending().await,
@@ -892,6 +1022,7 @@ mod tests {
             Some(&frame),
             &cancel,
             false,
+            false,
             "en",
         )
         .await
@@ -914,7 +1045,7 @@ mod tests {
                 ev(EV_CHUNK, json!({"text": "world"})),
                 ev(
                     EV_DONE,
-                    json!({"full": "Hello world", "provider": "openai", "model": "mock-model"})
+                    json!({"full": "Hello world", "provider": "openai", "model": "mock-model", "usage": null})
                 ),
                 ev(EV_STATE, json!({"state": "idle"})),
             ]
@@ -958,6 +1089,7 @@ mod tests {
             None,
             &cancel,
             false,
+            false,
             "en",
         )
         .await
@@ -978,7 +1110,7 @@ mod tests {
                 ev(EV_CHUNK, json!({"text": "ok"})),
                 ev(
                     EV_DONE,
-                    json!({"full": "ok", "provider": "gemini", "model": "mock-model"})
+                    json!({"full": "ok", "provider": "gemini", "model": "mock-model", "usage": null})
                 ),
                 ev(EV_STATE, json!({"state": "idle"})),
             ]
@@ -1011,6 +1143,7 @@ mod tests {
             "q",
             None,
             &cancel,
+            false,
             false,
             "en",
         )
@@ -1057,6 +1190,7 @@ mod tests {
             None,
             &cancel,
             false,
+            false,
             "en",
         )
         .await
@@ -1089,6 +1223,7 @@ mod tests {
             "q",
             Some(&frame),
             &cancel,
+            false,
             false,
             "en",
         )
@@ -1137,6 +1272,7 @@ mod tests {
             "q",
             Some(&frame),
             &cancel,
+            false,
             false,
             "en",
         )
@@ -1187,6 +1323,7 @@ mod tests {
             Some(&frame),
             &cancel,
             false,
+            false,
             "en",
         )
         .await
@@ -1231,6 +1368,7 @@ mod tests {
             None,
             &cancel,
             false,
+            false,
             "en",
         )
         .await
@@ -1260,6 +1398,7 @@ mod tests {
             "q",
             Some(&frame),
             &cancel,
+            false,
             false,
             "en",
         )
@@ -1309,6 +1448,7 @@ mod tests {
             Some(&frame),
             &cancel,
             false,
+            false,
             "en",
         )
         .await
@@ -1349,7 +1489,7 @@ mod tests {
                 ev(EV_CHUNK, json!({"text": "answer"})),
                 ev(
                     EV_DONE,
-                    json!({"full": "answer", "provider": "openai", "model": "mock-model"})
+                    json!({"full": "answer", "provider": "openai", "model": "mock-model", "usage": null})
                 ),
                 ev(EV_STATE, json!({"state": "idle"})),
             ]
@@ -1381,6 +1521,7 @@ mod tests {
             "q",
             Some(&frame),
             &cancel,
+            false,
             false,
             "en",
         )
@@ -1414,6 +1555,7 @@ mod tests {
             "q",
             None,
             &cancel,
+            false,
             false,
             "en",
         )
@@ -1452,6 +1594,7 @@ mod tests {
             "q",
             Some(&frame),
             &cancel,
+            false,
             false,
             "en",
         )
@@ -1494,6 +1637,7 @@ mod tests {
             "follow-up",
             Some(&frame),
             &cancel,
+            false,
             false,
             "en",
         )
@@ -1541,6 +1685,7 @@ mod tests {
             None,
             &cancel,
             true,
+            false,
             "en",
         )
         .await
@@ -1582,6 +1727,7 @@ mod tests {
             None,
             &cancel,
             false,
+            false,
             "en",
         )
         .await
@@ -1594,6 +1740,108 @@ mod tests {
         assert_eq!(msgs[1].content, vec![ContentPart::Text("u2".into())]);
         assert_eq!(msgs[20].content, vec![ContentPart::Text("a11".into())]);
         assert_request_text(&msgs[21], "new q");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `regenerate` (ask_retry): the session's last user row is re-asked
+    /// — not persisted twice — the rejected reply's row is deleted, and
+    /// the replacement lands with its provenance + token spend.
+    #[tokio::test]
+    async fn send_chain_regenerate_replaces_the_tail() {
+        let dir = tmp_dir();
+        let db = Db::at(dir.join("marvis.db")).unwrap();
+        let sid = db.session_get_or_create_active("ask").unwrap();
+        db.message_add(sid, "user", "first q").unwrap();
+        db.message_add(sid, "assistant", "first a").unwrap();
+        db.message_add(sid, "user", "second q").unwrap();
+        db.message_add(sid, "assistant", "rejected a").unwrap();
+        let provider = MockProvider::new(vec![Behavior::TokensUsage(
+            vec!["new a".into()],
+            TokenUsage {
+                input: Some(10),
+                output: Some(4),
+            },
+        )]);
+        let calls = provider.calls();
+        let (events, emit) = recorder();
+        let cancel = CancellationToken::new();
+
+        let full = send_chain(
+            vec![candidate("openai", provider)],
+            None,
+            &db,
+            &emit,
+            "second q",
+            None,
+            &cancel,
+            false,
+            true,
+            "en",
+        )
+        .await
+        .unwrap();
+        assert_eq!(full, "new a");
+
+        // The wire replays history BEFORE "second q" — the rejected
+        // reply is neither in context nor in the DB.
+        let calls = calls.lock();
+        let msgs = &calls[0];
+        assert_eq!(msgs.len(), 4); // [system] + first pair + re-asked turn
+        assert_eq!(msgs[1].content, vec![ContentPart::Text("first q".into())]);
+        assert_eq!(msgs[2].content, vec![ContentPart::Text("first a".into())]);
+        assert_eq!(msgs[3].role, Role::User);
+        assert_request_text(&msgs[3], "second q");
+        drop(calls);
+
+        let msgs = ask_messages(&db);
+        assert_eq!(msgs.len(), 4); // u, a, u, a — no dup, no "rejected a"
+        assert_eq!(msgs[2].role, "user");
+        assert_eq!(msgs[2].content, "second q");
+        assert_eq!(msgs[3].role, "assistant");
+        assert_eq!(msgs[3].content, "new a");
+        assert_eq!(msgs[3].provider.as_deref(), Some("openai"));
+        assert_eq!(msgs[3].model.as_deref(), Some("mock-model"));
+        assert_eq!(msgs[3].tokens_in, Some(10));
+        assert_eq!(msgs[3].tokens_out, Some(4));
+
+        // `ask:done` reports the same spend.
+        let got = events.lock().clone();
+        assert!(got.iter().any(|(n, p)| {
+            n == EV_DONE && p["usage"] == json!({"input": 10, "output": 4})
+        }));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A regenerate that finds no user tail degrades to a normal send —
+    /// the question persists as usual (`retry` resolves its question
+    /// from that same row, so this path is defensive only).
+    #[tokio::test]
+    async fn send_chain_regenerate_without_a_user_tail_sends_normally() {
+        let dir = tmp_dir();
+        let db = Db::at(dir.join("marvis.db")).unwrap();
+        let provider = MockProvider::new(vec![Behavior::Tokens(vec!["ok".into()])]);
+        let (_events, emit) = recorder();
+        let cancel = CancellationToken::new();
+
+        send_chain(
+            vec![candidate("openai", provider)],
+            None,
+            &db,
+            &emit,
+            "q",
+            None,
+            &cancel,
+            false,
+            true,
+            "en",
+        )
+        .await
+        .unwrap();
+
+        let msgs = ask_messages(&db);
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[0].role, "user");
+        assert_eq!(msgs[0].content, "q");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -507,6 +507,7 @@ impl Config {
         if !matches!(self.recording.fps, 2 | 4 | 8) {
             self.recording.fps = 4;
         }
+        self.recording.read_interval_secs = self.recording.read_interval_secs.max(1);
         self.recording.summary_prompt = self.recording.summary_prompt.trim().to_string();
     }
 

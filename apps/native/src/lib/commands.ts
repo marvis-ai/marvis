@@ -583,7 +583,8 @@ export const configGet = () => invoke<Config>('config_get');
  * clears), `vision.provider` (`''` or a vision-capable provider id),
  * `vision.models.<id>` (string; `''` removes),
  * `recording.auto_screenshots` (bool), `recording.fps` (`8|4|2`),
- * `recording.summary_prompt` (string). Provider
+ * `recording.read_interval_secs` (number ≥1 — applies on next
+ * capture start), `recording.summary_prompt` (string). Provider
  * order/switches/models go through `providersReorder`/
  * `providerSetEnabled`/`modelSetSelected`. Every successful write
  * broadcasts `config:changed` and resolves to the full updated config.

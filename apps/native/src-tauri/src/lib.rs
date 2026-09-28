@@ -465,10 +465,9 @@ fn start_capture(
                     )
                     .await
                     .map(|o| o.map(|r| r.full)),
-                    None => Err(crate::llm::LlmError::Http {
-                        status: 0,
-                        message: "no vision provider configured".into(),
-                    }),
+                    // No [vision] provider — skip the read quietly
+                    // (`Ok(None)` keeps the cache and never warns).
+                    None => Ok(None),
                 }
             })
         });
@@ -2113,7 +2112,9 @@ fn config_get(state: State<'_, AppState>) -> Config {
 /// `models.stt_provider` (`deepgram|whisper|sherpa`), and `models.stt_model`
 /// (a trimmed non-empty identifier), `recording.auto_screenshots` (bool),
 /// `recording.fps` (`8|4|2` — a write during a live capture restarts it
-/// so the new rate applies now), and `recording.summary_prompt` (string).
+/// so the new rate applies now), `recording.read_interval_secs` (u64
+/// ≥1 — minimum seconds between ambient screen reads; applies on the
+/// next capture start), and `recording.summary_prompt` (string).
 /// Provider order/switches/models have
 /// their own commands (`providers_reorder`,
 /// `provider_set_enabled`, `model_set_selected`). Persists `config.toml`

@@ -70,6 +70,8 @@ pub(crate) const SETTLE: Duration = Duration::from_millis(1000);
 
 /// Injected describe seam — production wiring passes a closure that
 /// resolves `[vision]` and calls [`describe_screen`]; tests pass fakes.
+/// `Ok(None)` = skipped/cancelled — silent, cache kept (also the
+/// no-vision-provider signal).
 pub(crate) type Describer =
     Arc<dyn Fn(Frame) -> BoxFuture<'static, Result<Option<String>, LlmError>>
         + Send
@@ -137,6 +139,9 @@ impl ScreenReader {
         if self.running.swap(true, Ordering::SeqCst) {
             return;
         }
+        // Drop a frame queued by a previous session — after a picker
+        // retarget it would describe the old scope's pixels.
+        *self.pending.lock() = None;
         let epoch = self.epoch.fetch_add(1, Ordering::SeqCst) + 1;
         let reader = Arc::clone(self);
         let task = async move {
@@ -223,7 +228,9 @@ impl ScreenReader {
             let frame = self.pending.lock().take().map(|(f, _)| f);
             let Some(frame) = frame else { continue };
             match describe(frame).await {
-                Ok(Some(text)) => {
+                // A stop/restart mid-read must not write the old
+                // session's result into the cache.
+                Ok(Some(text)) if self.live(epoch) => {
                     *self.context.lock() = Some(ScreenContext {
                         text,
                         ts: std::time::SystemTime::now()
@@ -232,7 +239,7 @@ impl ScreenReader {
                             .unwrap_or(0),
                     });
                 }
-                Ok(None) => {} // cancelled — keep cache
+                Ok(_) => {} // cancelled, skipped, or superseded
                 Err(e) => log::warn!(
                     "screen_read: describe failed ({e}); keeping context"
                 ),

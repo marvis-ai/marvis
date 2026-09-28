@@ -689,20 +689,19 @@ pub(crate) async fn resolve_screen(
         Ok(Ok(None)) | Ok(Err(_)) | Err(_) => {
             // A failed shot with revoked permission is what the
             // pre-redesign pre-flight check surfaced — keep the toast
-            // broadcast ahead of the required/warn split.
+            // emit ahead of the error.
             if !(input.screen_permission)() {
                 emit(
                     "capture:permission-needed",
                     json!({ "permission": "screen" }),
                 );
             }
-            if input.required {
-                return Err(
-                    "Screenshot failed — check screen permission".into(),
-                );
-            }
-            log::warn!("ask: one-shot unavailable; answering text-only");
-            return Ok((None, usage));
+            // The ask explicitly wanted the screen — a text-only
+            // fallback would answer blind (the confabulation failure
+            // this redesign exists to kill).
+            return Err(
+                "Screenshot failed — check screen permission".into(),
+            );
         }
     };
     if let Some(vis) = vision {
@@ -2191,20 +2190,20 @@ mod tests {
             .any(|(n, _)| n == "capture:permission-needed"));
     }
 
-    /// OFF + intent, shot fails, NOT required → degrade to text-only.
+    /// OFF + intent, shot fails → ask:error. An explicit screen ask
+    /// never degrades to a blind text-only answer.
     #[tokio::test]
-    async fn recording_off_shot_failure_degrades_to_text_only() {
+    async fn recording_off_shot_failure_errors() {
         let reader = screen_read::ScreenReader::new();
         let ring = Mutex::new(RingBuffer::new(4, 1 << 20));
         let mut input = input(&reader, &ring);
         input.needs_screen = true;
         input.shot = || Err(anyhow::anyhow!("x"));
         let (_ev, emit) = recorder();
-        let (mat, _u) =
+        let result =
             resolve_screen(&input, None, &emit, &CancellationToken::new())
-                .await
-                .unwrap();
-        assert!(mat.is_none(), "failed optional shot answers text-only");
+                .await;
+        assert!(result.is_err(), "failed intent shot must error");
     }
 
     /// Recording on + vision configured but no cached read yet → no
@@ -2253,11 +2252,10 @@ mod tests {
         input.shot = || Err(anyhow::anyhow!("x"));
         input.screen_permission = || false;
         let (events, emit) = recorder();
-        let (mat, _u) =
+        let result =
             resolve_screen(&input, None, &emit, &CancellationToken::new())
-                .await
-                .unwrap();
-        assert!(mat.is_none());
+                .await;
+        assert!(result.is_err());
         assert!(events
             .lock()
             .iter()

@@ -71,7 +71,12 @@ export const HistorySection = ({
     onOpenListen(
       s.ended_at === null
         ? null // live session → live view
-        : { id: s.id, startedAt: s.started_at, endedAt: s.ended_at },
+        : {
+            id: s.id,
+            startedAt: s.started_at,
+            endedAt: s.ended_at,
+            stt: s.stt,
+          },
     );
   };
 

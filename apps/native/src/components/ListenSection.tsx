@@ -7,12 +7,9 @@ import {
   listenStop,
   transcriptsFor,
   summaryLatest,
-  whisperStatus,
   windowShowSettings,
   type Config,
   type ListenStatus,
-  type WhisperBinarySource,
-  type WhisperStatus,
 } from '../lib/commands';
 import {
   EV_CONFIG_CHANGED,
@@ -25,9 +22,10 @@ import {
   type ListenStatePayload,
   type ListenSummaryPayload,
 } from '../lib/events';
-import { BTN_OUTLINE, BTN_SM, CHIP, EMPTY, cn } from '../lib/classes';
+import { BTN_OUTLINE, BTN_SM, EMPTY, cn } from '../lib/classes';
 import {
   buildBlocks,
+  elapsedLabel,
   sessionDateLabel,
   transcriptCopyText,
   type ListenViewing,
@@ -37,12 +35,6 @@ import { ListenHeader } from './listen/ListenHeader';
 import { SpeakerFilter } from './listen/SpeakerFilter';
 import { SummaryStrip } from './listen/SummaryStrip';
 import { TranscriptBlocks } from './listen/TranscriptBlocks';
-
-const whisperSourceLabel = (source: WhisperBinarySource | null) => {
-  if (source === 'Bundled') return 'Bundled with Marvis';
-  if (source) return 'Custom whisper-cli detected';
-  return 'Whisper CLI unavailable';
-};
 
 /** The structured meeting document — header (title, badge, timer,
  *  controls), speaker filter, timestamped transcript blocks, and the
@@ -82,7 +74,6 @@ export const ListenSection = ({
   const [error, setError] = useState<ListenErrorPayload | null>(null);
   const [provider, setProvider] = useState<string | null>(null);
   const [model, setModel] = useState<string | null>(null);
-  const [whisper, setWhisper] = useState<WhisperStatus | null>(null);
   const [copiedAll, setCopiedAll] = useState(false);
   const [filterKey, setFilterKey] = useState<string | null>(null);
 
@@ -98,19 +89,6 @@ export const ListenSection = ({
   }, []);
 
   useTauriEvent<Config>(EV_CONFIG_CHANGED, applyConfig);
-
-  useEffect(() => {
-    void whisperStatus()
-      .then(setWhisper)
-      .catch(() =>
-        setWhisper({
-          binary: null,
-          binary_status: { available: false, source: null },
-          models: [],
-          download: null,
-        }),
-      );
-  }, []);
 
   // Live resync — on mount AND whenever `viewing` returns to null (the
   // Listen tab's "back to live"). A same-mount viewing→null transition
@@ -241,7 +219,10 @@ export const ListenSection = ({
 
   const listening = status.state === 'listening';
   const paused = status.state === 'paused';
-  const activeProvider = provider ?? status.provider ?? 'stt';
+  /** The STT engine label — `status.provider` names the running
+   *  session's provider when there is one, config's otherwise. It
+   *  doubles as the `stt` handed to the finished-doc view on stop. */
+  const engine = `${status.provider ?? provider ?? 'stt'}${model ? ` ${model}` : ''}`;
 
   // Elapsed RECORDING time: live = (paused_since ?? now) − started_at −
   // paused_secs (the interval stops on pause so `now` freezes — but
@@ -284,6 +265,7 @@ export const ListenSection = ({
             id,
             startedAt: started,
             endedAt: Date.now() / 1000,
+            stt: engine,
           });
         }
       });
@@ -320,17 +302,20 @@ export const ListenSection = ({
       .catch(() => {});
   };
 
+  // The state pill is live-only — a viewed doc (from History or the
+  // just-stopped transition) carries no badge; its duration sits on
+  // the SpeakerFilter row.
   const badge = live
     ? paused
       ? ('PAUSED' as const)
       : status.session_id != null && listening
         ? ('LISTENING' as const)
         : null
-    : ('STOPPED' as const);
+    : null;
   const title = summary?.topic ?? 'Listen';
   const subtitle = live
-    ? `${status.mic ? 'mic + system audio' : 'system audio only'} · ${provider ?? 'stt'}${model ? ` ${model}` : ''}`
-    : sessionDateLabel(viewing.startedAt);
+    ? `${status.mic ? 'mic + system audio' : 'system audio only'} · ${engine}`
+    : `${sessionDateLabel(viewing.startedAt)}${viewing.stt ? ` · ${viewing.stt}` : ''}`;
 
   // Document scroll: follow live output while pinned; scrolling up
   // releases the pin and offers a way back to the live edge.
@@ -352,15 +337,11 @@ export const ListenSection = ({
         title={title}
         subtitle={subtitle}
         badge={badge}
-        elapsedSecs={elapsed}
-        live={live}
         listening={live && listening}
         paused={live && paused}
-        copiedAll={copiedAll}
         onPause={() => void listenPause().catch(() => {})}
         onResume={() => void listenResume().catch(() => {})}
         onStop={stop}
-        onCopyAll={copyAll}
       />
       {live && error && (
         <div className='flex items-center gap-2 border-b border-border bg-[color-mix(in_oklch,var(--destructive)_9%,transparent)] px-3 py-2 text-xs text-destructive'>
@@ -386,7 +367,10 @@ export const ListenSection = ({
         speakers={speakers}
         active={filterKey}
         count={shown.length}
+        elapsed={startedAt == null ? null : elapsedLabel(elapsed)}
+        copied={copiedAll}
         onPick={setFilterKey}
+        onCopy={copyAll}
       />
       <div className='relative min-h-0 flex-1'>
         <div

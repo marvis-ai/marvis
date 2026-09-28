@@ -598,7 +598,10 @@ impl WindowPool {
             return;
         }
         if !self.chat_open {
-            log::warn!("windows::adjust_height: ignored while the card is closed");
+            // Expected race: `chat_open` flips before the collapse
+            // animation finishes, and the webview's observers keep
+            // reporting heights until the window shrinks past BAR_H.
+            log::debug!("windows::adjust_height: ignored while the card is closed");
             return;
         }
         self.refresh_bar_rect();

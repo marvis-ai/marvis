@@ -148,6 +148,9 @@ export interface Session {
   title: string | null;
   /** Retained recording path (`~/.marvis/audios/recording_*.wav`) — listen only. */
   audio_file: string | null;
+  /** STT engine label that captured the session — listen only; null on
+   *  ask rows and sessions written before the column existed. */
+  stt: string | null;
   started_at: number;
   ended_at: number | null;
   last_active_at: number;

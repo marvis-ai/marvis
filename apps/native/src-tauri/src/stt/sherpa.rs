@@ -22,7 +22,6 @@ const WORKER_TICK: Duration = Duration::from_millis(100);
 const VAD_BUFFER_SECONDS: f32 = 30.0;
 const INIT_TIMEOUT: Duration = Duration::from_secs(30);
 const DECODE_TIMEOUT: Duration = Duration::from_secs(30);
-const QUEUE_DEPTH: usize = 8;
 
 struct DecodeJob {
     samples: Vec<f32>,
@@ -182,7 +181,7 @@ pub struct SherpaProvider {
     model_dir: PathBuf,
     channel: SpeakerChannel,
     diarize: bool,
-    queue: Option<mpsc::SyncSender<PcmChunk>>,
+    queue: Option<mpsc::Sender<PcmChunk>>,
     cancel: Arc<AtomicBool>,
     worker: Option<JoinHandle<()>>,
 }
@@ -219,7 +218,11 @@ impl SttProvider for SherpaProvider {
         let engine = engine_for(&self.model_dir).map_err(anyhow::Error::msg)?;
         let vad = VoiceActivityDetector::create(&vad_config(&self.model_dir), VAD_BUFFER_SECONDS)
             .ok_or_else(|| anyhow::anyhow!("the speech model could not be loaded"))?;
-        let (sender, receiver) = mpsc::sync_channel(QUEUE_DEPTH);
+        // Unbounded on purpose: decodes block the worker for up to whole
+        // seconds per segment, so a bounded queue overflows during speech
+        // and every dropped chunk is a permanent hole in the transcript —
+        // a backlog is only lag and drains in the next silence.
+        let (sender, receiver) = mpsc::channel();
         self.queue = Some(sender);
         self.cancel.store(false, Ordering::Release);
         let cancel = Arc::clone(&self.cancel);
@@ -244,9 +247,11 @@ impl SttProvider for SherpaProvider {
     }
 
     fn enqueue(&self, chunk: PcmChunk) -> bool {
+        // `false` now means the worker is gone — a terminal failure the
+        // error callback already reported — never a full queue.
         self.queue
             .as_ref()
-            .is_some_and(|sender| sender.try_send(chunk).is_ok())
+            .is_some_and(|sender| sender.send(chunk).is_ok())
     }
 
     fn stop(&mut self) {

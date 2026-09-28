@@ -995,8 +995,9 @@ mod tests {
             ContentPart::Text(text) => text,
             _ => panic!("request must start with a text part"),
         };
-        assert!(text.starts_with(&format!("{request}\n\n<meeting_context>")));
-        assert!(text.contains("</meeting_context>"));
+        // These tests have no listen session or vision read, so the
+        // turn is the bare request — no context blocks.
+        assert_eq!(text, request);
     }
 
     #[tokio::test]
@@ -1469,7 +1470,7 @@ mod tests {
         assert_eq!(
             user.content,
             vec![ContentPart::Text(
-                "what broke?\n\n<meeting_context>\nNo conversation history available.\n</meeting_context>\n\n<screen_context>\na terminal with an error\n</screen_context>"
+                "what broke?\n\n<screen_context>\na terminal with an error\n</screen_context>"
                     .to_string()
             )]
         );

@@ -192,7 +192,7 @@ consistent:
 
 Marvis handles screen captures, microphone audio, and provider API keys. If
 you find a vulnerability, please report it privately to
-<chenillen@gmail.com> instead of opening a public issue.
+<support@getmarvis.com> instead of opening a public issue.
 
 ## License
 

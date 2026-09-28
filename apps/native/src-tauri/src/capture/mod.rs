@@ -60,11 +60,8 @@ pub struct PickResolution {
 pub struct Frame {
     /// JPEG bytes (quality 80), `width`×`height` after downscale.
     pub jpeg: Vec<u8>,
-    /// Frame metadata below is produced for later consumers (status/debug
-    /// UIs); only `jpeg` feeds the ask pipeline today.
-    #[allow(dead_code)]
+    /// Downscaled pixel dims — logged by the vision-read diagnostics.
     pub width: u32,
-    #[allow(dead_code)]
     pub height: u32,
     /// Unix epoch seconds when the frame was encoded.
     #[allow(dead_code)]

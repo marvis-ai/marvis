@@ -704,6 +704,12 @@ pub(crate) async fn resolve_screen(
             );
         }
     };
+    log::info!(
+        "screen_read: one-shot screenshot — {}x{}, {}B jpeg",
+        frame.width,
+        frame.height,
+        frame.jpeg.len()
+    );
     if let Some(vis) = vision {
         let read = crate::screen_read::describe_screen(
             &*vis.provider,

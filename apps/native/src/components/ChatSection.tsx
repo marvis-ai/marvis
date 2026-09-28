@@ -341,7 +341,7 @@ export const ChatSection = ({ onBack }: { onBack: () => void }) => {
                 <div
                   key={i}
                   className='group/row'>
-                  <div className='prose prose-sm'>
+                  <div className='prose prose-sm dark:prose-invert'>
                     <ReactMarkdown
                       remarkPlugins={[remarkGfm]}
                       disallowedElements={['img']}

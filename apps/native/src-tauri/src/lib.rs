@@ -2451,7 +2451,12 @@ fn quit_application(app: AppHandle) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let _ = env_logger::try_init();
+    // Default our crate to info so dev runs show the screen-read
+    // diagnostics; `RUST_LOG` still overrides everything.
+    let _ = env_logger::Builder::from_env(
+        env_logger::Env::default().default_filter_or("marvis_lib=info"),
+    )
+    .try_init();
     tauri::Builder::default()
         // Order matters: the deep-link plugin must be registered before
         // `deeplink::init` resolves `app.deep_link()` inside `setup`.

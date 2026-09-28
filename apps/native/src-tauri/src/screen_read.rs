@@ -121,7 +121,6 @@ impl ScreenReader {
     /// Test hook for seeding the cache without running the loop — the
     /// ask-side `resolve_screen` cache tests use it.
     #[cfg(test)]
-    #[allow(dead_code)]
     pub(crate) fn seed_context(&self, text: &str) {
         *self.context.lock() = Some(ScreenContext {
             text: text.to_string(),

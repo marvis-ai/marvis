@@ -643,31 +643,41 @@ pub(crate) async fn resolve_screen(
 ) -> Result<(Option<ScreenMaterial>, TokenUsage), String> {
     let mut usage = TokenUsage::default();
     if input.capture_running {
-        if vision.is_some() {
-            return Ok((
-                input.reader.context().map(|c| {
-                    let age = unix_now() - c.ts;
-                    let text = if age > (input.read_interval_secs * 2) as i64 {
-                        format!("{}\n(captured ~{}s ago)", c.text, age)
-                    } else {
-                        c.text
-                    };
-                    ScreenMaterial::Text(text)
-                }),
-                usage,
-            ));
-        }
-        // No vision reader: attach the freshest ring frame. Permission
-        // revoked mid-session → drop the stale frame and warn the UI.
-        let frame = input.ring.lock().latest();
-        if frame.is_some() && !(input.screen_permission)() {
-            emit(
-                "capture:permission-needed",
-                json!({ "permission": "screen" }),
+        let material = if vision.is_some() {
+            input.reader.context().map(|c| {
+                let age = unix_now() - c.ts;
+                let text = if age > (input.read_interval_secs * 2) as i64 {
+                    format!("{}\n(captured ~{}s ago)", c.text, age)
+                } else {
+                    c.text
+                };
+                ScreenMaterial::Text(text)
+            })
+        } else {
+            // No vision reader: attach the freshest ring frame.
+            // Permission revoked mid-session → drop the stale frame and
+            // warn the UI.
+            let frame = input.ring.lock().latest();
+            if frame.is_some() && !(input.screen_permission)() {
+                emit(
+                    "capture:permission-needed",
+                    json!({ "permission": "screen" }),
+                );
+                None
+            } else {
+                frame.map(ScreenMaterial::Frame)
+            }
+        };
+        // `required` (screen-only) means the ON row MUST produce
+        // material — empty cache / empty or permission-dropped ring is
+        // the pre-redesign "No frame captured" → ask:error.
+        if material.is_none() && input.required {
+            return Err(
+                "No screen material captured — check screen permission"
+                    .into(),
             );
-            return Ok((None, usage));
         }
-        return Ok((frame.map(ScreenMaterial::Frame), usage));
+        return Ok((material, usage));
     }
     if !input.needs_screen {
         return Ok((None, usage));
@@ -677,6 +687,15 @@ pub(crate) async fn resolve_screen(
     let frame = match tokio::task::spawn_blocking(input.shot).await {
         Ok(Ok(Some(f))) => f,
         Ok(Ok(None)) | Ok(Err(_)) | Err(_) => {
+            // A failed shot with revoked permission is what the
+            // pre-redesign pre-flight check surfaced — keep the toast
+            // broadcast ahead of the required/warn split.
+            if !(input.screen_permission)() {
+                emit(
+                    "capture:permission-needed",
+                    json!({ "permission": "screen" }),
+                );
+            }
             if input.required {
                 return Err(
                     "Screenshot failed — check screen permission".into(),
@@ -2148,5 +2167,100 @@ mod tests {
         )
         .await;
         assert!(result.is_err());
+    }
+
+    /// Recording on + no vision + permission revoked mid-session: the
+    /// stale ring frame is dropped and the UI gets the toast broadcast.
+    #[tokio::test]
+    async fn recording_on_revoked_permission_drops_frame_and_warns() {
+        let reader = screen_read::ScreenReader::new();
+        let ring = Mutex::new(RingBuffer::new(4, 1 << 20));
+        ring.lock().push(test_frame());
+        let mut input = input(&reader, &ring);
+        input.capture_running = true;
+        input.screen_permission = || false;
+        let (events, emit) = recorder();
+        let (mat, _u) =
+            resolve_screen(&input, None, &emit, &CancellationToken::new())
+                .await
+                .unwrap();
+        assert!(mat.is_none(), "revoked permission drops the stale frame");
+        assert!(events
+            .lock()
+            .iter()
+            .any(|(n, _)| n == "capture:permission-needed"));
+    }
+
+    /// OFF + intent, shot fails, NOT required → degrade to text-only.
+    #[tokio::test]
+    async fn recording_off_shot_failure_degrades_to_text_only() {
+        let reader = screen_read::ScreenReader::new();
+        let ring = Mutex::new(RingBuffer::new(4, 1 << 20));
+        let mut input = input(&reader, &ring);
+        input.needs_screen = true;
+        input.shot = || Err(anyhow::anyhow!("x"));
+        let (_ev, emit) = recorder();
+        let (mat, _u) =
+            resolve_screen(&input, None, &emit, &CancellationToken::new())
+                .await
+                .unwrap();
+        assert!(mat.is_none(), "failed optional shot answers text-only");
+    }
+
+    /// Recording on + vision configured but no cached read yet → no
+    /// material, no error (the reader just hasn't produced one).
+    #[tokio::test]
+    async fn recording_on_with_vision_empty_cache_is_none() {
+        let reader = screen_read::ScreenReader::new();
+        let ring = Mutex::new(RingBuffer::new(4, 1 << 20));
+        let mut input = input(&reader, &ring);
+        input.capture_running = true;
+        let (_ev, emit) = recorder();
+        let vis = candidate("vis", MockProvider::new(vec![]));
+        let (mat, _u) =
+            resolve_screen(&input, Some(&vis), &emit, &CancellationToken::new())
+                .await
+                .unwrap();
+        assert!(mat.is_none());
+    }
+
+    /// Recording on + required + nothing to attach → the run errors
+    /// (send_chain's error arm emits ask:error) — required means the
+    /// screen material is the whole question.
+    #[tokio::test]
+    async fn recording_on_required_empty_ring_errors() {
+        let reader = screen_read::ScreenReader::new();
+        let ring = Mutex::new(RingBuffer::new(4, 1 << 20));
+        let mut input = input(&reader, &ring);
+        input.capture_running = true;
+        input.required = true;
+        let (_ev, emit) = recorder();
+        let result =
+            resolve_screen(&input, None, &emit, &CancellationToken::new())
+                .await;
+        assert!(result.is_err(), "required + empty ON material must error");
+    }
+
+    /// OFF + intent, shot fails AND permission is revoked → the UI
+    /// still gets the permission-needed broadcast (restores the
+    /// pre-redesign pre-flight signal).
+    #[tokio::test]
+    async fn recording_off_shot_failure_without_permission_warns_ui() {
+        let reader = screen_read::ScreenReader::new();
+        let ring = Mutex::new(RingBuffer::new(4, 1 << 20));
+        let mut input = input(&reader, &ring);
+        input.needs_screen = true;
+        input.shot = || Err(anyhow::anyhow!("x"));
+        input.screen_permission = || false;
+        let (events, emit) = recorder();
+        let (mat, _u) =
+            resolve_screen(&input, None, &emit, &CancellationToken::new())
+                .await
+                .unwrap();
+        assert!(mat.is_none());
+        assert!(events
+            .lock()
+            .iter()
+            .any(|(n, _)| n == "capture:permission-needed"));
     }
 }

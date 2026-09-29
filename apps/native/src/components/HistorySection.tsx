@@ -10,6 +10,7 @@ import { useEffect, useState } from 'react';
 import {
   MessageSquareTextIcon,
   MicAudioLinesIcon,
+  RotateCcwClockIcon,
   Trash2Icon,
 } from '@marvis/ui';
 import {
@@ -25,10 +26,11 @@ import {
   type ListenStatePayload,
 } from '@/lib/events';
 import type { AskActivity } from '@/lib/bar-state';
-import { CHIP, EMPTY, ICON_BTN, NUM, PANEL_BODY, cn } from '@/lib/classes';
+import { CHIP, ICON_BTN, NUM, PANEL_BODY, cn } from '@/lib/classes';
 import { CardHeader } from '@/components/shared/CardHeader';
 import { ConfirmButton } from '@/components/shared/ConfirmButton';
 import { relTime, type ListenViewing } from '@/components/listen/model';
+import { EmptyState } from '@/components/shared/EmptyState';
 
 export const HistorySection = ({
   askBusy,
@@ -104,9 +106,11 @@ export const HistorySection = ({
           data-card-content
           className='flow-root'>
           {sessions === null ? null : sessions.length === 0 ? (
-            <p className={EMPTY}>
-              No history yet — ask Marvis or start listening.
-            </p>
+            <EmptyState
+              icon={RotateCcwClockIcon}
+              title='No History Yet'
+              description='Ask Marvis or start listening.'
+            />
           ) : (
             sessions.map((s) => {
               const liveRow = s.ended_at === null;

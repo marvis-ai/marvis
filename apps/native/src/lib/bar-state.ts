@@ -3,7 +3,8 @@ export type SpeechActivity = 'idle' | 'listening' | 'paused' | 'error';
 
 /** The bar row's control set per surface — collapsed shows the
  *  background/Listen recorders + the History opener, expanded shows
- *  dictation + settings.
+ *  dictation + settings, and an open card's input row carries
+ *  dictation only (the section header owns Back/Settings/Close).
  *  Pure so the layout contract is testable without a Tauri window. */
 export type BarControl =
   | 'iris'
@@ -13,10 +14,15 @@ export type BarControl =
   | 'dictation'
   | 'settings';
 
-export const barControls = (expanded: boolean): BarControl[] =>
-  expanded
-    ? ['iris', 'dictation', 'settings']
-    : ['iris', 'capture', 'listen', 'history'];
+export const barControls = (
+  expanded: boolean,
+  cardOpen = false,
+): BarControl[] =>
+  cardOpen
+    ? ['dictation']
+    : expanded
+      ? ['iris', 'dictation', 'settings']
+      : ['iris', 'capture', 'listen', 'history'];
 
 /** `captureRunning` is deliberately absent: capture starts by default
  *  in the main gate, so counting it would pulse the shell permanently

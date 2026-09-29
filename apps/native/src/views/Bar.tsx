@@ -49,6 +49,7 @@ import {
   captureStop,
   configGet,
   listenStart,
+  listenStatus,
   raise,
   windowFocusBar,
   windowSetBarExpanded,
@@ -167,7 +168,7 @@ const Bar = () => {
   /** The row's control set for this surface — `bar-state.ts` owns the
    *  contract, the conditionals below consume it so the two can't
    *  drift. */
-  const controls = barControls(showInputRow);
+  const controls = barControls(showInputRow, cardOpen);
 
   const dictation = useDictation({
     text,
@@ -336,17 +337,30 @@ const Bar = () => {
     inputRef.current?.blur();
   };
 
-  /** Send the field's current text — read off `textRef` so the Enter
+  /** Send a question — the field's text by default, or an explicit one
+   *  (`question`, e.g. a summary follow-up chip — the field's draft is
+   *  untouched then). Field text reads off `textRef` so the Enter
    *  queued behind a settling stop sees the applied final draft, not
    *  the render-time `text`. `withScreen` (the field's Cmd/Ctrl+Enter)
-   *  forces a screen read even when the text shows no intent. */
-  const sendAsk = (withScreen = false) => {
-    const t = textRef.current.trim();
+   *  forces a screen read even when the text shows no intent. A send
+   *  from the listen card binds to that doc's own chat — the viewed
+   *  session's id, else the live session's. */
+  const sendAsk = async (withScreen = false, question?: string) => {
+    const t = (question ?? textRef.current).trim();
     if (!t) {
       return;
     }
-    setText('');
-    void askSend(t, withScreen).catch(() => raise('Send failed'));
+    if (question === undefined) {
+      setText('');
+    }
+    let listenId = section === 'listen' ? listenViewing?.id : undefined;
+    if (section === 'listen' && listenId === undefined) {
+      listenId =
+        (await listenStatus()
+          .then((s) => s.session_id)
+          .catch(() => null)) ?? undefined;
+    }
+    void askSend(t, withScreen, listenId).catch(() => raise('Send failed'));
   };
 
   // Submit = ask (a follow-up while the card is open). The backend
@@ -355,7 +369,7 @@ const Bar = () => {
   // live dictation still stops for review first, never auto-submits.
   const submitAsk = (withScreen = false) => {
     setPinned('chat');
-    dictation.submit(() => sendAsk(withScreen));
+    dictation.submit(() => void sendAsk(withScreen));
   };
 
   /** Toggle continuous screen capture — a pure recorder switch that
@@ -457,14 +471,12 @@ const Bar = () => {
       });
   };
 
-  /** Meeting-Listen start shared by the capsule's mic button and the
-   *  `bar:start-listen` event (the hotkey + the shared menu item).
-   *  Start-only — a live or paused session is left alone. Live
-   *  dictation owns the mic, so it is stopped first rather than left
-   *  to reject the start server-side. */
-  const startListenSession = () => {
+  /** Always mints a fresh session — 'Start new' on a viewed doc is
+   *  reachable while another session is live, and `listen_start`
+   *  stops it server-side anyway. Live dictation owns the mic, so it
+   *  is stopped first rather than left to reject the start. */
+  const startNewListen = () => {
     if (speechBusy.current) return;
-    if (listenState === 'listening' || listenState === 'paused') return;
     speechBusy.current = true;
     const stopping = dictation.stopIfActive();
     if (stopping !== null) {
@@ -474,6 +486,14 @@ const Bar = () => {
       return;
     }
     beginListen();
+  };
+
+  /** Meeting-Listen start shared by the capsule's mic button and the
+   *  `bar:start-listen` event (the hotkey + the shared menu item).
+   *  Start-only — a live or paused session is left alone. */
+  const startListenSession = () => {
+    if (listenState === 'listening' || listenState === 'paused') return;
+    startNewListen();
   };
 
   /** Shared press route for the split mic controls — collapsed Listen
@@ -541,22 +561,20 @@ const Bar = () => {
         }}
         className={rowCls}
         data-tauri-drag-region='deep'>
-        <IrisButton
-          active={
-            listenState === 'listening' ||
-            listenState === 'paused' ||
-            dictation.state === 'listening'
-          }
-          label={cardOpen ? 'Close' : open ? 'Back to capsule' : 'Ask Marvis'}
-          onPress={() =>
-            cardOpen
-              ? void askClose().catch(() => {})
-              : open
-                ? collapse()
-                : setOpen(true)
-          }
-          disabled={gate !== 'main'}
-        />
+        {/* Absent while the card is open — the section header owns
+            Back/Close, so the footer's row is input + dictation only. */}
+        {controls.includes('iris') && (
+          <IrisButton
+            active={
+              listenState === 'listening' ||
+              listenState === 'paused' ||
+              dictation.state === 'listening'
+            }
+            label={open ? 'Back to capsule' : 'Ask Marvis'}
+            onPress={() => (open ? collapse() : setOpen(true))}
+            disabled={gate !== 'main'}
+          />
+        )}
         <AskInput
           ref={inputRef}
           value={text}
@@ -656,8 +674,9 @@ const Bar = () => {
           </BarButton>
         )}
 
-        {/* Only rendered in the input row — the idle capsule has no
-            room for a fourth control (tray menu + Cmd+, reach it
+        {/* Only rendered in the pill's input row — the idle capsule
+            has no room for a fourth control and the card header
+            carries its own Settings (tray menu + Cmd+, reach it
             anyway). */}
         {controls.includes('settings') && (
           <BarButton
@@ -728,6 +747,14 @@ const Bar = () => {
         {section === 'listen' && (
           <ListenSection
             viewing={listenViewing}
+            onStartNew={startNewListen}
+            onFollowUp={(q) => {
+              // A summary chip asks the doc's own chat — `sendAsk`
+              // resolves this session's `listenId` while the section
+              // is still 'listen'.
+              setPinned('chat');
+              void sendAsk(false, q);
+            }}
             onSessionEnded={(v) => {
               if (!cardOpenRef.current) return;
               setListenViewing(v);

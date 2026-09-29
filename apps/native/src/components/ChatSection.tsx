@@ -18,15 +18,15 @@ import { useEffect, useRef, useState } from 'react';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { CheckIcon, CopyIcon, SettingsIcon, XIcon } from '@marvis/ui';
+import { CheckIcon, CopyIcon, MessageSquareTextIcon } from '@marvis/ui';
 import {
-  askClose,
   askCurrent,
   askRetry,
   sessionEndActive,
   sessionGet,
   sessionList,
   windowShowSettings,
+  type Message,
 } from '@/lib/commands';
 import {
   EV_ASK_CHUNK,
@@ -38,7 +38,6 @@ import {
 import {
   BTN_OUTLINE,
   BTN_SM,
-  EMPTY,
   ICON_BTN,
   NUM,
   PANEL_BODY,
@@ -47,7 +46,8 @@ import {
 } from '@/lib/classes';
 import { sessionDateLabel } from '@/components/listen/model';
 import { CardHeader } from '@/components/shared/CardHeader';
-import { ChatMsgMenu, type ChatMsgMeta } from './ChatMsgMenu';
+import { EmptyState } from '@/components/shared/EmptyState';
+import { ChatMsgMenu, type ChatMsgMeta } from '@/components/ChatMsgMenu';
 
 type AskPhase = 'loading' | 'streaming' | 'idle';
 
@@ -120,6 +120,21 @@ const appendTail = (prev: ChatMsg[], text: string): ChatMsg[] => {
   return [...prev.slice(0, -1), { ...last, content: last.content + text }];
 };
 
+/** Persisted `messages` rows → the card's bubble model — shared by the
+ *  mount resync and the session-switch refetch on `loading`. */
+const rowsToMsgs = (rows: Message[]): ChatMsg[] =>
+  rows
+    .filter((r) => r.role === 'user' || r.role === 'assistant')
+    .map((r) => ({
+      role: r.role as ChatMsg['role'],
+      content: r.content,
+      ts: r.ts,
+      provider: r.provider,
+      model: r.model,
+      tokensIn: r.tokens_in,
+      tokensOut: r.tokens_out,
+    }));
+
 export const ChatSection = ({ onBack }: { onBack: () => void }) => {
   const [msgs, setMsgs] = useState<ChatMsg[]>([]);
   const [phase, setPhase] = useState<AskPhase>('idle');
@@ -133,6 +148,10 @@ export const ChatSection = ({ onBack }: { onBack: () => void }) => {
   const scrollRef = useRef<HTMLDivElement>(null);
   /** Autoscroll is on until the user scrolls away from the bottom. */
   const pinnedRef = useRef(true);
+  /** The session `msgs` was loaded from — a send bound to a listen doc
+   *  switches the active ask session, so `loading` refetches when this
+   *  stops matching. */
+  const sessionRef = useRef<number | null>(null);
 
   // Mount resync: active `ask` session → persisted history; then
   // `ask_current` folds an in-flight run's tail on top. Best-effort —
@@ -148,19 +167,8 @@ export const ChatSection = ({ onBack }: { onBack: () => void }) => {
         if (active) {
           const rows = await sessionGet(active.id);
           if (!cancelled) {
-            setMsgs(
-              rows
-                .filter((r) => r.role === 'user' || r.role === 'assistant')
-                .map((r) => ({
-                  role: r.role as ChatMsg['role'],
-                  content: r.content,
-                  ts: r.ts,
-                  provider: r.provider,
-                  model: r.model,
-                  tokensIn: r.tokens_in,
-                  tokensOut: r.tokens_out,
-                })),
-            );
+            sessionRef.current = active.id;
+            setMsgs(rowsToMsgs(rows));
           }
         }
         const cur = await askCurrent();
@@ -192,7 +200,25 @@ export const ChatSection = ({ onBack }: { onBack: () => void }) => {
     if (p.state === 'loading') {
       setError(null);
       pinnedRef.current = true;
-      setMsgs((prev) => applyLoading(prev, p.question ?? ''));
+      // The send may have switched sessions — a send from a listen doc
+      // binds to that doc's own chat (ask.rs `listen_id`). Refetch the
+      // now-active session rather than folding onto the old one's rows.
+      void (async () => {
+        let base: ChatMsg[] | null = null;
+        try {
+          const sessions = await sessionList();
+          const active = sessions.find(
+            (s) => s.kind === 'ask' && s.ended_at === null,
+          );
+          if (active && active.id !== sessionRef.current) {
+            sessionRef.current = active.id;
+            base = rowsToMsgs(await sessionGet(active.id));
+          }
+        } catch {
+          /* resync is best-effort — the fold below still applies */
+        }
+        setMsgs((prev) => applyLoading(base ?? prev, p.question ?? ''));
+      })();
     }
     setPhase(p.state);
   });
@@ -242,6 +268,7 @@ export const ChatSection = ({ onBack }: { onBack: () => void }) => {
 
   const newChat = () => {
     void sessionEndActive('ask').catch(() => {});
+    sessionRef.current = null;
     setMsgs([]);
     setError(null);
     setPhase('idle');
@@ -284,22 +311,6 @@ export const ChatSection = ({ onBack }: { onBack: () => void }) => {
           className={cn(BTN_SM, BTN_OUTLINE)}
           onClick={newChat}>
           New chat
-        </button>
-        <button
-          type='button'
-          className={cn(ICON_BTN, '-mt-0.5 shrink-0')}
-          title='Settings'
-          aria-label='Settings'
-          onClick={() => void windowShowSettings().catch(() => {})}>
-          <SettingsIcon className='size-4' />
-        </button>
-        <button
-          type='button'
-          className={cn(ICON_BTN, '-mt-0.5 shrink-0')}
-          title='Close'
-          aria-label='Close'
-          onClick={() => void askClose().catch(() => {})}>
-          <XIcon className='size-4' />
         </button>
       </CardHeader>
       {error && (
@@ -432,7 +443,11 @@ export const ChatSection = ({ onBack }: { onBack: () => void }) => {
             <span className='ml-0.5 inline-block h-3.25 w-1.75 animate-caret bg-foreground align-[-2px] motion-reduce:animate-none' />
           )}
           {msgs.length === 0 && phase === 'idle' && !error && (
-            <p className={EMPTY}>Ask Marvis — the conversation stays here.</p>
+            <EmptyState
+              icon={MessageSquareTextIcon}
+              title='Ask Marvis'
+              description='the conversation stays here.'
+            />
           )}
         </div>
       </div>

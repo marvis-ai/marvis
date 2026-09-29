@@ -674,7 +674,7 @@ fn deeplink_dispatch(app: &AppHandle) -> impl Fn(deeplink::Action) + Send + Sync
                 if let Some(bar) = bar {
                     let _ = bar.set_focus();
                 }
-                state.ask.send(&app, &state.deps(), &text, false);
+                state.ask.send(&app, &state.deps(), &text, false, None);
             } else {
                 // Not ready yet — if the bar is visible (onboarding done,
                 // permission pending) surface its gate card instead of
@@ -1225,9 +1225,10 @@ async fn model_list_available(app: AppHandle, provider: String) -> Vec<String> {
 /// Fire an ask; returns after synchronous pre-flight — tokens stream to
 /// the `bar` window as `ask:*` events on a spawned task. `withScreen`
 /// (optional) is the explicit attach flag — a screen read runs even when
-/// the text shows no intent.
+/// the text shows no intent. `listenId` (optional) binds the send to a
+/// listen doc — its own ask session, its summary+transcript as context.
 #[tauri::command]
-fn ask_send(app: AppHandle, text: String, with_screen: Option<bool>) {
+fn ask_send(app: AppHandle, text: String, with_screen: Option<bool>, listen_id: Option<i64>) {
     let state = app.state::<AppState>();
     // Crafted-invoke guard: the shipped UI gates sends behind `Main`,
     // but a crafted invoke during onboarding would otherwise proceed —
@@ -1236,9 +1237,13 @@ fn ask_send(app: AppHandle, text: String, with_screen: Option<bool>) {
         log::warn!("ask_send dropped while gate != Main");
         return;
     }
-    state
-        .ask
-        .send(&app, &state.deps(), &text, with_screen.unwrap_or(false));
+    state.ask.send(
+        &app,
+        &state.deps(),
+        &text,
+        with_screen.unwrap_or(false),
+        listen_id,
+    );
 }
 
 /// Regenerate the last answer — re-runs the active session's last user
@@ -1448,10 +1453,9 @@ pub(crate) fn refresh_speech_setup(app: &AppHandle) {
     let keystore = state.keystore.lock().clone();
     let bundled = state.bundled_whisper.as_deref();
     let sherpa_root = paths::sherpa_models_dir();
-    if let Some(status) =
-        state
-            .listen
-            .revalidate_setup(&keystore, &config, bundled, &sherpa_root)
+    if let Some(status) = state
+        .listen
+        .revalidate_setup(&keystore, &config, bundled, &sherpa_root)
     {
         emit_listen_state(app, &status);
     }
@@ -2006,9 +2010,7 @@ fn capture_pick_and_start(app: AppHandle) {
                         return;
                     };
                     if *state2.gate.lock() != Gate::Main {
-                        log::warn!(
-                            "capture_pick_and_start: pick landed after gate left Main"
-                        );
+                        log::warn!("capture_pick_and_start: pick landed after gate left Main");
                         return;
                     }
                     // `start_capture` is idempotent while a capture lives —
@@ -2210,7 +2212,10 @@ fn session_end_active(state: State<'_, AppState>, kind: String) -> Result<bool, 
 /// return false). The next `ask_send` appends to the reopened session.
 #[tauri::command]
 fn session_resume(state: State<'_, AppState>, id: i64) -> Result<bool, String> {
-    state.db.session_reopen(id, "ask").map_err(|e| e.to_string())
+    state
+        .db
+        .session_reopen(id, "ask")
+        .map_err(|e| e.to_string())
 }
 
 // ---------------------------------------------------------------------------

@@ -44,6 +44,7 @@ const SCHEMA: &str = "
         title          TEXT,
         audio_file     TEXT,
         stt            TEXT,
+        listen_id      INTEGER,
         started_at     INTEGER NOT NULL,
         ended_at       INTEGER,
         last_active_at INTEGER NOT NULL
@@ -225,6 +226,51 @@ impl Db {
             params![kind, now()],
         )?;
         Ok(conn.last_insert_rowid())
+    }
+
+    /// The ask session bound to a listen doc — one chat per doc. The
+    /// most recent linked row is reopened (`session_reopen` ends other
+    /// open asks and clears `ended_at`, so returning to a doc resumes
+    /// its thread); a fresh linked row is minted when none exists.
+    pub fn ask_session_for_listen(&self, listen_id: i64) -> anyhow::Result<i64> {
+        let existing: Option<i64> = self
+            .conn
+            .lock()
+            .query_row(
+                "SELECT id FROM sessions
+                 WHERE type = 'ask' AND listen_id = ?1
+                 ORDER BY last_active_at DESC, id DESC LIMIT 1",
+                [listen_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if let Some(id) = existing {
+            self.session_reopen(id, "ask")?;
+            return Ok(id);
+        }
+        self.session_end_open("ask")?;
+        let conn = self.conn.lock();
+        conn.execute(
+            "INSERT INTO sessions (type, title, listen_id, started_at, ended_at, last_active_at)
+             VALUES ('ask', NULL, ?1, ?2, NULL, ?2)",
+            params![listen_id, now()],
+        )?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    /// The session's `listen_id` link — `None` for plain sessions and
+    /// rows written before the column existed.
+    pub fn session_listen_id(&self, id: i64) -> anyhow::Result<Option<i64>> {
+        Ok(self
+            .conn
+            .lock()
+            .query_row(
+                "SELECT listen_id FROM sessions WHERE id = ?1",
+                [id],
+                |row| row.get::<_, Option<i64>>(0),
+            )
+            .optional()?
+            .flatten())
     }
 
     /// Bump `last_active_at` to now — keeps the session on top of the list.
@@ -682,6 +728,11 @@ fn migrate(conn: &Connection) -> anyhow::Result<()> {
         if !columns.iter().any(|c| c == "stt") {
             conn.execute_batch("ALTER TABLE sessions ADD COLUMN stt TEXT")?;
         }
+        // The listen session an ask chat is bound to — plain INTEGER,
+        // not a self-FK (a deleted doc leaves the chat readable).
+        if !columns.iter().any(|c| c == "listen_id") {
+            conn.execute_batch("ALTER TABLE sessions ADD COLUMN listen_id INTEGER")?;
+        }
     }
     if table_exists("summaries")? {
         let columns = columns("summaries")?;
@@ -1046,6 +1097,47 @@ mod tests {
         assert_eq!(db.session_active_id("ask").unwrap(), Some(sid));
         db.session_end(sid).unwrap();
         assert_eq!(db.session_active_id("ask").unwrap(), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// One chat per listen doc: mint on first use, end the open ask,
+    /// then REOPEN the linked row on a later send — ending whatever ask
+    /// took its place in between.
+    #[test]
+    fn ask_session_for_listen_mints_then_resumes_per_doc() {
+        let dir = tmp_dir();
+        let db = Db::at(dir.join("marvis.db")).unwrap();
+        let doc_a = db.session_get_or_create_active("listen").unwrap();
+        db.session_end(doc_a).unwrap();
+        let doc_b = db.session_get_or_create_active("listen").unwrap();
+        db.session_end(doc_b).unwrap();
+
+        // First send about doc A: ends the open generic ask, mints a
+        // linked row.
+        let generic = db.session_get_or_create_active("ask").unwrap();
+        let chat_a = db.ask_session_for_listen(doc_a).unwrap();
+        assert_ne!(chat_a, generic);
+        assert_eq!(db.session_listen_id(chat_a).unwrap(), Some(doc_a));
+        assert_eq!(db.session_listen_id(generic).unwrap(), None);
+        assert_eq!(db.session_active_id("ask").unwrap(), Some(chat_a));
+
+        // Chatting about doc B ends A's thread and mints its own.
+        let chat_b = db.ask_session_for_listen(doc_b).unwrap();
+        assert_ne!(chat_b, chat_a);
+        assert_eq!(db.session_active_id("ask").unwrap(), Some(chat_b));
+
+        // Back to A: the ENDED linked row is resumed, not duplicated —
+        // B's open row ends in the swap.
+        assert_eq!(db.ask_session_for_listen(doc_a).unwrap(), chat_a);
+        assert_eq!(db.session_active_id("ask").unwrap(), Some(chat_a));
+        assert_eq!(
+            db.session_list()
+                .unwrap()
+                .iter()
+                .filter(|s| s.kind == "ask")
+                .count(),
+            3 // generic + chat_a + chat_b — B closed, A reopened
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

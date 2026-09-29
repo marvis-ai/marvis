@@ -9,7 +9,6 @@ import {
   listenStop,
   transcriptsFor,
   summaryLatest,
-  windowShowSettings,
   type Config,
   type ListenStatus,
 } from '@/lib/commands';
@@ -38,6 +37,7 @@ import { SpeakerFilter } from '@/components/listen/SpeakerFilter';
 import { SummaryStrip } from '@/components/listen/SummaryStrip';
 import { TranscriptBlocks } from '@/components/listen/TranscriptBlocks';
 import { EmptyState } from '@/components/shared/EmptyState';
+import { ErrorBanner } from '@/components/shared/ErrorBanner';
 
 /** The structured meeting document — header (title, badge, timer,
  *  controls), speaker filter, timestamped transcript blocks, and the
@@ -58,7 +58,7 @@ export const ListenSection = ({
   onStartNew: () => void;
   onBack: () => void;
   /** A summary follow-up chip — sends itself to this doc's chat. */
-  onFollowUp?: (question: string) => void;
+  onFollowUp: (question: string) => void;
 }) => {
   const live = viewing === null;
   /** Live mirror of `viewing` for Tauri event handlers — an event that
@@ -311,16 +311,6 @@ export const ListenSection = ({
       .catch(() => {});
   };
 
-  // The state pill is live-only — a viewed doc (from History or the
-  // just-stopped transition) carries no badge; its duration sits on
-  // the SpeakerFilter row.
-  const badge = live
-    ? paused
-      ? ('PAUSED' as const)
-      : status.session_id != null && listening
-        ? ('LISTENING' as const)
-        : null
-    : null;
   const title = summary?.topic ?? 'Listen';
   const subtitle = live
     ? `${status.mic ? 'mic + system audio' : 'system audio only'} · ${engine}`
@@ -345,28 +335,22 @@ export const ListenSection = ({
         onBack={onBack}
         title={title}
         subtitle={subtitle}
-        badge={badge}
         listening={live && listening}
         paused={live && paused}
+        // The state pill is live-only — a viewed doc (from History or
+        // the just-stopped transition) carries no badge; its duration
+        // sits on the SpeakerFilter row.
+        hasSession={live && status.session_id != null}
         onPause={() => void listenPause().catch(() => {})}
         onResume={() => void listenResume().catch(() => {})}
         onStop={stop}
         onStartNew={live ? undefined : onStartNew}
       />
       {live && error && (
-        <div className='flex items-center gap-2 border-b border-border bg-[color-mix(in_oklch,var(--destructive)_9%,transparent)] px-3 py-2 text-xs text-destructive'>
-          <span className='min-w-0 flex-1 wrap-break-word'>
-            {error.message}
-          </span>
-          {error.needs_setup && (
-            <button
-              type='button'
-              className={cn(BTN_SM, BTN_OUTLINE)}
-              onClick={() => void windowShowSettings().catch(() => {})}>
-              Open settings
-            </button>
-          )}
-        </div>
+        <ErrorBanner
+          message={error.message}
+          needsSetup={error.needs_setup}
+        />
       )}
       {live && listening && !status.mic && !error && (
         <div className='border-b border-border px-3 py-2 text-xs text-muted-foreground'>

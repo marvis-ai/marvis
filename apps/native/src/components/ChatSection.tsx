@@ -25,7 +25,6 @@ import {
   sessionEndActive,
   sessionGet,
   sessionList,
-  windowShowSettings,
   type Message,
 } from '@/lib/commands';
 import {
@@ -47,6 +46,7 @@ import {
 import { sessionDateLabel } from '@/components/listen/model';
 import { CardHeader } from '@/components/shared/CardHeader';
 import { EmptyState } from '@/components/shared/EmptyState';
+import { ErrorBanner } from '@/components/shared/ErrorBanner';
 import { ChatMsgMenu, type ChatMsgMeta } from '@/components/ChatMsgMenu';
 
 type AskPhase = 'loading' | 'streaming' | 'idle';
@@ -314,19 +314,10 @@ export const ChatSection = ({ onBack }: { onBack: () => void }) => {
         </button>
       </CardHeader>
       {error && (
-        <div className='flex items-center gap-2 border-b border-border bg-[color-mix(in_oklch,var(--destructive)_9%,transparent)] px-3 py-2 text-xs text-destructive'>
-          <span className='min-w-0 flex-1 wrap-break-word'>
-            {error.message}
-          </span>
-          {error.needsSetup && (
-            <button
-              type='button'
-              className={cn(BTN_SM, BTN_OUTLINE)}
-              onClick={() => void windowShowSettings().catch(() => {})}>
-              Open settings
-            </button>
-          )}
-        </div>
+        <ErrorBanner
+          message={error.message}
+          needsSetup={error.needsSetup}
+        />
       )}
       <div
         ref={scrollRef}

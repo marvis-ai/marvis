@@ -117,6 +117,23 @@ pub struct Deps<'a> {
     pub pool: &'a Mutex<WindowPool>,
 }
 
+/// One send's inputs — what `send`/`send_screen_only`/`retry` hand to
+/// `kick` (bundled the same way `Deps` bundles the environment).
+/// `with_screen` is the explicit attach flag (`Cmd+Enter`/`withScreen`
+/// invoke arg); `screen_required` is the screen-only variant's
+/// failed-shot→error rule; `regenerate` is `retry`'s
+/// re-ask-the-last-turn mode; `listen_id` binds the send to a listen
+/// doc's own ask session (`send` only — a retry inherits the link from
+/// its session row).
+#[derive(Default)]
+pub(crate) struct SendOpts<'a> {
+    pub text: &'a str,
+    pub with_screen: bool,
+    pub screen_required: bool,
+    pub regenerate: bool,
+    pub listen_id: Option<i64>,
+}
+
 /// One ask at a time; the Task-14 `AppState` share.
 pub struct AskService {
     state: Mutex<AskState>,
@@ -192,14 +209,32 @@ impl AskService {
         with_screen: bool,
         listen_id: Option<i64>,
     ) {
-        self.kick(app, deps, text, with_screen, false, false, listen_id);
+        self.kick(
+            app,
+            deps,
+            SendOpts {
+                text,
+                with_screen,
+                listen_id,
+                ..SendOpts::default()
+            },
+        );
     }
 
     /// The camera button's screen-only ask: fixed prompt, screen
     /// REQUIRED — a failed one-shot errors instead of degrading to
     /// text-only.
     pub fn send_screen_only(self: &Arc<Self>, app: &AppHandle, deps: &Deps<'_>) {
-        self.kick(app, deps, SCREEN_ONLY_PROMPT, true, true, false, None);
+        self.kick(
+            app,
+            deps,
+            SendOpts {
+                text: SCREEN_ONLY_PROMPT,
+                with_screen: true,
+                screen_required: true,
+                ..SendOpts::default()
+            },
+        );
     }
 
     /// Regenerate the last answer: re-runs the active ask session's last
@@ -223,7 +258,15 @@ impl AskService {
             log::warn!("ask::retry: no user turn to regenerate");
             return;
         };
-        self.kick(app, deps, &text, false, false, true, None);
+        self.kick(
+            app,
+            deps,
+            SendOpts {
+                text: &text,
+                regenerate: true,
+                ..SendOpts::default()
+            },
+        );
     }
 
     /// `ask_close`: cancel the in-flight stream (its `select!` arm emits
@@ -241,22 +284,15 @@ impl AskService {
     }
 
     /// Shared pre-flight + spawn behind `send`/`send_screen_only`/`retry`.
-    /// `with_screen` is the explicit attach flag; `screen_required` is
-    /// the screen-only variant's failed-shot→error rule; `regenerate` is
-    /// `retry`'s re-ask-the-last-turn mode; `listen_id` is the listen doc
-    /// the send is bound to (`send` only — a retry inherits the link
-    /// from its session row).
-    #[allow(clippy::too_many_arguments)]
-    fn kick(
-        self: &Arc<Self>,
-        app: &AppHandle,
-        deps: &Deps<'_>,
-        text: &str,
-        with_screen: bool,
-        screen_required: bool,
-        regenerate: bool,
-        listen_id: Option<i64>,
-    ) {
+    /// The [`SendOpts`] fields pick the run's mode — see the struct.
+    fn kick(self: &Arc<Self>, app: &AppHandle, deps: &Deps<'_>, opts: SendOpts<'_>) {
+        let SendOpts {
+            text,
+            with_screen,
+            screen_required,
+            regenerate,
+            listen_id,
+        } = opts;
         let gen = {
             let mut state = self.state.lock();
             if *state != AskState::Idle {
@@ -365,13 +401,15 @@ impl AskService {
                 vision,
                 db.as_ref(),
                 &emit,
-                &text,
                 &screen_input,
                 &cancel,
-                fresh_session,
-                regenerate,
-                listen_id,
-                &language,
+                ChainOpts {
+                    text: &text,
+                    fresh_session,
+                    regenerate,
+                    listen_id,
+                    language: &language,
+                },
             )
             .await;
         });
@@ -424,6 +462,22 @@ impl Default for AskService {
     }
 }
 
+/// The per-run fields `send_chain` consumes — resolved by `kick`
+/// (bundled the same way `ScreenInput` bundles the screen side):
+/// `fresh_session` (the send found the card closed) ends the open ask
+/// session so this run mints a fresh row; `regenerate` re-asks the
+/// session's last user row; `listen_id` binds the run to a listen
+/// doc's own ask session — one chat per doc; `language` is the
+/// `config.app.main_language` snapshot — the reply language.
+#[derive(Default)]
+pub(crate) struct ChainOpts<'a> {
+    pub text: &'a str,
+    pub fresh_session: bool,
+    pub regenerate: bool,
+    pub listen_id: Option<i64>,
+    pub language: &'a str,
+}
+
 /// The testable core: persist → walk the failover chain → persist,
 /// emitting the `ask:*` protocol through `emit`. No `AppHandle`/keystore/
 /// pool inside — [`AskService::send`] gathers those deps and delegates.
@@ -463,20 +517,22 @@ impl Default for AskService {
 /// `loading` emit so the card shows busy during an inline read. Its
 /// `Err` ends the run: `"cancelled"` → `idle` only (no failover may
 /// open a new request), anything else → `ask:error` + `idle`.
-#[allow(clippy::too_many_arguments)]
 pub(crate) async fn send_chain(
     candidates: Vec<ProviderCandidate>,
     vision: Option<ProviderCandidate>,
     db: &Db,
     emit: &(dyn Fn(&str, serde_json::Value) + Send + Sync),
-    text: &str,
     screen_input: &ScreenInput<'_>,
     cancel: &CancellationToken,
-    fresh_session: bool,
-    regenerate: bool,
-    listen_id: Option<i64>,
-    language: &str,
+    opts: ChainOpts<'_>,
 ) -> Result<String, LlmError> {
+    let ChainOpts {
+        text,
+        fresh_session,
+        regenerate,
+        listen_id,
+        language,
+    } = opts;
     // A send that arrived with the card closed is a new conversation:
     // end the still-open ask session so get_or_create mints a fresh row.
     // A linked send resolves its own session below instead.
@@ -1284,13 +1340,13 @@ mod tests {
             None,
             &db,
             &emit,
-            "what is this?",
             &input,
             &cancel,
-            false,
-            false,
-            None,
-            "en",
+            ChainOpts {
+                text: "what is this?",
+                language: "en",
+                ..ChainOpts::default()
+            },
         )
         .await
         .unwrap();
@@ -1355,13 +1411,13 @@ mod tests {
             None,
             &db,
             &emit,
-            "q",
             &input,
             &cancel,
-            false,
-            false,
-            None,
-            "en",
+            ChainOpts {
+                text: "q",
+                language: "en",
+                ..ChainOpts::default()
+            },
         )
         .await
         .unwrap();
@@ -1414,13 +1470,13 @@ mod tests {
             None,
             &db,
             &emit,
-            "q",
             &input,
             &cancel,
-            false,
-            false,
-            None,
-            "en",
+            ChainOpts {
+                text: "q",
+                language: "en",
+                ..ChainOpts::default()
+            },
         )
         .await
         .unwrap_err();
@@ -1464,13 +1520,13 @@ mod tests {
             None,
             &db,
             &emit,
-            "q",
             &input,
             &cancel,
-            false,
-            false,
-            None,
-            "en",
+            ChainOpts {
+                text: "q",
+                language: "en",
+                ..ChainOpts::default()
+            },
         )
         .await
         .unwrap_err();
@@ -1501,13 +1557,13 @@ mod tests {
             None,
             &db,
             &emit,
-            "q",
             &input,
             &cancel,
-            false,
-            false,
-            None,
-            "en",
+            ChainOpts {
+                text: "q",
+                language: "en",
+                ..ChainOpts::default()
+            },
         )
         .await
         .unwrap();
@@ -1553,13 +1609,13 @@ mod tests {
             None,
             &db,
             &emit,
-            "q",
             &input,
             &cancel,
-            false,
-            false,
-            None,
-            "en",
+            ChainOpts {
+                text: "q",
+                language: "en",
+                ..ChainOpts::default()
+            },
         )
         .await
         .unwrap_err();
@@ -1606,13 +1662,13 @@ mod tests {
             None,
             &db,
             &emit,
-            "q",
             &input,
             &cancel,
-            false,
-            false,
-            None,
-            "en",
+            ChainOpts {
+                text: "q",
+                language: "en",
+                ..ChainOpts::default()
+            },
         )
         .await
         .unwrap_err();
@@ -1655,13 +1711,13 @@ mod tests {
             None,
             &db,
             &emit,
-            "q",
             &input,
             &cancel,
-            false,
-            false,
-            None,
-            "en",
+            ChainOpts {
+                text: "q",
+                language: "en",
+                ..ChainOpts::default()
+            },
         )
         .await
         .unwrap();
@@ -1689,13 +1745,13 @@ mod tests {
             None,
             &db,
             &emit,
-            "q",
             &input,
             &cancel,
-            false,
-            false,
-            None,
-            "en",
+            ChainOpts {
+                text: "q",
+                language: "en",
+                ..ChainOpts::default()
+            },
         )
         .await
         .unwrap_err();
@@ -1741,13 +1797,13 @@ mod tests {
             Some(candidate("gemini", vision)),
             &db,
             &emit,
-            "what broke?",
             &input,
             &cancel,
-            false,
-            false,
-            None,
-            "en",
+            ChainOpts {
+                text: "what broke?",
+                language: "en",
+                ..ChainOpts::default()
+            },
         )
         .await
         .unwrap();
@@ -1818,13 +1874,13 @@ mod tests {
             Some(candidate("gemini", vision)),
             &db,
             &emit,
-            "q",
             &input,
             &cancel,
-            false,
-            false,
-            None,
-            "en",
+            ChainOpts {
+                text: "q",
+                language: "en",
+                ..ChainOpts::default()
+            },
         )
         .await
         .unwrap();
@@ -1856,13 +1912,13 @@ mod tests {
             Some(candidate("gemini", vision)),
             &db,
             &emit,
-            "q",
             &input,
             &cancel,
-            false,
-            false,
-            None,
-            "en",
+            ChainOpts {
+                text: "q",
+                language: "en",
+                ..ChainOpts::default()
+            },
         )
         .await
         .unwrap();
@@ -1898,13 +1954,13 @@ mod tests {
             Some(candidate("gemini", vision)),
             &db,
             &emit,
-            "q",
             &input,
             &cancel,
-            false,
-            false,
-            None,
-            "en",
+            ChainOpts {
+                text: "q",
+                language: "en",
+                ..ChainOpts::default()
+            },
         )
         .await
         .unwrap_err();
@@ -1944,13 +2000,13 @@ mod tests {
             None,
             &db,
             &emit,
-            "follow-up",
             &input,
             &cancel,
-            false,
-            false,
-            None,
-            "en",
+            ChainOpts {
+                text: "follow-up",
+                language: "en",
+                ..ChainOpts::default()
+            },
         )
         .await
         .unwrap();
@@ -1995,13 +2051,14 @@ mod tests {
             None,
             &db,
             &emit,
-            "new conversation",
             &input,
             &cancel,
-            true,
-            false,
-            None,
-            "en",
+            ChainOpts {
+                text: "new conversation",
+                fresh_session: true,
+                language: "en",
+                ..ChainOpts::default()
+            },
         )
         .await
         .unwrap();
@@ -2040,13 +2097,13 @@ mod tests {
             None,
             &db,
             &emit,
-            "new q",
             &input,
             &cancel,
-            false,
-            false,
-            None,
-            "en",
+            ChainOpts {
+                text: "new q",
+                language: "en",
+                ..ChainOpts::default()
+            },
         )
         .await
         .unwrap();
@@ -2092,13 +2149,14 @@ mod tests {
             None,
             &db,
             &emit,
-            "second q",
             &input,
             &cancel,
-            false,
-            true,
-            None,
-            "en",
+            ChainOpts {
+                text: "second q",
+                regenerate: true,
+                language: "en",
+                ..ChainOpts::default()
+            },
         )
         .await
         .unwrap();
@@ -2153,13 +2211,14 @@ mod tests {
             None,
             &db,
             &emit,
-            "q",
             &input,
             &cancel,
-            false,
-            true,
-            None,
-            "en",
+            ChainOpts {
+                text: "q",
+                regenerate: true,
+                language: "en",
+                ..ChainOpts::default()
+            },
         )
         .await
         .unwrap();
@@ -2208,13 +2267,14 @@ mod tests {
             None,
             &db,
             &emit,
-            "what freezes?",
             &input,
             &cancel,
-            false,
-            false,
-            Some(doc),
-            "en",
+            ChainOpts {
+                text: "what freezes?",
+                listen_id: Some(doc),
+                language: "en",
+                ..ChainOpts::default()
+            },
         )
         .await
         .unwrap();
@@ -2254,13 +2314,14 @@ mod tests {
             None,
             &db,
             &emit,
-            "and the exception?",
             &input,
             &cancel,
-            false,
-            false,
-            Some(doc),
-            "en",
+            ChainOpts {
+                text: "and the exception?",
+                listen_id: Some(doc),
+                language: "en",
+                ..ChainOpts::default()
+            },
         )
         .await
         .unwrap();
@@ -2295,13 +2356,13 @@ mod tests {
             None,
             &db,
             &emit,
-            "follow-up",
             &input,
             &cancel,
-            false,
-            false,
-            None,
-            "en",
+            ChainOpts {
+                text: "follow-up",
+                language: "en",
+                ..ChainOpts::default()
+            },
         )
         .await
         .unwrap();

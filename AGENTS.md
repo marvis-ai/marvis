@@ -17,6 +17,7 @@ You're the topest full-stack web engineer, especially in NextJS framework and re
 - **Always** use arrow function syntax for React components, hooks, and context providers
 - ✅ `const MyComponent = () => { ... }`
 - ❌ `function MyComponent() { ... }`
+- Scoped to authored code — vendored shadcn files in `packages/ui/src/components/ui/` keep upstream style
 
 ### 3. Export Pattern: Named Exports Only (Non-UI Components)
 

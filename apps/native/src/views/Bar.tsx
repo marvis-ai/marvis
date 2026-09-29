@@ -457,14 +457,12 @@ const Bar = () => {
       });
   };
 
-  /** Meeting-Listen start shared by the capsule's mic button and the
-   *  `bar:start-listen` event (the hotkey + the shared menu item).
-   *  Start-only — a live or paused session is left alone. Live
-   *  dictation owns the mic, so it is stopped first rather than left
-   *  to reject the start server-side. */
-  const startListenSession = () => {
+  /** Always mints a fresh session — 'Start new' on a viewed doc is
+   *  reachable while another session is live, and `listen_start`
+   *  stops it server-side anyway. Live dictation owns the mic, so it
+   *  is stopped first rather than left to reject the start. */
+  const startNewListen = () => {
     if (speechBusy.current) return;
-    if (listenState === 'listening' || listenState === 'paused') return;
     speechBusy.current = true;
     const stopping = dictation.stopIfActive();
     if (stopping !== null) {
@@ -474,6 +472,14 @@ const Bar = () => {
       return;
     }
     beginListen();
+  };
+
+  /** Meeting-Listen start shared by the capsule's mic button and the
+   *  `bar:start-listen` event (the hotkey + the shared menu item).
+   *  Start-only — a live or paused session is left alone. */
+  const startListenSession = () => {
+    if (listenState === 'listening' || listenState === 'paused') return;
+    startNewListen();
   };
 
   /** Shared press route for the split mic controls — collapsed Listen
@@ -727,6 +733,7 @@ const Bar = () => {
         {section === 'listen' && (
           <ListenSection
             viewing={listenViewing}
+            onStartNew={startNewListen}
             onSessionEnded={(v) => {
               if (!cardOpenRef.current) return;
               setListenViewing(v);

@@ -48,10 +48,13 @@ import { EmptyState } from '@/components/shared/EmptyState';
 export const ListenSection = ({
   viewing,
   onSessionEnded,
+  onStartNew,
   onBack,
 }: {
   viewing: ListenViewing | null;
   onSessionEnded: (v: ListenViewing) => void;
+  /** 'Start new' on a viewed doc — Bar owns the fresh-session route. */
+  onStartNew: () => void;
   onBack: () => void;
 }) => {
   const live = viewing === null;
@@ -345,6 +348,7 @@ export const ListenSection = ({
         onPause={() => void listenPause().catch(() => {})}
         onResume={() => void listenResume().catch(() => {})}
         onStop={stop}
+        onStartNew={live ? undefined : onStartNew}
       />
       {live && error && (
         <div className='flex items-center gap-2 border-b border-border bg-[color-mix(in_oklch,var(--destructive)_9%,transparent)] px-3 py-2 text-xs text-destructive'>

@@ -18,8 +18,10 @@ export const EmptyState = ({ icon: Icon, title, description }: Props) => {
   return (
     <Empty>
       <EmptyHeader>
-        <EmptyMedia variant='icon'>
-          <Icon />
+        <EmptyMedia
+          variant='icon'
+          className='bg-accent/20'>
+          <Icon className='text-accent/40 size-5' />
         </EmptyMedia>
         <EmptyTitle>{title}</EmptyTitle>
         <EmptyDescription>{description}</EmptyDescription>

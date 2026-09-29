@@ -49,6 +49,7 @@ import {
   captureStop,
   configGet,
   listenStart,
+  listenStatus,
   raise,
   windowFocusBar,
   windowSetBarExpanded,
@@ -339,14 +340,23 @@ const Bar = () => {
   /** Send the field's current text — read off `textRef` so the Enter
    *  queued behind a settling stop sees the applied final draft, not
    *  the render-time `text`. `withScreen` (the field's Cmd/Ctrl+Enter)
-   *  forces a screen read even when the text shows no intent. */
-  const sendAsk = (withScreen = false) => {
+   *  forces a screen read even when the text shows no intent. A send
+   *  from the listen card binds to that doc's own chat — the viewed
+   *  session's id, else the live session's. */
+  const sendAsk = async (withScreen = false) => {
     const t = textRef.current.trim();
     if (!t) {
       return;
     }
     setText('');
-    void askSend(t, withScreen).catch(() => raise('Send failed'));
+    let listenId = section === 'listen' ? listenViewing?.id : undefined;
+    if (section === 'listen' && listenId === undefined) {
+      listenId =
+        (await listenStatus()
+          .then((s) => s.session_id)
+          .catch(() => null)) ?? undefined;
+    }
+    void askSend(t, withScreen, listenId).catch(() => raise('Send failed'));
   };
 
   // Submit = ask (a follow-up while the card is open). The backend
@@ -355,7 +365,7 @@ const Bar = () => {
   // live dictation still stops for review first, never auto-submits.
   const submitAsk = (withScreen = false) => {
     setPinned('chat');
-    dictation.submit(() => sendAsk(withScreen));
+    dictation.submit(() => void sendAsk(withScreen));
   };
 
   /** Toggle continuous screen capture — a pure recorder switch that

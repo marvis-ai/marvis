@@ -50,12 +50,15 @@ export const ListenSection = ({
   onSessionEnded,
   onStartNew,
   onBack,
+  onFollowUp,
 }: {
   viewing: ListenViewing | null;
   onSessionEnded: (v: ListenViewing) => void;
   /** 'Start new' on a viewed doc — Bar owns the fresh-session route. */
   onStartNew: () => void;
   onBack: () => void;
+  /** A summary follow-up chip — sends itself to this doc's chat. */
+  onFollowUp?: (question: string) => void;
 }) => {
   const live = viewing === null;
   /** Live mirror of `viewing` for Tauri event handlers — an event that
@@ -424,7 +427,10 @@ export const ListenSection = ({
           </button>
         )}
       </div>
-      <SummaryStrip summary={summary} />
+      <SummaryStrip
+        summary={summary}
+        onFollowUp={onFollowUp}
+      />
     </div>
   );
 };

@@ -337,18 +337,22 @@ const Bar = () => {
     inputRef.current?.blur();
   };
 
-  /** Send the field's current text — read off `textRef` so the Enter
+  /** Send a question — the field's text by default, or an explicit one
+   *  (`question`, e.g. a summary follow-up chip — the field's draft is
+   *  untouched then). Field text reads off `textRef` so the Enter
    *  queued behind a settling stop sees the applied final draft, not
    *  the render-time `text`. `withScreen` (the field's Cmd/Ctrl+Enter)
    *  forces a screen read even when the text shows no intent. A send
    *  from the listen card binds to that doc's own chat — the viewed
    *  session's id, else the live session's. */
-  const sendAsk = async (withScreen = false) => {
-    const t = textRef.current.trim();
+  const sendAsk = async (withScreen = false, question?: string) => {
+    const t = (question ?? textRef.current).trim();
     if (!t) {
       return;
     }
-    setText('');
+    if (question === undefined) {
+      setText('');
+    }
     let listenId = section === 'listen' ? listenViewing?.id : undefined;
     if (section === 'listen' && listenId === undefined) {
       listenId =
@@ -744,6 +748,13 @@ const Bar = () => {
           <ListenSection
             viewing={listenViewing}
             onStartNew={startNewListen}
+            onFollowUp={(q) => {
+              // A summary chip asks the doc's own chat — `sendAsk`
+              // resolves this session's `listenId` while the section
+              // is still 'listen'.
+              setPinned('chat');
+              void sendAsk(false, q);
+            }}
             onSessionEnded={(v) => {
               if (!cardOpenRef.current) return;
               setListenViewing(v);

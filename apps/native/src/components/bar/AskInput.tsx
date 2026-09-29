@@ -44,10 +44,10 @@ export const AskInput = ({
     placeholder='Ask Marvis…'
     aria-label='Ask Marvis'
     className={cn(
-      'field-sizing-content min-w-0 flex-1 resize-none self-center overflow-y-auto border-0 bg-transparent text-[13.5px] leading-5 text-foreground caret-accent outline-none select-text placeholder:text-muted-foreground focus-visible:shadow-none transition-[max-width_var(--motion-base)_var(--ease),opacity_var(--motion-fast)_var(--ease),margin-inline_var(--motion-base)_var(--ease)] motion-reduce:transition-none',
+      'field-sizing-content min-w-0 flex-1 resize-none self-center overflow-y-auto border-0 bg-transparent text-[14px] leading-5 text-foreground caret-accent outline-none select-text placeholder:text-muted-foreground focus-visible:shadow-none transition-[max-width_var(--motion-base)_var(--ease),opacity_var(--motion-fast)_var(--ease),margin-inline_var(--motion-base)_var(--ease)] motion-reduce:transition-none',
       // Line cap: 2 inside the fixed-height pill (scrolls past),
       // ~6 in the card — its ResizeObserver reports growth up.
-      cardOpen ? 'max-h-30' : 'max-h-10',
+      cardOpen ? 'max-h-30 pl-2' : 'max-h-10',
       visible ? 'max-w-full' : 'pointer-events-none -mx-0.75 max-w-0 opacity-0',
     )}
   />

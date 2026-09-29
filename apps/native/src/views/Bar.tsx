@@ -167,7 +167,7 @@ const Bar = () => {
   /** The row's control set for this surface — `bar-state.ts` owns the
    *  contract, the conditionals below consume it so the two can't
    *  drift. */
-  const controls = barControls(showInputRow);
+  const controls = barControls(showInputRow, cardOpen);
 
   const dictation = useDictation({
     text,
@@ -541,22 +541,20 @@ const Bar = () => {
         }}
         className={rowCls}
         data-tauri-drag-region='deep'>
-        <IrisButton
-          active={
-            listenState === 'listening' ||
-            listenState === 'paused' ||
-            dictation.state === 'listening'
-          }
-          label={cardOpen ? 'Close' : open ? 'Back to capsule' : 'Ask Marvis'}
-          onPress={() =>
-            cardOpen
-              ? void askClose().catch(() => {})
-              : open
-                ? collapse()
-                : setOpen(true)
-          }
-          disabled={gate !== 'main'}
-        />
+        {/* Absent while the card is open — the section header owns
+            Back/Close, so the footer's row is input + dictation only. */}
+        {controls.includes('iris') && (
+          <IrisButton
+            active={
+              listenState === 'listening' ||
+              listenState === 'paused' ||
+              dictation.state === 'listening'
+            }
+            label={open ? 'Back to capsule' : 'Ask Marvis'}
+            onPress={() => (open ? collapse() : setOpen(true))}
+            disabled={gate !== 'main'}
+          />
+        )}
         <AskInput
           ref={inputRef}
           value={text}
@@ -656,8 +654,9 @@ const Bar = () => {
           </BarButton>
         )}
 
-        {/* Only rendered in the input row — the idle capsule has no
-            room for a fourth control (tray menu + Cmd+, reach it
+        {/* Only rendered in the pill's input row — the idle capsule
+            has no room for a fourth control and the card header
+            carries its own Settings (tray menu + Cmd+, reach it
             anyway). */}
         {controls.includes('settings') && (
           <BarButton

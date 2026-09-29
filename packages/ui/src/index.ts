@@ -67,4 +67,5 @@ export {
   Trash2Icon,
   VideoIcon,
   XIcon,
+  type LucideIcon,
 } from "lucide-react"

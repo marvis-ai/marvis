@@ -1,11 +1,10 @@
-import { LucideIcon } from 'lucide-react';
-
 import {
   Empty,
   EmptyMedia,
   EmptyDescription,
   EmptyHeader,
   EmptyTitle,
+  type LucideIcon,
 } from '@marvis/ui';
 
 type Props = {

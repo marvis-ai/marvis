@@ -98,7 +98,7 @@ impl GraphicsCaptureApiHandler for Handler {
         frame: &mut WgcFrame,
         _capture_control: InternalCaptureControl,
     ) -> Result<(), Self::Error> {
-        let mut buffer = frame.buffer()?;
+        let buffer = frame.buffer()?;
         if buffer.color_format() != ColorFormat::Bgra8 {
             if !self.warned.swap(true, Ordering::Relaxed) {
                 log::warn!(

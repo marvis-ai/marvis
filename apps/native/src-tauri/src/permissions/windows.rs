@@ -53,11 +53,11 @@ pub fn mic_request() -> bool {
         _ => {}
     }
     // `MediaCapture` is a WinRT activation (RoActivateInstance) — no
-    // explicit COM apartment init needed, and `get()` on the async op
+    // explicit COM apartment init needed, and `join()` on the async op
     // blocks the calling (spawn_blocking) thread until consent resolves.
     MediaCapture::new()
         .and_then(|capture| capture.InitializeAsync())
-        .and_then(|op| op.get())
+        .and_then(|op| op.join())
         .is_ok()
 }
 

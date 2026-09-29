@@ -13,17 +13,8 @@ use std::sync::mpsc;
 use block2::RcBlock;
 use objc2::runtime::Bool;
 use objc2_av_foundation::{AVAuthorizationStatus, AVCaptureDevice, AVMediaType, AVMediaTypeAudio};
-use serde::{Deserialize, Serialize};
 
-/// Authorization state for a media type, serialized for the webview bar.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum PermissionState {
-    NotDetermined,
-    Restricted,
-    Denied,
-    Authorized,
-}
+use super::PermissionState;
 
 // CoreGraphics exposes these as `Boolean` (unsigned char), not `bool`.
 // Present on macOS 10.15+; safe to declare unconditionally.
@@ -120,21 +111,5 @@ mod tests {
     fn status_queries_do_not_panic() {
         let _ = screen_status();
         let _ = mic_status();
-    }
-
-    /// `PermissionState` must survive a JSON roundtrip so the webview bar
-    /// can serialize states back for diagnostics without loss.
-    #[test]
-    fn permission_state_serde_roundtrip() {
-        for state in [
-            PermissionState::NotDetermined,
-            PermissionState::Restricted,
-            PermissionState::Denied,
-            PermissionState::Authorized,
-        ] {
-            let json = serde_json::to_string(&state).unwrap();
-            let back: PermissionState = serde_json::from_str(&json).unwrap();
-            assert_eq!(back, state);
-        }
     }
 }

@@ -23,8 +23,10 @@ use crate::menus;
 
 #[cfg(target_os = "macos")]
 const ICON_BYTES: &[u8] = include_bytes!("../icons/tray-macos.png");
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
 const ICON_BYTES: &[u8] = include_bytes!("../icons/tray-windows.ico");
+#[cfg(target_os = "linux")]
+const ICON_BYTES: &[u8] = include_bytes!("../icons/32x32.png");
 
 /// Build the tray icon and attach the shared menu.
 pub fn init(app: &AppHandle) -> tauri::Result<()> {

@@ -16,7 +16,7 @@
 use tauri::menu::{CheckMenuItem, IsMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::{AppHandle, Manager, Wry};
 
-use crate::capture::MacosCapture;
+use crate::capture::{FrameSource, PlatformCapture};
 use crate::windows::Dir;
 use crate::AppState;
 
@@ -57,7 +57,7 @@ pub fn build(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
         .capture
         .lock()
         .as_ref()
-        .is_some_and(MacosCapture::is_running);
+        .is_some_and(PlatformCapture::is_running);
     let listen_live = state.listen.status().is_listening();
     let edge = {
         let mut pool = state.pool.lock();

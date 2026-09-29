@@ -412,13 +412,15 @@ fn is_false(v: &bool) -> bool {
 /// inside the bar webview: `Cmd+,` opens settings while the bar is
 /// active, and at the input `Enter` sends / `Shift+Enter` adds a line /
 /// `Cmd+Enter` sends with the current screen frame.
+/// `CmdOrCtrl` resolves to Cmd on macOS and Ctrl elsewhere — plain
+/// `Cmd` would bind the Win key on Windows/Linux.
 pub fn default_hotkeys() -> BTreeMap<String, String> {
     BTreeMap::from([
-        ("toggle_input".into(), "Cmd+Alt+Space".into()),
-        ("toggle_capture".into(), "Cmd+Alt+R".into()),
-        ("start_listen".into(), "Cmd+Alt+T".into()),
-        ("show_history".into(), "Cmd+Alt+H".into()),
-        ("toggle_lock".into(), "Cmd+Shift+L".into()),
+        ("toggle_input".into(), "CmdOrCtrl+Alt+Space".into()),
+        ("toggle_capture".into(), "CmdOrCtrl+Alt+R".into()),
+        ("start_listen".into(), "CmdOrCtrl+Alt+T".into()),
+        ("show_history".into(), "CmdOrCtrl+Alt+H".into()),
+        ("toggle_lock".into(), "CmdOrCtrl+Shift+L".into()),
     ])
 }
 
@@ -729,7 +731,7 @@ mod tests {
                 .collect::<Vec<_>>()
         );
         assert!(cfg.providers.disabled.is_empty());
-        assert_eq!(cfg.hotkeys["toggle_input"], "Cmd+Alt+Space");
+        assert_eq!(cfg.hotkeys["toggle_input"], "CmdOrCtrl+Alt+Space");
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
@@ -914,7 +916,7 @@ mod tests {
         assert_eq!(cfg.models.llm_model, "gpt-4o");
         assert_eq!(cfg.providers.models["anthropic"], "gpt-4o");
         assert_eq!(cfg.models.stt_provider, "deepgram");
-        assert_eq!(cfg.hotkeys["toggle_input"], "Cmd+Alt+Space");
+        assert_eq!(cfg.hotkeys["toggle_input"], "CmdOrCtrl+Alt+Space");
         assert!(cfg.window.bar_x.is_none());
 
         // Spec example writes integer positions (`bar_x = 812`) into f64 fields.
@@ -951,11 +953,11 @@ mod tests {
     fn default_hotkeys_matches_spec_table() {
         let hk = default_hotkeys();
         assert_eq!(hk.len(), 5);
-        assert_eq!(hk["toggle_input"], "Cmd+Alt+Space");
-        assert_eq!(hk["toggle_capture"], "Cmd+Alt+R");
-        assert_eq!(hk["start_listen"], "Cmd+Alt+T");
-        assert_eq!(hk["show_history"], "Cmd+Alt+H");
-        assert_eq!(hk["toggle_lock"], "Cmd+Shift+L");
+        assert_eq!(hk["toggle_input"], "CmdOrCtrl+Alt+Space");
+        assert_eq!(hk["toggle_capture"], "CmdOrCtrl+Alt+R");
+        assert_eq!(hk["start_listen"], "CmdOrCtrl+Alt+T");
+        assert_eq!(hk["show_history"], "CmdOrCtrl+Alt+H");
+        assert_eq!(hk["toggle_lock"], "CmdOrCtrl+Shift+L");
     }
 
     #[test]

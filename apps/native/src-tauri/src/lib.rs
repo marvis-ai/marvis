@@ -60,15 +60,17 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use parking_lot::Mutex;
-use screencapturekit::stream::content_filter::SCContentFilter;
 use serde::Serialize;
 use serde_json::json;
 use tauri::{AppHandle, Emitter, Manager, State};
+#[cfg(target_os = "macos")]
 use tauri_plugin_liquid_glass::LiquidGlassExt;
 
 use ask::AskService;
 use capture::controller::{CaptureLifecycle, StartDecision, StopDecision};
-use capture::{primary_display_filter, FrameSource, MacosCapture, PickCandidate, RingBuffer};
+use capture::{
+    primary_display_source, CaptureSource, FrameSource, PickCandidate, PlatformCapture, RingBuffer,
+};
 use config::Config;
 use dictation::{DictationEvent, DictationService};
 use hotkey::RegisteredHotkeys;
@@ -120,7 +122,7 @@ pub struct AppState {
     config: Mutex<Config>,
     db: Arc<Db>,
     ring: Arc<Mutex<RingBuffer>>,
-    capture: Mutex<Option<MacosCapture>>,
+    capture: Mutex<Option<PlatformCapture>>,
     /// The settled-screen describer — fed by the capture callback and
     /// started/stopped alongside capture, so the ambient `[vision]`
     /// read only runs while frames actually flow.
@@ -186,7 +188,7 @@ impl AppState {
                 .capture
                 .lock()
                 .as_ref()
-                .is_some_and(MacosCapture::is_running),
+                .is_some_and(PlatformCapture::is_running),
             keystore: &self.keystore,
             config: &self.config,
             pool: &self.pool,
@@ -306,11 +308,11 @@ fn transition_gate(app: &AppHandle) {
 fn enter_main(app: &AppHandle) {
     let state = app.state::<AppState>();
     if state.config.lock().recording.auto_screenshots {
-        match primary_display_filter() {
-            Ok((filter, w, h)) => {
-                start_capture(app, filter, w, h, None);
+        match primary_display_source() {
+            Ok((source, w, h)) => {
+                start_capture(app, source, w, h, None);
             }
-            Err(e) => log::warn!("capture: display filter failed: {e}"),
+            Err(e) => log::warn!("capture: display source failed: {e}"),
         }
     } else {
         // Still broadcast — listeners resync on every Main entry.
@@ -371,7 +373,7 @@ fn capture_snapshot(state: &AppState) -> CaptureStatus {
         .capture
         .lock()
         .as_ref()
-        .is_some_and(MacosCapture::is_running);
+        .is_some_and(PlatformCapture::is_running);
     json!({
         "running": running,
         "frames": state.ring.lock().len(),
@@ -389,17 +391,17 @@ fn emit_capture_state(app: &AppHandle, status: &CaptureStatus) {
 
 /// The one capture-start boundary — `enter_main`, the `capture_start`
 /// command, `toggle_capture`, and the picker's start share it (callers
-/// own filter construction; `target` is the picker-selected scope or
+/// own source construction; `target` is the picker-selected scope or
 /// `None` on the auto-display path). Idempotent: a live capture
 /// returns the current status untouched. Otherwise a fresh
-/// [`MacosCapture`] is built and started with a callback that feeds
+/// [`PlatformCapture`] is built and started with a callback that feeds
 /// the screen reader ahead of the ring, then stored only when
 /// `is_running()` — a silently-failed start must not block a later
 /// retry. Every step warns and continues; `capture:state` carries the
 /// result.
 fn start_capture(
     app: &AppHandle,
-    filter: SCContentFilter,
+    source: CaptureSource,
     width: u32,
     height: u32,
     target: Option<CaptureTarget>,
@@ -416,11 +418,11 @@ fn start_capture(
         // holds — a stopped leftover falls through to `Create` and is
         // replaced by the fresh capture below.
         let mut lifecycle = CaptureLifecycle::default();
-        if slot.as_ref().is_some_and(MacosCapture::is_running) {
+        if slot.as_ref().is_some_and(PlatformCapture::is_running) {
             lifecycle.mark_running();
         }
         if lifecycle.start_decision() == StartDecision::Create {
-            match MacosCapture::new(filter, width, height, fps) {
+            match PlatformCapture::new(source, width, height, fps) {
                 Ok(capture) => {
                     let ring = Arc::clone(&state.ring);
                     let reader = Arc::clone(&state.screen_reader);
@@ -449,7 +451,7 @@ fn start_capture(
         .capture
         .lock()
         .as_ref()
-        .is_some_and(MacosCapture::is_running)
+        .is_some_and(PlatformCapture::is_running)
     {
         let app2 = app.clone();
         let describe: screen_read::Describer = Arc::new(move |frame| {
@@ -529,7 +531,7 @@ fn toggle_capture(app: &AppHandle) {
         .capture
         .lock()
         .as_ref()
-        .is_some_and(MacosCapture::is_running);
+        .is_some_and(PlatformCapture::is_running);
     if running {
         stop_capture(app);
         return;
@@ -539,11 +541,11 @@ fn toggle_capture(app: &AppHandle) {
         log::warn!("toggle_capture dropped while gate != Main");
         return;
     }
-    match primary_display_filter() {
-        Ok((filter, w, h)) => {
-            start_capture(app, filter, w, h, None);
+    match primary_display_source() {
+        Ok((source, w, h)) => {
+            start_capture(app, source, w, h, None);
         }
-        Err(e) => log::warn!("capture: display filter failed: {e}"),
+        Err(e) => log::warn!("capture: display source failed: {e}"),
     }
 }
 
@@ -1928,10 +1930,10 @@ fn capture_start(app: AppHandle) -> serde_json::Value {
         log::warn!("capture_start dropped while gate != Main");
         return capture_snapshot(&state);
     }
-    match primary_display_filter() {
-        Ok((filter, w, h)) => start_capture(&app, filter, w, h, None),
+    match primary_display_source() {
+        Ok((source, w, h)) => start_capture(&app, source, w, h, None),
         Err(e) => {
-            log::warn!("capture: display filter failed: {e}");
+            log::warn!("capture: display source failed: {e}");
             capture_snapshot(&state)
         }
     }
@@ -1952,7 +1954,10 @@ fn capture_stop(app: AppHandle) -> serde_json::Value {
 ///
 /// The picker is a main-thread API (its config setters require it), so
 /// the command hops via `run_on_main_thread`; `show` is non-blocking
-/// and its `Send` callback fires later with the outcome.
+/// and its `Send` callback fires later with the outcome. On other OSes
+/// the in-app picker window (Windows) or the portal dialog (Linux)
+/// already covers the flow, so this alias just forwards there.
+#[cfg(target_os = "macos")]
 #[tauri::command]
 fn capture_pick_and_start(app: AppHandle) {
     let state = app.state::<AppState>();
@@ -2023,7 +2028,7 @@ fn capture_pick_and_start(app: AppHandle) {
                         .capture
                         .lock()
                         .as_ref()
-                        .is_some_and(MacosCapture::is_running)
+                        .is_some_and(PlatformCapture::is_running)
                     {
                         stop_capture(&app2);
                     }
@@ -2040,10 +2045,55 @@ fn capture_pick_and_start(app: AppHandle) {
     }
 }
 
+/// Non-macOS alias: the record button's "pick and start" is the same
+/// custom-picker flow (Windows) or portal dialog (Linux) — whichever
+/// `capture_pick_begin` drives on this OS.
+#[cfg(not(target_os = "macos"))]
+#[tauri::command]
+fn capture_pick_and_start(app: AppHandle) {
+    capture_pick_begin(app);
+}
+
+/// Linux pick flow, run on a worker thread spawned by
+/// `capture_pick_begin`: the XDG screencast portal's own dialog IS the
+/// picker (Linux exposes no source enumeration to apps), so the command
+/// returns immediately and the pick lands here — same post-pick path
+/// the macOS native picker callback takes: gate re-check under
+/// `gate_transition`, stop a live capture, start the picked source.
+/// The bar comes back in every outcome.
+#[cfg(target_os = "linux")]
+fn portal_pick_flow(app: AppHandle) {
+    match capture::portal_pick_blocking() {
+        Ok(Some((source, w, h, kind, label))) => {
+            let state = app.state::<AppState>();
+            let _transition = state.gate_transition.lock();
+            if *state.gate.lock() != Gate::Main {
+                log::warn!("capture_pick_begin: portal pick landed after gate left Main");
+            } else {
+                if state
+                    .capture
+                    .lock()
+                    .as_ref()
+                    .is_some_and(PlatformCapture::is_running)
+                {
+                    stop_capture(&app);
+                }
+                start_capture(&app, source, w, h, Some(CaptureTarget { kind, label }));
+            }
+        }
+        Ok(None) => {} // user cancelled the portal dialog — silent no-op
+        Err(e) => log::warn!("capture: portal pick failed: {e}"),
+    }
+    if let Some(bar) = app.state::<AppState>().pool.lock().bar() {
+        let _ = bar.show();
+    }
+}
+
 /// Idle record button: hide the bar and open the share-picker window.
 /// Gate-guarded like `capture_start` — a crafted invoke outside Main
 /// must not surface the picker (or a capture behind it). The bar is
-/// re-shown by `capture_pick_select`/`capture_pick_cancel`.
+/// re-shown by `capture_pick_select`/`capture_pick_cancel`. On Linux
+/// the portal's native dialog replaces the picker window entirely.
 #[tauri::command]
 fn capture_pick_begin(app: AppHandle) {
     let state = app.state::<AppState>();
@@ -2052,15 +2102,29 @@ fn capture_pick_begin(app: AppHandle) {
         log::warn!("capture_pick_begin dropped while gate != Main");
         return;
     }
-    let mut pool = state.pool.lock();
-    if let Some(bar) = pool.bar() {
-        let _ = bar.hide();
+    #[cfg(target_os = "linux")]
+    {
+        // Hide the bar under the portal dialog, then let a worker own
+        // the (user-paced) pick — the command can't block on it.
+        if let Some(bar) = state.pool.lock().bar() {
+            let _ = bar.hide();
+        }
+        drop(_transition);
+        let app2 = app.clone();
+        std::thread::spawn(move || portal_pick_flow(app2));
     }
-    if !pool.show_picker(&app) {
-        // A failed build can't be cancelled from a picker that never
-        // opened — restore the bar so the UI isn't left hidden.
+    #[cfg(not(target_os = "linux"))]
+    {
+        let mut pool = state.pool.lock();
         if let Some(bar) = pool.bar() {
-            let _ = bar.show();
+            let _ = bar.hide();
+        }
+        if !pool.show_picker(&app) {
+            // A failed build can't be cancelled from a picker that never
+            // opened — restore the bar so the UI isn't left hidden.
+            if let Some(bar) = pool.bar() {
+                let _ = bar.show();
+            }
         }
     }
 }
@@ -2073,6 +2137,7 @@ fn capture_pick_begin(app: AppHandle) {
 /// windows emit, so apps need no extra capture. Gate-guarded: a
 /// crafted invoke outside Main could otherwise enumerate window
 /// titles.
+#[cfg(not(target_os = "linux"))]
 #[tauri::command]
 fn capture_pick_list(app: AppHandle) -> Result<Vec<PickCandidate>, String> {
     let state = app.state::<AppState>();
@@ -2115,6 +2180,7 @@ fn capture_pick_list(app: AppHandle) -> Result<Vec<PickCandidate>, String> {
 /// live capture if one raced in, start scoped, restore the bar.
 /// Errors on stale ids ("no longer available") — the picker shows it
 /// and refetches.
+#[cfg(not(target_os = "linux"))]
 #[tauri::command]
 fn capture_pick_select(app: AppHandle, id: String) -> Result<(), String> {
     let state = app.state::<AppState>();
@@ -2127,7 +2193,7 @@ fn capture_pick_select(app: AppHandle, id: String) -> Result<(), String> {
         .capture
         .lock()
         .as_ref()
-        .is_some_and(MacosCapture::is_running)
+        .is_some_and(PlatformCapture::is_running)
     {
         stop_capture(&app);
     }
@@ -2135,13 +2201,29 @@ fn capture_pick_select(app: AppHandle, id: String) -> Result<(), String> {
         kind: res.kind,
         label: res.label,
     };
-    start_capture(&app, res.filter, res.w, res.h, Some(target));
+    start_capture(&app, res.source, res.w, res.h, Some(target));
     let pool = state.pool.lock();
     pool.hide_picker();
     if let Some(bar) = pool.bar() {
         let _ = bar.show();
     }
     Ok(())
+}
+
+/// Linux: no in-app candidate list exists — the portal's own dialog owns
+/// selection, so the picker window is never shown and the frontend never
+/// calls this. A defensive empty list keeps the command surface uniform.
+#[cfg(target_os = "linux")]
+#[tauri::command]
+fn capture_pick_list(_app: AppHandle) -> Result<Vec<PickCandidate>, String> {
+    Ok(vec![])
+}
+
+/// Linux: nothing to resolve — see `capture_pick_list`.
+#[cfg(target_os = "linux")]
+#[tauri::command]
+fn capture_pick_select(_app: AppHandle, _id: String) -> Result<(), String> {
+    Err("the portal dialog owns source selection on Linux".into())
 }
 
 /// Esc / Cancel: drop the picker, restore the bar. No gate check —
@@ -2388,16 +2470,16 @@ fn config_set(app: AppHandle, key: String, value: serde_json::Value) -> Result<C
             .capture
             .lock()
             .as_ref()
-            .is_some_and(MacosCapture::is_running)
+            .is_some_and(PlatformCapture::is_running)
     {
         // A live session keeps its old cadence — rebuild it so the new
         // rate applies immediately.
         stop_capture(&app);
-        match primary_display_filter() {
-            Ok((filter, w, h)) => {
-                start_capture(&app, filter, w, h, None);
+        match primary_display_source() {
+            Ok((source, w, h)) => {
+                start_capture(&app, source, w, h, None);
             }
-            Err(e) => log::warn!("capture: display filter failed: {e}"),
+            Err(e) => log::warn!("capture: display source failed: {e}"),
         }
     }
     if onboarding_changed {
@@ -2465,14 +2547,29 @@ pub fn run() {
         env_logger::Env::default().default_filter_or("marvis_lib=info"),
     )
     .try_init();
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         // Order matters: the deep-link plugin must be registered before
         // `deeplink::init` resolves `app.deep_link()` inside `setup`.
         .plugin(tauri_plugin_deep_link::init())
         // Required before `app.global_shortcut()` (hotkey registration).
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
-        .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_liquid_glass::init())
+        .plugin(tauri_plugin_opener::init());
+    // Windows/Linux: a second `marvis://` launch forwards to the running
+    // instance instead of spawning a duplicate (deep-link rides this
+    // channel). macOS delivers open-url natively — leave it untouched.
+    #[cfg(not(target_os = "macos"))]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+        let pool = app.state::<AppState>().pool.lock();
+        if let Some(bar) = pool.bar() {
+            let _ = bar.show();
+            let _ = bar.set_focus();
+        }
+    }));
+    // Liquid glass is macOS-only — other OSes keep the webview's CSS
+    // frost (`surface_material` reports "none").
+    #[cfg(target_os = "macos")]
+    let builder = builder.plugin(tauri_plugin_liquid_glass::init());
+    builder
         .setup(|app| {
             let handle = app.handle();
             // `~/.marvis` must exist before Db/keystore touch it.
@@ -2771,7 +2868,7 @@ mod tests {
             .expect("capture_start must hold gate_transition across check + start");
         let gate_check = start_body.find("*state.gate.lock() != Gate::Main").unwrap();
         let start_call = start_body
-            .find("start_capture(&app, filter, w, h, None)")
+            .find("start_capture(&app, source, w, h, None)")
             .expect("capture_start must resolve the display filter into start_capture");
         assert!(
             transition_lock < gate_check && transition_lock < start_call,

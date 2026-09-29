@@ -16,6 +16,7 @@ use tauri::{
     WebviewWindowBuilder,
 };
 
+#[cfg(target_os = "macos")]
 use tauri_plugin_liquid_glass::{GlassMaterialVariant, LiquidGlassConfig, LiquidGlassExt};
 
 use layout::{clamp_to_work_area, derive_pill_rect, expand_dir_for, expanded_rect};
@@ -890,14 +891,28 @@ fn build_window(
     if let Err(e) = win.set_content_protected(true) {
         log::warn!("windows: set_content_protected failed for {label}: {e}");
     }
-    // set_effect dispatches to the main queue and blocks on it; callers
-    // hold the pool lock, which main-thread callbacks also take — apply
-    // on a detached thread so the lock is never held across the wait.
-    // Warn-only on failure, same as the calls above.
-    let app = app.clone();
-    let label = label.to_string();
+    apply_surface_material(app, &win, corner_radius, tint_color, label);
+    Ok(win)
+}
+
+/// Surface material application. On macOS this is the liquid-glass
+/// `set_effect`, which dispatches to the main queue and blocks on it;
+/// callers hold the pool lock, which main-thread callbacks also take —
+/// apply on a detached thread so the lock is never held across the
+/// wait. Warn-only on failure, same as the calls above. Off macOS the
+/// webview's own CSS frost/radius draws the surface, so this is a no-op.
+fn apply_surface_material(
+    app: &AppHandle,
+    win: &WebviewWindow,
+    corner_radius: f64,
+    tint_color: Option<String>,
+    label: &str,
+) {
+    #[cfg(target_os = "macos")]
     std::thread::spawn({
+        let app = app.clone();
         let win = win.clone();
+        let label = label.to_string();
         move || {
             if let Err(e) = app.liquid_glass().set_effect(
                 &win,
@@ -911,32 +926,19 @@ fn build_window(
             }
         }
     });
-    Ok(win)
+    #[cfg(not(target_os = "macos"))]
+    let _ = (app, win, corner_radius, tint_color, label);
 }
 
 /// Re-apply the liquid-glass corner radius on a live window — capsule
-/// (`BAR_H/2`) ⇄ card (`CARD_RADIUS`). Same warn-only detached-thread
-/// pattern as `build_window`: the call blocks on the main queue and the
-/// pool lock must not be held across the wait.
+/// (`BAR_H/2`) ⇄ card (`CARD_RADIUS`). Shares `apply_surface_material`'s
+/// warn-only detached-thread pattern; a no-op off macOS.
 fn set_glass_radius(app: &AppHandle, win: &WebviewWindow, corner_radius: f64) {
-    let app = app.clone();
-    let win = win.clone();
-    std::thread::spawn(move || {
-        // Re-supply the accent tint — `set_effect` CLEARS the tint when
-        // `tint_color` is `None`, so a radius-only re-apply would strip
-        // it on every pill⇄card morph.
-        let tint_color = accent_glass_tint(&app.state::<crate::AppState>().accent());
-        if let Err(e) = app.liquid_glass().set_effect(
-            &win,
-            LiquidGlassConfig {
-                corner_radius,
-                tint_color,
-                ..Default::default()
-            },
-        ) {
-            log::warn!("windows: liquid glass radius update failed: {e}");
-        }
-    });
+    // Re-supply the accent tint — `set_effect` CLEARS the tint when
+    // `tint_color` is `None`, so a radius-only re-apply would strip
+    // it on every pill⇄card morph.
+    let tint_color = accent_glass_tint(&app.state::<crate::AppState>().accent());
+    apply_surface_material(app, win, corner_radius, tint_color, "bar");
 }
 
 /// The prefs window is deliberately NOT built by [`build_window`]: it's a
@@ -998,10 +1000,10 @@ fn build_prefs_window(app: &AppHandle) -> anyhow::Result<WebviewWindow> {
     if let Err(e) = win.set_content_protected(true) {
         log::warn!("windows: set_content_protected failed for prefs: {e}");
     }
-    // set_effect dispatches to the main queue and blocks on it; the pool
-    // lock is held by `show_prefs`'s caller path, which main-thread
-    // callbacks also take — apply on a detached thread so the lock is
-    // never held across the wait. Warn-only on failure, same as above.
+    // Same detached warn-only pattern as `apply_surface_material`; the
+    // sidebar variant is macOS-only chrome — other platforms keep the
+    // webview's own surface.
+    #[cfg(target_os = "macos")]
     std::thread::spawn({
         let app = app.clone();
         let win = win.clone();

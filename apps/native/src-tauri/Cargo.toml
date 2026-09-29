@@ -18,7 +18,15 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["macos-private-api", "tray-icon", "image-png", "image-ico"] }
+tauri = { version = "2", features = [
+    "tray-icon",
+    "image-png",
+    "image-ico",
+    # Powers transparent/glass windows; tauri-build's allowlist only
+    # inspects this declaration, so it stays here — the feature is a
+    # no-op when compiled off macOS.
+    "macos-private-api",
+] }
 tauri-plugin-opener = "2"
 tauri-plugin-global-shortcut = "2"
 tauri-plugin-deep-link = "2"
@@ -37,18 +45,46 @@ base64 = "0.22"
 toml = "0.8"
 dirs = "6"
 image = { version = "0.25", default-features = false, features = ["jpeg"] }
-screencapturekit = { version = "10", features = ["macos_14_0"] }
-objc2 = "0.6"
-block2 = "0.6"
-objc2-av-foundation = { version = "0.3", default-features = false, features = ["AVCaptureDevice", "AVMediaFormat", "block2"] }
 thiserror = "2"
 anyhow = "1"
 parking_lot = "0.12"
 log = "0.4"
 env_logger = "0.11"
-tauri-plugin-liquid-glass = { git = "https://github.com/chenillen/tauri-plugin-liquid-glass", tag = "v0.1.7" }
 cpal = "0.18.2"
 tokio-tungstenite = { version = "0.30.0", features = ["rustls-tls-native-roots"] }
+tauri-plugin-single-instance = "2"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# Windows falls back to CSS frost and Linux keeps the webview's own
+# surface, so the glass plugin and every AppKit/SCK dep is macOS-gated.
+tauri-plugin-liquid-glass = { git = "https://github.com/chenillen/tauri-plugin-liquid-glass", tag = "v0.1.7" }
+screencapturekit = { version = "10", features = ["macos_14_0"] }
+objc2 = "0.6"
+block2 = "0.6"
+objc2-av-foundation = { version = "0.3", default-features = false, features = ["AVCaptureDevice", "AVMediaFormat", "block2"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+# WGC frame capture + WASAPI loopback system audio + WinRT mic consent.
+windows-capture = "2"
+wasapi = "0.24"
+windows = { version = "0.62", features = [
+    "Devices_Enumeration",
+    "Foundation",
+    "Media_Capture",
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_UI_HiDpi",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# XDG portal consent + PipeWire frames; PulseAudio monitor for system
+# audio (works against pipewire-pulse too). `pollster` drives the async
+# portal handshake inside the capture worker thread.
+ashpd = { version = "0.13", features = ["tokio"] }
+pipewire = "0.10"
+libpulse-binding = "2.30"
+pollster = "0.4"
 
 [dev-dependencies]
 # `test-util` enables `#[tokio::test(start_paused = true)]` so the

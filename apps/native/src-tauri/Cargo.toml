@@ -81,7 +81,7 @@ windows = { version = "0.62", features = [
 # XDG portal consent + PipeWire frames; PulseAudio monitor for system
 # audio (works against pipewire-pulse too). `pollster` drives the async
 # portal handshake inside the capture worker thread.
-ashpd = { version = "0.13", features = ["tokio"] }
+ashpd = { version = "0.13", features = ["screencast", "tokio"] }
 pipewire = "0.10"
 libpulse-binding = "2.30"
 pollster = "0.4"

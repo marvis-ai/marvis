@@ -13,9 +13,8 @@ use std::time::Duration;
 use anyhow::{anyhow, Result};
 use wasapi::{DeviceEnumerator, Direction, SampleType, StreamMode};
 
-use super::{
-    interleaved_pcm_to_f32, normalize_pcm, status_channel, warn_unsupported, AudioSource, PcmChunk,
-};
+use super::{interleaved_pcm_to_f32, normalize_pcm, status_channel, warn_unsupported};
+use crate::audio::{AudioSource, PcmChunk};
 
 /// Requested WASAPI buffer capacity (20 ms in 100 ns units).
 const BUFFER_DURATION_HNS: i64 = 200_000;

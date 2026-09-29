@@ -25,7 +25,7 @@ use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use anyhow::{anyhow, bail, Context as _, Result};
+use anyhow::{anyhow, Context as _, Result};
 use ashpd::desktop::screencast::{
     CreateSessionOptions, CursorMode, OpenPipeWireRemoteOptions, Screencast,
     SelectSourcesOptions, SourceType, StartCastOptions,
@@ -267,9 +267,11 @@ fn extract_frame(state: &mut StreamState, buffer: &mut pipewire::buffer::Buffer<
         return;
     };
     let chunk = data.chunk();
+    // stride is signed (a bottom-up producer can go negative) — a raw
+    // `as usize` cast wraps it huge before `.max` can clamp it.
     let (offset, stride, size) = (
         chunk.offset() as usize,
-        chunk.stride() as usize,
+        usize::try_from(chunk.stride()).unwrap_or(0),
         chunk.size() as usize,
     );
     if size == 0 {

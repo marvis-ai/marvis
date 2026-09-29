@@ -23,9 +23,8 @@ use libpulse_binding::stream::{
     FlagSet as StreamFlagSet, PeekResult, State as StreamState, Stream,
 };
 
-use super::{
-    interleaved_pcm_to_f32, normalize_pcm, status_channel, warn_unsupported, AudioSource, PcmChunk,
-};
+use super::{interleaved_pcm_to_f32, normalize_pcm, status_channel, warn_unsupported};
+use crate::audio::{AudioSource, PcmChunk};
 
 /// Requested capture format — PulseAudio resamples/remixes server-side,
 /// so this is fixed regardless of the sink's native layout.

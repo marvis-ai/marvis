@@ -14,7 +14,7 @@ use crate::config::Config;
 use crate::keystore::Keystore;
 use crate::llm::{ChatMessage, Role};
 use crate::prompts::{summary_context, summary_system_prompt_for};
-use crate::storage::{Db, Transcript};
+use crate::storage::Db;
 use crate::stt::{
     make_stt_provider, sanitize_provider_error, stt_setup_error, Finality, SpeakerChannel,
     TranscriptEvent,
@@ -22,7 +22,6 @@ use crate::stt::{
 
 const SILENCE: Duration = Duration::from_millis(1500);
 const SUMMARY_EVERY: usize = 5;
-const HISTORY_LIMIT: usize = 20;
 const WORKER_TICK: Duration = Duration::from_millis(100);
 const SUMMARY_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -473,7 +472,6 @@ pub enum ListenEvent {
 
 struct SessionContext {
     db: Arc<Db>,
-    history: Arc<Mutex<Vec<Transcript>>>,
     status: Arc<Mutex<ListenStatus>>,
     emit: Arc<dyn Fn(ListenEvent) + Send + Sync>,
     cancel: Arc<AtomicBool>,
@@ -500,7 +498,6 @@ pub struct ListenService {
     state: Arc<Mutex<ListenStatus>>,
     running: Mutex<Option<Running>>,
     db: Mutex<Option<Arc<Db>>>,
-    history: Arc<Mutex<Vec<Transcript>>>,
 }
 
 impl ListenService {
@@ -519,15 +516,10 @@ impl ListenService {
             })),
             running: Mutex::new(None),
             db: Mutex::new(None),
-            history: Arc::new(Mutex::new(Vec::new())),
         }
     }
     pub fn status(&self) -> ListenStatus {
         self.state.lock().clone()
-    }
-    #[allow(dead_code)]
-    pub fn current_history(&self) -> Vec<Transcript> {
-        self.history.lock().clone()
     }
 
     pub fn start(
@@ -601,20 +593,12 @@ impl ListenService {
                 log::warn!("listen: session_set_audio_file failed: {error}");
             }
         }
-        {
-            let mut history = self.history.lock();
-            history.clear();
-            for transcript in existing.iter().rev().take(HISTORY_LIMIT).rev() {
-                history.push(transcript.clone());
-            }
-        }
         let cancel = Arc::new(AtomicBool::new(false));
         let paused = Arc::new(AtomicBool::new(false));
         let assembler = Arc::new(Mutex::new(TurnAssembler::new()));
         let echo_gate = Arc::new(Mutex::new(EchoGate::default()));
         let context = Arc::new(SessionContext {
             db: db.clone(),
-            history: self.history.clone(),
             status: self.state.clone(),
             emit: emit.clone(),
             cancel: cancel.clone(),
@@ -1010,13 +994,6 @@ fn report_terminal_error(context: &SessionContext, message: &str) {
     });
 }
 
-fn append_history(history: &mut Vec<Transcript>, transcript: Transcript) {
-    history.push(transcript);
-    if history.len() > HISTORY_LIMIT {
-        history.remove(0);
-    }
-}
-
 fn persist_turn(context: &Arc<SessionContext>, turn: ClosedTurn) {
     let inserted = context.db.transcript_add(
         context.session_id,
@@ -1024,27 +1001,11 @@ fn persist_turn(context: &Arc<SessionContext>, turn: ClosedTurn) {
         &turn.text,
         turn.speaker_idx,
     );
-    let history_snapshot = match inserted {
-        Ok(id) => {
-            let transcript = Transcript {
-                id,
-                session_id: context.session_id,
-                speaker: speaker_name(turn.speaker).into(),
-                speaker_idx: turn.speaker_idx.map(i64::from),
-                content: turn.text.clone(),
-                ts: turn.ts,
-            };
-            let mut history = context.history.lock();
-            append_history(&mut history, transcript);
-            Some(history.clone())
-        }
-        Err(error) => {
-            log::warn!("listen transcript persistence failed: {error}");
-            None
-        }
-    };
+    if let Err(error) = &inserted {
+        log::warn!("listen transcript persistence failed: {error}");
+    }
 
-    let count = if history_snapshot.is_some() {
+    let count = if inserted.is_ok() {
         context.persisted_turns.fetch_add(1, Ordering::AcqRel) + 1
     } else {
         // A database failure must not hide a valid transcript event.
@@ -1074,7 +1035,6 @@ fn persist_turn(context: &Arc<SessionContext>, turn: ClosedTurn) {
     }));
 
     if count % SUMMARY_EVERY == 0 {
-        let transcript = history_snapshot.expect("successful insert has history snapshot");
         let summary_context = context.clone();
         context
             .summary_workers
@@ -1094,7 +1054,6 @@ fn persist_turn(context: &Arc<SessionContext>, turn: ClosedTurn) {
                                         summary_context.session_id,
                                         &summary_context.config,
                                         &summary_context.keystore,
-                                        &transcript,
                                     ),
                                 )
                                 .await
@@ -1138,20 +1097,25 @@ fn build_summary_messages(
     ]
 }
 
+/// The summary's transcript input — the session's full persisted
+/// transcript, oldest first, as `speaker: text` lines.
+fn summary_transcript(db: &Db, session_id: i64) -> anyhow::Result<String> {
+    let rows = db.transcripts_for(session_id, None)?;
+    Ok(rows
+        .iter()
+        .map(|t| format!("{}: {}", t.speaker, t.content))
+        .collect::<Vec<_>>()
+        .join("\n"))
+}
+
 /// Generate and persist a bounded structured summary. Provider failures are deliberately non-fatal.
 pub async fn generate_summary(
     db: &Db,
     session_id: i64,
     config: &Config,
     keystore: &Keystore,
-    transcript: &[Transcript],
 ) -> anyhow::Result<ListenSummary> {
     let candidates = crate::provider_candidates(config, keystore);
-    let history = transcript
-        .iter()
-        .map(|t| format!("{}: {}", t.speaker, t.content))
-        .collect::<Vec<_>>()
-        .join("\n");
     let previous = match db.summary_latest(session_id) {
         Ok(summary) => summary.map(|summary| ListenSummary {
             tldr: summary.tldr,
@@ -1162,6 +1126,13 @@ pub async fn generate_summary(
         Err(error) => {
             log::warn!("listen summary history lookup failed: {error}");
             None
+        }
+    };
+    let history = match summary_transcript(db, session_id) {
+        Ok(history) => history,
+        Err(error) => {
+            log::warn!("listen summary transcript load failed: {error}");
+            return preserve_previous_summary(Err(error), previous);
         }
     };
     let previous_text = previous.as_ref().map(format_previous_summary);
@@ -1474,26 +1445,34 @@ mod tests {
         assert!(a.summary_boundary());
         assert_eq!(a.closed_count(), 10);
     }
-    #[test]
-    fn history_keeps_only_the_last_twenty_turns() {
-        let mut history = Vec::new();
-        for id in 0..25 {
-            append_history(
-                &mut history,
-                Transcript {
-                    id,
-                    session_id: 1,
-                    speaker: "me".into(),
-                    speaker_idx: None,
-                    content: id.to_string(),
-                    ts: id,
-                },
-            );
-        }
-        assert_eq!(history.len(), HISTORY_LIMIT);
-        assert_eq!(history.first().unwrap().id, 5);
-        assert_eq!(history.last().unwrap().id, 24);
+    /// Unique temp dir per test; `Db::at` creates it (parent-dirs path).
+    fn tmp_dir() -> std::path::PathBuf {
+        static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        std::env::temp_dir().join(format!(
+            "marvis-listen-test-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ))
     }
+
+    /// The summary prompt is built from the session's full persisted
+    /// transcript — an early turn must reach the provider no matter how
+    /// long the session runs (no tail-window cap).
+    #[test]
+    fn summary_transcript_uses_all_persisted_turns() {
+        let dir = tmp_dir();
+        let db = Db::at(dir.join("marvis.db")).unwrap();
+        let sid = db.session_get_or_create_active("listen").unwrap();
+        for i in 0..25 {
+            db.transcript_add(sid, "them", &format!("turn {i}"), None)
+                .unwrap();
+        }
+        let history = summary_transcript(&db, sid).unwrap();
+        assert!(history.contains("turn 0"));
+        assert!(history.contains("turn 24"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn summary_parser_bounds_arrays_and_rejects_invalid_without_mutation() {
         let raw = r#"{"tldr":"x","bullets":["1","2","3","4","5","6"],"follow_ups":["a","b","c","d"],"topic":"t","extra":true}"#;
@@ -1621,9 +1600,8 @@ mod tests {
         );
         service.stop();
 
-        // The stale session was closed rather than adopted: its turns
-        // never entered the live history and nothing appended to its row.
-        assert!(service.current_history().is_empty());
+        // The stale session was closed rather than adopted: a fresh
+        // session is active and nothing appended to the stale row.
         assert_ne!(db.session_active_id("listen").unwrap(), Some(stale));
         assert!(db
             .session_list()

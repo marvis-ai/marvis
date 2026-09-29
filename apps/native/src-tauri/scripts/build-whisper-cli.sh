@@ -67,11 +67,17 @@ architecture_for_target() {
 }
 
 sha256_file() {
+  local digest
   if command -v sha256sum >/dev/null 2>&1; then
-    sha256sum "$1"
+    digest="$(sha256sum -b "$1")"
   else
-    shasum -a 256 "$1"
+    digest="$(shasum -a 256 -b "$1")"
   fi
+  # Emit only the digest: -b pins binary-mode reads (a text-mode read would
+  # translate CRLF and hash different bytes), and a leading `\` marks an
+  # escaped filename — paths with backslashes (e.g. D:\a\_temp\...) would
+  # otherwise yield "\hash" and corrupt comparisons.
+  printf '%s\n' "$digest" | awk '{ print $1 }' | sed 's/^\\//'
 }
 
 parallel_jobs() {
@@ -178,10 +184,10 @@ validate_binary() {
   validate_format "$artifact" "$target" "$os_family" "$architecture"
   validate_linkage "$artifact" "$os_family"
   [[ -f "$checksum" ]] || fail "missing checksum: ${checksum}"
-  expected_checksum="$(awk 'NF { print $1; exit }' "$checksum")"
-  actual_checksum="$(sha256_file "$artifact" | awk '{ print $1 }')"
+  expected_checksum="$(awk 'NF { print $1; exit }' "$checksum" | tr -d '[:space:]' | sed 's/^\\//')"
+  actual_checksum="$(sha256_file "$artifact")"
   [[ -n "$expected_checksum" && "$actual_checksum" == "$expected_checksum" ]] \
-    || fail "checksum verification failed: ${checksum}"
+    || { echo "expected: ${expected_checksum:-<empty>} | actual: ${actual_checksum:-<empty>}" >&2; fail "checksum verification failed: ${checksum}"; }
 }
 
 validate_artifact() {
@@ -197,12 +203,15 @@ stage_artifact() {
   local source_checksum="${3:-${source}.sha256}"
   local staged
 
+  # download-artifact drops Unix permission bits; the staged copy is chmod'd
+  # regardless, so restore the bit on the input before validation.
+  chmod 755 "$source"
   validate_binary "$source" "$target" "$source_checksum"
   mkdir -p "$OUTPUT_DIR"
   staged="$(artifact_for_target "$target")"
   cp "$source" "$staged"
   chmod 755 "$staged"
-  sha256_file "$staged" | awk '{ print $1 }' > "${staged}.sha256"
+  sha256_file "$staged" > "${staged}.sha256"
   validate_artifact "$target"
   echo "Staged ${staged}"
 }
@@ -391,6 +400,6 @@ fi
 artifact="$(artifact_for_target "$target")"
 cp "$built_cli" "$artifact"
 chmod 755 "$artifact"
-sha256_file "$artifact" | awk '{ print $1 }' > "${artifact}.sha256"
+sha256_file "$artifact" > "${artifact}.sha256"
 validate_artifact "$target"
 echo "Built ${artifact}"

@@ -18,9 +18,8 @@ import { useEffect, useRef, useState } from 'react';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { CheckIcon, CopyIcon, SettingsIcon, XIcon } from '@marvis/ui';
+import { CheckIcon, CopyIcon, MessageSquareTextIcon } from '@marvis/ui';
 import {
-  askClose,
   askCurrent,
   askRetry,
   sessionEndActive,
@@ -38,7 +37,6 @@ import {
 import {
   BTN_OUTLINE,
   BTN_SM,
-  EMPTY,
   ICON_BTN,
   NUM,
   PANEL_BODY,
@@ -47,7 +45,8 @@ import {
 } from '@/lib/classes';
 import { sessionDateLabel } from '@/components/listen/model';
 import { CardHeader } from '@/components/shared/CardHeader';
-import { ChatMsgMenu, type ChatMsgMeta } from './ChatMsgMenu';
+import { EmptyState } from '@/components/shared/EmptyState';
+import { ChatMsgMenu, type ChatMsgMeta } from '@/components/ChatMsgMenu';
 
 type AskPhase = 'loading' | 'streaming' | 'idle';
 
@@ -285,22 +284,6 @@ export const ChatSection = ({ onBack }: { onBack: () => void }) => {
           onClick={newChat}>
           New chat
         </button>
-        <button
-          type='button'
-          className={cn(ICON_BTN, '-mt-0.5 shrink-0')}
-          title='Settings'
-          aria-label='Settings'
-          onClick={() => void windowShowSettings().catch(() => {})}>
-          <SettingsIcon className='size-4' />
-        </button>
-        <button
-          type='button'
-          className={cn(ICON_BTN, '-mt-0.5 shrink-0')}
-          title='Close'
-          aria-label='Close'
-          onClick={() => void askClose().catch(() => {})}>
-          <XIcon className='size-4' />
-        </button>
       </CardHeader>
       {error && (
         <div className='flex items-center gap-2 border-b border-border bg-[color-mix(in_oklch,var(--destructive)_9%,transparent)] px-3 py-2 text-xs text-destructive'>
@@ -432,7 +415,11 @@ export const ChatSection = ({ onBack }: { onBack: () => void }) => {
             <span className='ml-0.5 inline-block h-3.25 w-1.75 animate-caret bg-foreground align-[-2px] motion-reduce:animate-none' />
           )}
           {msgs.length === 0 && phase === 'idle' && !error && (
-            <p className={EMPTY}>Ask Marvis — the conversation stays here.</p>
+            <EmptyState
+              icon={MessageSquareTextIcon}
+              title='Ask Marvis'
+              description='the conversation stays here.'
+            />
           )}
         </div>
       </div>

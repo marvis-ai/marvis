@@ -76,7 +76,7 @@ const formatVoiceBytes = (bytes: number) => {
   return `${Math.round(bytes / (1024 * 1024))} MB`;
 };
 
-export const whisperSourceLabel = (source: WhisperBinarySource | null) => {
+const whisperSourceLabel = (source: WhisperBinarySource | null) => {
   if (source === 'Bundled') return 'Bundled with Marvis';
   if (source) return 'Custom whisper-cli detected';
   return 'Whisper CLI unavailable';

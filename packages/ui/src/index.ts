@@ -18,6 +18,14 @@ export { Label } from "./components/ui/label"
 export { ShineBorder } from "./components/ui/shine-border"
 export { Tabs, TabsContent, TabsList, TabsTrigger } from "./components/ui/tabs"
 export { ToggleGroup, ToggleGroupItem } from "./components/ui/toggle-group"
+export {
+  Empty,
+  EmptyContent,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle,
+} from "./components/ui/empty"
 
 // Icon surface for workspace consumers (lucide-react is a dep of this
 // package, so apps import glyphs through the barrel instead of relying
@@ -47,6 +55,7 @@ export {
   PanelTopIcon,
   PauseIcon,
   PlayIcon,
+  RotateCcwClockIcon,
   RotateCcwIcon,
   SettingsIcon,
   ShieldIcon,

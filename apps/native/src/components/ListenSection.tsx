@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+
+import { CaptionsIcon } from '@marvis/ui';
 import {
   configGet,
   listenPause,
@@ -10,7 +12,7 @@ import {
   windowShowSettings,
   type Config,
   type ListenStatus,
-} from '../lib/commands';
+} from '@/lib/commands';
 import {
   EV_CONFIG_CHANGED,
   EV_LISTEN_ERROR,
@@ -21,8 +23,8 @@ import {
   type ListenErrorPayload,
   type ListenStatePayload,
   type ListenSummaryPayload,
-} from '../lib/events';
-import { BTN_OUTLINE, BTN_SM, EMPTY, cn } from '../lib/classes';
+} from '@/lib/events';
+import { BTN_OUTLINE, BTN_SM, cn } from '@/lib/classes';
 import {
   buildBlocks,
   elapsedLabel,
@@ -30,11 +32,12 @@ import {
   transcriptCopyText,
   type ListenViewing,
   type Turn,
-} from './listen/model';
-import { ListenHeader } from './listen/ListenHeader';
-import { SpeakerFilter } from './listen/SpeakerFilter';
-import { SummaryStrip } from './listen/SummaryStrip';
-import { TranscriptBlocks } from './listen/TranscriptBlocks';
+} from '@/components/listen/model';
+import { ListenHeader } from '@/components/listen/ListenHeader';
+import { SpeakerFilter } from '@/components/listen/SpeakerFilter';
+import { SummaryStrip } from '@/components/listen/SummaryStrip';
+import { TranscriptBlocks } from '@/components/listen/TranscriptBlocks';
+import { EmptyState } from '@/components/shared/EmptyState';
 
 /** The structured meeting document — header (title, badge, timer,
  *  controls), speaker filter, timestamped transcript blocks, and the
@@ -386,13 +389,17 @@ export const ListenSection = ({
               startedAt={startedAt}
             />
             {turns.length === 0 && !summary && (!error || !live) && (
-              <p className={EMPTY}>
-                {live
-                  ? listening
-                    ? 'Speak naturally — your transcript will appear here.'
-                    : 'Start listening to capture a conversation.'
-                  : 'No transcript captured.'}
-              </p>
+              <EmptyState
+                icon={CaptionsIcon}
+                title='No Transcript Yet'
+                description={
+                  live
+                    ? listening
+                      ? 'Speak naturally — your transcript will appear here.'
+                      : 'Start listening to capture a conversation.'
+                    : 'No transcript captured.'
+                }
+              />
             )}
           </div>
         </div>

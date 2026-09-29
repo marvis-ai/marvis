@@ -67,10 +67,12 @@ architecture_for_target() {
 }
 
 sha256_file() {
+  # -b pins binary-mode reads: a text-mode read would translate CRLF on
+  # Windows and hash different bytes than the file on disk.
   if command -v sha256sum >/dev/null 2>&1; then
-    sha256sum "$1"
+    sha256sum -b "$1"
   else
-    shasum -a 256 "$1"
+    shasum -a 256 -b "$1"
   fi
 }
 
@@ -178,10 +180,10 @@ validate_binary() {
   validate_format "$artifact" "$target" "$os_family" "$architecture"
   validate_linkage "$artifact" "$os_family"
   [[ -f "$checksum" ]] || fail "missing checksum: ${checksum}"
-  expected_checksum="$(awk 'NF { print $1; exit }' "$checksum")"
+  expected_checksum="$(awk 'NF { print $1; exit }' "$checksum" | tr -d '[:space:]')"
   actual_checksum="$(sha256_file "$artifact" | awk '{ print $1 }')"
   [[ -n "$expected_checksum" && "$actual_checksum" == "$expected_checksum" ]] \
-    || fail "checksum verification failed: ${checksum}"
+    || { echo "expected: ${expected_checksum:-<empty>} | actual: ${actual_checksum:-<empty>}" >&2; fail "checksum verification failed: ${checksum}"; }
 }
 
 validate_artifact() {
@@ -197,6 +199,9 @@ stage_artifact() {
   local source_checksum="${3:-${source}.sha256}"
   local staged
 
+  # download-artifact drops Unix permission bits; the staged copy is chmod'd
+  # regardless, so restore the bit on the input before validation.
+  chmod 755 "$source"
   validate_binary "$source" "$target" "$source_checksum"
   mkdir -p "$OUTPUT_DIR"
   staged="$(artifact_for_target "$target")"

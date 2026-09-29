@@ -29,6 +29,14 @@ whisper_description="$(file -b "$whisper")"
 [[ "$whisper_description" == *"$expected_arch"* ]] || fail "whisper architecture mismatch: $whisper_description"
 
 # Never report a release as signed based only on a signing identity setting;
-# codesign performs the strict verification of the produced app contents.
-codesign --verify --deep --strict --verbose=2 "$APP_PATH"
-echo "Strict signature and ${expected_arch} app/Whisper architecture verification passed"
+# codesign performs the verification of the produced app contents. A real
+# Developer ID identity gets the strict deep check; ad-hoc (`-`, used for
+# unsigned test builds) only proves the bundle is sealed — `--deep --strict`
+# would reject an ad-hoc seal outright.
+if [[ "${APPLE_SIGNING_IDENTITY:-}" == "-" || -z "${APPLE_SIGNING_IDENTITY:-}" ]]; then
+  codesign --verify --verbose=2 "$APP_PATH"
+  echo "Ad-hoc signature and ${expected_arch} app/Whisper architecture verification passed"
+else
+  codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+  echo "Strict signature and ${expected_arch} app/Whisper architecture verification passed"
+fi

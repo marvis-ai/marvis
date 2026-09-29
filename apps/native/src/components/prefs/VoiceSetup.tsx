@@ -733,8 +733,8 @@ export const VoiceSetup = ({
             </span>
           </div>
           <p className={PROV_NOTE}>
-            {punctModel.description} Optional — without it, English speech is
-            transcribed in ALL CAPS with no punctuation.
+            {punctModel.description} Downloads automatically with SenseVoice —
+            remove it only if you prefer the raw transcript.
           </p>
           {punctProgress && (
             <div className='mt-2'>

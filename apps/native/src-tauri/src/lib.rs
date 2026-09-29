@@ -1453,6 +1453,9 @@ pub(crate) fn refresh_speech_setup(app: &AppHandle) {
     let keystore = state.keystore.lock().clone();
     let bundled = state.bundled_whisper.as_deref();
     let sherpa_root = paths::sherpa_models_dir();
+    state
+        .sherpa_models
+        .ensure_punct(&config.models.stt_provider, &config.models.stt_model);
     if let Some(status) = state
         .listen
         .revalidate_setup(&keystore, &config, bundled, &sherpa_root)

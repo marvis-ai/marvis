@@ -174,7 +174,10 @@ impl AskService {
 
     /// Ask a free-text question. `with_screen` is the explicit attach
     /// flag (`Cmd+Enter`/`withScreen` invoke arg) — it forces a screen
-    /// read regardless of the text's intent heuristic. A send while
+    /// read regardless of the text's intent heuristic. `listen_id`
+    /// binds the send to a listen doc: the question lands in that doc's
+    /// own ask session (reopened or minted — one chat per doc) and its
+    /// summary+transcript becomes the meeting context. A send while
     /// `Loading`/`Streaming` is ignored (warn-logged) rather than
     /// cancel-then-send — the in-flight stream keeps running.
     ///
@@ -187,15 +190,16 @@ impl AskService {
         deps: &Deps<'_>,
         text: &str,
         with_screen: bool,
+        listen_id: Option<i64>,
     ) {
-        self.kick(app, deps, text, with_screen, false, false);
+        self.kick(app, deps, text, with_screen, false, false, listen_id);
     }
 
     /// The camera button's screen-only ask: fixed prompt, screen
     /// REQUIRED — a failed one-shot errors instead of degrading to
     /// text-only.
     pub fn send_screen_only(self: &Arc<Self>, app: &AppHandle, deps: &Deps<'_>) {
-        self.kick(app, deps, SCREEN_ONLY_PROMPT, true, true, false);
+        self.kick(app, deps, SCREEN_ONLY_PROMPT, true, true, false, None);
     }
 
     /// Regenerate the last answer: re-runs the active ask session's last
@@ -219,7 +223,7 @@ impl AskService {
             log::warn!("ask::retry: no user turn to regenerate");
             return;
         };
-        self.kick(app, deps, &text, false, false, true);
+        self.kick(app, deps, &text, false, false, true, None);
     }
 
     /// `ask_close`: cancel the in-flight stream (its `select!` arm emits
@@ -239,7 +243,10 @@ impl AskService {
     /// Shared pre-flight + spawn behind `send`/`send_screen_only`/`retry`.
     /// `with_screen` is the explicit attach flag; `screen_required` is
     /// the screen-only variant's failed-shot→error rule; `regenerate` is
-    /// `retry`'s re-ask-the-last-turn mode.
+    /// `retry`'s re-ask-the-last-turn mode; `listen_id` is the listen doc
+    /// the send is bound to (`send` only — a retry inherits the link
+    /// from its session row).
+    #[allow(clippy::too_many_arguments)]
     fn kick(
         self: &Arc<Self>,
         app: &AppHandle,
@@ -248,6 +255,7 @@ impl AskService {
         with_screen: bool,
         screen_required: bool,
         regenerate: bool,
+        listen_id: Option<i64>,
     ) {
         let gen = {
             let mut state = self.state.lock();
@@ -308,9 +316,8 @@ impl AskService {
         // read (Cmd+Enter, screen-only, intent keyword); `needs_screen`
         // additionally counts ambient recording (a plain ask still gets
         // the cached context, it just doesn't force a read).
-        let screen_explicit = with_screen
-            || screen_required
-            || screen_read::looks_like_screen_intent(&text);
+        let screen_explicit =
+            with_screen || screen_required || screen_read::looks_like_screen_intent(&text);
         let needs_screen = screen_explicit || deps.capture_running;
         let read_interval_secs = deps.config.lock().recording.read_interval_secs;
         let reader = Arc::clone(&deps.reader);
@@ -363,6 +370,7 @@ impl AskService {
                 &cancel,
                 fresh_session,
                 regenerate,
+                listen_id,
                 &language,
             )
             .await;
@@ -422,7 +430,9 @@ impl Default for AskService {
 ///
 /// Order of operations:
 /// 0. `fresh_session` (the send found the card closed): end the open
-///    ask session so this run starts a new conversation.
+///    ask session so this run starts a new conversation. `listen_id`
+///    (a send from the listen doc) instead binds the run to that doc's
+///    own ask session — one chat per doc.
 /// 1. Persist the user message FIRST — it was already sent, so it must
 ///    be recorded even when every candidate later errors or is cancelled.
 /// 2. `ask:state{loading}` once (the chain is one run).
@@ -464,24 +474,39 @@ pub(crate) async fn send_chain(
     cancel: &CancellationToken,
     fresh_session: bool,
     regenerate: bool,
+    listen_id: Option<i64>,
     language: &str,
 ) -> Result<String, LlmError> {
     // A send that arrived with the card closed is a new conversation:
     // end the still-open ask session so get_or_create mints a fresh row.
-    if fresh_session {
+    // A linked send resolves its own session below instead.
+    if fresh_session && listen_id.is_none() {
         if let Ok(Some(id)) = db.session_active_id("ask") {
             if let Err(error) = db.session_end(id) {
                 log::warn!("ask: session_end before fresh send failed: {error}");
             }
         }
     }
+    // Session resolution: a linked send lands in the listen doc's own
+    // ask session (`ask_session_for_listen` reopens it or mints one);
+    // a regenerate keeps the active session — its question IS that
+    // session's last user row; anything else is the open ask session.
+    let session_id = match (regenerate, listen_id) {
+        (false, Some(lid)) => match db.ask_session_for_listen(lid) {
+            Ok(id) => Some(id),
+            Err(error) => {
+                log::warn!("ask: linked session resolve failed: {error}");
+                None
+            }
+        },
+        _ => open_ask_session(db),
+    };
     // Order matters: history is read BEFORE the new user row persists —
     // the new turn is appended separately so it can carry the frame. A
     // regenerate skips the write: its question is the session's last
     // user row, and history ends BEFORE it (a missing tail — shouldn't
     // happen, `retry` resolved the question from that row — degrades
     // to a normal send).
-    let session_id = open_ask_session(db);
     let (history, re_asked) = if regenerate {
         match regenerate_tail(db, session_id) {
             Some(h) => (h, true),
@@ -490,7 +515,12 @@ pub(crate) async fn send_chain(
     } else {
         (load_history(db, session_id), false)
     };
-    let listen_history = load_listen_context(db);
+    // The effective doc link: the send's explicit one, else the resolved
+    // session's stored link — a continued doc chat (or its retry) keeps
+    // the doc's context even though the caller passed none.
+    let listen_id =
+        listen_id.or_else(|| session_id.and_then(|sid| db.session_listen_id(sid).ok().flatten()));
+    let listen_history = load_listen_context(db, listen_id);
     if !re_asked {
         persist_user_message(db, session_id, text);
     }
@@ -499,22 +529,24 @@ pub(crate) async fn send_chain(
     // The screen-material truth table (spec §Ask flow): cached context /
     // ring frame / inline one-shot describe / raw frame / none. A failed
     // REQUIRED read ends the run as ask:error; a cancel stops it cold.
-    let resolved =
-        match resolve_screen(screen_input, vision.as_ref(), emit, cancel).await {
-            Ok(r) => r,
-            Err(msg) if msg == "cancelled" => {
-                emit(EV_STATE, json!({"state": "idle"}));
-                return Err(LlmError::Http {
-                    status: 0,
-                    message: "cancelled".into(),
-                });
-            }
-            Err(msg) => {
-                emit(EV_ERROR, json!({ "message": msg }));
-                emit(EV_STATE, json!({"state": "idle"}));
-                return Err(LlmError::Http { status: 0, message: msg });
-            }
-        };
+    let resolved = match resolve_screen(screen_input, vision.as_ref(), emit, cancel).await {
+        Ok(r) => r,
+        Err(msg) if msg == "cancelled" => {
+            emit(EV_STATE, json!({"state": "idle"}));
+            return Err(LlmError::Http {
+                status: 0,
+                message: "cancelled".into(),
+            });
+        }
+        Err(msg) => {
+            emit(EV_ERROR, json!({ "message": msg }));
+            emit(EV_STATE, json!({"state": "idle"}));
+            return Err(LlmError::Http {
+                status: 0,
+                message: msg,
+            });
+        }
+    };
     let (frame, screen) = match resolved.0 {
         Some(ScreenMaterial::Text(t)) => (None, Some(t)),
         Some(ScreenMaterial::Frame(f)) => (Some(f), None),
@@ -651,8 +683,7 @@ pub(crate) async fn resolve_screen(
             let cached = || {
                 input.reader.context().map(|c| {
                     let age = unix_now() - c.ts;
-                    let text = if age > (input.read_interval_secs * 2) as i64
-                    {
+                    let text = if age > (input.read_interval_secs * 2) as i64 {
                         format!("{}\n(captured ~{}s ago)", c.text, age)
                     } else {
                         c.text
@@ -669,12 +700,7 @@ pub(crate) async fn resolve_screen(
                 let latest = input.ring.lock().latest();
                 let fresh = match latest {
                     Some(f) if (input.screen_permission)() => {
-                        match crate::screen_read::describe_screen(
-                            &*vis.provider,
-                            &f,
-                            cancel,
-                        )
-                        .await
+                        match crate::screen_read::describe_screen(&*vis.provider, &f, cancel).await
                         {
                             Ok(Some(reply)) => {
                                 if let Some(u) = &reply.usage {
@@ -717,10 +743,7 @@ pub(crate) async fn resolve_screen(
         // is the pre-redesign "No frame captured" → ask:error. Ambient
         // asks (explicit=false) still get Ok(None) → plain text.
         if material.is_none() && input.explicit {
-            return Err(
-                "No screen material captured — check screen permission"
-                    .into(),
-            );
+            return Err("No screen material captured — check screen permission".into());
         }
         return Ok((material, usage));
     }
@@ -744,9 +767,7 @@ pub(crate) async fn resolve_screen(
             // The ask explicitly wanted the screen — a text-only
             // fallback would answer blind (the confabulation failure
             // this redesign exists to kill).
-            return Err(
-                "Screenshot failed — check screen permission".into(),
-            );
+            return Err("Screenshot failed — check screen permission".into());
         }
     };
     log::info!(
@@ -756,12 +777,7 @@ pub(crate) async fn resolve_screen(
         frame.jpeg.len()
     );
     if let Some(vis) = vision {
-        let read = crate::screen_read::describe_screen(
-            &*vis.provider,
-            &frame,
-            cancel,
-        )
-        .await;
+        let read = crate::screen_read::describe_screen(&*vis.provider, &frame, cancel).await;
         match read {
             Ok(Some(reply)) => {
                 if let Some(u) = reply.usage {
@@ -888,12 +904,20 @@ fn build_messages(
     msgs
 }
 
-/// The active listen transcript tail, formatted for the live request context.
-fn load_listen_context(db: &Db) -> String {
-    let Some(session_id) = db.session_active_id("listen").ok().flatten() else {
-        return String::new();
+/// The send's meeting context. A linked send (`Some`) is about THAT
+/// listen doc — live or ended — so its persisted summary leads (it
+/// covers the whole session, where the transcript tail truncates) and
+/// the transcript tail follows. An unlinked ask keeps the ambient
+/// behavior: the live listen session's tail, transcript only.
+fn load_listen_context(db: &Db, listen_id: Option<i64>) -> String {
+    let (sid, linked) = match listen_id {
+        Some(id) => (id, true),
+        None => match db.session_active_id("listen").ok().flatten() {
+            Some(id) => (id, false),
+            None => return String::new(),
+        },
     };
-    match db.transcripts_tail(session_id, HISTORY_TAIL) {
+    let transcript = match db.transcripts_tail(sid, HISTORY_TAIL) {
         Ok(rows) => rows
             .iter()
             .map(|row: &Transcript| format!("{}: {}", row.speaker, row.content))
@@ -903,6 +927,31 @@ fn load_listen_context(db: &Db) -> String {
             log::warn!("ask: listen history load failed: {error}");
             String::new()
         }
+    };
+    if !linked {
+        return transcript;
+    }
+    let summary = match db.summary_latest(sid) {
+        Ok(summary) => summary.map(|s| {
+            let mut text = match s.topic.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
+                Some(topic) => format!("Topic: {topic}\n"),
+                None => String::new(),
+            };
+            text.push_str(&format!("TLDR: {}", s.tldr));
+            for bullet in &s.bullets {
+                text.push_str(&format!("\n- {bullet}"));
+            }
+            text
+        }),
+        Err(error) => {
+            log::warn!("ask: listen summary load failed: {error}");
+            None
+        }
+    };
+    match (summary, transcript.is_empty()) {
+        (Some(s), false) => format!("Summary:\n{s}\n\nTranscript:\n{transcript}"),
+        (Some(s), true) => format!("Summary:\n{s}"),
+        (None, _) => transcript,
     }
 }
 
@@ -1073,10 +1122,7 @@ mod tests {
                             on_token(t);
                             full.push_str(t);
                         }
-                        Ok(StreamReply {
-                            full,
-                            usage: None,
-                        })
+                        Ok(StreamReply { full, usage: None })
                     }
                     Behavior::TokensUsage(tokens, usage) => {
                         let mut full = String::new();
@@ -1156,7 +1202,13 @@ mod tests {
     }
 
     fn test_frame() -> Frame {
-        Frame { jpeg: vec![1, 2, 3], width: 8, height: 8, ts: 0, hash: 0 }
+        Frame {
+            jpeg: vec![1, 2, 3],
+            width: 8,
+            height: 8,
+            ts: 0,
+            hash: 0,
+        }
     }
 
     /// A `ScreenInput` with every seam stubbed benign: no recording, no
@@ -1237,6 +1289,7 @@ mod tests {
             &cancel,
             false,
             false,
+            None,
             "en",
         )
         .await
@@ -1307,6 +1360,7 @@ mod tests {
             &cancel,
             false,
             false,
+            None,
             "en",
         )
         .await
@@ -1365,6 +1419,7 @@ mod tests {
             &cancel,
             false,
             false,
+            None,
             "en",
         )
         .await
@@ -1414,6 +1469,7 @@ mod tests {
             &cancel,
             false,
             false,
+            None,
             "en",
         )
         .await
@@ -1450,6 +1506,7 @@ mod tests {
             &cancel,
             false,
             false,
+            None,
             "en",
         )
         .await
@@ -1501,6 +1558,7 @@ mod tests {
             &cancel,
             false,
             false,
+            None,
             "en",
         )
         .await
@@ -1553,6 +1611,7 @@ mod tests {
             &cancel,
             false,
             false,
+            None,
             "en",
         )
         .await
@@ -1601,6 +1660,7 @@ mod tests {
             &cancel,
             false,
             false,
+            None,
             "en",
         )
         .await
@@ -1634,6 +1694,7 @@ mod tests {
             &cancel,
             false,
             false,
+            None,
             "en",
         )
         .await
@@ -1685,6 +1746,7 @@ mod tests {
             &cancel,
             false,
             false,
+            None,
             "en",
         )
         .await
@@ -1761,6 +1823,7 @@ mod tests {
             &cancel,
             false,
             false,
+            None,
             "en",
         )
         .await
@@ -1798,6 +1861,7 @@ mod tests {
             &cancel,
             false,
             false,
+            None,
             "en",
         )
         .await
@@ -1839,6 +1903,7 @@ mod tests {
             &cancel,
             false,
             false,
+            None,
             "en",
         )
         .await
@@ -1884,6 +1949,7 @@ mod tests {
             &cancel,
             false,
             false,
+            None,
             "en",
         )
         .await
@@ -1934,6 +2000,7 @@ mod tests {
             &cancel,
             true,
             false,
+            None,
             "en",
         )
         .await
@@ -1958,8 +2025,7 @@ mod tests {
         let sid = db.session_get_or_create_active("ask").unwrap();
         for i in 0..12 {
             db.message_add(sid, "user", &format!("u{i}")).unwrap();
-            db.message_add(sid, "assistant", &format!("a{i}"))
-                .unwrap();
+            db.message_add(sid, "assistant", &format!("a{i}")).unwrap();
         }
         let provider = MockProvider::new(vec![Behavior::Tokens(vec!["ok".into()])]);
         let calls = provider.calls();
@@ -1979,6 +2045,7 @@ mod tests {
             &cancel,
             false,
             false,
+            None,
             "en",
         )
         .await
@@ -2030,6 +2097,7 @@ mod tests {
             &cancel,
             false,
             true,
+            None,
             "en",
         )
         .await
@@ -2060,9 +2128,9 @@ mod tests {
 
         // `ask:done` reports the same spend.
         let got = events.lock().clone();
-        assert!(got.iter().any(|(n, p)| {
-            n == EV_DONE && p["usage"] == json!({"input": 10, "output": 4})
-        }));
+        assert!(got
+            .iter()
+            .any(|(n, p)| { n == EV_DONE && p["usage"] == json!({"input": 10, "output": 4}) }));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2090,6 +2158,7 @@ mod tests {
             &cancel,
             false,
             true,
+            None,
             "en",
         )
         .await
@@ -2099,6 +2168,152 @@ mod tests {
         assert_eq!(msgs.len(), 2);
         assert_eq!(msgs[0].role, "user");
         assert_eq!(msgs[0].content, "q");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A send bound to a listen doc (`listen_id`) gets its own ask
+    /// session — not the open generic one — and the request carries
+    /// the doc's summary + transcript tail, not some other session's.
+    /// A second send reuses the linked chat (one thread per doc).
+    #[tokio::test]
+    async fn send_chain_listen_linked_send_uses_the_doc_session() {
+        let dir = tmp_dir();
+        let db = Db::at(dir.join("marvis.db")).unwrap();
+        // The viewed doc: ended, with a transcript + summary.
+        let doc = db.session_get_or_create_active("listen").unwrap();
+        db.transcript_add(doc, "them", "deploys freeze on Friday", None)
+            .unwrap();
+        db.summary_upsert(
+            doc,
+            "Freeze starts Friday.",
+            &["no deploys after Thursday".to_string()],
+            &[],
+            Some("release plan"),
+        )
+        .unwrap();
+        db.session_end(doc).unwrap();
+        // An unrelated open ask session — the send must not join it.
+        let generic = db.session_get_or_create_active("ask").unwrap();
+        db.message_add(generic, "user", "unrelated").unwrap();
+        let provider = MockProvider::new(vec![Behavior::Tokens(vec!["ok".into()])]);
+        let calls = provider.calls();
+        let (_events, emit) = recorder();
+        let reader = screen_read::ScreenReader::new();
+        let ring = Mutex::new(RingBuffer::new(4, 1 << 20));
+        let input = input(&reader, &ring);
+        let cancel = CancellationToken::new();
+
+        send_chain(
+            vec![candidate("openai", provider)],
+            None,
+            &db,
+            &emit,
+            "what freezes?",
+            &input,
+            &cancel,
+            false,
+            false,
+            Some(doc),
+            "en",
+        )
+        .await
+        .unwrap();
+
+        let ask_sid = db.session_active_id("ask").unwrap().unwrap();
+        assert_eq!(db.session_listen_id(ask_sid).unwrap(), Some(doc));
+        assert_ne!(ask_sid, generic);
+        // The doc's chat got the user row; the generic session is closed
+        // and kept only its own message.
+        assert_eq!(
+            db.messages_for(ask_sid).unwrap()[0].content,
+            "what freezes?"
+        );
+        assert_eq!(db.messages_for(generic).unwrap().len(), 1);
+
+        // The provider saw the doc's summary AND transcript in
+        // <meeting_context>, not the ended-guess ambient tail.
+        let (request, call_len) = {
+            let calls = calls.lock();
+            let msgs = &calls[0];
+            let request = match &msgs.last().unwrap().content[0] {
+                ContentPart::Text(text) => text.clone(),
+                _ => panic!("request must start with a text part"),
+            };
+            (request, msgs.len())
+        };
+        assert!(request.contains("<meeting_context>"));
+        assert!(request.contains("Freeze starts Friday."));
+        assert!(request.contains("deploys freeze on Friday"));
+        // No prior chat turns — this session is fresh.
+        assert_eq!(call_len, 2); // [system] + user turn
+
+        // A second linked send reuses the same session.
+        let provider = MockProvider::new(vec![Behavior::Tokens(vec!["again".into()])]);
+        send_chain(
+            vec![candidate("openai", provider)],
+            None,
+            &db,
+            &emit,
+            "and the exception?",
+            &input,
+            &cancel,
+            false,
+            false,
+            Some(doc),
+            "en",
+        )
+        .await
+        .unwrap();
+        assert_eq!(db.session_active_id("ask").unwrap(), Some(ask_sid));
+        assert_eq!(db.messages_for(ask_sid).unwrap().len(), 4);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An unlinked send that lands in a doc-bound session (a continued
+    /// doc chat or its retry) still loads that doc's context — the link
+    /// lives on the session row, not the call.
+    #[tokio::test]
+    async fn send_chain_unlinked_send_inherits_the_sessions_doc() {
+        let dir = tmp_dir();
+        let db = Db::at(dir.join("marvis.db")).unwrap();
+        let doc = db.session_get_or_create_active("listen").unwrap();
+        db.transcript_add(doc, "me", "ship it Monday", None)
+            .unwrap();
+        db.session_end(doc).unwrap();
+        let ask_sid = db.ask_session_for_listen(doc).unwrap();
+        db.message_add(ask_sid, "user", "first doc q").unwrap();
+        let provider = MockProvider::new(vec![Behavior::Tokens(vec!["ok".into()])]);
+        let calls = provider.calls();
+        let (_events, emit) = recorder();
+        let reader = screen_read::ScreenReader::new();
+        let ring = Mutex::new(RingBuffer::new(4, 1 << 20));
+        let input = input(&reader, &ring);
+        let cancel = CancellationToken::new();
+
+        send_chain(
+            vec![candidate("openai", provider)],
+            None,
+            &db,
+            &emit,
+            "follow-up",
+            &input,
+            &cancel,
+            false,
+            false,
+            None,
+            "en",
+        )
+        .await
+        .unwrap();
+
+        let calls = calls.lock();
+        let msgs = &calls[0];
+        let request = match &msgs.last().unwrap().content[0] {
+            ContentPart::Text(text) => text.clone(),
+            _ => panic!("request must start with a text part"),
+        };
+        assert!(request.contains("ship it Monday"));
+        assert_eq!(db.session_active_id("ask").unwrap(), Some(ask_sid));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2139,10 +2354,9 @@ mod tests {
         input.capture_running = true;
         let (_ev, emit) = recorder();
         let vis = candidate("vis", MockProvider::new(vec![]));
-        let (mat, _u) =
-            resolve_screen(&input, Some(&vis), &emit, &CancellationToken::new())
-                .await
-                .unwrap();
+        let (mat, _u) = resolve_screen(&input, Some(&vis), &emit, &CancellationToken::new())
+            .await
+            .unwrap();
         let Some(ScreenMaterial::Text(t)) = mat else {
             panic!("expected cached text");
         };
@@ -2157,10 +2371,9 @@ mod tests {
         let mut input = input(&reader, &ring);
         input.capture_running = true;
         let (_ev, emit) = recorder();
-        let (mat, _u) =
-            resolve_screen(&input, None, &emit, &CancellationToken::new())
-                .await
-                .unwrap();
+        let (mat, _u) = resolve_screen(&input, None, &emit, &CancellationToken::new())
+            .await
+            .unwrap();
         assert!(matches!(mat, Some(ScreenMaterial::Frame(_))));
     }
 
@@ -2170,10 +2383,9 @@ mod tests {
         let ring = Mutex::new(RingBuffer::new(4, 1 << 20));
         let input = input(&reader, &ring);
         let (_ev, emit) = recorder();
-        let (mat, _u) =
-            resolve_screen(&input, None, &emit, &CancellationToken::new())
-                .await
-                .unwrap();
+        let (mat, _u) = resolve_screen(&input, None, &emit, &CancellationToken::new())
+            .await
+            .unwrap();
         assert!(mat.is_none(), "no intent + no recording → nothing attached");
     }
 
@@ -2186,14 +2398,11 @@ mod tests {
         let (_ev, emit) = recorder();
         let vis = candidate(
             "vis",
-            MockProvider::new(vec![Behavior::Tokens(vec![
-                "screen text".into(),
-            ])]),
+            MockProvider::new(vec![Behavior::Tokens(vec!["screen text".into()])]),
         );
-        let (mat, _u) =
-            resolve_screen(&input, Some(&vis), &emit, &CancellationToken::new())
-                .await
-                .unwrap();
+        let (mat, _u) = resolve_screen(&input, Some(&vis), &emit, &CancellationToken::new())
+            .await
+            .unwrap();
         let Some(ScreenMaterial::Text(t)) = mat else {
             panic!("expected inline read text");
         };
@@ -2209,13 +2418,7 @@ mod tests {
         input.explicit = true;
         input.shot = || Err(anyhow::anyhow!("denied"));
         let (_ev, emit) = recorder();
-        let result = resolve_screen(
-            &input,
-            None,
-            &emit,
-            &CancellationToken::new(),
-        )
-        .await;
+        let result = resolve_screen(&input, None, &emit, &CancellationToken::new()).await;
         assert!(result.is_err());
     }
 
@@ -2230,10 +2433,9 @@ mod tests {
         input.capture_running = true;
         input.screen_permission = || false;
         let (events, emit) = recorder();
-        let (mat, _u) =
-            resolve_screen(&input, None, &emit, &CancellationToken::new())
-                .await
-                .unwrap();
+        let (mat, _u) = resolve_screen(&input, None, &emit, &CancellationToken::new())
+            .await
+            .unwrap();
         assert!(mat.is_none(), "revoked permission drops the stale frame");
         assert!(events
             .lock()
@@ -2251,9 +2453,7 @@ mod tests {
         input.needs_screen = true;
         input.shot = || Err(anyhow::anyhow!("x"));
         let (_ev, emit) = recorder();
-        let result =
-            resolve_screen(&input, None, &emit, &CancellationToken::new())
-                .await;
+        let result = resolve_screen(&input, None, &emit, &CancellationToken::new()).await;
         assert!(result.is_err(), "failed intent shot must error");
     }
 
@@ -2267,10 +2467,9 @@ mod tests {
         input.capture_running = true;
         let (_ev, emit) = recorder();
         let vis = candidate("vis", MockProvider::new(vec![]));
-        let (mat, _u) =
-            resolve_screen(&input, Some(&vis), &emit, &CancellationToken::new())
-                .await
-                .unwrap();
+        let (mat, _u) = resolve_screen(&input, Some(&vis), &emit, &CancellationToken::new())
+            .await
+            .unwrap();
         assert!(mat.is_none());
     }
 
@@ -2291,10 +2490,9 @@ mod tests {
             "vis",
             MockProvider::new(vec![Behavior::Tokens(vec!["fresh".into()])]),
         );
-        let (mat, _u) =
-            resolve_screen(&input, Some(&vis), &emit, &CancellationToken::new())
-                .await
-                .unwrap();
+        let (mat, _u) = resolve_screen(&input, Some(&vis), &emit, &CancellationToken::new())
+            .await
+            .unwrap();
         match mat {
             Some(ScreenMaterial::Text(t)) => assert_eq!(t, "fresh"),
             _ => panic!("intent ask must produce the fresh inline read"),
@@ -2317,10 +2515,9 @@ mod tests {
             "vis",
             MockProvider::new(vec![Behavior::Fail(LlmError::Auth)]),
         );
-        let (mat, _u) =
-            resolve_screen(&input, Some(&vis), &emit, &CancellationToken::new())
-                .await
-                .unwrap();
+        let (mat, _u) = resolve_screen(&input, Some(&vis), &emit, &CancellationToken::new())
+            .await
+            .unwrap();
         match mat {
             Some(ScreenMaterial::Text(t)) => assert_eq!(t, "cached read"),
             _ => panic!("failed fresh read must fall back to cache"),
@@ -2338,9 +2535,7 @@ mod tests {
         input.explicit = true;
         let (_ev, emit) = recorder();
         let vis = candidate("vis", MockProvider::new(vec![]));
-        let result =
-            resolve_screen(&input, Some(&vis), &emit, &CancellationToken::new())
-                .await;
+        let result = resolve_screen(&input, Some(&vis), &emit, &CancellationToken::new()).await;
         assert!(result.is_err(), "intent ask with no material must error");
     }
 
@@ -2355,9 +2550,7 @@ mod tests {
         input.capture_running = true;
         input.explicit = true;
         let (_ev, emit) = recorder();
-        let result =
-            resolve_screen(&input, None, &emit, &CancellationToken::new())
-                .await;
+        let result = resolve_screen(&input, None, &emit, &CancellationToken::new()).await;
         assert!(result.is_err(), "required + empty ON material must error");
     }
 
@@ -2373,9 +2566,7 @@ mod tests {
         input.shot = || Err(anyhow::anyhow!("x"));
         input.screen_permission = || false;
         let (events, emit) = recorder();
-        let result =
-            resolve_screen(&input, None, &emit, &CancellationToken::new())
-                .await;
+        let result = resolve_screen(&input, None, &emit, &CancellationToken::new()).await;
         assert!(result.is_err());
         assert!(events
             .lock()

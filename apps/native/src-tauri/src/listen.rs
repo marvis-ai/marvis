@@ -1,5 +1,6 @@
 //! Listen orchestration: channel-aware turn assembly, persistence, and summaries.
 
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc};
 use std::thread::JoinHandle;
@@ -203,6 +204,120 @@ fn append_segment(committed: &mut String, segment: &str) {
     } else if committed != segment {
         committed.push(' ');
         committed.push_str(segment);
+    }
+}
+
+/// Speaker text stays referenceable long enough to outlast the mic's
+/// acoustic path plus the STT window and decode lag behind it.
+const ECHO_REFERENCE_WINDOW: Duration = Duration::from_secs(15);
+/// A mic segment is echo when this fraction of its character-bigram
+/// multiset is covered by recent speaker text — the acoustic decode
+/// garbles a few characters but keeps most of the utterance.
+const ECHO_CONTAINMENT: f64 = 0.65;
+/// Segments this short carry too few bigrams to judge; suppressing them
+/// would drop genuine acknowledgments ("好的", "OK"), so they never match.
+const ECHO_MIN_CHARS: usize = 6;
+
+/// Mic re-capture gate. The capture path has no acoustic echo
+/// cancellation, so speech played through the speakers is transcribed
+/// twice: digitally on `them`, then acoustically on `me` seconds later —
+/// one utterance becomes both a "Speaker N" and a "You" line. The gate
+/// retains a short window of normalized `them` text and drops `me`
+/// events whose text is contained in it. It only engages while speaker
+/// audio was actually captured, so mic-only sessions are unaffected.
+#[derive(Debug, Default)]
+struct EchoGate {
+    /// `(seen_at, normalized_text)` of recent `them` segments.
+    them_recent: VecDeque<(Instant, String)>,
+}
+
+impl EchoGate {
+    /// Retain a `them` segment's text as echo reference.
+    fn record(&mut self, text: &str) {
+        self.record_at(text, Instant::now());
+    }
+
+    fn record_at(&mut self, text: &str, now: Instant) {
+        let normalized = normalize_echo_text(text);
+        if normalized.is_empty() {
+            return;
+        }
+        self.them_recent.push_back((now, normalized));
+        self.evict(now);
+    }
+
+    /// `text` heard on the mic re-transcribes speaker output when its
+    /// bigrams are mostly covered by the retained `them` window. The
+    /// digital channel decodes first — the acoustic path adds the lag —
+    /// so the reference already exists when the echo arrives.
+    fn is_echo(&mut self, text: &str) -> bool {
+        self.is_echo_at(text, Instant::now())
+    }
+
+    fn is_echo_at(&mut self, text: &str, now: Instant) -> bool {
+        self.evict(now);
+        let probe = normalize_echo_text(text);
+        if probe.chars().count() < ECHO_MIN_CHARS || self.them_recent.is_empty() {
+            return false;
+        }
+        // One concatenated window covers an echo that re-decoded to a
+        // slice of a speaker segment or spanned a segment boundary.
+        let reference: String = self
+            .them_recent
+            .iter()
+            .map(|(_, segment)| segment.as_str())
+            .collect();
+        echo_containment(&probe, &reference) >= ECHO_CONTAINMENT
+    }
+
+    fn evict(&mut self, now: Instant) {
+        while self
+            .them_recent
+            .front()
+            .is_some_and(|(seen, _)| now.duration_since(*seen) > ECHO_REFERENCE_WINDOW)
+        {
+            self.them_recent.pop_front();
+        }
+    }
+}
+
+/// Case-folded alphanumerics only — the digital and acoustic decodes of
+/// one utterance disagree on punctuation and spacing more than on the
+/// spoken characters themselves.
+fn normalize_echo_text(text: &str) -> String {
+    text.chars()
+        .filter(|c| c.is_alphanumeric())
+        .flat_map(|c| c.to_lowercase())
+        .collect()
+}
+
+/// The fraction of `probe`'s character-bigram multiset covered by
+/// `reference`'s. Containment — not symmetric similarity — because an
+/// echo may re-decode to just a slice of the speaker text.
+fn echo_containment(probe: &str, reference: &str) -> f64 {
+    let mut available: HashMap<(char, char), usize> = HashMap::new();
+    let mut previous = None;
+    for c in reference.chars() {
+        if let Some(p) = previous.replace(c) {
+            *available.entry((p, c)).or_default() += 1;
+        }
+    }
+    let (mut matched, mut total) = (0usize, 0usize);
+    let mut previous = None;
+    for c in probe.chars() {
+        if let Some(p) = previous.replace(c) {
+            total += 1;
+            let slot = available.entry((p, c)).or_insert(0);
+            if *slot > 0 {
+                *slot -= 1;
+                matched += 1;
+            }
+        }
+    }
+    if total == 0 {
+        0.0
+    } else {
+        matched as f64 / total as f64
     }
 }
 
@@ -490,6 +605,7 @@ impl ListenService {
         let cancel = Arc::new(AtomicBool::new(false));
         let paused = Arc::new(AtomicBool::new(false));
         let assembler = Arc::new(Mutex::new(TurnAssembler::new()));
+        let echo_gate = Arc::new(Mutex::new(EchoGate::default()));
         let context = Arc::new(SessionContext {
             db: db.clone(),
             history: self.history.clone(),
@@ -526,9 +642,22 @@ impl ListenService {
                     }
                 };
                 let callback_assembler = assembler.clone();
+                let callback_gate = echo_gate.clone();
                 let callback_context = context.clone();
                 if let Err(error) = stt.start(
                     Box::new(move |event| {
+                        // `them` text seeds the echo reference; a `me`
+                        // event that re-transcribes it is speaker playback
+                        // heard by the mic — dropped before it can emit a
+                        // phantom "You" line or close the speaker's turn.
+                        {
+                            let mut gate = callback_gate.lock();
+                            match event.channel {
+                                SpeakerChannel::Them => gate.record(&event.text),
+                                SpeakerChannel::Me if gate.is_echo(&event.text) => return,
+                                SpeakerChannel::Me => {}
+                            }
+                        }
                         let channel = event.channel;
                         let speaker_idx = event.speaker_idx;
                         let (turns, interim, interim_label) = {
@@ -1199,6 +1328,63 @@ mod tests {
             SpeakerChannel::Me
         );
     }
+    /// Speaker playback heard acoustically by the mic re-decodes a few
+    /// seconds after the digital channel, slightly garbled — it is the
+    /// same utterance and must not emit a second "You" line.
+    #[test]
+    fn mic_retranscription_of_speaker_output_is_dropped() {
+        let mut gate = EchoGate::default();
+        let t = Instant::now();
+        gate.record_at("我们公司真的有病他妈的吃饱了又他妈把好行范围给缩小", t);
+        assert!(
+            gate.is_echo_at("有病他妈的吃饱了又他妈把考勤范围给缩小了嗯", t + Duration::from_secs(4))
+        );
+    }
+
+    /// Genuine user speech while the speakers play shares too few bigrams
+    /// with the output to be echo — it must survive the gate.
+    #[test]
+    fn real_user_speech_during_playback_survives() {
+        let mut gate = EchoGate::default();
+        let t = Instant::now();
+        gate.record_at("the roadmap review moved to next friday", t);
+        assert!(!gate.is_echo_at(
+            "I disagree with that plan entirely",
+            t + Duration::from_secs(2)
+        ));
+    }
+
+    /// Very short mic segments carry too few bigrams to distinguish echo
+    /// from a real acknowledgment — they are never suppressed.
+    #[test]
+    fn short_mic_segments_are_never_echo() {
+        let mut gate = EchoGate::default();
+        let t = Instant::now();
+        gate.record_at("okay sounds good to me", t);
+        assert!(!gate.is_echo_at("okay", t + Duration::from_secs(1)));
+    }
+
+    /// Speaker text older than the lag window is stale — the same words
+    /// said later are a real utterance, not re-capture.
+    #[test]
+    fn stale_speaker_text_no_longer_suppresses() {
+        let mut gate = EchoGate::default();
+        let t = Instant::now();
+        gate.record_at("the meeting moved to friday", t);
+        assert!(!gate.is_echo_at(
+            "the meeting moved to friday",
+            t + ECHO_REFERENCE_WINDOW + Duration::from_secs(1)
+        ));
+    }
+
+    /// Without captured speaker audio there is nothing to echo — a mic
+    /// session alone must never gate.
+    #[test]
+    fn empty_reference_never_suppresses() {
+        let mut gate = EchoGate::default();
+        assert!(!gate.is_echo_at("hello can anyone hear me", Instant::now()));
+    }
+
     #[test]
     fn empty_text_is_dropped() {
         let mut a = TurnAssembler::new();

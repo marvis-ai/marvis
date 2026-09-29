@@ -243,9 +243,11 @@ export const providerSetEnabled = (provider: string, enabled: boolean) =>
 
 /** Fire-and-forget: returns after pre-flight; tokens stream as `ask:*`.
  *  `withScreen` (the bar's Cmd/Ctrl+Enter) is the explicit attach flag —
- *  a screen read runs even when the text shows no intent. */
-export const askSend = (text: string, withScreen = false) =>
-  invoke<void>('ask_send', { text, withScreen });
+ *  a screen read runs even when the text shows no intent. `listenId`
+ *  binds the send to a listen doc — its own ask session (one chat per
+ *  doc), its summary+transcript as the meeting context. */
+export const askSend = (text: string, withScreen = false, listenId?: number) =>
+  invoke<void>('ask_send', { text, withScreen, listenId });
 
 /** The bar's camera affordance — a screen-only ask (fixed prompt,
  *  frame required). */

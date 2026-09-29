@@ -33,5 +33,8 @@ describe('barControls', () => {
       'history',
     ]);
     expect(barControls(true)).toEqual(['iris', 'dictation', 'settings']);
+    // The card's input row drops Back/Settings — the section header
+    // carries those; only dictation rides along with the Ask field.
+    expect(barControls(true, true)).toEqual(['dictation']);
   });
 });

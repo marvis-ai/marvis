@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+
+import { CaptionsIcon } from '@marvis/ui';
 import {
   configGet,
   listenPause,
@@ -10,7 +12,7 @@ import {
   windowShowSettings,
   type Config,
   type ListenStatus,
-} from '../lib/commands';
+} from '@/lib/commands';
 import {
   EV_CONFIG_CHANGED,
   EV_LISTEN_ERROR,
@@ -21,8 +23,8 @@ import {
   type ListenErrorPayload,
   type ListenStatePayload,
   type ListenSummaryPayload,
-} from '../lib/events';
-import { BTN_OUTLINE, BTN_SM, EMPTY, cn } from '../lib/classes';
+} from '@/lib/events';
+import { BTN_OUTLINE, BTN_SM, cn } from '@/lib/classes';
 import {
   buildBlocks,
   elapsedLabel,
@@ -30,11 +32,12 @@ import {
   transcriptCopyText,
   type ListenViewing,
   type Turn,
-} from './listen/model';
-import { ListenHeader } from './listen/ListenHeader';
-import { SpeakerFilter } from './listen/SpeakerFilter';
-import { SummaryStrip } from './listen/SummaryStrip';
-import { TranscriptBlocks } from './listen/TranscriptBlocks';
+} from '@/components/listen/model';
+import { ListenHeader } from '@/components/listen/ListenHeader';
+import { SpeakerFilter } from '@/components/listen/SpeakerFilter';
+import { SummaryStrip } from '@/components/listen/SummaryStrip';
+import { TranscriptBlocks } from '@/components/listen/TranscriptBlocks';
+import { EmptyState } from '@/components/shared/EmptyState';
 
 /** The structured meeting document — header (title, badge, timer,
  *  controls), speaker filter, timestamped transcript blocks, and the
@@ -45,11 +48,17 @@ import { TranscriptBlocks } from './listen/TranscriptBlocks';
 export const ListenSection = ({
   viewing,
   onSessionEnded,
+  onStartNew,
   onBack,
+  onFollowUp,
 }: {
   viewing: ListenViewing | null;
   onSessionEnded: (v: ListenViewing) => void;
+  /** 'Start new' on a viewed doc — Bar owns the fresh-session route. */
+  onStartNew: () => void;
   onBack: () => void;
+  /** A summary follow-up chip — sends itself to this doc's chat. */
+  onFollowUp?: (question: string) => void;
 }) => {
   const live = viewing === null;
   /** Live mirror of `viewing` for Tauri event handlers — an event that
@@ -342,6 +351,7 @@ export const ListenSection = ({
         onPause={() => void listenPause().catch(() => {})}
         onResume={() => void listenResume().catch(() => {})}
         onStop={stop}
+        onStartNew={live ? undefined : onStartNew}
       />
       {live && error && (
         <div className='flex items-center gap-2 border-b border-border bg-[color-mix(in_oklch,var(--destructive)_9%,transparent)] px-3 py-2 text-xs text-destructive'>
@@ -386,13 +396,17 @@ export const ListenSection = ({
               startedAt={startedAt}
             />
             {turns.length === 0 && !summary && (!error || !live) && (
-              <p className={EMPTY}>
-                {live
-                  ? listening
-                    ? 'Speak naturally — your transcript will appear here.'
-                    : 'Start listening to capture a conversation.'
-                  : 'No transcript captured.'}
-              </p>
+              <EmptyState
+                icon={CaptionsIcon}
+                title='No Transcript Yet'
+                description={
+                  live
+                    ? listening
+                      ? 'Speak naturally — your transcript will appear here.'
+                      : 'Start listening to capture a conversation.'
+                    : 'No transcript captured.'
+                }
+              />
             )}
           </div>
         </div>
@@ -413,7 +427,10 @@ export const ListenSection = ({
           </button>
         )}
       </div>
-      <SummaryStrip summary={summary} />
+      <SummaryStrip
+        summary={summary}
+        onFollowUp={onFollowUp}
+      />
     </div>
   );
 };

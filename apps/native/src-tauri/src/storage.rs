@@ -10,7 +10,7 @@
 //! Schema (spec §Persistence):
 //!
 //! ```sql
-//! sessions(id PK, type 'ask'|'listen', title?, audio_file?, started_at, ended_at?, last_active_at)
+//! sessions(id PK, type 'ask'|'listen', title?, audio_file?, stt?, started_at, ended_at?, last_active_at)
 //! messages(id PK, session_id FK → sessions.id ON DELETE CASCADE, role, content,
 //!          provider?, model?, tokens_in?, tokens_out?, ts)
 //! transcripts(id PK, session_id FK → sessions.id ON DELETE CASCADE, speaker, speaker_idx?, content, ts)
@@ -43,6 +43,7 @@ const SCHEMA: &str = "
         type           TEXT NOT NULL,
         title          TEXT,
         audio_file     TEXT,
+        stt            TEXT,
         started_at     INTEGER NOT NULL,
         ended_at       INTEGER,
         last_active_at INTEGER NOT NULL
@@ -95,6 +96,10 @@ pub struct Session {
     /// The retained session recording (mixed mic+system WAV under
     /// `~/.marvis/audios`) — listen sessions only.
     pub audio_file: Option<String>,
+    /// The STT engine label that captured the session
+    /// (`"whisper large-v3"`-shaped) — listen only; NULL on ask rows
+    /// and sessions written before the column existed.
+    pub stt: Option<String>,
     pub started_at: i64,
     pub ended_at: Option<i64>,
     pub last_active_at: i64,
@@ -315,7 +320,7 @@ impl Db {
                           WHERE sm.session_id = s.id AND sm.topic IS NOT NULL
                           ORDER BY sm.updated_at DESC, sm.id DESC LIMIT 1)
                       END),
-                    s.audio_file, s.started_at, s.ended_at, s.last_active_at
+                    s.audio_file, s.stt, s.started_at, s.ended_at, s.last_active_at
              FROM sessions s ORDER BY s.last_active_at DESC, s.id DESC",
         )?;
         let rows = stmt.query_map([], |row| {
@@ -324,9 +329,10 @@ impl Db {
                 kind: row.get(1)?,
                 title: row.get(2)?,
                 audio_file: row.get(3)?,
-                started_at: row.get(4)?,
-                ended_at: row.get(5)?,
-                last_active_at: row.get(6)?,
+                stt: row.get(4)?,
+                started_at: row.get(5)?,
+                ended_at: row.get(6)?,
+                last_active_at: row.get(7)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -338,6 +344,16 @@ impl Db {
         self.conn.lock().execute(
             "UPDATE sessions SET audio_file = ?1 WHERE id = ?2",
             params![path, id],
+        )?;
+        Ok(())
+    }
+
+    /// Record the STT engine label at listen start — the finished doc's
+    /// header reads it back via `session_list`; pre-column rows show none.
+    pub fn session_set_stt(&self, id: i64, stt: &str) -> anyhow::Result<()> {
+        self.conn.lock().execute(
+            "UPDATE sessions SET stt = ?1 WHERE id = ?2",
+            params![stt, id],
         )?;
         Ok(())
     }
@@ -658,8 +674,14 @@ fn migrate(conn: &Connection) -> anyhow::Result<()> {
             conn.execute_batch("ALTER TABLE transcripts ADD COLUMN speaker_idx INTEGER")?;
         }
     }
-    if table_exists("sessions")? && !columns("sessions")?.iter().any(|c| c == "audio_file") {
-        conn.execute_batch("ALTER TABLE sessions ADD COLUMN audio_file TEXT")?;
+    if table_exists("sessions")? {
+        let columns = columns("sessions")?;
+        if !columns.iter().any(|c| c == "audio_file") {
+            conn.execute_batch("ALTER TABLE sessions ADD COLUMN audio_file TEXT")?;
+        }
+        if !columns.iter().any(|c| c == "stt") {
+            conn.execute_batch("ALTER TABLE sessions ADD COLUMN stt TEXT")?;
+        }
     }
     if table_exists("summaries")? {
         let columns = columns("summaries")?;

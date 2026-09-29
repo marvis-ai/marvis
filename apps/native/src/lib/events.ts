@@ -119,6 +119,17 @@ export interface CaptureStatePayload {
    *  primary-display path and after a stop. */
   target: { kind: 'display' | 'window' | 'app'; label: string } | null;
 }
+/** Emitted to the picker window by `show_picker` — the view refetches
+ * `capture_pick_list` on it. The view ALSO fetches on mount: first
+ * open can emit before this webview's listener exists. */
+export const EV_PICKER_OPEN = 'picker:open';
+/** Per-candidate thumbnail, emitted to the picker as each renders —
+ * `{ id, jpeg }` where jpeg is base64 (pick-list background task). */
+export const EV_PICKER_THUMB = 'picker:thumb';
+export interface PickerThumbPayload {
+  id: string;
+  jpeg: string;
+}
 /** Broadcast after every successful `config_set` — payload is the full
  * `Config`, so windows re-render without a second `config_get`. */
 export const EV_CONFIG_CHANGED = 'config:changed';
@@ -130,6 +141,13 @@ export const EV_PREFS_MODE = 'prefs:mode';
  * `listen<T>(name)` with cleanup. Subscribes once per `name`; the callback
  * is held in a ref so a new `cb` identity each render never triggers a
  * re-subscribe (and the ref always points at the latest render's closure).
+ *
+ * `active` neutralizes a Tauri race (tauri-apps/tauri#15799): `unlisten`
+ * throws when called before the registration eval lands, so the backend
+ * listener LEAKS and keeps delivering — under StrictMode's
+ * mount→cleanup→mount every event then fires twice (`ask:chunk` doubling
+ * streamed text). The flag drops the zombie's deliveries; the catch
+ * swallows the racy throw.
  */
 export function useTauriEvent<T>(name: string, cb: (payload: T) => void) {
   const cbRef = useRef(cb);
@@ -138,9 +156,13 @@ export function useTauriEvent<T>(name: string, cb: (payload: T) => void) {
   });
 
   useEffect(() => {
-    const unlisten = listen<T>(name, (event) => cbRef.current(event.payload));
+    let active = true;
+    const unlisten = listen<T>(name, (event) => {
+      if (active) cbRef.current(event.payload);
+    });
     return () => {
-      void unlisten.then((u) => u());
+      active = false;
+      void unlisten.then((u) => u()).catch(() => {});
     };
   }, [name]);
 }

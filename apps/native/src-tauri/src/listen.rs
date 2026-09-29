@@ -460,6 +460,16 @@ impl ListenService {
             log::warn!("listen: session_end_open before start failed: {error}");
         }
         let session_id = db.session_get_or_create_active("listen")?;
+        // The engine that captured the session goes on the row now —
+        // a finished doc's header reads it back off `session_list`.
+        let stt_label = if model.trim().is_empty() {
+            provider_name.clone()
+        } else {
+            format!("{provider_name} {}", model.trim())
+        };
+        if let Err(error) = db.session_set_stt(session_id, &stt_label) {
+            log::warn!("listen: session_set_stt failed: {error}");
+        }
         let existing = db.transcripts_for(session_id, None)?;
         // The recording must exist before workers stream — `audio_file`
         // links immediately so a crashed run still finds the partial WAV.

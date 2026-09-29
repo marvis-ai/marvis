@@ -1,44 +1,31 @@
-import {
-  CheckIcon,
-  CopyIcon,
-  PauseIcon,
-  PlayIcon,
-  SquareIcon,
-} from '@marvis/ui';
-import { CHIP, ICON_BTN, NUM, cn } from '@/lib/classes';
+import { PauseIcon, PlayIcon, SquareIcon } from '@marvis/ui';
+import { CHIP, ICON_BTN, cn } from '@/lib/classes';
 import { CardHeader } from '../shared/CardHeader';
-import { elapsedLabel } from './model';
 
-/** Document header: title/subtitle on the left; state pill, elapsed
- *  recording time, and pause/resume/stop/copy controls on the right.
- *  `live` stays in the contract (idle-live shows no badge, viewed docs
- *  show STOPPED) even though the control booleans carry the render. */
+/** Document header: title/subtitle on the left; the live state pill
+ *  (LISTENING/PAUSED) and pause/resume/stop controls on the right —
+ *  live-only, so a viewed doc carries no badge and no controls.
+ *  Elapsed time and copy moved down to the SpeakerFilter row, shared
+ *  by live and viewed docs alike. */
 export const ListenHeader = ({
   title,
   subtitle,
   badge,
-  elapsedSecs,
   listening,
   paused,
-  copiedAll,
   onPause,
   onResume,
   onStop,
-  onCopyAll,
   onBack,
 }: {
   title: string;
   subtitle: string;
-  badge: 'LISTENING' | 'PAUSED' | 'STOPPED' | null;
-  elapsedSecs: number;
-  live: boolean;
+  badge: 'LISTENING' | 'PAUSED' | null;
   listening: boolean;
   paused: boolean;
-  copiedAll: boolean;
   onPause: () => void;
   onResume: () => void;
   onStop: () => void;
-  onCopyAll: () => void;
   onBack: () => void;
 }) => (
   <CardHeader
@@ -58,11 +45,6 @@ export const ListenHeader = ({
           />
         )}
         {badge}
-      </span>
-    )}
-    {badge && (
-      <span className={cn(NUM, 'text-xs text-foreground')}>
-        {elapsedLabel(elapsedSecs)}
       </span>
     )}
     {listening && (
@@ -95,17 +77,5 @@ export const ListenHeader = ({
         <SquareIcon className='size-3.5' />
       </button>
     )}
-    <button
-      type='button'
-      className={ICON_BTN}
-      title='Copy transcript'
-      aria-label='Copy transcript'
-      onClick={onCopyAll}>
-      {copiedAll ? (
-        <CheckIcon className='size-3.5 text-accent' />
-      ) : (
-        <CopyIcon className='size-3.5' />
-      )}
-    </button>
   </CardHeader>
 );

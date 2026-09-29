@@ -58,7 +58,7 @@ export const PROV_ERR =
 export const PANEL =
   'glass-surface flex flex-col overflow-hidden rounded-[18px] bg-[color-mix(in_oklch,var(--surface)_90%,transparent)] backdrop-blur-lg';
 export const PANEL_HEAD =
-  'flex items-center gap-1.5 border-b border-border px-3 py-3';
+  'flex min-h-16 items-center gap-1.5 border-b border-border px-3 py-3';
 export const PANEL_BODY =
   'min-h-0 flex-1 select-text overflow-y-auto px-3.5 pt-3 pb-3.5 text-[13px] leading-[1.6]';
 export const CHIP =

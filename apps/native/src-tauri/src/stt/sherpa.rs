@@ -9,8 +9,8 @@ use std::time::Duration;
 
 use parking_lot::Mutex;
 use sherpa_onnx::{
-    OfflineRecognizer, OfflineRecognizerConfig, OfflineSenseVoiceModelConfig, SileroVadModelConfig,
-    VadModelConfig, VoiceActivityDetector,
+    OfflineRecognizer, OfflineRecognizerConfig, OfflineSenseVoiceModelConfig, OnlinePunctuation,
+    OnlinePunctuationConfig, SileroVadModelConfig, VadModelConfig, VoiceActivityDetector,
 };
 
 use crate::audio::PcmChunk;
@@ -22,7 +22,6 @@ const WORKER_TICK: Duration = Duration::from_millis(100);
 const VAD_BUFFER_SECONDS: f32 = 30.0;
 const INIT_TIMEOUT: Duration = Duration::from_secs(30);
 const DECODE_TIMEOUT: Duration = Duration::from_secs(30);
-const QUEUE_DEPTH: usize = 8;
 
 struct DecodeJob {
     samples: Vec<f32>,
@@ -134,6 +133,31 @@ fn create_recognizer(model_dir: &Path) -> Result<OfflineRecognizer, String> {
         .ok_or_else(|| "the speech model could not be loaded".to_string())
 }
 
+/// Load the optional English punctuation+casing model. Any failure yields
+/// `None` — transcripts then pass through unmodified, as before.
+fn create_punctuator(model: &Path, vocab: &Path) -> Option<OnlinePunctuation> {
+    let mut config = OnlinePunctuationConfig::default();
+    config.model.cnn_bilstm = Some(model.display().to_string());
+    config.model.bpe_vocab = Some(vocab.display().to_string());
+    OnlinePunctuation::create(&config)
+}
+
+/// SenseVoice emits English uppercased with no punctuation. The CNN-BiLSTM
+/// punctuator's case head was trained on lowercase input, so the text is
+/// lowered before the call and the model restores word case plus `, . ?`.
+/// Segments without Latin letters (pure Chinese, numbers) skip the model so
+/// they can never be mangled by an English-trained punctuator.
+fn restore_punct_and_case(punct: Option<&OnlinePunctuation>, text: &str) -> String {
+    let Some(punct) = punct else {
+        return text.to_string();
+    };
+    if !text.bytes().any(|b| b.is_ascii_alphabetic()) {
+        return text.to_string();
+    }
+    let lowered = text.to_lowercase();
+    punct.add_punctuation(&lowered).unwrap_or(lowered)
+}
+
 // The multi-field `default()` + reassignment shape mirrors the recognizer
 // config above and sherpa-onnx's own examples.
 #[allow(clippy::field_reassign_with_default)]
@@ -157,7 +181,7 @@ pub struct SherpaProvider {
     model_dir: PathBuf,
     channel: SpeakerChannel,
     diarize: bool,
-    queue: Option<mpsc::SyncSender<PcmChunk>>,
+    queue: Option<mpsc::Sender<PcmChunk>>,
     cancel: Arc<AtomicBool>,
     worker: Option<JoinHandle<()>>,
 }
@@ -194,12 +218,18 @@ impl SttProvider for SherpaProvider {
         let engine = engine_for(&self.model_dir).map_err(anyhow::Error::msg)?;
         let vad = VoiceActivityDetector::create(&vad_config(&self.model_dir), VAD_BUFFER_SECONDS)
             .ok_or_else(|| anyhow::anyhow!("the speech model could not be loaded"))?;
-        let (sender, receiver) = mpsc::sync_channel(QUEUE_DEPTH);
+        // Unbounded on purpose: decodes block the worker for up to whole
+        // seconds per segment, so a bounded queue overflows during speech
+        // and every dropped chunk is a permanent hole in the transcript —
+        // a backlog is only lag and drains in the next silence.
+        let (sender, receiver) = mpsc::channel();
         self.queue = Some(sender);
         self.cancel.store(false, Ordering::Release);
         let cancel = Arc::clone(&self.cancel);
         let channel = self.channel;
         let diarize = self.diarize;
+        let punct_paths =
+            crate::sherpa_models::punctuation_model_paths(&crate::paths::sherpa_models_dir());
         self.worker = Some(thread::spawn(move || {
             run_worker(
                 receiver,
@@ -207,6 +237,7 @@ impl SttProvider for SherpaProvider {
                 engine,
                 channel,
                 diarize,
+                punct_paths,
                 cancel,
                 callback,
                 error_callback,
@@ -216,9 +247,11 @@ impl SttProvider for SherpaProvider {
     }
 
     fn enqueue(&self, chunk: PcmChunk) -> bool {
+        // `false` now means the worker is gone — a terminal failure the
+        // error callback already reported — never a full queue.
         self.queue
             .as_ref()
-            .is_some_and(|sender| sender.try_send(chunk).is_ok())
+            .is_some_and(|sender| sender.send(chunk).is_ok())
     }
 
     fn stop(&mut self) {
@@ -246,11 +279,19 @@ fn run_worker(
     engine: Arc<SherpaEngine>,
     channel: SpeakerChannel,
     diarize: bool,
+    punct_paths: Option<(PathBuf, PathBuf)>,
     cancel: Arc<AtomicBool>,
     callback: Box<dyn Fn(TranscriptEvent) + Send + Sync>,
     error_callback: Box<dyn Fn(String) + Send + Sync>,
 ) {
-    let decode = |samples: &[f32]| engine.decode(samples.to_vec());
+    // Punctuation is progressive enhancement like diarization: absent or
+    // unloadable model files leave the raw transcript unchanged.
+    let punct = punct_paths.and_then(|(model, vocab)| create_punctuator(&model, &vocab));
+    let decode = |samples: &[f32]| {
+        engine
+            .decode(samples.to_vec())
+            .map(|text| restore_punct_and_case(punct.as_ref(), &text))
+    };
     // Diarization is progressive enhancement: a missing/unloadable
     // embedding model leaves `speaker_idx` unset rather than failing STT.
     let mut tracker = diarize
@@ -425,6 +466,14 @@ mod tests {
             &|m| errors.lock().unwrap().push(m),
         ));
         assert_eq!(errors.lock().unwrap().len(), 1);
+    }
+
+    /// Without the punctuation model installed every byte passes through
+    /// unchanged — the all-caps behavior is then upstream's, not ours.
+    #[test]
+    fn restore_punct_and_case_passes_through_without_a_model() {
+        assert_eq!(restore_punct_and_case(None, "HELLO 你好"), "HELLO 你好");
+        assert_eq!(restore_punct_and_case(None, ""), "");
     }
 
     #[test]

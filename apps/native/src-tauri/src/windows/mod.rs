@@ -99,6 +99,13 @@ pub const ALERT_LABEL: &str = "alert";
 const ALERT_W: f64 = 340.0;
 /// Fixed toast height — informational only, so one layout suffices.
 const ALERT_H: f64 = 100.0;
+/// The share-picker surface (`?view=picker`) — lazy like `prefs`,
+/// borderless glass via `build_window` (content-protected, so it
+/// never appears in its own candidate list).
+pub const PICKER_LABEL: &str = "picker";
+const PICKER_W: f64 = 760.0;
+const PICKER_H: f64 = 560.0;
+const PICKER_RADIUS: f64 = 16.0;
 /// Slide-in distance above the target rect when the alert toast appears.
 const SHOW_OFFSET_Y: f64 = 10.0;
 /// Fallback work area if every monitor query fails.
@@ -132,6 +139,9 @@ pub struct WindowPool {
     /// the `prefs_mode` command returns it so a `prefs:mode` emit that
     /// raced a still-loading webview isn't lost.
     prefs_mode: String,
+    /// The share-picker panel (`?view=picker`) — built lazily on first
+    /// `show_picker`, then re-shown; it never joins the gate lifecycle.
+    picker: Option<WebviewWindow>,
     /// Whether the unified card (chat or listen mode) is open.
     chat_open: bool,
     /// Last reported card CONTENT height — window = `BAR_H + this`.
@@ -163,6 +173,7 @@ impl WindowPool {
             alert: None,
             prefs: None,
             prefs_mode: String::new(),
+            picker: None,
             chat_open: false,
             chat_height: CHAT_DEFAULT_H,
             expand_dir: Dir::Down,
@@ -270,6 +281,7 @@ impl WindowPool {
             alert: None,
             prefs: None,
             prefs_mode: String::new(),
+            picker: None,
             chat_open: false,
             chat_height: CHAT_DEFAULT_H,
             expand_dir: Dir::Down,
@@ -373,6 +385,37 @@ impl WindowPool {
 
     pub fn prefs_mode(&self) -> &str {
         &self.prefs_mode
+    }
+
+    /// Show (lazily building) the share picker centered on the display
+    /// under the pointer, then announce `picker:open` — the view
+    /// refetches `capture_pick_list` on it (first open can race the
+    /// still-loading webview; its mount covers that).
+    pub fn show_picker(&mut self, app: &AppHandle) -> bool {
+        if self.picker.is_none() {
+            let tint = accent_glass_tint(&app.state::<crate::AppState>().accent());
+            match build_window(app, PICKER_LABEL, PICKER_W, PICKER_H, PICKER_RADIUS, tint) {
+                Ok(win) => self.picker = Some(win),
+                Err(e) => {
+                    log::warn!("windows: picker build failed: {e}");
+                    return false;
+                }
+            }
+        }
+        let Some(win) = self.picker.clone() else {
+            return false;
+        };
+        center_on_pointer_display(&win);
+        let _ = win.show();
+        let _ = win.set_focus();
+        let _ = app.emit_to(PICKER_LABEL, "picker:open", ());
+        true
+    }
+
+    pub fn hide_picker(&self) {
+        if let Some(win) = &self.picker {
+            let _ = win.hide();
+        }
     }
 
     /// The window's animated destination: the derived card rect while
@@ -555,7 +598,10 @@ impl WindowPool {
             return;
         }
         if !self.chat_open {
-            log::warn!("windows::adjust_height: ignored while the card is closed");
+            // Expected race: `chat_open` flips before the collapse
+            // animation finishes, and the webview's observers keep
+            // reporting heights until the window shrinks past BAR_H.
+            log::debug!("windows::adjust_height: ignored while the card is closed");
             return;
         }
         self.refresh_bar_rect();
@@ -1007,4 +1053,31 @@ fn window_rect(win: &WebviewWindow) -> Option<Rect> {
 fn set_rect(win: &WebviewWindow, r: Rect) {
     let _ = win.set_size(LogicalSize::new(r.w, r.h));
     let _ = win.set_position(LogicalPosition::new(r.x, r.y));
+}
+
+/// Center `win` on the monitor containing the pointer — physical px
+/// math (monitor position/size are physical; the window's logical
+/// size scales by `scale_factor`). Primary monitor on any miss.
+fn center_on_pointer_display(win: &WebviewWindow) {
+    let monitor = win
+        .cursor_position()
+        .ok()
+        .and_then(|pos| {
+            // `cursor_position` is physical f64; monitor bounds are
+            // physical i32/u32 — compare in i32 space.
+            let (cx, cy) = (pos.x as i32, pos.y as i32);
+            win.available_monitors().ok()?.into_iter().find(|m| {
+                let (p, s) = (m.position(), m.size());
+                cx >= p.x && cx < p.x + s.width as i32 && cy >= p.y && cy < p.y + s.height as i32
+            })
+        })
+        .or_else(|| win.primary_monitor().ok().flatten())
+        .or_else(|| win.available_monitors().ok()?.into_iter().next());
+    let Some(mon) = monitor else { return };
+    let scale = mon.scale_factor();
+    let (mp, ms) = (mon.position(), mon.size());
+    let (pw, ph) = ((PICKER_W * scale) as i32, (PICKER_H * scale) as i32);
+    let x = mp.x + (ms.width as i32 - pw).max(0) / 2;
+    let y = mp.y + (ms.height as i32 - ph).max(0) / 2;
+    let _ = win.set_position(tauri::PhysicalPosition::new(x, y));
 }

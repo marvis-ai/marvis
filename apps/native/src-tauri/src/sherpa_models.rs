@@ -22,29 +22,34 @@ const SIZE_TOLERANCE_PERCENT: u64 = 10;
 pub enum SherpaModelId {
     SenseVoice,
     SpeakerEmbedding,
+    PunctEn,
 }
 impl SherpaModelId {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::SenseVoice => "sense-voice",
             Self::SpeakerEmbedding => "speaker-id",
+            Self::PunctEn => "punct-en",
         }
     }
 }
 
 /// What a catalog entry is for. STT entries can be selected as the
 /// transcription model; `SpeakerEmbedding` entries only feed speaker
-/// diarization and must never appear as a selectable STT model.
+/// diarization and `Punctuation` entries only post-process sherpa
+/// transcripts — neither may appear as a selectable STT model.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SherpaModelKind {
     Stt,
     SpeakerEmbedding,
+    Punctuation,
 }
 impl SherpaModelKind {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Stt => "stt",
             Self::SpeakerEmbedding => "speaker-embedding",
+            Self::Punctuation => "punctuation",
         }
     }
 }
@@ -98,7 +103,26 @@ const SPEAKER_EMBEDDING_FILES: &[SherpaFileSpec] = &[SherpaFileSpec {
     sha256: "aa3cfc16963a10586a9393f5035d6d6b57e98d358b347f80c2a30bf4f00ceba2",
 }];
 
-const CATALOG: [SherpaCatalogEntry; 2] = [
+// sherpa-onnx-online-punct-en-2024-08-06 — CNN-BiLSTM punctuation + casing
+// head from the `punctuation-models` GitHub release. Hugging Face hosts only
+// community mirrors of the loose files; both pinned digests were verified
+// byte-identical to the official release tarball.
+const PUNCT_EN_FILES: &[SherpaFileSpec] = &[
+    SherpaFileSpec {
+        filename: "model.int8.onnx",
+        url: "https://huggingface.co/lorneluo/sherpa-onnx-online-punct-en-2024-08-06/resolve/main/model.int8.onnx",
+        bytes: 7_490_500,
+        sha256: "9d611f445fe4a46186080fe161be6059d87d72eb88d3a8cb00c1a06e83a6067e",
+    },
+    SherpaFileSpec {
+        filename: "bpe.vocab",
+        url: "https://huggingface.co/lorneluo/sherpa-onnx-online-punct-en-2024-08-06/resolve/main/bpe.vocab",
+        bytes: 149_430,
+        sha256: "e118b7ad88c54db562517df49e1cffd4836d166c34fb190fd311d7f34eb238f5",
+    },
+];
+
+const CATALOG: [SherpaCatalogEntry; 3] = [
     SherpaCatalogEntry {
         id: SherpaModelId::SenseVoice,
         dirname: "sense-voice",
@@ -116,6 +140,15 @@ const CATALOG: [SherpaCatalogEntry; 2] = [
         files: SPEAKER_EMBEDDING_FILES,
         source: CATALOG_SOURCE,
         kind: SherpaModelKind::SpeakerEmbedding,
+    },
+    SherpaCatalogEntry {
+        id: SherpaModelId::PunctEn,
+        dirname: "punct-en",
+        label: "Punctuation",
+        description: "English punctuation and capitalization — SenseVoice emits English in all caps; this restores normal casing and , . ? in English segments.",
+        files: PUNCT_EN_FILES,
+        source: CATALOG_SOURCE,
+        kind: SherpaModelKind::Punctuation,
     },
 ];
 
@@ -162,6 +195,13 @@ pub fn speaker_embedding_model_path(root: &Path) -> Option<PathBuf> {
     let entry = entry_for_id(SherpaModelId::SpeakerEmbedding.as_str())?;
     let path = entry_dir(root, entry).join(entry.files[0].filename);
     path.is_file().then_some(path)
+}
+/// Paths `(cnn_bilstm, bpe_vocab)` of the English punctuation model when its
+/// catalog entry is installed — `None` keeps sherpa transcripts unmodified.
+pub fn punctuation_model_paths(root: &Path) -> Option<(PathBuf, PathBuf)> {
+    let entry = entry_for_id(SherpaModelId::PunctEn.as_str())?;
+    let dir = entry_dir(root, entry);
+    entry_installed_at(root, entry).then(|| (dir.join("model.int8.onnx"), dir.join("bpe.vocab")))
 }
 /// An entry is installed only when its entire file set is present.
 pub fn entry_installed_at(root: &Path, entry: &SherpaCatalogEntry) -> bool {
@@ -640,7 +680,7 @@ mod tests {
 
     #[test]
     fn catalog_is_the_approved_file_set() {
-        assert_eq!(catalog().len(), 2);
+        assert_eq!(catalog().len(), 3);
         let entry = &catalog()[0];
         assert_eq!(entry.id.as_str(), "sense-voice");
         assert_eq!(entry.dirname, "sense-voice");
@@ -660,17 +700,30 @@ mod tests {
         assert!(speaker.files.iter().all(|f| f.url.starts_with("https://")
             && f.sha256.len() == 64
             && f.sha256.chars().all(|c| c.is_ascii_hexdigit())));
+        let punct = &catalog()[2];
+        assert_eq!(punct.id.as_str(), "punct-en");
+        assert_eq!(punct.dirname, "punct-en");
+        assert_eq!(punct.kind, SherpaModelKind::Punctuation);
+        assert_eq!(
+            punct.files.iter().map(|f| f.filename).collect::<Vec<_>>(),
+            ["model.int8.onnx", "bpe.vocab"]
+        );
+        assert!(punct.files.iter().all(|f| f.url.starts_with("https://")
+            && f.sha256.len() == 64
+            && f.sha256.chars().all(|c| c.is_ascii_hexdigit())));
     }
 
-    /// The embedding model must never be selectable as the transcription
-    /// model — `stt_entry_for_value` filters non-STT entries while the
+    /// Non-STT entries are downloadable but must never be selectable as the
+    /// transcription model — `stt_entry_for_value` filters them while the
     /// general lookup still resolves them for download/remove.
     #[test]
-    fn speaker_embedding_is_downloadable_but_never_an_stt_model() {
-        assert!(entry_for_value("speaker-id").is_some());
-        assert!(stt_entry_for_value("speaker-id").is_none());
+    fn aux_models_are_downloadable_but_never_an_stt_model() {
+        for id in ["speaker-id", "punct-en"] {
+            assert!(entry_for_value(id).is_some());
+            assert!(stt_entry_for_value(id).is_none());
+            assert!(crate::config::validate_sherpa_model(id).is_err());
+        }
         assert!(stt_entry_for_value("sense-voice").is_some());
-        assert!(crate::config::validate_sherpa_model("speaker-id").is_err());
         assert_eq!(
             crate::config::validate_sherpa_model("sense-voice").unwrap(),
             "sense-voice"

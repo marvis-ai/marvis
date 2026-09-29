@@ -27,10 +27,10 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Context as _, Result};
 use ashpd::desktop::screencast::{
-    CreateSessionOptions, CursorMode, OpenPipeWireRemoteOptions, Screencast,
-    SelectSourcesOptions, SourceType, StartCastOptions,
+    CursorMode, OpenPipeWireRemoteOptions, Screencast, SelectSourcesOptions, SourceType,
+    StartCastOptions,
 };
-use ashpd::desktop::{PersistMode, ResponseError, Session};
+use ashpd::desktop::{CreateSessionOptions, PersistMode, ResponseError, Session};
 use ashpd::Error as PortalError;
 use parking_lot::Mutex;
 use pipewire::context::ContextBox;

@@ -959,12 +959,18 @@ fn set_glass_radius(app: &AppHandle, win: &WebviewWindow, corner_radius: f64) {
 /// the webview (a fresh build would lose scroll/tab state).
 fn build_prefs_window(app: &AppHandle) -> anyhow::Result<WebviewWindow> {
     let url = WebviewUrl::App(format!("index.html?view={PREFS_LABEL}").into());
-    let win = WebviewWindowBuilder::new(app, PREFS_LABEL, url)
+    let builder = WebviewWindowBuilder::new(app, PREFS_LABEL, url)
         .inner_size(PREFS_W, PREFS_H)
         .title("Marvis — Settings")
-        .decorations(true)
+        .decorations(true);
+    // Overlay titlebar + hidden title are macOS-only builder methods —
+    // they put the traffic lights inside the sidebar surface; other
+    // platforms keep native decorations (the builder above).
+    #[cfg(target_os = "macos")]
+    let builder = builder
         .title_bar_style(tauri::TitleBarStyle::Overlay)
-        .hidden_title(true)
+        .hidden_title(true);
+    let win = builder
         .transparent(true)
         .resizable(false)
         .visible(false)
@@ -976,7 +982,9 @@ fn build_prefs_window(app: &AppHandle) -> anyhow::Result<WebviewWindow> {
     {
         let handle = win.clone();
         let app = app.clone();
-        win.on_window_event(move |event| match event {
+        // `match event.clone()` binds arm fields by value, so `focused`
+        // is `bool` regardless of the handler's `&WindowEvent` signature.
+        win.on_window_event(move |event| match event.clone() {
             tauri::WindowEvent::CloseRequested { api, .. } => {
                 api.prevent_close();
                 let _ = handle.set_always_on_top(false);
@@ -989,7 +997,7 @@ fn build_prefs_window(app: &AppHandle) -> anyhow::Result<WebviewWindow> {
             // Float only while active: focused prefs may overlap the
             // always-on-top bar; on blur it drops to the normal level.
             tauri::WindowEvent::Focused(focused) => {
-                let _ = handle.set_always_on_top(*focused);
+                let _ = handle.set_always_on_top(focused);
             }
             _ => {}
         });

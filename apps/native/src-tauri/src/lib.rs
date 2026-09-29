@@ -2559,7 +2559,8 @@ pub fn run() {
     // channel). macOS delivers open-url natively — leave it untouched.
     #[cfg(not(target_os = "macos"))]
     let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-        let pool = app.state::<AppState>().pool.lock();
+        let state = app.state::<AppState>();
+        let pool = state.pool.lock();
         if let Some(bar) = pool.bar() {
             let _ = bar.show();
             let _ = bar.set_focus();

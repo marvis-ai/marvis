@@ -44,12 +44,24 @@ jobs:
         run: bunx turbo run build --filter=@marvis/native...
 
   rust:
-    name: Rust tests (src-tauri)
-    # macOS-only: src-tauri links AppKit/ScreenCaptureKit/CoreAudio.
+    name: Rust tests (${{ matrix.os }})
     # macos-26 image: screencapturekit's apple-metal Swift bridge requires the macOS 26 SDK.
-    runs-on: macos-26
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-26, windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Install Linux system dependencies
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
+            librsvg2-dev libdbus-1-dev libasound2-dev \
+            libpipewire-0.3-dev libpulse-dev pkg-config
 
       - uses: dtolnay/rust-toolchain@stable
 

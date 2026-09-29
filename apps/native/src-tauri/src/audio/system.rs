@@ -1,178 +1,44 @@
-use super::{normalize_pcm, AudioSource, PcmChunk};
-use anyhow::{anyhow, Result};
-use screencapturekit::cm::{CMSampleBuffer, CMSampleBufferExt};
-use screencapturekit::stream::configuration::SCStreamConfiguration;
-use screencapturekit::stream::content_filter::SCContentFilter;
-use screencapturekit::stream::output_type::SCStreamOutputType;
-use screencapturekit::stream::sc_stream::SCStream;
+//! `audio::system` — the loopback "them" channel, per OS.
+//!
+//! Each backend produces interleaved `f32` samples plus the source rate
+//! and channel count (`RawChunk`); the shared worker normalizes to
+//! mono/16 kHz `PcmChunk`s via [`super::normalize_pcm`]. Only the PCM
+//! contract is shared — the acquisition is entirely per-platform:
+//!
+//! - macOS: ScreenCaptureKit `SCStream` audio output on the primary
+//!   display's content filter (`excludes_current_process_audio`).
+//! - Windows: WASAPI shared-mode loopback on the default render device.
+//! - Linux: PulseAudio monitor source of the default sink (the
+//!   `pipewire-pulse` shim exposes the same protocol under PipeWire).
+
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
-use std::sync::Arc;
-use std::thread::{self, JoinHandle};
+use std::sync::mpsc::{self, Receiver};
+
+use super::{normalize_pcm, PcmChunk};
+
+#[cfg(target_os = "linux")]
+mod linux;
+#[cfg(target_os = "macos")]
+mod macos;
+#[cfg(target_os = "windows")]
+mod windows;
+
+#[cfg(target_os = "linux")]
+pub use linux::SystemAudioSource;
+#[cfg(target_os = "macos")]
+pub use macos::SystemAudioSource;
+#[cfg(target_os = "windows")]
+pub use windows::SystemAudioSource;
 
 /// Deep enough to ride out short CPU spikes (model loads, decode bursts)
 /// without dropping samples destined for transcription.
 const AUDIO_QUEUE_CAPACITY: usize = 64;
-const FLAG_FLOAT: u32 = 1;
-const FLAG_BIG_ENDIAN: u32 = 2;
-const FLAG_NON_INTERLEAVED: u32 = 0x20;
 
+/// Interleaved `f32` samples + `(sample_rate, channels)`.
 type RawChunk = (Vec<f32>, u32, u16);
 
-#[derive(Debug, Clone, Copy)]
-struct AudioBufferBytes<'a> {
-    data: &'a [u8],
-    channels: usize,
-}
-
-/// System audio captured from the primary display's ScreenCaptureKit stream.
-/// ScreenCaptureKit types stay private; consumers receive normalized chunks.
-pub struct SystemAudioSource {
-    filter: Option<SCContentFilter>,
-    stream: Option<SCStream>,
-    input_tx: Option<SyncSender<RawChunk>>,
-    worker: Option<JoinHandle<()>>,
-    running: bool,
-}
-
-impl SystemAudioSource {
-    pub fn new() -> Result<Self> {
-        let (filter, _, _) = crate::capture::primary_display_filter()?;
-        Ok(Self {
-            filter: Some(filter),
-            stream: None,
-            input_tx: None,
-            worker: None,
-            running: false,
-        })
-    }
-
-    fn enqueue_sample(sample: &CMSampleBuffer, tx: &SyncSender<RawChunk>, warned: &AtomicBool) {
-        let Some(format) = sample.format_description() else {
-            warn_unsupported(warned, "missing format description");
-            return;
-        };
-        let Some(sample_rate) = format.audio_sample_rate() else {
-            warn_unsupported(warned, "missing sample rate");
-            return;
-        };
-        let Some(bits) = format.audio_bits_per_channel() else {
-            warn_unsupported(warned, "missing bits-per-channel metadata");
-            return;
-        };
-        let Some(flags) = format.audio_format_flags() else {
-            warn_unsupported(warned, "missing audio format flags");
-            return;
-        };
-        if flags & FLAG_BIG_ENDIAN != 0 || !matches!(bits, 16 | 32) {
-            warn_unsupported(warned, "unsupported byte order or sample width");
-            return;
-        }
-        let channels = format.audio_channel_count().unwrap_or(1) as usize;
-        let Some(list) = sample.audio_buffer_list() else {
-            warn_unsupported(warned, "missing audio buffer list");
-            return;
-        };
-        let buffers: Vec<_> = list
-            .iter()
-            .map(|buffer| AudioBufferBytes {
-                data: buffer.data(),
-                channels: buffer.number_channels() as usize,
-            })
-            .collect();
-        let Some(samples) = decode_pcm(
-            &buffers,
-            bits as usize,
-            flags & FLAG_FLOAT != 0,
-            flags & FLAG_NON_INTERLEAVED != 0,
-            channels,
-        ) else {
-            warn_unsupported(warned, "audio buffer layout or PCM data was rejected");
-            return;
-        };
-        match tx.try_send((samples, sample_rate.round() as u32, channels as u16)) {
-            Ok(()) | Err(TrySendError::Disconnected(_)) => {}
-            Err(TrySendError::Full(_)) => log::debug!("dropping stale system-audio chunk"),
-        }
-    }
-}
-
-impl AudioSource for SystemAudioSource {
-    fn start(&mut self, output: mpsc::Sender<PcmChunk>) -> Result<()> {
-        self.stop();
-        let filter = self
-            .filter
-            .as_ref()
-            .ok_or_else(|| anyhow!("system audio filter unavailable"))?;
-        let config = SCStreamConfiguration::new()
-            .with_captures_audio(true)
-            .with_excludes_current_process_audio(true);
-        let (tx, rx) = mpsc::sync_channel(AUDIO_QUEUE_CAPACITY);
-        let worker = thread::spawn(move || forward_chunks(rx, output));
-        let callback_tx = tx.clone();
-        let warned = Arc::new(AtomicBool::new(false));
-        let callback_warned = warned.clone();
-        let mut stream = SCStream::new(filter, &config);
-        if stream
-            .add_output_handler(
-                move |sample: CMSampleBuffer, _| {
-                    Self::enqueue_sample(&sample, &callback_tx, &callback_warned)
-                },
-                SCStreamOutputType::Audio,
-            )
-            .is_none()
-        {
-            drop(stream);
-            drop(tx);
-            let _ = worker.join();
-            return Err(anyhow!("SCStream rejected the audio output handler"));
-        }
-        if let Err(error) = stream.start_capture() {
-            drop(stream);
-            drop(tx);
-            let _ = worker.join();
-            return Err(anyhow!("failed to start system audio capture: {error}"));
-        }
-        self.stream = Some(stream);
-        self.input_tx = Some(tx);
-        self.worker = Some(worker);
-        self.running = true;
-        Ok(())
-    }
-
-    fn stop(&mut self) {
-        let Some(stream) = self.stream.take() else {
-            self.running = false;
-            return;
-        };
-        if let Err(error) = stream.stop_capture() {
-            log::warn!("SCStream system-audio stop failed: {error}");
-        }
-        drop(stream);
-        drop(self.input_tx.take());
-        if let Some(worker) = self.worker.take() {
-            let _ = worker.join();
-        }
-        self.running = false;
-    }
-
-    fn is_running(&self) -> bool {
-        self.running
-    }
-}
-
-impl Drop for SystemAudioSource {
-    fn drop(&mut self) {
-        self.stop();
-    }
-}
-
-fn warn_unsupported(warned: &AtomicBool, reason: &str) {
-    if !warned.swap(true, Ordering::Relaxed) {
-        log::warn!("dropping system-audio samples: unsupported or rejected format ({reason})");
-    }
-}
-
+/// Normalize worker: `RawChunk` → mono/16 kHz `PcmChunk`, forwards to the
+/// session's `output` until either end disconnects.
 fn forward_chunks(rx: Receiver<RawChunk>, output: mpsc::Sender<PcmChunk>) {
     while let Ok((samples, sample_rate, channels)) = rx.recv() {
         if output
@@ -184,115 +50,50 @@ fn forward_chunks(rx: Receiver<RawChunk>, output: mpsc::Sender<PcmChunk>) {
     }
 }
 
-/// Decode the AudioBufferList layout used by ScreenCaptureKit v10.
-/// Interleaved lists contain one buffer with N channels; non-interleaved lists
-/// contain one buffer per channel and are woven into frame-major samples.
-fn decode_pcm(
-    buffers: &[AudioBufferBytes<'_>],
-    bits: usize,
-    is_float: bool,
-    non_interleaved: bool,
-    channels: usize,
-) -> Option<Vec<f32>> {
-    if buffers.is_empty() || channels == 0 || !matches!(bits, 16 | 32) {
-        return None;
-    }
-    let width = bits / 8;
-    let decode = |bytes: &[u8]| -> Option<f32> {
-        if bytes.len() != width {
-            return None;
-        }
-        Some(if is_float {
-            f32::from_le_bytes(bytes.try_into().ok()?)
-        } else if bits == 16 {
-            f32::from(i16::from_le_bytes(bytes.try_into().ok()?)) / 32_768.0
-        } else {
-            i32::from_le_bytes(bytes.try_into().ok()?) as f32 / 2_147_483_648.0
-        })
-    };
-    if non_interleaved {
-        if buffers.len() < channels {
-            return None;
-        }
-        let frames = buffers
-            .iter()
-            .take(channels)
-            .map(|buffer| buffer.data.len() / width)
-            .min()?;
-        let mut output = Vec::with_capacity(frames * channels);
-        for frame in 0..frames {
-            for buffer in buffers.iter().take(channels) {
-                output.push(decode(&buffer.data[frame * width..(frame + 1) * width])?);
-            }
-        }
-        Some(output)
-    } else {
-        let buffer = buffers.first()?;
-        if buffer.channels != channels || buffer.data.len() % (width * channels) != 0 {
-            return None;
-        }
-        buffer.data.chunks_exact(width).map(decode).collect()
+/// Log once per stream when a chunk's layout is rejected — the samples
+/// are dropped (the stream keeps running), so silence would be silent.
+fn warn_unsupported(warned: &AtomicBool, reason: &str) {
+    if !warned.swap(true, Ordering::Relaxed) {
+        log::warn!("dropping system-audio samples: unsupported or rejected format ({reason})");
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn decodes_interleaved_float_audio_buffer_bytes() {
-        let bytes = [0.25f32.to_le_bytes(), (-0.5f32).to_le_bytes()].concat();
-        let result = decode_pcm(
-            &[AudioBufferBytes {
-                data: &bytes,
-                channels: 2,
-            }],
-            32,
-            true,
-            false,
-            2,
-        );
-        assert_eq!(result, Some(vec![0.25, -0.5]));
+/// Interleaved little-endian PCM bytes → `f32` samples. Supports the
+/// layouts loopback/monitor sources deliver: f32, s16, s32. Returns
+/// `None` on any byte-count mismatch rather than a partial decode.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+fn interleaved_pcm_to_f32(bytes: &[u8], bits: u16, is_float: bool) -> Option<Vec<f32>> {
+    let width = usize::from(bits / 8);
+    if bytes.is_empty() || bytes.len() % width != 0 {
+        return None;
     }
+    let decode = |b: &[u8]| -> Option<f32> {
+        Some(match (is_float, bits) {
+            (true, 32) => f32::from_le_bytes(b.try_into().ok()?),
+            (false, 16) => f32::from(i16::from_le_bytes(b.try_into().ok()?)) / 32_768.0,
+            (false, 32) => i32::from_le_bytes(b.try_into().ok()?) as f32 / 2_147_483_648.0,
+            _ => return None,
+        })
+    };
+    bytes.chunks_exact(width).map(decode).collect()
+}
 
-    #[test]
-    fn decodes_non_interleaved_signed_audio_buffer_bytes() {
-        let left = [i16::MAX.to_le_bytes(), 0i16.to_le_bytes()].concat();
-        let right = [0i16.to_le_bytes(), i16::MIN.to_le_bytes()].concat();
-        let result = decode_pcm(
-            &[
-                AudioBufferBytes {
-                    data: &left,
-                    channels: 1,
-                },
-                AudioBufferBytes {
-                    data: &right,
-                    channels: 1,
-                },
-            ],
-            16,
-            false,
-            true,
-            2,
-        );
-        assert_eq!(result, Some(vec![0.9999695, 0.0, 0.0, -1.0]));
-    }
+/// A silent `RawChunk` for `frames` frames — WASAPI flags muted packets
+/// instead of filling them; emitting zeros keeps transcript timing
+/// continuous through desktop silence.
+#[cfg(target_os = "windows")]
+fn silent_chunk(frames: usize, channels: u16, sample_rate: u32) -> RawChunk {
+    (
+        vec![0.0; frames * usize::from(channels)],
+        sample_rate,
+        channels,
+    )
+}
 
-    #[test]
-    fn rejects_empty_or_malformed_audio_buffers() {
-        assert_eq!(decode_pcm(&[], 32, true, false, 1), None);
-        assert_eq!(
-            decode_pcm(
-                &[AudioBufferBytes {
-                    data: &[0, 1, 2],
-                    channels: 1
-                }],
-                16,
-                false,
-                false,
-                1
-            ),
-            None
-        );
-    }
+/// Channel for the backend → [`super::AudioSource::try_recv_status`] fatal
+/// errors (init failures, device loss). Matches `MicSource`'s contract:
+/// only fatal errors land here; glitches log-and-continue.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+fn status_channel() -> (mpsc::Sender<String>, mpsc::Receiver<String>) {
+    mpsc::channel()
 }

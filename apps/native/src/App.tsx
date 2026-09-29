@@ -11,7 +11,7 @@ import Prefs from './views/Prefs';
  * back to Bar, the always-present unified window (chat/listen are its
  * card modes now, not separate windows).
  */
-export default function App() {
+const App = () => {
   const view = new URLSearchParams(window.location.search).get('view');
   switch (view) {
     case 'alert':
@@ -23,4 +23,6 @@ export default function App() {
     default:
       return <Bar />;
   }
-}
+};
+
+export default App;

@@ -899,11 +899,34 @@ mod tests {
                 }
                 head.push(byte[0]);
             }
+            // Drain the request body before responding: on Windows,
+            // dropping a socket that still holds unread receive data turns
+            // the close abortive (RST), and hyper surfaces ConnectionReset
+            // even though the response was already written.
+            let lowered = String::from_utf8_lossy(&head).to_lowercase();
+            if let Some(len) = lowered
+                .split("\r\n")
+                .find_map(|line| line.strip_prefix("content-length:"))
+                .and_then(|value| value.trim().parse::<usize>().ok())
+            {
+                let mut rest = len;
+                let mut buf = [0u8; 8192];
+                while rest > 0 {
+                    let want = rest.min(buf.len());
+                    match sock.read(&mut buf[..want]).await.unwrap_or(0) {
+                        0 => return,
+                        n => rest -= n,
+                    }
+                }
+            }
             for w in writes {
                 if sock.write_all(&w).await.is_err() {
                     return;
                 }
             }
+            // Nothing inbound is unread, so shutdown lands as a clean FIN
+            // instead of the RST a bare drop risks on Windows.
+            let _ = sock.shutdown().await;
         });
         format!("http://{addr}/")
     }

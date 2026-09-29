@@ -25,7 +25,6 @@ import {
   sessionEndActive,
   sessionGet,
   sessionList,
-  windowShowSettings,
   type Message,
 } from '@/lib/commands';
 import {
@@ -47,6 +46,7 @@ import {
 import { sessionDateLabel } from '@/components/listen/model';
 import { CardHeader } from '@/components/shared/CardHeader';
 import { EmptyState } from '@/components/shared/EmptyState';
+import { ErrorBanner } from '@/components/shared/ErrorBanner';
 import { ChatMsgMenu, type ChatMsgMeta } from '@/components/ChatMsgMenu';
 
 type AskPhase = 'loading' | 'streaming' | 'idle';
@@ -152,6 +152,11 @@ export const ChatSection = ({ onBack }: { onBack: () => void }) => {
    *  switches the active ask session, so `loading` refetches when this
    *  stops matching. */
   const sessionRef = useRef<number | null>(null);
+  /** Chunks landing while a `loading` refetch is in flight — the send
+   *  may have switched sessions, so they buffer until `applyLoading`
+   *  commits rather than appending onto the stale list's tail (the
+   *  previous reply's row would keep them permanently). */
+  const chunkBufRef = useRef<string | null>(null);
 
   // Mount resync: active `ask` session → persisted history; then
   // `ask_current` folds an in-flight run's tail on top. Best-effort —
@@ -203,6 +208,8 @@ export const ChatSection = ({ onBack }: { onBack: () => void }) => {
       // The send may have switched sessions — a send from a listen doc
       // binds to that doc's own chat (ask.rs `listen_id`). Refetch the
       // now-active session rather than folding onto the old one's rows.
+      // Chunks arriving mid-refetch buffer until the fold commits.
+      chunkBufRef.current = '';
       void (async () => {
         let base: ChatMsg[] | null = null;
         try {
@@ -217,12 +224,21 @@ export const ChatSection = ({ onBack }: { onBack: () => void }) => {
         } catch {
           /* resync is best-effort — the fold below still applies */
         }
-        setMsgs((prev) => applyLoading(base ?? prev, p.question ?? ''));
+        const buffered = chunkBufRef.current ?? '';
+        chunkBufRef.current = null;
+        setMsgs((prev) => {
+          const next = applyLoading(base ?? prev, p.question ?? '');
+          return buffered ? appendTail(next, buffered) : next;
+        });
       })();
     }
     setPhase(p.state);
   });
   useTauriEvent<{ text: string }>(EV_ASK_CHUNK, (p) => {
+    if (chunkBufRef.current !== null) {
+      chunkBufRef.current += p.text;
+      return;
+    }
     setMsgs((prev) => appendTail(prev, p.text));
   });
   useTauriEvent<{
@@ -314,19 +330,10 @@ export const ChatSection = ({ onBack }: { onBack: () => void }) => {
         </button>
       </CardHeader>
       {error && (
-        <div className='flex items-center gap-2 border-b border-border bg-[color-mix(in_oklch,var(--destructive)_9%,transparent)] px-3 py-2 text-xs text-destructive'>
-          <span className='min-w-0 flex-1 wrap-break-word'>
-            {error.message}
-          </span>
-          {error.needsSetup && (
-            <button
-              type='button'
-              className={cn(BTN_SM, BTN_OUTLINE)}
-              onClick={() => void windowShowSettings().catch(() => {})}>
-              Open settings
-            </button>
-          )}
-        </div>
+        <ErrorBanner
+          message={error.message}
+          needsSetup={error.needsSetup}
+        />
       )}
       <div
         ref={scrollRef}

@@ -471,21 +471,31 @@ const Bar = () => {
       });
   };
 
+  /** One mic action under `speechBusy` — no-ops while a start/stop is
+   *  in flight, then stops a live dictation before running `next`.
+   *  `stoppedDictation` marks a press whose whole work was that stop;
+   *  whatever runs last owns the release. */
+  const withSpeechLock = (next: (stoppedDictation: boolean) => void) => {
+    if (speechBusy.current) return;
+    speechBusy.current = true;
+    const stopping = dictation.stopIfActive();
+    if (stopping !== null) {
+      void stopping
+        .then(() => next(true))
+        .catch(() => {
+          speechBusy.current = false;
+        });
+      return;
+    }
+    next(false);
+  };
+
   /** Always mints a fresh session — 'Start new' on a viewed doc is
    *  reachable while another session is live, and `listen_start`
    *  stops it server-side anyway. Live dictation owns the mic, so it
    *  is stopped first rather than left to reject the start. */
   const startNewListen = () => {
-    if (speechBusy.current) return;
-    speechBusy.current = true;
-    const stopping = dictation.stopIfActive();
-    if (stopping !== null) {
-      void stopping.then(beginListen).catch(() => {
-        speechBusy.current = false;
-      });
-      return;
-    }
-    beginListen();
+    withSpeechLock(() => beginListen());
   };
 
   /** Meeting-Listen start shared by the capsule's mic button and the
@@ -503,34 +513,29 @@ const Bar = () => {
    *  leaving the section never stopped the recorder, so the button is
    *  the way back in (Stop stays on the listen header). */
   const pressMic = () => {
-    if (speechBusy.current) return;
-    speechBusy.current = true;
-    // An active dictation stops first — `speechBusy` stays held
-    // until it settles so a follow-up press can't start the
-    // other mode mid-teardown.
-    const stopping = dictation.stopIfActive();
-    if (stopping !== null) {
-      void stopping.finally(() => {
+    withSpeechLock((stoppedDictation) => {
+      if (stoppedDictation) {
+        // The press's whole action was stopping the live dictation.
         speechBusy.current = false;
-      });
-      return;
-    }
-    if (listenState === 'listening' || listenState === 'paused') {
-      // A paused session is still live (backend `is_listening()`) —
-      // `null` viewing lands the card on the live session, not a doc.
-      setListenViewing(null);
-      setPinned('listen');
-      void windowSetChatOpen(true).catch(() => {});
-      speechBusy.current = false;
-      return;
-    }
-    if (showInputRow) {
-      void dictation.start().finally(() => {
+        return;
+      }
+      if (listenState === 'listening' || listenState === 'paused') {
+        // A paused session is still live (backend `is_listening()`) —
+        // `null` viewing lands the card on the live session, not a doc.
+        setListenViewing(null);
+        setPinned('listen');
+        void windowSetChatOpen(true).catch(() => {});
         speechBusy.current = false;
-      });
-      return;
-    }
-    beginListen();
+        return;
+      }
+      if (showInputRow) {
+        void dictation.start().finally(() => {
+          speechBusy.current = false;
+        });
+        return;
+      }
+      beginListen();
+    });
   };
 
   const row = () => {

@@ -12,7 +12,7 @@ export const SummaryStrip = ({
   onFollowUp,
 }: {
   summary: ListenSummaryPayload | null;
-  onFollowUp?: (question: string) => void;
+  onFollowUp: (question: string) => void;
 }) => {
   const [open, setOpen] = useState(false);
   if (!summary) return null;
@@ -53,7 +53,7 @@ export const SummaryStrip = ({
                 <button
                   key={f}
                   type='button'
-                  onClick={() => onFollowUp?.(f)}
+                  onClick={() => onFollowUp(f)}
                   className={cn(
                     CHIP,
                     'cursor-pointer transition-colors hover:bg-fg-soft hover:text-foreground',

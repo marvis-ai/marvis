@@ -1,28 +1,17 @@
 //! ScreenCaptureKit-backed [`FrameSource`] for macOS.
 //!
-//! Pipeline (privacy: pixels live only in process memory, never on disk):
-//!
-//! ```text
-//! SCStream ──dispatch queue──> extract_raw (lock, memcpy BGRA, unlock)
-//!          ──mpsc──> worker: frame_hash → dedupe → resize ≤1600w → JPEG q80
-//!          ──> on_frame(Frame)
-//! ```
-//!
-//! The dispatch-queue callback does no hashing, resizing, or encoding so it
-//! can never stall `ScreenCaptureKit`'s delivery queue; everything expensive
-//! runs on our worker thread.
+//! The dispatch-queue callback is `extract_raw` only (lock, memcpy BGRA,
+//! unlock) so it can never stall `ScreenCaptureKit`'s delivery queue;
+//! dedupe/resize/JPEG all run in `frame_pipe::run_worker` shared with the
+//! Windows and Linux backends.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use base64::{engine::general_purpose, Engine as _};
-use image::codecs::jpeg::JpegEncoder;
-use image::imageops::{self, FilterType};
-use image::{GenericImageView, Rgba};
 use parking_lot::Mutex;
 use screencapturekit::cm::{CMSampleBuffer, CMSampleBufferExt, CMTime};
 use screencapturekit::screenshot_manager::SCScreenshotManager;
@@ -34,65 +23,12 @@ use screencapturekit::stream::content_filter::SCContentFilter;
 use screencapturekit::stream::output_type::SCStreamOutputType;
 use screencapturekit::stream::sc_stream::SCStream;
 
-use super::{frame_hash_rows, Frame, FrameSource, PickCandidate, PickResolution};
+use super::frame_pipe::{encode_frame, jpeg_at, run_worker, RawFrame};
+use super::{frame_interval_secs, Frame, FrameSource, PickCandidate, PickResolution};
 
-/// Longest-side cap for the encoded frame: width is capped at 1600 px,
-/// height follows aspect. Screen reading needs legible text — the old
-/// 384 px height cap made on-screen text illegible and the vision model
-/// confabulated details. `Frame` widths below the cap pass through.
-const TARGET_WIDTH: u32 = 1600;
-/// fps → `minimum_frame_interval` seconds (8→0.125, 4→0.25, 2→0.5).
-/// The stream is event-driven so this only bounds rate; `fps.max(1)`
-/// guards a 0 write from dividing by zero.
-pub(crate) fn frame_interval_secs(fps: u32) -> f64 {
-    1.0 / f64::from(fps.max(1))
-}
-/// `frame_hash` samples every 4096th byte of the raw BGRA buffer.
-const HASH_STRIDE: usize = 4096;
-const JPEG_QUALITY: u8 = 80;
-/// Worker polls the channel this often so `stop()` can interrupt a quiet
-/// stream even while the sender is still alive.
-const POLL: Duration = Duration::from_millis(200);
 /// Big-endian FourCC for BGRA — checked per frame so a surprise format can
 /// never silently garble colors.
 const FOURCC_BGRA: u32 = u32::from_be_bytes(*b"BGRA");
-
-/// Raw BGRA frame handed from the dispatch-queue callback to the worker.
-/// `data` is the full locked pixel-buffer copy; `bytes_per_row` may exceed
-/// `width * 4` (row alignment padding).
-struct RawFrame {
-    data: Vec<u8>,
-    width: u32,
-    height: u32,
-    bytes_per_row: usize,
-}
-
-/// Zero-copy strided view over raw BGRA rows. `get_pixel` swizzles
-/// B,G,R,A → R,G,B,A so `resize` and `JpegEncoder` see true RGBA ordering.
-struct BgraView<'a> {
-    data: &'a [u8],
-    width: u32,
-    height: u32,
-    bytes_per_row: usize,
-}
-
-impl GenericImageView for BgraView<'_> {
-    type Pixel = Rgba<u8>;
-
-    fn dimensions(&self) -> (u32, u32) {
-        (self.width, self.height)
-    }
-
-    fn get_pixel(&self, x: u32, y: u32) -> Rgba<u8> {
-        let i = y as usize * self.bytes_per_row + x as usize * 4;
-        Rgba([
-            self.data[i + 2],
-            self.data[i + 1],
-            self.data[i],
-            self.data[i + 3],
-        ])
-    }
-}
 
 /// Screen capture over a caller-built filter. Create with
 /// [`MacosCapture::for_display`] (primary display — enumerates shareable
@@ -115,8 +51,10 @@ struct Running {
     stop: Arc<AtomicBool>,
 }
 
-/// Build the primary-display filter shared by screen and system-audio streams.
-pub(crate) fn primary_display_filter() -> anyhow::Result<(SCContentFilter, u32, u32)> {
+/// Build the primary-display filter shared by screen and system-audio
+/// streams. The platform-neutral name is `primary_display_source` — on
+/// macOS a `CaptureSource` IS an `SCContentFilter`.
+pub(crate) fn primary_display_source() -> anyhow::Result<(SCContentFilter, u32, u32)> {
     let content = SCShareableContent::get()?;
     let display = content
         .displays()
@@ -147,7 +85,7 @@ pub(crate) fn primary_display_filter() -> anyhow::Result<(SCContentFilter, u32, 
 /// single-shot `Frame` is indistinguishable from a ring frame.
 /// `Ok(None)` means the call succeeded but delivered no pixels.
 pub(crate) fn shot_fullscreen() -> anyhow::Result<Option<Frame>> {
-    let (filter, width, height) = primary_display_filter()?;
+    let (filter, width, height) = primary_display_source()?;
     let config = SCStreamConfiguration::new()
         .with_width(width)
         .with_height(height)
@@ -364,7 +302,7 @@ pub(crate) fn resolve_candidate(id: &str) -> anyhow::Result<PickResolution> {
         .map(|i| i.pixel_size())
         .ok_or_else(|| anyhow::anyhow!("filter info unavailable"))?;
     Ok(PickResolution {
-        filter,
+        source: filter,
         w,
         h,
         kind,
@@ -386,7 +324,7 @@ pub(crate) fn thumb_for(id: &str) -> Option<String> {
         .with_height(th)
         .with_pixel_format(PixelFormat::BGRA)
         .with_shows_cursor(false);
-    let sample = SCScreenshotManager::capture_sample_buffer(&res.filter, &config).ok()?;
+    let sample = SCScreenshotManager::capture_sample_buffer(&res.source, &config).ok()?;
     let raw = extract_raw(&sample)?;
     let (jpeg, _, _) = jpeg_at(&raw, tw)?;
     Some(general_purpose::STANDARD.encode(jpeg))
@@ -394,7 +332,7 @@ pub(crate) fn thumb_for(id: &str) -> Option<String> {
 
 impl MacosCapture {
     /// Wrap a caller-built filter (primary display via
-    /// [`primary_display_filter`], or a picker result) with the shared
+    /// [`primary_display_source`], or a picker result) with the shared
     /// stream configuration. Does not start capturing.
     pub fn new(filter: SCContentFilter, width: u32, height: u32, fps: u32) -> anyhow::Result<Self> {
         let config = SCStreamConfiguration::new()
@@ -422,16 +360,10 @@ impl MacosCapture {
     ///
     /// Fails if screen-recording permission is missing or no display is
     /// shareable.
-    #[allow(dead_code)] // callers build filters via `primary_display_filter` + `new`; the manual test drives this
+    #[allow(dead_code)] // callers build filters via `primary_display_source` + `new`; the manual test drives this
     pub fn for_display(fps: u32) -> anyhow::Result<Self> {
-        let (filter, width, height) = primary_display_filter()?;
+        let (filter, width, height) = primary_display_source()?;
         Self::new(filter, width, height, fps)
-    }
-
-    /// Whether the stream + worker are live — false after a failed `start`
-    /// (the error path never fills `running`) or after `stop`.
-    pub fn is_running(&self) -> bool {
-        self.state.lock().running.is_some()
     }
 }
 
@@ -497,6 +429,12 @@ impl FrameSource for MacosCapture {
         drop(running.stream);
         let _ = running.worker.join();
     }
+
+    /// Whether the stream + worker are live — false after a failed `start`
+    /// (the error path never fills `running`) or after `stop`.
+    fn is_running(&self) -> bool {
+        self.state.lock().running.is_some()
+    }
 }
 
 impl Drop for MacosCapture {
@@ -530,96 +468,10 @@ fn extract_raw(sample: &CMSampleBuffer) -> Option<RawFrame> {
     })
 }
 
-/// BGRA → `(jpeg, out_w, out_h)` width-capped to `target_w`,
-/// aspect preserved, q80 — shared by the stream/shot path
-/// (`TARGET_WIDTH`) and picker thumbnails (`THUMB_WIDTH`).
-fn jpeg_at(raw: &RawFrame, target_w: u32) -> Option<(Vec<u8>, u32, u32)> {
-    let view = BgraView {
-        data: &raw.data,
-        width: raw.width,
-        height: raw.height,
-        bytes_per_row: raw.bytes_per_row,
-    };
-    let mut jpeg = Vec::new();
-    let mut encoder = JpegEncoder::new_with_quality(&mut jpeg, JPEG_QUALITY);
-    let (out_w, out_h, encoded) = if raw.width > target_w {
-        let out_h = (u64::from(raw.height) * u64::from(target_w) / u64::from(raw.width)) as u32;
-        let out_h = out_h.max(1);
-        let resized = imageops::resize(&view, target_w, out_h, FilterType::Triangle);
-        (target_w, out_h, encoder.encode_image(&resized))
-    } else {
-        (raw.width, raw.height, encoder.encode_image(&view))
-    };
-    match encoded {
-        Ok(()) => Some((jpeg, out_w, out_h)),
-        Err(e) => {
-            log::warn!("jpeg encode failed ({out_w}x{out_h}): {e}");
-            None
-        }
-    }
-}
-
-/// BGRA → JPEG `Frame` at `TARGET_WIDTH` — stream worker + one-shot
-/// share this so both produce identical `Frame`s. `hash` is the
-/// caller's dedupe hash (0 for single-shots).
-fn encode_frame(raw: &RawFrame, hash: u64) -> Option<Frame> {
-    let (jpeg, width, height) = jpeg_at(raw, TARGET_WIDTH)?;
-    Some(Frame {
-        jpeg,
-        width,
-        height,
-        ts: SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0),
-        hash,
-    })
-}
-
-/// Worker loop: dedupe by raw-BGRA hash, downscale, JPEG-encode, emit.
-/// Exits when `stop` is set or the sender disconnects.
-fn run_worker(
-    rx: mpsc::Receiver<RawFrame>,
-    stop: Arc<AtomicBool>,
-    on_frame: Box<dyn Fn(Frame) + Send>,
-) {
-    let mut last_hash: Option<u64> = None;
-    loop {
-        if stop.load(Ordering::Relaxed) {
-            break;
-        }
-        let raw = match rx.recv_timeout(POLL) {
-            Ok(raw) => raw,
-            Err(mpsc::RecvTimeoutError::Timeout) => continue,
-            Err(mpsc::RecvTimeoutError::Disconnected) => break,
-        };
-
-        // Hash pixel bytes only — `bytes_per_row` padding is pool garbage
-        // that would defeat dedupe (identical screens → different hashes).
-        let hash = frame_hash_rows(
-            &raw.data,
-            raw.width,
-            raw.height,
-            raw.bytes_per_row,
-            HASH_STRIDE,
-        );
-        if Some(hash) == last_hash {
-            continue; // changed-frames-only: identical screen, drop entirely
-        }
-
-        // Leave last_hash untouched on encode failure so the next
-        // identical frame retries (unchanged rule).
-        if let Some(frame) = encode_frame(&raw, hash) {
-            last_hash = Some(hash);
-            on_frame(frame);
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::super::FrameSource;
-    use super::{jpeg_at, MacosCapture, RawFrame};
+    use super::MacosCapture;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
     use std::time::Duration;
@@ -633,64 +485,10 @@ mod tests {
     /// total count after ~3 s.
     #[test]
     fn frame_interval_maps_fps_to_seconds() {
-        assert_eq!(super::frame_interval_secs(8), 0.125);
-        assert_eq!(super::frame_interval_secs(4), 0.25);
-        assert_eq!(super::frame_interval_secs(2), 0.5);
-        assert_eq!(super::frame_interval_secs(0), 1.0); // defensive floor
-    }
-
-    #[test]
-    fn encode_frame_caps_width_at_target() {
-        // 3200x2000 solid-black BGRA (bytes_per_row == width * 4).
-        let raw = RawFrame {
-            data: vec![0u8; 3200 * 2000 * 4],
-            width: 3200,
-            height: 2000,
-            bytes_per_row: 3200 * 4,
-        };
-        let frame = super::encode_frame(&raw, 0).expect("encode succeeds");
-        assert_eq!(frame.width, 1600);
-        assert_eq!(frame.height, 1000);
-        assert!(!frame.jpeg.is_empty());
-        assert_eq!(frame.hash, 0);
-    }
-
-    #[test]
-    fn encode_frame_passes_small_sources_through() {
-        let raw = RawFrame {
-            data: vec![0u8; 800 * 600 * 4],
-            width: 800,
-            height: 600,
-            bytes_per_row: 800 * 4,
-        };
-        let frame = super::encode_frame(&raw, 7).expect("encode succeeds");
-        assert_eq!((frame.width, frame.height), (800, 600));
-        assert_eq!(frame.hash, 7);
-    }
-
-    #[test]
-    fn jpeg_at_caps_width_at_target() {
-        // 800x400 BGRA → 480 wide must produce a 480x240 jpeg.
-        let raw = RawFrame {
-            data: vec![0u8; 800 * 400 * 4],
-            width: 800,
-            height: 400,
-            bytes_per_row: 800 * 4,
-        };
-        let (_jpeg, w, h) = jpeg_at(&raw, 480).expect("encode failed");
-        assert_eq!((w, h), (480, 240));
-    }
-
-    #[test]
-    fn jpeg_at_passes_small_sources_through() {
-        let raw = RawFrame {
-            data: vec![0u8; 320 * 200 * 4],
-            width: 320,
-            height: 200,
-            bytes_per_row: 320 * 4,
-        };
-        let (_jpeg, w, h) = jpeg_at(&raw, 480).expect("encode failed");
-        assert_eq!((w, h), (320, 200));
+        assert_eq!(super::super::frame_interval_secs(8), 0.125);
+        assert_eq!(super::super::frame_interval_secs(4), 0.25);
+        assert_eq!(super::super::frame_interval_secs(2), 0.5);
+        assert_eq!(super::super::frame_interval_secs(0), 1.0); // defensive floor
     }
 
     /// `pick_candidates` can never run in tests (needs real

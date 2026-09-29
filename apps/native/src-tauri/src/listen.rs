@@ -176,6 +176,12 @@ impl TurnAssembler {
             ts: now_unix(),
         }]
     }
+    /// Drop a channel's open provisional — the echo gate removed the
+    /// matching final upstream, and a stale provisional would still
+    /// land in the next `close()`.
+    pub fn drop_provisional(&mut self, channel: SpeakerChannel) {
+        self.pending_mut(channel).provisional = None;
+    }
     fn pending(&self, channel: SpeakerChannel) -> &Pending {
         match channel {
             SpeakerChannel::Me => &self.me,
@@ -646,17 +652,60 @@ impl ListenService {
                 let callback_context = context.clone();
                 if let Err(error) = stt.start(
                     Box::new(move |event| {
-                        // `them` text seeds the echo reference; a `me`
-                        // event that re-transcribes it is speaker playback
-                        // heard by the mic — dropped before it can emit a
-                        // phantom "You" line or close the speaker's turn.
-                        {
+                        // `them` finals seed the echo reference (interims
+                        // would inflate it with text that may never land);
+                        // a `me` event that re-transcribes one is speaker
+                        // playback heard by the mic — dropped before it
+                        // can emit a phantom "You" line or close the
+                        // speaker's turn.
+                        let dropped = {
                             let mut gate = callback_gate.lock();
                             match event.channel {
-                                SpeakerChannel::Them => gate.record(&event.text),
-                                SpeakerChannel::Me if gate.is_echo(&event.text) => return,
-                                SpeakerChannel::Me => {}
+                                SpeakerChannel::Them
+                                    if event.finality == Finality::Final =>
+                                {
+                                    gate.record(&event.text);
+                                    false
+                                }
+                                SpeakerChannel::Me if gate.is_echo(&event.text) => {
+                                    log::debug!(
+                                        "listen: dropped mic echo {:?}",
+                                        event.text
+                                    );
+                                    true
+                                }
+                                _ => false,
                             }
+                        };
+                        if dropped {
+                            // A dropped final leaves its last interim
+                            // seeded as the channel's provisional — it
+                            // would still land in the next `close()`.
+                            // Clear it and re-emit the interim so a live
+                            // "You" bubble sheds the echo tail.
+                            if event.finality == Finality::Final {
+                                let (interim, label) = {
+                                    let mut assembler = callback_assembler.lock();
+                                    assembler.drop_provisional(SpeakerChannel::Me);
+                                    (
+                                        assembler.interim(SpeakerChannel::Me),
+                                        assembler.interim_label(SpeakerChannel::Me),
+                                    )
+                                };
+                                if let Some(text) = interim {
+                                    (callback_context.emit)(ListenEvent::Turn(
+                                        ListenTurn {
+                                            speaker: SpeakerChannel::Me,
+                                            speaker_idx: label,
+                                            text,
+                                            ts: now_unix(),
+                                            session_id: callback_context.session_id,
+                                            finality: false,
+                                        },
+                                    ));
+                                }
+                            }
+                            return;
                         }
                         let channel = event.channel;
                         let speaker_idx = event.speaker_idx;
@@ -1259,6 +1308,23 @@ mod tests {
         a.push_at(event(SpeakerChannel::Me, "hel", Finality::Interim), t);
         a.push_at(event(SpeakerChannel::Me, "hello", Finality::Final), t);
         assert_eq!(a.flush_at(t + SILENCE).pop().unwrap().text, "hello");
+    }
+    /// The echo gate drops a mic FINAL before it reaches `push` — its
+    /// passed interim would otherwise stay seeded as the provisional
+    /// and land in the next `close()` as a phantom "You" turn.
+    #[test]
+    fn dropped_echo_final_leaves_no_provisional_residue() {
+        let mut a = TurnAssembler::new();
+        let t = Instant::now();
+        a.push_at(
+            event(SpeakerChannel::Me, "a partial echo", Finality::Interim),
+            t,
+        );
+        // The gate-side drop: the final never reaches `push`, only the
+        // provisional cleanup does.
+        a.drop_provisional(SpeakerChannel::Me);
+        assert_eq!(a.interim(SpeakerChannel::Me), None);
+        assert!(a.flush_at(t + SILENCE).is_empty());
     }
     /// A document transcript renders one block per speaker run — so a
     /// confirmed voice change must close the open turn even before the

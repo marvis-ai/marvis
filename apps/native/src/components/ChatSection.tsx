@@ -152,6 +152,11 @@ export const ChatSection = ({ onBack }: { onBack: () => void }) => {
    *  switches the active ask session, so `loading` refetches when this
    *  stops matching. */
   const sessionRef = useRef<number | null>(null);
+  /** Chunks landing while a `loading` refetch is in flight — the send
+   *  may have switched sessions, so they buffer until `applyLoading`
+   *  commits rather than appending onto the stale list's tail (the
+   *  previous reply's row would keep them permanently). */
+  const chunkBufRef = useRef<string | null>(null);
 
   // Mount resync: active `ask` session → persisted history; then
   // `ask_current` folds an in-flight run's tail on top. Best-effort —
@@ -203,6 +208,8 @@ export const ChatSection = ({ onBack }: { onBack: () => void }) => {
       // The send may have switched sessions — a send from a listen doc
       // binds to that doc's own chat (ask.rs `listen_id`). Refetch the
       // now-active session rather than folding onto the old one's rows.
+      // Chunks arriving mid-refetch buffer until the fold commits.
+      chunkBufRef.current = '';
       void (async () => {
         let base: ChatMsg[] | null = null;
         try {
@@ -217,12 +224,21 @@ export const ChatSection = ({ onBack }: { onBack: () => void }) => {
         } catch {
           /* resync is best-effort — the fold below still applies */
         }
-        setMsgs((prev) => applyLoading(base ?? prev, p.question ?? ''));
+        const buffered = chunkBufRef.current ?? '';
+        chunkBufRef.current = null;
+        setMsgs((prev) => {
+          const next = applyLoading(base ?? prev, p.question ?? '');
+          return buffered ? appendTail(next, buffered) : next;
+        });
       })();
     }
     setPhase(p.state);
   });
   useTauriEvent<{ text: string }>(EV_ASK_CHUNK, (p) => {
+    if (chunkBufRef.current !== null) {
+      chunkBufRef.current += p.text;
+      return;
+    }
     setMsgs((prev) => appendTail(prev, p.text));
   });
   useTauriEvent<{

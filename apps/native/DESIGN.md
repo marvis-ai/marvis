@@ -38,7 +38,7 @@ All colors are OKLch. Derive variants with `color-mix` — never hand-pick hex.
 | `--surface` | `oklch(1 0 0)` | `#ffffff` | Card / panel / window fill |
 | `--fg` | `oklch(0.148 0.004 228.8)` | — | Primary text |
 | `--muted` | `oklch(0.56 0.021 213.5)` | — | Secondary text, captions |
-| `--border` | `oklch(0.925 0.005 214.3)` | — | Hairline borders |
+| `--border` | `fg 15%` | — | Hairline borders |
 | `--accent` | `oklch(0.53 0.08 237)` | `#3a7294` | Deep slate — the Marvis hue |
 | `--primary` | = `--accent` | `#3a7294` | Primary button fill |
 | `--primary-fg` | `oklch(0.97 0.008 237)` | near-white | Label on slate (~5.2:1) |
@@ -58,7 +58,7 @@ All colors are OKLch. Derive variants with `color-mix` — never hand-pick hex.
 | `--surface` | `oklch(0.245 0.016 237)` |
 | `--fg` | `oklch(0.93 0.006 230)` |
 | `--muted` | `oklch(0.70 0.02 230)` |
-| `--border` | `oklch(0.375 0.016 235)` |
+| `--border` | `fg 18%` |
 | `--fg-2` | `oklch(0.84 0.01 230)` |
 | `--accent` | unchanged `#3a7294` |
 | `--accent-soft` | `accent 26%` (stronger on dark) |

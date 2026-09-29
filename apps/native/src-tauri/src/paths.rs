@@ -61,16 +61,26 @@ pub fn whisper_bin_dir() -> PathBuf {
 /// does not inspect the filesystem.
 #[allow(dead_code)] // Used by Task 4 after resolving the executable directory.
 pub fn bundled_whisper_cli(executable_dir: &std::path::Path) -> PathBuf {
-    executable_dir.join(format!("whisper-cli-{}", whisper_target_triple()))
+    executable_dir.join(format!(
+        "whisper-cli-{}{}",
+        whisper_target_triple(),
+        EXE_SUFFIX
+    ))
 }
 
-/// Return the sidecar name emitted by Tauri inside a packaged macOS app.
+/// Return the sidecar name emitted by Tauri inside a packaged app.
 /// Tauri consumes the target-suffixed staging file and strips that suffix when
-/// it copies the external binary beside the application executable.
+/// it copies the external binary beside the application executable —
+/// `whisper-cli.exe` on Windows.
 #[allow(dead_code)]
 pub fn packaged_whisper_cli(executable_dir: &std::path::Path) -> PathBuf {
-    executable_dir.join("whisper-cli")
+    executable_dir.join(format!("whisper-cli{EXE_SUFFIX}"))
 }
+
+#[cfg(target_os = "windows")]
+const EXE_SUFFIX: &str = ".exe";
+#[cfg(not(target_os = "windows"))]
+const EXE_SUFFIX: &str = "";
 
 #[cfg(target_os = "macos")]
 #[allow(dead_code)]
@@ -157,6 +167,15 @@ pub fn audios_dir() -> PathBuf {
     root().join("audios")
 }
 
+/// `~/.marvis/portal_restore_token` — the XDG screencast portal's
+/// `PersistMode::ExplicitlyRevoked` token, letting later captures skip
+/// the consent dialog. Linux only; not a credential, but it lives under
+/// the 0700 root like everything else.
+#[cfg(target_os = "linux")]
+pub fn portal_token_file() -> PathBuf {
+    root().join("portal_restore_token")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -211,13 +230,15 @@ mod tests {
         let executable_dir = PathBuf::from("/app/Contents/MacOS");
         let candidate = bundled_whisper_cli(&executable_dir);
         assert_eq!(candidate.parent(), Some(executable_dir.as_path()));
+        // Windows sidecars keep the PE `.exe` extension through staging
+        // and packaging; every other platform is suffix-free.
         assert_eq!(
             candidate.file_name().unwrap().to_string_lossy(),
-            format!("whisper-cli-{}", whisper_target_triple())
+            format!("whisper-cli-{}{}", whisper_target_triple(), EXE_SUFFIX)
         );
         assert_eq!(
             packaged_whisper_cli(&executable_dir),
-            executable_dir.join("whisper-cli")
+            executable_dir.join(format!("whisper-cli{EXE_SUFFIX}"))
         );
     }
 

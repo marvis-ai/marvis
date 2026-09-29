@@ -149,7 +149,7 @@ export const EV_PREFS_MODE = 'prefs:mode';
  * streamed text). The flag drops the zombie's deliveries; the catch
  * swallows the racy throw.
  */
-export function useTauriEvent<T>(name: string, cb: (payload: T) => void) {
+export const useTauriEvent = <T>(name: string, cb: (payload: T) => void) => {
   const cbRef = useRef(cb);
   useEffect(() => {
     cbRef.current = cb;
@@ -165,4 +165,4 @@ export function useTauriEvent<T>(name: string, cb: (payload: T) => void) {
       void unlisten.then((u) => u()).catch(() => {});
     };
   }, [name]);
-}
+};

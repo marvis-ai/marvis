@@ -243,6 +243,7 @@ struct ActiveDownload {
 struct ManagerState {
     active: Option<ActiveDownload>,
     selected: Option<SherpaModelId>,
+    punct_attempted: bool,
 }
 pub struct SherpaModelManager {
     root: PathBuf,
@@ -303,6 +304,7 @@ impl SherpaModelManager {
             state: Mutex::new(ManagerState {
                 active: None,
                 selected: None,
+                punct_attempted: false,
             }),
             app: Mutex::new(None),
             cancel_gate: tokio::sync::Mutex::new(()),
@@ -420,6 +422,32 @@ impl SherpaModelManager {
             progress,
         });
         Ok(())
+    }
+    /// Download the punctuation add-on once per run when sherpa is the
+    /// active provider and its STT model is installed but punct is missing.
+    /// Silent best-effort: `Busy`/errors surface only as `sherpa:*` events.
+    pub fn ensure_punct(&self, provider: &str, stt_model: &str) {
+        if provider != "sherpa" {
+            return;
+        }
+        let Some(stt) = stt_entry_for_value(stt_model) else {
+            return;
+        };
+        if !entry_installed_at(&self.root, stt) {
+            return;
+        }
+        let punct = entry_for_id(SherpaModelId::PunctEn.as_str()).expect("catalog");
+        if entry_installed_at(&self.root, punct) {
+            return;
+        }
+        {
+            let mut state = self.state.lock();
+            if state.active.is_some() || state.punct_attempted {
+                return;
+            }
+            state.punct_attempted = true;
+        }
+        let _ = self.start_download(SherpaModelId::PunctEn);
     }
     pub async fn cancel_download(&self) -> Result<(), VoiceDownloadError> {
         let _gate = self.cancel_gate.lock().await;
@@ -1032,6 +1060,70 @@ mod tests {
         manager.start_download(SherpaModelId::SenseVoice).unwrap();
         manager.cancel_download().await.unwrap();
         assert_eq!(fs::read(tmp).unwrap(), b"owned by someone else");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn ensure_punct_downloads_once_when_stt_installed() {
+        let root = temp_root();
+        // "Installed" stt entry: all its catalog files present.
+        let stt_dir = entry_dir(&root, &catalog()[0]);
+        fs::create_dir_all(&stt_dir).unwrap();
+        for f in catalog()[0].files {
+            fs::write(stt_dir.join(f.filename), b"x").unwrap();
+        }
+        let sources = fixture_set(&[b"punct model".to_vec(), b"bpe vocab".to_vec()], Duration::ZERO);
+        let manager = SherpaModelManager::with_test_files(root.clone(), SherpaModelId::PunctEn, sources);
+        manager.ensure_punct("sherpa", "sense-voice");
+        while manager.status().download.is_some() {
+            tokio::task::yield_now().await;
+        }
+        assert!(entry_installed_at(&root, entry_for_id("punct-en").unwrap()));
+        // Second call is a no-op — no Busy error, nothing re-queued.
+        manager.ensure_punct("sherpa", "sense-voice");
+        assert!(manager.status().download.is_none());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// A non-sherpa provider, an stt value outside the sherpa STT catalog,
+    /// and a not-yet-installed STT model all skip the fetch — and none of
+    /// those skips burns the once-per-run flag, so the first refresh after
+    /// SenseVoice lands still heals.
+    #[tokio::test]
+    async fn ensure_punct_only_fires_for_sherpa_with_stt_installed() {
+        let root = temp_root();
+        let stt_dir = entry_dir(&root, &catalog()[0]);
+        fs::create_dir_all(&stt_dir).unwrap();
+        for f in catalog()[0].files {
+            fs::write(stt_dir.join(f.filename), b"x").unwrap();
+        }
+        let sources = fixture_set(&[b"punct model".to_vec(), b"bpe vocab".to_vec()], Duration::ZERO);
+        let manager = SherpaModelManager::with_test_files(root.clone(), SherpaModelId::PunctEn, sources);
+        manager.ensure_punct("whisper", "sense-voice");
+        manager.ensure_punct("sherpa", "tiny");
+        assert!(manager.status().download.is_none());
+        manager.ensure_punct("sherpa", "sense-voice");
+        while manager.status().download.is_some() {
+            tokio::task::yield_now().await;
+        }
+        assert!(entry_installed_at(&root, entry_for_id("punct-en").unwrap()));
+        let _ = fs::remove_dir_all(root);
+
+        let root = temp_root();
+        let sources = fixture_set(&[b"punct model".to_vec(), b"bpe vocab".to_vec()], Duration::ZERO);
+        let missing = SherpaModelManager::with_test_files(root.clone(), SherpaModelId::PunctEn, sources);
+        missing.ensure_punct("sherpa", "sense-voice");
+        assert!(missing.status().download.is_none());
+        let stt_dir = entry_dir(&root, &catalog()[0]);
+        fs::create_dir_all(&stt_dir).unwrap();
+        for f in catalog()[0].files {
+            fs::write(stt_dir.join(f.filename), b"x").unwrap();
+        }
+        missing.ensure_punct("sherpa", "sense-voice");
+        while missing.status().download.is_some() {
+            tokio::task::yield_now().await;
+        }
+        assert!(entry_installed_at(&root, entry_for_id("punct-en").unwrap()));
         let _ = fs::remove_dir_all(root);
     }
 }

@@ -404,18 +404,28 @@ fn is_model_file_name(model: &str) -> bool {
         && model != ".."
 }
 
+/// The on-disk executable name — `whisper-cli.exe` on Windows (PATH dirs
+/// and the user dir both carry the real file name).
+#[cfg(target_os = "windows")]
+const WHISPER_EXE_NAME: &str = "whisper-cli.exe";
+#[cfg(not(target_os = "windows"))]
+const WHISPER_EXE_NAME: &str = "whisper-cli";
+
 fn resolve_fallback(
     path: Option<&std::ffi::OsStr>,
     user_dir: &Path,
 ) -> Option<(PathBuf, WhisperBinarySource)> {
     if let Some(path) = path {
         for directory in std::env::split_paths(path) {
-            let candidate = directory.join("whisper-cli");
+            let candidate = directory.join(WHISPER_EXE_NAME);
             if is_usable_candidate(&candidate) {
                 return Some((candidate, WhisperBinarySource::Path));
             }
         }
     }
+    // Package-manager installs only exist on Unix (Homebrew/local bin);
+    // Windows/Linux users land on PATH or the user dir.
+    #[cfg(unix)]
     for homebrew in [
         Path::new("/opt/homebrew/bin/whisper-cli"),
         Path::new("/usr/local/bin/whisper-cli"),
@@ -424,7 +434,7 @@ fn resolve_fallback(
             return Some((homebrew.to_path_buf(), WhisperBinarySource::Homebrew));
         }
     }
-    let candidate = user_dir.join("whisper-cli");
+    let candidate = user_dir.join(WHISPER_EXE_NAME);
     is_usable_candidate(&candidate).then_some((candidate, WhisperBinarySource::User))
 }
 
@@ -649,7 +659,7 @@ mod tests {
         let bundled = root.join("bundled").join("whisper-cli");
         fs::create_dir_all(&path_dir).unwrap();
         fs::create_dir_all(bundled.parent().unwrap()).unwrap();
-        let path_binary = path_dir.join("whisper-cli");
+        let path_binary = path_dir.join(WHISPER_EXE_NAME);
         make_test_executable(&path_binary);
         make_test_executable(&bundled);
         let path = std::ffi::OsString::from(path_dir);
@@ -693,19 +703,26 @@ mod tests {
             resolve_fallback(Some(std::ffi::OsStr::new("/missing")), &user_dir),
             None
         );
-        make_test_executable(&user_dir.join("whisper-cli"));
+        make_test_executable(&user_dir.join(WHISPER_EXE_NAME));
         assert_eq!(
             resolve_fallback(None, &user_dir),
-            Some((user_dir.join("whisper-cli"), WhisperBinarySource::User))
+            Some((user_dir.join(WHISPER_EXE_NAME), WhisperBinarySource::User))
         );
-        assert!(!is_executable_file(&path_binary));
-        assert!(!is_usable_candidate(&path_binary));
+        // The "exists but isn't executable" rejection is only testable on
+        // Unix — the Windows impl treats any regular file as executable
+        // (there's no exec bit), and a `whisper-cli` (no `.exe`) path is
+        // never probed there since candidates are `whisper-cli.exe`.
+        #[cfg(unix)]
+        {
+            assert!(!is_executable_file(&path_binary));
+            assert!(!is_usable_candidate(&path_binary));
+        }
         #[cfg(target_os = "macos")]
         {
             make_executable(&path_binary);
             assert_eq!(
                 resolve_fallback(Some(path_dir.as_os_str()), &user_dir),
-                Some((user_dir.join("whisper-cli"), WhisperBinarySource::User))
+                Some((user_dir.join(WHISPER_EXE_NAME), WhisperBinarySource::User))
             );
         }
         fs::create_dir(path_dir.join("not-a-file")).unwrap();

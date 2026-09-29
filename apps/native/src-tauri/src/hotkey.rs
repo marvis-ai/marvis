@@ -345,14 +345,22 @@ mod tests {
     use super::*;
     use tauri_plugin_global_shortcut::{Code, Modifiers};
 
+    /// `CmdOrCtrl` resolves per platform — SUPER on macOS, CONTROL
+    /// elsewhere (the crate's own `CMD_OR_CTRL` isn't re-exported
+    /// through `tauri_plugin_global_shortcut`).
+    #[cfg(target_os = "macos")]
+    const CMD_OR_CTRL_MOD: Modifiers = Modifiers::SUPER;
+    #[cfg(not(target_os = "macos"))]
+    const CMD_OR_CTRL_MOD: Modifiers = Modifiers::CONTROL;
+
     #[test]
-    fn accelerator_for_toggle_input_parses_cmd_alt_space() {
-        // Spec default `Cmd+Alt+Space` must parse — `Space` is a named
-        // key in the grammar.
-        let s = accelerator_for("toggle_input").expect("Cmd+Alt+Space should parse");
-        assert_eq!(s.mods, Modifiers::SUPER | Modifiers::ALT);
+    fn accelerator_for_toggle_input_parses_cmd_or_ctrl_alt_space() {
+        // Spec default `CmdOrCtrl+Alt+Space` must parse — `Space` is a
+        // named key in the grammar.
+        let s = accelerator_for("toggle_input").expect("CmdOrCtrl+Alt+Space should parse");
+        assert_eq!(s.mods, CMD_OR_CTRL_MOD | Modifiers::ALT);
         assert_eq!(s.key, Code::Space);
-        assert_eq!(s, "Cmd+Alt+Space".parse::<Shortcut>().unwrap());
+        assert_eq!(s, "CmdOrCtrl+Alt+Space".parse::<Shortcut>().unwrap());
     }
 
     #[test]
@@ -416,14 +424,26 @@ mod tests {
         assert_eq!(
             got,
             vec![
-                (accelerator_for("Cmd+Alt+H").unwrap(), Action::ShowHistory),
-                (accelerator_for("Cmd+Alt+T").unwrap(), Action::StartListen),
-                (accelerator_for("Cmd+Alt+R").unwrap(), Action::ToggleCapture),
                 (
-                    accelerator_for("Cmd+Alt+Space").unwrap(),
+                    accelerator_for("CmdOrCtrl+Alt+H").unwrap(),
+                    Action::ShowHistory
+                ),
+                (
+                    accelerator_for("CmdOrCtrl+Alt+T").unwrap(),
+                    Action::StartListen
+                ),
+                (
+                    accelerator_for("CmdOrCtrl+Alt+R").unwrap(),
+                    Action::ToggleCapture
+                ),
+                (
+                    accelerator_for("CmdOrCtrl+Alt+Space").unwrap(),
                     Action::ToggleInput
                 ),
-                (accelerator_for("Cmd+Shift+L").unwrap(), Action::ToggleLock),
+                (
+                    accelerator_for("CmdOrCtrl+Shift+L").unwrap(),
+                    Action::ToggleLock
+                ),
             ]
         );
     }
@@ -449,7 +469,7 @@ mod tests {
         binds.insert("toggle_input".to_string(), "Ctrl+Alt+J".to_string());
         let new = bindings(&binds);
         let (keep, drop, add) = plan_swap(&prev, &new);
-        let old = accelerator_for("Cmd+Alt+Space").unwrap();
+        let old = accelerator_for("CmdOrCtrl+Alt+Space").unwrap();
         let rebound = accelerator_for("Ctrl+Alt+J").unwrap();
         assert_eq!(add, vec![(rebound, Action::ToggleInput)]);
         assert_eq!(drop, vec![(old, Action::ToggleInput)]);

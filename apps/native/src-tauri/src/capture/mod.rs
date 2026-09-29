@@ -7,15 +7,60 @@
 //! thumbs go to Marvis's own content-protected `picker` window so the
 //! user can see what they're choosing.
 //!
-//! [`MacosCapture`] (ScreenCaptureKit) is the production [`FrameSource`];
-//! `RingBuffer` and [`frame_hash`] are platform-pure and unit-tested here.
+//! [`PlatformCapture`] is the production [`FrameSource`]:
+//! ScreenCaptureKit on macOS, Windows.Graphics.Capture on Windows, and
+//! the XDG screencast portal + PipeWire on Linux. The dedupe → downscale
+//! → JPEG pipeline (`frame_pipe`) plus `RingBuffer`/`frame_hash` are
+//! platform-pure and unit-tested here.
+//!
+//! Platform asymmetries the seam absorbs:
+//!
+//! - `CaptureSource` is whatever a resolved picker answer means on that
+//!   OS — an `SCContentFilter` on macOS, a monitor/window handle pair on
+//!   Windows, a live portal session's PipeWire node on Linux.
+//! - Linux has no enumerable sources by design (the portal's own dialog
+//!   owns selection), so `pick_candidates`/`resolve_candidate`/`thumb_for`
+//!   are unsupported there and `capture_pick_begin` drives the portal
+//!   picker directly.
 
 pub(crate) mod controller;
+pub(crate) mod frame_pipe;
+#[cfg(target_os = "linux")]
+mod linux;
+#[cfg(target_os = "macos")]
 pub(crate) mod macos;
-pub(crate) use macos::primary_display_filter;
-pub(crate) use macos::shot_fullscreen;
-pub use macos::MacosCapture;
+#[cfg(target_os = "windows")]
+mod windows;
+
+#[cfg(target_os = "linux")]
+pub(crate) use linux::{portal_pick_blocking, primary_display_source, shot_fullscreen};
+#[cfg(target_os = "macos")]
 pub(crate) use macos::{pick_candidates, resolve_candidate, thumb_for};
+#[cfg(target_os = "macos")]
+pub(crate) use macos::{primary_display_source, shot_fullscreen};
+#[cfg(target_os = "windows")]
+pub(crate) use windows::shot_fullscreen;
+#[cfg(target_os = "windows")]
+pub(crate) use windows::{pick_candidates, primary_display_source, resolve_candidate, thumb_for};
+
+/// The production capture type for this OS — `lib.rs` holds
+/// `Mutex<Option<PlatformCapture>>` and treats it uniformly.
+#[cfg(target_os = "linux")]
+pub use linux::LinuxCapture as PlatformCapture;
+#[cfg(target_os = "macos")]
+pub use macos::MacosCapture as PlatformCapture;
+#[cfg(target_os = "windows")]
+pub use windows::WindowsCapture as PlatformCapture;
+
+/// What a resolved picker answer (or the auto primary-display path)
+/// hands to [`PlatformCapture::new`] — the OS-specific "capture this"
+/// token. On macOS it is an `SCContentFilter`.
+#[cfg(target_os = "linux")]
+pub(crate) use linux::Source as CaptureSource;
+#[cfg(target_os = "macos")]
+pub(crate) use screencapturekit::stream::content_filter::SCContentFilter as CaptureSource;
+#[cfg(target_os = "windows")]
+pub(crate) use windows::Source as CaptureSource;
 
 use std::collections::VecDeque;
 
@@ -43,10 +88,10 @@ pub struct PickCandidate {
     pub thumb_of: Option<String>,
 }
 
-/// A picker id resolved against fresh `SCShareableContent` — the
-/// filter, stream dims, and `capture:state` target fields.
+/// A picker id resolved against fresh shareable content — the platform
+/// source token, stream dims, and `capture:state` target fields.
 pub struct PickResolution {
-    pub filter: screencapturekit::stream::content_filter::SCContentFilter,
+    pub source: CaptureSource,
     pub w: u32,
     pub h: u32,
     /// `"display" | "window" | "app"`
@@ -162,6 +207,14 @@ pub fn frame_hash_rows(
     acc
 }
 
+/// fps → minimum frame interval seconds (8→0.125, 4→0.25, 2→0.5) —
+/// shared by the SCK `minimum_frame_interval` and WGC
+/// `MinimumUpdateIntervalSettings` throttles. `fps.max(1)` guards a 0
+/// write from dividing by zero.
+pub(crate) fn frame_interval_secs(fps: u32) -> f64 {
+    1.0 / f64::from(fps.max(1))
+}
+
 /// A frame producer with a lifecycle. `Send + Sync` so the app layer can
 /// share one source across threads.
 pub trait FrameSource: Send + Sync {
@@ -170,6 +223,9 @@ pub trait FrameSource: Send + Sync {
     fn start(&self, on_frame: Box<dyn Fn(Frame) + Send>);
     /// Stop producing and join the worker thread.
     fn stop(&self);
+    /// Whether the stream + worker are live — false after a failed
+    /// `start` or after `stop`.
+    fn is_running(&self) -> bool;
 }
 
 #[cfg(test)]
@@ -222,17 +278,14 @@ mod tests {
         // otherwise changed-frames-only dedupe silently never fires.
         let (w, h, bpr) = (4u32, 4u32, 20usize); // 16 px bytes + 4 pad/row
         let mut a = vec![0u8; bpr * h as usize];
+        let mut b = vec![0u8; bpr * h as usize];
         for y in 0..h as usize {
             for x in 0..16 {
                 a[y * bpr + x] = 0x5a;
+                b[y * bpr + x] = 0x5a;
             }
             for x in 16..bpr {
                 a[y * bpr + x] = 0xde; // padding garbage A
-            }
-        }
-        let mut b = a.clone();
-        for y in 0..h as usize {
-            for x in 16..bpr {
                 b[y * bpr + x] = 0x77; // padding garbage B
             }
         }

@@ -19,7 +19,7 @@
   --surface: oklch(1 0 0);
   --fg: oklch(0.148 0.004 228.8);
   --muted: oklch(0.56 0.021 213.5);
-  --border: oklch(0.925 0.005 214.3);
+  --border: color-mix(in oklch, var(--fg) 15%, transparent);
   --accent: oklch(0.53 0.08 237); /* deep slate #3a7294 */
   --primary: var(--accent);
   --primary-fg: oklch(0.97 0.008 237);
@@ -72,7 +72,7 @@
   --surface: oklch(0.245 0.016 237);
   --fg: oklch(0.93 0.006 230);
   --muted: oklch(0.7 0.02 230);
-  --border: oklch(0.375 0.016 235);
+  --border: color-mix(in oklch, var(--fg) 18%, transparent);
   --fg-2: oklch(0.84 0.01 230);
   --accent-soft: color-mix(in oklch, var(--accent) 26%, transparent);
   --accent-text: color-mix(in oklch, var(--accent) 55%, white);

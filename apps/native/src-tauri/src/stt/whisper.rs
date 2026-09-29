@@ -708,8 +708,15 @@ mod tests {
             resolve_fallback(None, &user_dir),
             Some((user_dir.join(WHISPER_EXE_NAME), WhisperBinarySource::User))
         );
-        assert!(!is_executable_file(&path_binary));
-        assert!(!is_usable_candidate(&path_binary));
+        // The "exists but isn't executable" rejection is only testable on
+        // Unix — the Windows impl treats any regular file as executable
+        // (there's no exec bit), and a `whisper-cli` (no `.exe`) path is
+        // never probed there since candidates are `whisper-cli.exe`.
+        #[cfg(unix)]
+        {
+            assert!(!is_executable_file(&path_binary));
+            assert!(!is_usable_candidate(&path_binary));
+        }
         #[cfg(target_os = "macos")]
         {
             make_executable(&path_binary);

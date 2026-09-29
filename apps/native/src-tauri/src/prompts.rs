@@ -28,9 +28,9 @@ fn data_block(tag: &str, value: &str) -> String {
 }
 
 /// The new user turn: the request plus whatever context exists — a
-/// `<meeting_context>` block only when the listen transcript tail is
-/// non-empty, a `<screen_context>` block only when the vision reader
-/// described a frame. A bare request is a standalone question.
+/// `<meeting_context>` block only when the listen transcript context
+/// is non-empty, a `<screen_context>` block only when the vision
+/// reader described a frame. A bare request is a standalone question.
 pub fn live_user_prompt(request: &str, history: &str, screen: Option<&str>) -> String {
     let mut prompt = request.to_string();
     if !history.trim().is_empty() {

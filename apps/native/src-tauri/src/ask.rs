@@ -961,10 +961,11 @@ fn build_messages(
 }
 
 /// The send's meeting context. A linked send (`Some`) is about THAT
-/// listen doc — live or ended — so its persisted summary leads (it
-/// covers the whole session, where the transcript tail truncates) and
-/// the transcript tail follows. An unlinked ask keeps the ambient
-/// behavior: the live listen session's tail, transcript only.
+/// listen doc — live or ended — so its persisted summary leads and the
+/// WHOLE transcript follows: the summary is already generated over all
+/// turns, and the verbatim rows answer "who said what" anywhere in the
+/// session. An unlinked ask keeps the ambient behavior: the live
+/// listen session's tail, transcript only.
 fn load_listen_context(db: &Db, listen_id: Option<i64>) -> String {
     let (sid, linked) = match listen_id {
         Some(id) => (id, true),
@@ -973,7 +974,12 @@ fn load_listen_context(db: &Db, listen_id: Option<i64>) -> String {
             None => return String::new(),
         },
     };
-    let transcript = match db.transcripts_tail(sid, HISTORY_TAIL) {
+    let rows = if linked {
+        db.transcripts_for(sid, None)
+    } else {
+        db.transcripts_tail(sid, HISTORY_TAIL)
+    };
+    let transcript = match rows {
         Ok(rows) => rows
             .iter()
             .map(|row: &Transcript| format!("{}: {}", row.speaker, row.content))
@@ -2232,7 +2238,7 @@ mod tests {
 
     /// A send bound to a listen doc (`listen_id`) gets its own ask
     /// session — not the open generic one — and the request carries
-    /// the doc's summary + transcript tail, not some other session's.
+    /// the doc's summary + full transcript, not some other session's.
     /// A second send reuses the linked chat (one thread per doc).
     #[tokio::test]
     async fn send_chain_listen_linked_send_uses_the_doc_session() {
@@ -2375,6 +2381,57 @@ mod tests {
         };
         assert!(request.contains("ship it Monday"));
         assert_eq!(db.session_active_id("ask").unwrap(), Some(ask_sid));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A linked doc's context carries the WHOLE transcript, not just
+    /// the tail — the earliest turn must reach the provider even past
+    /// `HISTORY_TAIL` rows.
+    #[tokio::test]
+    async fn send_chain_linked_send_carries_the_full_transcript() {
+        let dir = tmp_dir();
+        let db = Db::at(dir.join("marvis.db")).unwrap();
+        let doc = db.session_get_or_create_active("listen").unwrap();
+        db.transcript_add(doc, "them", "the earliest decision", None)
+            .unwrap();
+        for i in 0..(HISTORY_TAIL + 5) {
+            db.transcript_add(doc, "them", &format!("filler turn {i}"), None)
+                .unwrap();
+        }
+        db.session_end(doc).unwrap();
+        let provider = MockProvider::new(vec![Behavior::Tokens(vec!["ok".into()])]);
+        let calls = provider.calls();
+        let (_events, emit) = recorder();
+        let reader = screen_read::ScreenReader::new();
+        let ring = Mutex::new(RingBuffer::new(4, 1 << 20));
+        let input = input(&reader, &ring);
+        let cancel = CancellationToken::new();
+
+        send_chain(
+            vec![candidate("openai", provider)],
+            None,
+            &db,
+            &emit,
+            &input,
+            &cancel,
+            ChainOpts {
+                text: "q",
+                listen_id: Some(doc),
+                language: "en",
+                ..ChainOpts::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        let calls = calls.lock();
+        let msgs = &calls[0];
+        let request = match &msgs.last().unwrap().content[0] {
+            ContentPart::Text(text) => text.clone(),
+            _ => panic!("request must start with a text part"),
+        };
+        assert!(request.contains("the earliest decision"));
+        assert!(request.contains(&format!("filler turn {}", HISTORY_TAIL + 4)));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

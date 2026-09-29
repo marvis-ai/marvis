@@ -390,6 +390,14 @@ export const VoiceSetup = ({
     (sherpaActiveDownload?.model === speakerModel.id
       ? sherpaActiveDownload
       : (sherpaProgress[speakerModel.id] ?? null));
+  const punctModel = sherpa?.models.find(
+    (entry) => entry.kind === 'punctuation',
+  );
+  const punctProgress =
+    punctModel &&
+    (sherpaActiveDownload?.model === punctModel.id
+      ? sherpaActiveDownload
+      : (sherpaProgress[punctModel.id] ?? null));
   const save = (
     key: 'models.stt_provider' | 'models.stt_model',
     value: string,
@@ -704,6 +712,73 @@ export const VoiceSetup = ({
           <p className={PROV_ERR}>{error || downloadError}</p>
         )}
       </div>
+      {provider === 'sherpa' && punctModel && (
+        <div className={cn(PROV_CARD, 'border-border')}>
+          <div className='flex items-center gap-2'>
+            <span
+              className={cn(
+                'size-1.75 flex-none rounded-full',
+                punctModel.installed
+                  ? 'bg-accent'
+                  : 'bg-[color-mix(in_oklch,var(--fg)_20%,transparent)]',
+              )}
+            />
+            <span className={LBL}>Punctuation & casing</span>
+            <span
+              className={cn(
+                NUM,
+                'ml-auto text-[10.5px] text-muted-foreground',
+              )}>
+              {formatVoiceBytes(punctModel.bytes)}
+            </span>
+          </div>
+          <p className={PROV_NOTE}>
+            {punctModel.description} Optional — without it, English speech is
+            transcribed in ALL CAPS with no punctuation.
+          </p>
+          {punctProgress && (
+            <div className='mt-2'>
+              <div className='flex justify-between text-[10px] text-muted-foreground'>
+                <span>Downloading…</span>
+                <span className={NUM}>
+                  {formatVoiceBytes(punctProgress.received)} /{' '}
+                  {formatVoiceBytes(punctProgress.total)}
+                </span>
+              </div>
+              <progress
+                className='mt-1 h-1.5 w-full accent-accent'
+                value={punctProgress.received}
+                max={punctProgress.total}
+              />
+            </div>
+          )}
+          <div className='mt-2 flex gap-1.5'>
+            {sherpaActiveDownload?.model === punctModel.id ? (
+              <button
+                type='button'
+                className={cn(BTN_LG, BTN_OUTLINE)}
+                onClick={() => void cancelSherpaDownload()}>
+                Cancel
+              </button>
+            ) : !punctModel.installed ? (
+              <button
+                type='button'
+                className={cn(BTN_LG, BTN_PRIMARY)}
+                disabled={Boolean(sherpaActiveDownload)}
+                onClick={() => void startSherpaDownload(punctModel.id)}>
+                Download
+              </button>
+            ) : (
+              <button
+                type='button'
+                className={cn(BTN_LINK_LG, BTN_DANGER)}
+                onClick={() => void removeSherpaModel(punctModel.id)}>
+                Remove
+              </button>
+            )}
+          </div>
+        </div>
+      )}
       {provider !== 'deepgram' && speakerModel && (
         <div className={cn(PROV_CARD, 'border-border')}>
           <div className='flex items-center gap-2'>

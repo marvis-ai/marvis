@@ -45,7 +45,7 @@ import {
   askClose,
   askSend,
   barContextMenu,
-  capturePickAndStart,
+  capturePickBegin,
   captureStop,
   configGet,
   listenStart,
@@ -372,10 +372,10 @@ const Bar = () => {
       ? 'Screen recording start failed'
       : 'Screen recording stop failed';
     if (wantRunning) {
-      // The picker resolves once its panel is up — the pick (or
-      // cancel) lands later as `capture:state`, so there's no status
-      // to check on the start arm.
-      void capturePickAndStart()
+      // The custom share picker: hides the bar and shows candidate
+      // thumbs — the pick (or cancel) lands via capture_pick_select /
+      // capture_pick_cancel, so there's no status to check here.
+      void capturePickBegin()
         .catch(() => raise(failure))
         .finally(() => setBusy(false));
       return;

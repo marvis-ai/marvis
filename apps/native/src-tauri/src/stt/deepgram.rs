@@ -33,7 +33,7 @@ pub struct DeepgramProvider {
     model: String,
     channel: SpeakerChannel,
     endpoint: String,
-    input: Option<mpsc::Sender<PcmChunk>>,
+    input: Option<mpsc::UnboundedSender<PcmChunk>>,
     stop: Arc<AtomicBool>,
     worker: Option<JoinHandle<()>>,
 }
@@ -70,7 +70,10 @@ impl SttProvider for DeepgramProvider {
         if self.worker.is_some() {
             anyhow::bail!("deepgram provider is already running");
         }
-        let (sender, receiver) = mpsc::channel(32);
+        // Unbounded on purpose: a bounded queue drops audio whenever the
+        // socket stalls or a reconnect is in flight — a dropped chunk is a
+        // permanent hole in the transcript, a backlog is only lag.
+        let (sender, receiver) = mpsc::unbounded_channel();
         self.input = Some(sender);
         self.stop.store(false, Ordering::Release);
         let key = self.key.clone();
@@ -106,7 +109,7 @@ impl SttProvider for DeepgramProvider {
     fn enqueue(&self, chunk: PcmChunk) -> bool {
         self.input
             .as_ref()
-            .is_some_and(|sender| sender.try_send(chunk).is_ok())
+            .is_some_and(|sender| sender.send(chunk).is_ok())
     }
 
     fn stop(&mut self) {
@@ -130,7 +133,7 @@ async fn run_worker(
     model: String,
     channel: SpeakerChannel,
     endpoint: String,
-    mut receiver: mpsc::Receiver<PcmChunk>,
+    mut receiver: mpsc::UnboundedReceiver<PcmChunk>,
     callback: Box<dyn Fn(TranscriptEvent) + Send + Sync>,
     error_callback: Box<dyn Fn(String) + Send + Sync>,
     stop: Arc<AtomicBool>,
@@ -187,7 +190,7 @@ async fn run_session(
     model: &str,
     channel: SpeakerChannel,
     endpoint: &str,
-    receiver: &mut mpsc::Receiver<PcmChunk>,
+    receiver: &mut mpsc::UnboundedReceiver<PcmChunk>,
     callback: &(dyn Fn(TranscriptEvent) + Send + Sync),
     stop: &AtomicBool,
 ) -> Result<(), SessionFailure> {
@@ -394,7 +397,7 @@ mod tests {
             socket.send(Message::Close(None)).await.unwrap();
         });
 
-        let (_sender, mut receiver) = mpsc::channel(1);
+        let (_sender, mut receiver) = mpsc::unbounded_channel();
         let events = Arc::new(Mutex::new(Vec::new()));
         let events_for_callback = Arc::clone(&events);
         let stop = AtomicBool::new(false);
@@ -435,7 +438,7 @@ mod tests {
                 .await
                 .unwrap();
         });
-        let (_sender, receiver) = mpsc::channel(1);
+        let (_sender, receiver) = mpsc::unbounded_channel();
         let errors = Arc::new(Mutex::new(Vec::new()));
         let errors_for_callback = Arc::clone(&errors);
         run_worker(
@@ -459,7 +462,7 @@ mod tests {
 
     #[tokio::test]
     async fn reports_terminal_error_after_reconnect_exhaustion() {
-        let (_sender, receiver) = mpsc::channel(1);
+        let (_sender, receiver) = mpsc::unbounded_channel();
         let errors = Arc::new(Mutex::new(Vec::new()));
         let errors_for_callback = Arc::clone(&errors);
         let stop = Arc::new(AtomicBool::new(false));

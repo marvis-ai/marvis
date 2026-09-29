@@ -304,13 +304,14 @@ impl AskService {
         let text = text.to_string();
         // The `resolve_screen` inputs — computed here so the spawned
         // task owns plain values/`Arc`s (`deps` is a borrow that dies
-        // with this call). `needs_screen` folds every screen trigger:
-        // explicit flag, screen-only, the text's intent heuristic, or a
-        // live recording.
-        let needs_screen = with_screen
+        // with this call). `explicit` marks asks that *demand* a fresh
+        // read (Cmd+Enter, screen-only, intent keyword); `needs_screen`
+        // additionally counts ambient recording (a plain ask still gets
+        // the cached context, it just doesn't force a read).
+        let screen_explicit = with_screen
             || screen_required
-            || screen_read::looks_like_screen_intent(&text)
-            || deps.capture_running;
+            || screen_read::looks_like_screen_intent(&text);
+        let needs_screen = screen_explicit || deps.capture_running;
         let read_interval_secs = deps.config.lock().recording.read_interval_secs;
         let reader = Arc::clone(&deps.reader);
         let ring = Arc::clone(&deps.ring);
@@ -347,7 +348,7 @@ impl AskService {
                 ring: &ring,
                 capture_running,
                 needs_screen,
-                required: screen_required,
+                explicit: screen_explicit,
                 read_interval_secs,
                 screen_permission: crate::permissions::screen_status,
                 shot: crate::capture::shot_fullscreen,
@@ -608,10 +609,13 @@ pub(crate) struct ScreenInput<'a> {
     pub ring: &'a Mutex<RingBuffer>,
     /// `state.capture` is live — ring frames are fresh.
     pub capture_running: bool,
-    /// with_screen || screen_required || looks_like_screen_intent(text)
+    /// `with_screen`/`screen_required`/intent — the user asked about
+    /// the screen: while recording this forces a fresh inline read of
+    /// the newest ring frame (never just the cache), and no material
+    /// at all errors rather than answering blind.
+    pub explicit: bool,
+    /// explicit || capture_running — the OFF branch's shot gate.
     pub needs_screen: bool,
-    /// screen_only: a failed one-shot errors instead of degrading.
-    pub required: bool,
     pub read_interval_secs: u64,
     /// `crate::permissions::screen_status` in prod; stubbed in tests.
     pub screen_permission: fn() -> bool,
@@ -643,16 +647,57 @@ pub(crate) async fn resolve_screen(
 ) -> Result<(Option<ScreenMaterial>, TokenUsage), String> {
     let mut usage = TokenUsage::default();
     if input.capture_running {
-        let material = if vision.is_some() {
-            input.reader.context().map(|c| {
-                let age = unix_now() - c.ts;
-                let text = if age > (input.read_interval_secs * 2) as i64 {
-                    format!("{}\n(captured ~{}s ago)", c.text, age)
-                } else {
-                    c.text
+        let material = if let Some(vis) = vision {
+            let cached = || {
+                input.reader.context().map(|c| {
+                    let age = unix_now() - c.ts;
+                    let text = if age > (input.read_interval_secs * 2) as i64
+                    {
+                        format!("{}\n(captured ~{}s ago)", c.text, age)
+                    } else {
+                        c.text
+                    };
+                    ScreenMaterial::Text(text)
+                })
+            };
+            if input.explicit {
+                // Intent / Cmd+Enter means "the screen NOW" — read the
+                // newest ring frame inline (the ring respects the picked
+                // scope; a fullscreen one-shot would not). A failed read
+                // or revoked permission falls back to the cache.
+                // The ring guard isn't Send — drop it before the await.
+                let latest = input.ring.lock().latest();
+                let fresh = match latest {
+                    Some(f) if (input.screen_permission)() => {
+                        match crate::screen_read::describe_screen(
+                            &*vis.provider,
+                            &f,
+                            cancel,
+                        )
+                        .await
+                        {
+                            Ok(Some(reply)) => {
+                                if let Some(u) = &reply.usage {
+                                    usage.add(u);
+                                }
+                                Some(ScreenMaterial::Text(reply.full))
+                            }
+                            _ => None,
+                        }
+                    }
+                    Some(_) => {
+                        emit(
+                            "capture:permission-needed",
+                            json!({ "permission": "screen" }),
+                        );
+                        None
+                    }
+                    None => None,
                 };
-                ScreenMaterial::Text(text)
-            })
+                fresh.or_else(cached)
+            } else {
+                cached()
+            }
         } else {
             // No vision reader: attach the freshest ring frame.
             // Permission revoked mid-session → drop the stale frame and
@@ -668,10 +713,10 @@ pub(crate) async fn resolve_screen(
                 frame.map(ScreenMaterial::Frame)
             }
         };
-        // `required` (screen-only) means the ON row MUST produce
-        // material — empty cache / empty or permission-dropped ring is
-        // the pre-redesign "No frame captured" → ask:error.
-        if material.is_none() && input.required {
+        // An explicit screen ask must never answer blind — no material
+        // is the pre-redesign "No frame captured" → ask:error. Ambient
+        // asks (explicit=false) still get Ok(None) → plain text.
+        if material.is_none() && input.explicit {
             return Err(
                 "No screen material captured — check screen permission"
                     .into(),
@@ -704,6 +749,12 @@ pub(crate) async fn resolve_screen(
             );
         }
     };
+    log::info!(
+        "screen_read: one-shot screenshot — {}x{}, {}B jpeg",
+        frame.width,
+        frame.height,
+        frame.jpeg.len()
+    );
     if let Some(vis) = vision {
         let read = crate::screen_read::describe_screen(
             &*vis.provider,
@@ -1120,7 +1171,7 @@ mod tests {
             ring,
             capture_running: false,
             needs_screen: false,
-            required: false,
+            explicit: false,
             read_interval_secs: 3,
             screen_permission: || true,
             shot: || Ok(Some(test_frame())),
@@ -2155,7 +2206,7 @@ mod tests {
         let ring = Mutex::new(RingBuffer::new(4, 1 << 20));
         let mut input = input(&reader, &ring);
         input.needs_screen = true;
-        input.required = true;
+        input.explicit = true;
         input.shot = || Err(anyhow::anyhow!("denied"));
         let (_ev, emit) = recorder();
         let result = resolve_screen(
@@ -2223,6 +2274,76 @@ mod tests {
         assert!(mat.is_none());
     }
 
+    /// Recording on + intent (keyword or Cmd+Enter) reads the newest
+    /// ring frame inline — "read my screen" means NOW, not whenever
+    /// the background reader last settled.
+    #[tokio::test]
+    async fn recording_on_intent_reads_newest_ring_frame() {
+        let reader = screen_read::ScreenReader::new();
+        reader.seed_context("stale cached read");
+        let ring = Mutex::new(RingBuffer::new(4, 1 << 20));
+        ring.lock().push(test_frame());
+        let mut input = input(&reader, &ring);
+        input.capture_running = true;
+        input.explicit = true;
+        let (_ev, emit) = recorder();
+        let vis = candidate(
+            "vis",
+            MockProvider::new(vec![Behavior::Tokens(vec!["fresh".into()])]),
+        );
+        let (mat, _u) =
+            resolve_screen(&input, Some(&vis), &emit, &CancellationToken::new())
+                .await
+                .unwrap();
+        match mat {
+            Some(ScreenMaterial::Text(t)) => assert_eq!(t, "fresh"),
+            _ => panic!("intent ask must produce the fresh inline read"),
+        }
+    }
+
+    /// The fresh read failing must not sink the ask — the cached
+    /// context is the documented fallback (stale beats empty).
+    #[tokio::test]
+    async fn recording_on_intent_read_failure_falls_back_to_cache() {
+        let reader = screen_read::ScreenReader::new();
+        reader.seed_context("cached read");
+        let ring = Mutex::new(RingBuffer::new(4, 1 << 20));
+        ring.lock().push(test_frame());
+        let mut input = input(&reader, &ring);
+        input.capture_running = true;
+        input.explicit = true;
+        let (_ev, emit) = recorder();
+        let vis = candidate(
+            "vis",
+            MockProvider::new(vec![Behavior::Fail(LlmError::Auth)]),
+        );
+        let (mat, _u) =
+            resolve_screen(&input, Some(&vis), &emit, &CancellationToken::new())
+                .await
+                .unwrap();
+        match mat {
+            Some(ScreenMaterial::Text(t)) => assert_eq!(t, "cached read"),
+            _ => panic!("failed fresh read must fall back to cache"),
+        }
+    }
+
+    /// Intent + neither a ring frame nor a cache → error, not a blind
+    /// text-only answer (same rule as the OFF path's failed shot).
+    #[tokio::test]
+    async fn recording_on_intent_nothing_to_read_errors() {
+        let reader = screen_read::ScreenReader::new();
+        let ring = Mutex::new(RingBuffer::new(4, 1 << 20));
+        let mut input = input(&reader, &ring);
+        input.capture_running = true;
+        input.explicit = true;
+        let (_ev, emit) = recorder();
+        let vis = candidate("vis", MockProvider::new(vec![]));
+        let result =
+            resolve_screen(&input, Some(&vis), &emit, &CancellationToken::new())
+                .await;
+        assert!(result.is_err(), "intent ask with no material must error");
+    }
+
     /// Recording on + required + nothing to attach → the run errors
     /// (send_chain's error arm emits ask:error) — required means the
     /// screen material is the whole question.
@@ -2232,7 +2353,7 @@ mod tests {
         let ring = Mutex::new(RingBuffer::new(4, 1 << 20));
         let mut input = input(&reader, &ring);
         input.capture_running = true;
-        input.required = true;
+        input.explicit = true;
         let (_ev, emit) = recorder();
         let result =
             resolve_screen(&input, None, &emit, &CancellationToken::new())

@@ -52,7 +52,7 @@ pub struct WhisperProvider {
     channel: SpeakerChannel,
     binary: Option<PathBuf>,
     diarize: bool,
-    input: Option<mpsc::SyncSender<PcmChunk>>,
+    input: Option<mpsc::Sender<PcmChunk>>,
     stop: Arc<AtomicBool>,
     child: Arc<Mutex<Option<Child>>>,
     worker: Option<JoinHandle<()>>,
@@ -150,7 +150,10 @@ impl SttProvider for WhisperProvider {
             anyhow::bail!("whisper model was not found: {}", model.display());
         }
 
-        let (sender, receiver) = mpsc::sync_channel(4);
+        // Unbounded on purpose: a whisper-cli window takes seconds, so a
+        // bounded queue overflows during speech and every dropped chunk is
+        // a permanent hole in the transcript — a backlog is only lag.
+        let (sender, receiver) = mpsc::channel();
         self.input = Some(sender);
         self.stop.store(false, Ordering::Release);
         let stop = Arc::clone(&self.stop);
@@ -176,7 +179,7 @@ impl SttProvider for WhisperProvider {
     fn enqueue(&self, chunk: PcmChunk) -> bool {
         self.input
             .as_ref()
-            .is_some_and(|sender| sender.try_send(chunk).is_ok())
+            .is_some_and(|sender| sender.send(chunk).is_ok())
     }
 
     fn stop(&mut self) {

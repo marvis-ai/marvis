@@ -10,7 +10,9 @@ use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 
-const AUDIO_QUEUE_CAPACITY: usize = 8;
+/// Deep enough to ride out short CPU spikes (model loads, decode bursts)
+/// without dropping samples destined for transcription.
+const AUDIO_QUEUE_CAPACITY: usize = 64;
 const FLAG_FLOAT: u32 = 1;
 const FLAG_BIG_ENDIAN: u32 = 2;
 const FLAG_NON_INTERLEAVED: u32 = 0x20;

@@ -25,15 +25,15 @@ export const CardHeader = ({
     {onBack && (
       <button
         type='button'
-        className={cn(ICON_BTN, '-mt-0.5 shrink-0')}
+        className={cn(ICON_BTN, 'size-8.5 text-fg-2 shrink-0')}
         title='Back'
         aria-label='Back'
         onClick={onBack}>
-        <ArrowLeftIcon className='size-4' />
+        <ArrowLeftIcon className='size-5.5' />
       </button>
     )}
     <div className='min-w-0 flex-1 select-none cursor-grab'>
-      <p className='truncate text-xs leading-normal font-[550] select-none'>
+      <p className='truncate text-sm leading-normal font-medium select-none'>
         {title}
       </p>
       {subtitle && (

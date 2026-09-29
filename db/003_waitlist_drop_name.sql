@@ -1,0 +1,2 @@
+ALTER TABLE waitlist
+  DROP COLUMN IF EXISTS name;

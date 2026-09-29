@@ -23,8 +23,10 @@ export { ToggleGroup, ToggleGroupItem } from "./components/ui/toggle-group"
 // package, so apps import glyphs through the barrel instead of relying
 // on undeclared/hoisted node_modules).
 export {
+  AppWindowIcon,
   ArrowLeftIcon,
   CameraIcon,
+  CaptionsIcon,
   CheckIcon,
   ChevronDownIcon,
   ChevronRightIcon,
@@ -36,10 +38,12 @@ export {
   InfoIcon,
   KeyboardIcon,
   KeyRoundIcon,
+  LayoutGridIcon,
   MessageSquareTextIcon,
   MicIcon,
   MicAudioLinesIcon,
   MonitorDotIcon,
+  MonitorIcon,
   PanelTopIcon,
   PauseIcon,
   PlayIcon,
@@ -50,6 +54,7 @@ export {
   ShieldCheckIcon,
   SlidersHorizontalIcon,
   SquareIcon,
+  TimerIcon,
   Trash2Icon,
   VideoIcon,
   XIcon,

@@ -1,12 +1,19 @@
 use super::{normalize_pcm, AudioSource, PcmChunk};
 use anyhow::{anyhow, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::{ErrorKind, Sample, SampleFormat, Stream, StreamConfig};
+use cpal::{BufferSize, ErrorKind, Sample, SampleFormat, Stream, StreamConfig};
 use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 
-const INPUT_QUEUE_CAPACITY: usize = 8;
+/// Deep enough to ride out short CPU spikes (model loads, decode bursts)
+/// without the realtime callback hitting "input queue is full".
+const INPUT_QUEUE_CAPACITY: usize = 64;
+/// Requested input buffer: ~43ms at the common 48kHz vs ~10ms at the
+/// device default — slack so a stalled scheduler tick doesn't glitch the
+/// stream (xrun). Costs ~30ms of extra capture latency, irrelevant next
+/// to STT turnaround. Devices that reject it fall back to the default.
+const MIC_BUFFER_FRAMES: u32 = 2048;
 
 type RawChunk = (Vec<f32>, u32, u16);
 
@@ -50,44 +57,65 @@ impl MicSource {
         let channels = config.channels;
         let (input_tx, input_rx) = mpsc::sync_channel(INPUT_QUEUE_CAPACITY);
         let worker = thread::spawn(move || forward_chunks(input_rx, output));
-        let callback_tx = input_tx.clone();
         let status_tx = self.status_tx.clone();
-        let error_callback = move |error| report_stream_error(&error, &status_tx);
 
-        let stream = match sample_format {
-            SampleFormat::F32 => device.build_input_stream(
-                config,
-                move |data: &[f32], _| enqueue(data.to_vec(), sample_rate, channels, &callback_tx),
-                error_callback,
-                None,
-            ),
-            SampleFormat::I16 => device.build_input_stream(
-                config,
-                move |data: &[i16], _| {
-                    let converted: Vec<f32> = data
-                        .iter()
-                        .map(|&sample| f32::from_sample(sample))
-                        .collect();
-                    enqueue(converted, sample_rate, channels, &callback_tx);
-                },
-                error_callback,
-                None,
-            ),
-            SampleFormat::U16 => device.build_input_stream(
-                config,
-                move |data: &[u16], _| {
-                    let converted: Vec<f32> = data
-                        .iter()
-                        .map(|&sample| f32::from_sample(sample))
-                        .collect();
-                    enqueue(converted, sample_rate, channels, &callback_tx);
-                },
-                error_callback,
-                None,
-            ),
-            format => return Err(anyhow!("unsupported microphone sample format: {format:?}")),
-        }
-        .map_err(|error| anyhow!("failed to build microphone input stream: {error}"))?;
+        // A device may reject a requested buffer size — the retry drops to
+        // the default rather than failing microphone startup outright.
+        let build = |config: StreamConfig| -> Result<Stream> {
+            let callback_tx = input_tx.clone();
+            let status_tx = status_tx.clone();
+            let error_callback = move |error| report_stream_error(&error, &status_tx);
+            match sample_format {
+                SampleFormat::F32 => device.build_input_stream(
+                    config,
+                    move |data: &[f32], _| {
+                        enqueue(data.to_vec(), sample_rate, channels, &callback_tx)
+                    },
+                    error_callback,
+                    None,
+                ),
+                SampleFormat::I16 => device.build_input_stream(
+                    config,
+                    move |data: &[i16], _| {
+                        let converted: Vec<f32> = data
+                            .iter()
+                            .map(|&sample| f32::from_sample(sample))
+                            .collect();
+                        enqueue(converted, sample_rate, channels, &callback_tx);
+                    },
+                    error_callback,
+                    None,
+                ),
+                SampleFormat::U16 => device.build_input_stream(
+                    config,
+                    move |data: &[u16], _| {
+                        let converted: Vec<f32> = data
+                            .iter()
+                            .map(|&sample| f32::from_sample(sample))
+                            .collect();
+                        enqueue(converted, sample_rate, channels, &callback_tx);
+                    },
+                    error_callback,
+                    None,
+                ),
+                format => return Err(anyhow!("unsupported microphone sample format: {format:?}")),
+            }
+            .map_err(|error| anyhow!("failed to build microphone input stream: {error}"))
+        };
+
+        let stream = match build(config.clone()) {
+            Ok(stream) => stream,
+            Err(first_error) if config.buffer_size != BufferSize::Default => {
+                log::warn!(
+                    "microphone rejected the requested buffer size; retrying with the device default ({first_error})"
+                );
+                build(StreamConfig {
+                    buffer_size: BufferSize::Default,
+                    ..config
+                })?
+            }
+            Err(error) => return Err(error),
+        };
 
         stream
             .play()
@@ -112,7 +140,9 @@ impl AudioSource for MicSource {
             .default_input_config()
             .map_err(|error| anyhow!("failed to get microphone input config: {error}"))?;
         let sample_format = supported.sample_format();
-        self.start_with_format(output, device, supported.into(), sample_format)
+        let mut config: StreamConfig = supported.into();
+        config.buffer_size = BufferSize::Fixed(MIC_BUFFER_FRAMES);
+        self.start_with_format(output, device, config, sample_format)
     }
 
     fn stop(&mut self) {

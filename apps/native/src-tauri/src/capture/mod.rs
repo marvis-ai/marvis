@@ -3,7 +3,9 @@
 //! Privacy boundary: captured pixels are reduced to JPEG [`Frame`]s held in
 //! an in-memory [`RingBuffer`]. Frame bytes are never written to disk and
 //! never serialized to JavaScript — only the local LLM pipeline consumes
-//! them.
+//! them. The one deliberate exception is the share picker: small JPEG
+//! thumbs go to Marvis's own content-protected `picker` window so the
+//! user can see what they're choosing.
 //!
 //! [`MacosCapture`] (ScreenCaptureKit) is the production [`FrameSource`];
 //! `RingBuffer` and [`frame_hash`] are platform-pure and unit-tested here.
@@ -13,8 +15,44 @@ pub(crate) mod macos;
 pub(crate) use macos::primary_display_filter;
 pub(crate) use macos::shot_fullscreen;
 pub use macos::MacosCapture;
+pub(crate) use macos::{pick_candidates, resolve_candidate, thumb_for};
 
 use std::collections::VecDeque;
+
+use serde::Serialize;
+
+/// One shareable target offered by the picker window — meta only;
+/// thumbnails arrive over `picker:thumb` emits.
+#[derive(Debug, Clone, Serialize)]
+pub struct PickCandidate {
+    /// Opaque resolver key: `"d:<display_id>"`, `"w:<window_id>"`,
+    /// `"a:<bundle_id>"` — re-resolved against fresh content on pick.
+    pub id: String,
+    /// `"display" | "window" | "app"` — matches `CaptureTarget.kind`.
+    pub kind: &'static str,
+    /// Primary card text — `"Screen N"`, window title, or app name.
+    pub label: String,
+    /// Secondary line — owning app name for window cards.
+    pub sub: Option<String>,
+    /// Aspect hint (points/pixels) for the card's thumbnail frame.
+    pub w: u32,
+    pub h: u32,
+    /// `"app"` only: the `"w:..."` id whose thumbnail this card reuses
+    /// — an app capture composites at display size, so a real app
+    /// thumb would be a mostly-empty display shot.
+    pub thumb_of: Option<String>,
+}
+
+/// A picker id resolved against fresh `SCShareableContent` — the
+/// filter, stream dims, and `capture:state` target fields.
+pub struct PickResolution {
+    pub filter: screencapturekit::stream::content_filter::SCContentFilter,
+    pub w: u32,
+    pub h: u32,
+    /// `"display" | "window" | "app"`
+    pub kind: &'static str,
+    pub label: String,
+}
 
 /// One captured screen moment: a JPEG-encoded downscale plus the content
 /// hash that deduplicated it against the previous frame.
@@ -22,11 +60,8 @@ use std::collections::VecDeque;
 pub struct Frame {
     /// JPEG bytes (quality 80), `width`×`height` after downscale.
     pub jpeg: Vec<u8>,
-    /// Frame metadata below is produced for later consumers (status/debug
-    /// UIs); only `jpeg` feeds the ask pipeline today.
-    #[allow(dead_code)]
+    /// Downscaled pixel dims — logged by the vision-read diagnostics.
     pub width: u32,
-    #[allow(dead_code)]
     pub height: u32,
     /// Unix epoch seconds when the frame was encoded.
     #[allow(dead_code)]

@@ -51,16 +51,37 @@ pub(crate) async fn describe_screen(
     frame: &Frame,
     cancel: &CancellationToken,
 ) -> Result<Option<StreamReply>, LlmError> {
+    log::info!(
+        "screen_read: vision request — {}x{}, {}B jpeg",
+        frame.width,
+        frame.height,
+        frame.jpeg.len()
+    );
     let msgs = vec![ChatMessage::user_with_image(
         screen_prompt(),
         frame.jpeg.clone(),
     )];
     let mut sink = |_: &str| {};
     tokio::select! {
-        _ = cancel.cancelled() => Ok(None),
+        _ = cancel.cancelled() => {
+            log::info!("screen_read: vision read cancelled");
+            Ok(None)
+        }
         r = provider.stream_chat(&msgs, &mut sink) => match r {
-            Ok(reply) => Ok(Some(reply)),
-            Err(e) => Err(e),
+            Ok(reply) => {
+                let first = reply.full.trim().lines().next().unwrap_or("");
+                match &reply.usage {
+                    Some(u) => log::info!(
+                        "screen_read: vision result ({u:?}): {first}"
+                    ),
+                    None => log::info!("screen_read: vision result: {first}"),
+                }
+                Ok(Some(reply))
+            }
+            Err(e) => {
+                log::warn!("screen_read: vision read failed: {e}");
+                Err(e)
+            }
         },
     }
 }
@@ -227,6 +248,13 @@ impl ScreenReader {
             }
             let frame = self.pending.lock().take().map(|(f, _)| f);
             let Some(frame) = frame else { continue };
+            match last_read {
+                Some(t) => log::info!(
+                    "screen_read: settled → read ({:.1}s since last)",
+                    t.elapsed().as_secs_f64()
+                ),
+                None => log::info!("screen_read: settled → first read"),
+            }
             match describe(frame).await {
                 // A stop/restart mid-read must not write the old
                 // session's result into the cache.

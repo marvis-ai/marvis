@@ -12,17 +12,13 @@ attachDatabasePool(pool);
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const DEFAULT_FROM = 'Marvis AI <notification@updates.getmarvis.com>';
 
-export const validateSignup = (
-  input: unknown,
-): { name: string; email: string } | null => {
+export const validateSignup = (input: unknown): { email: string } | null => {
   if (typeof input !== 'object' || input === null) return null;
-  const { name, email } = input as Record<string, unknown>;
+  const { email } = input as Record<string, unknown>;
   if (typeof email !== 'string') return null;
-  const trimmedName = typeof name === 'string' ? name.trim() : '';
   const trimmedEmail = email.trim().toLowerCase();
-  if (trimmedName.length > 120) return null;
   if (trimmedEmail.length > 254 || !EMAIL_RE.test(trimmedEmail)) return null;
-  return { name: trimmedName, email: trimmedEmail };
+  return { email: trimmedEmail };
 };
 
 // First XFF hop is the client; x-real-ip is the fallback. isIP() guards the
@@ -33,30 +29,19 @@ export const clientIp = (headers: Headers): string | null => {
   return candidate && isIP(candidate) ? candidate : null;
 };
 
-const escapeHtml = (s: string) =>
-  s
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
-
-const sendWelcome = async (
-  name: string,
-  email: string,
-): Promise<string | null> => {
+const sendWelcome = async (email: string): Promise<string | null> => {
   const key = process.env.RESEND_API_KEY;
   if (!key) {
     console.warn('RESEND_API_KEY unset — skipping waitlist email');
     return null;
   }
   const resend = new Resend(key);
-  const greeting = name || 'there';
   const { data, error } = await resend.emails.send({
     from: process.env.FROM_EMAIL ?? DEFAULT_FROM,
     to: email,
     subject: "You're on the Marvis waitlist",
-    text: `Hi ${greeting},\n\nThanks for joining the Marvis waitlist — we'll email you as soon as the macOS build is ready to download.\n\n— The Marvis team`,
-    html: `<p>Hi ${escapeHtml(greeting)},</p><p>Thanks for joining the Marvis waitlist — we'll email you as soon as the macOS build is ready to download.</p><p>— The Marvis team</p>`,
+    text: "Hi there,\n\nThanks for joining the Marvis waitlist — we'll email you as soon as the macOS build is ready to download.\n\n— The Marvis team",
+    html: "<p>Hi there,</p><p>Thanks for joining the Marvis waitlist — we'll email you as soon as the macOS build is ready to download.</p><p>— The Marvis team</p>",
   });
   if (error) {
     console.error('Resend send failed', error);
@@ -86,17 +71,15 @@ app.post('/', async (c) => {
   const userAgent = c.req.header('user-agent')?.slice(0, 512) ?? null;
   try {
     const { rows } = await pool.query(
-      'INSERT INTO waitlist (name, email, ip_address, user_agent) VALUES ($1, $2, $3, $4) ON CONFLICT (email) DO NOTHING RETURNING id',
-      [parsed.name, parsed.email, ip, userAgent],
+      'INSERT INTO waitlist (email, ip_address, user_agent) VALUES ($1, $2, $3) ON CONFLICT (email) DO NOTHING RETURNING id',
+      [parsed.email, ip, userAgent],
     );
     // rows.length === 0 means a duplicate — success without re-sending mail.
     if (rows.length > 0) {
-      const emailId = await sendWelcome(parsed.name, parsed.email).catch(
-        (err) => {
-          console.error('welcome email failed', err);
-          return null;
-        },
-      );
+      const emailId = await sendWelcome(parsed.email).catch((err) => {
+        console.error('welcome email failed', err);
+        return null;
+      });
       // NULL email_sent_at marks signups whose welcome never went out —
       // retryable later. Stamping must not fail the signup.
       if (emailId) {

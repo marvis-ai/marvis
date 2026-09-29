@@ -10,14 +10,12 @@ import { useEffect, useState } from 'react';
 import {
   MessageSquareTextIcon,
   MicAudioLinesIcon,
-  SettingsIcon,
   Trash2Icon,
 } from '@marvis/ui';
 import {
   sessionDelete,
   sessionList,
   sessionResume,
-  windowShowSettings,
   type Session,
 } from '@/lib/commands';
 import {
@@ -29,6 +27,7 @@ import {
 import type { AskActivity } from '@/lib/bar-state';
 import { CHIP, EMPTY, ICON_BTN, NUM, PANEL_BODY, cn } from '@/lib/classes';
 import { CardHeader } from '@/components/shared/CardHeader';
+import { ConfirmButton } from '@/components/shared/ConfirmButton';
 import { relTime, type ListenViewing } from '@/components/listen/model';
 
 export const HistorySection = ({
@@ -72,7 +71,12 @@ export const HistorySection = ({
     onOpenListen(
       s.ended_at === null
         ? null // live session → live view
-        : { id: s.id, startedAt: s.started_at, endedAt: s.ended_at },
+        : {
+            id: s.id,
+            startedAt: s.started_at,
+            endedAt: s.ended_at,
+            stt: s.stt,
+          },
     );
   };
 
@@ -86,21 +90,13 @@ export const HistorySection = ({
 
   return (
     <div className='flex min-h-0 flex-1 flex-col'>
-      {/* Back on the left, settings on the right — the header doubles
-          as the card's drag region. This section drops the shared
-          input row: it's a picker, not a chat surface. */}
+      {/* Back on the left — the header doubles as the card's drag
+          region. This section drops the shared input row: it's a
+          picker, not a chat surface. */}
       <CardHeader
         title='History'
-        onBack={onBack}>
-        <button
-          type='button'
-          className={cn(ICON_BTN, '-mt-0.5 shrink-0')}
-          title='Settings'
-          aria-label='Settings'
-          onClick={() => void windowShowSettings().catch(() => {})}>
-          <SettingsIcon className='size-4' />
-        </button>
-      </CardHeader>
+        onBack={onBack}
+      />
       <div
         data-card-scroll
         className={PANEL_BODY}>
@@ -124,11 +120,11 @@ export const HistorySection = ({
                   )}
                   onClick={() => !disabled && openRow(s)}>
                   {s.kind === 'listen' ? (
-                    <MicAudioLinesIcon className='size-3.5 flex-none text-muted-foreground' />
+                    <MicAudioLinesIcon className='size-4 flex-none text-muted-foreground' />
                   ) : (
-                    <MessageSquareTextIcon className='size-3.5 flex-none text-muted-foreground' />
+                    <MessageSquareTextIcon className='size-4 flex-none text-muted-foreground' />
                   )}
-                  <span className='min-w-0 flex-1 truncate text-[12.5px]'>
+                  <span className='min-w-0 flex-1 truncate text-sm'>
                     {s.title ?? (s.kind === 'listen' ? 'Meeting' : 'Chat')}
                   </span>
                   {liveRow && (
@@ -144,19 +140,15 @@ export const HistorySection = ({
                     {relTime(s.last_active_at)}
                   </span>
                   {!liveRow && (
-                    <button
-                      type='button'
+                    <ConfirmButton
                       aria-label='Delete session'
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        removeRow(s);
-                      }}
+                      onConfirm={() => removeRow(s)}
                       className={cn(
                         ICON_BTN,
                         'size-5 opacity-0 group-hover/row:opacity-100 focus-visible:opacity-100',
                       )}>
                       <Trash2Icon className='size-3' />
-                    </button>
+                    </ConfirmButton>
                   )}
                 </div>
               );

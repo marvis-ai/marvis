@@ -4,17 +4,27 @@
  * `TranscriptBlocks`. No React here so the whole pipeline (turn list →
  * speaker blocks → clipboard text) stays unit-testable.
  */
+import {
+  differenceInSeconds,
+  format,
+  formatDistanceToNowStrict,
+  isThisYear,
+  isToday,
+  isYesterday,
+} from 'date-fns';
 import type { ListenSummaryPayload, ListenTurnPayload } from '@/lib/events';
 
 export type Turn = ListenTurnPayload & { interim?: boolean };
 
 /** The session the card is viewing instead of the live capture — set
  *  after stop (and, later, from History). `endedAt` is null only for a
- *  still-open session. */
+ *  still-open session. `stt` is the engine label that recorded it —
+ *  `sessions.stt`; null on sessions written before the column. */
 export interface ListenViewing {
   id: number;
   startedAt: number;
   endedAt: number | null;
+  stt: string | null;
 }
 
 /* ─── transcript document model ──────────────────────────────────
@@ -95,12 +105,7 @@ export const buildBlocks = (turns: Turn[]): TurnBlock[] => {
 
 /** Wall-clock `HH:MM` — the per-block stamp fallback when a session
  *  start is unavailable (e.g. old sessions in viewing mode). */
-export const timeLabel = (ts: number) => {
-  const date = new Date(ts * 1000);
-  const hh = String(date.getHours()).padStart(2, '0');
-  const mm = String(date.getMinutes()).padStart(2, '0');
-  return `${hh}:${mm}`;
-};
+export const timeLabel = (ts: number) => format(ts * 1000, 'HH:mm');
 
 /** `m:ss`, uncapped minutes (mockup's 107:36). */
 export const elapsedLabel = (secs: number) => {
@@ -108,10 +113,15 @@ export const elapsedLabel = (secs: number) => {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
 };
 
-/** `"Sep 26 · 14:32"` — the viewed-session header subtitle. */
+/** Adaptive stamp — today `14:32`, yesterday `Yesterday · 14:32`, older
+ *  `Sep 26 · 14:32` (`Sep 26, 2025 · 14:32` across years). Viewed-session
+ *  header subtitle + chat row stamp. */
 export const sessionDateLabel = (ts: number) => {
   const d = new Date(ts * 1000);
-  return `${d.toLocaleString('en', { month: 'short' })} ${d.getDate()} · ${timeLabel(ts)}`;
+  const time = format(d, 'HH:mm');
+  if (isToday(d)) return time;
+  if (isYesterday(d)) return `Yesterday · ${time}`;
+  return `${format(d, isThisYear(d) ? 'MMM d' : 'MMM d, yyyy')} · ${time}`;
 };
 
 /** Plain-text block content (finals + interim) — for the clipboard;
@@ -144,10 +154,9 @@ export const transcriptCopyText = (
 };
 
 export const relTime = (ts: number) => {
-  const diff = Date.now() / 1000 - ts;
-  if (diff < 60) return 'now';
-  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
-  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
-  const d = new Date(ts * 1000);
-  return `${d.toLocaleString('en', { month: 'short' })} ${d.getDate()}`;
+  const secs = differenceInSeconds(Date.now(), ts * 1000);
+  if (secs < 60) return 'now';
+  if (secs < 86400)
+    return formatDistanceToNowStrict(ts * 1000, { addSuffix: true });
+  return format(ts * 1000, isThisYear(ts * 1000) ? 'MMM d' : 'MMM d, yyyy');
 };

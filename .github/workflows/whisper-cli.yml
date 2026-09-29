@@ -21,7 +21,7 @@ jobs:
     name: Build whisper-cli (arm64)
     runs-on: macos-14
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Validate build metadata
         working-directory: apps/native/src-tauri
@@ -32,7 +32,7 @@ jobs:
         run: bash scripts/build-whisper-cli.sh --target aarch64-apple-darwin
 
       - name: Upload arm64 artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: whisper-cli-aarch64-apple-darwin
           path: |
@@ -45,7 +45,7 @@ jobs:
     # macos-15-intel is the final supported Intel runner path.
     runs-on: macos-15-intel
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Validate build metadata
         working-directory: apps/native/src-tauri
@@ -56,7 +56,7 @@ jobs:
         run: bash scripts/build-whisper-cli.sh --target x86_64-apple-darwin
 
       - name: Upload x86_64 artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: whisper-cli-x86_64-apple-darwin
           path: |
@@ -71,7 +71,7 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Validate build metadata
         working-directory: apps/native/src-tauri
@@ -82,7 +82,7 @@ jobs:
         run: bash scripts/build-whisper-cli.sh --target x86_64-pc-windows-msvc
 
       - name: Upload windows artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: whisper-cli-x86_64-pc-windows-msvc
           path: |
@@ -94,7 +94,7 @@ jobs:
     name: Build whisper-cli (linux x86_64)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Validate build metadata
         working-directory: apps/native/src-tauri
@@ -105,7 +105,7 @@ jobs:
         run: bash scripts/build-whisper-cli.sh --target x86_64-unknown-linux-gnu
 
       - name: Upload linux artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: whisper-cli-x86_64-unknown-linux-gnu
           path: |
@@ -126,8 +126,8 @@ jobs:
       # a real Developer ID signature without touching the workflow.
       APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY || '-' }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with:
           name: whisper-cli-aarch64-apple-darwin
           path: /tmp/whisper-cli-aarch64-apple-darwin
@@ -149,7 +149,7 @@ jobs:
         working-directory: apps/native/src-tauri
         run: bash scripts/verify-release-app.sh target/aarch64-apple-darwin/release/bundle/macos/Marvis.app aarch64-apple-darwin
       - name: Upload arm64 bundles
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: marvis-aarch64-apple-darwin
           path: |
@@ -171,8 +171,8 @@ jobs:
       # a real Developer ID signature without touching the workflow.
       APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY || '-' }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with:
           name: whisper-cli-x86_64-apple-darwin
           path: /tmp/whisper-cli-x86_64-apple-darwin
@@ -196,7 +196,7 @@ jobs:
         working-directory: apps/native/src-tauri
         run: bash scripts/verify-release-app.sh target/x86_64-apple-darwin/release/bundle/macos/Marvis.app x86_64-apple-darwin
       - name: Upload x86_64 bundles
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: marvis-x86_64-apple-darwin
           path: |
@@ -213,8 +213,8 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with:
           name: whisper-cli-x86_64-pc-windows-msvc
           path: ${{ runner.temp }}/whisper-cli-x86_64-pc-windows-msvc
@@ -237,7 +237,7 @@ jobs:
           ls target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi
           ls target/x86_64-pc-windows-msvc/release/bundle/nsis/*-setup.exe
       - name: Upload windows bundles
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: marvis-x86_64-pc-windows-msvc
           path: |
@@ -251,7 +251,7 @@ jobs:
     needs: build-linux
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install Tauri + capture/audio system dependencies
         run: |
           sudo apt-get update
@@ -259,7 +259,7 @@ jobs:
             libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
             librsvg2-dev patchelf libdbus-1-dev libasound2-dev \
             libpipewire-0.3-dev libpulse-dev pkg-config
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: whisper-cli-x86_64-unknown-linux-gnu
           path: ${{ runner.temp }}/whisper-cli-x86_64-unknown-linux-gnu
@@ -282,7 +282,7 @@ jobs:
           ls target/x86_64-unknown-linux-gnu/release/bundle/appimage/*.AppImage
           ls target/x86_64-unknown-linux-gnu/release/bundle/deb/*.deb
       - name: Upload linux bundles
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: marvis-x86_64-unknown-linux-gnu
           path: |

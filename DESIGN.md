@@ -1,6 +1,7 @@
 # Marvis — Design System
 
-Design documentation for the Marvis landing page (`assets/marvis-landing.html`) and its
+Design documentation for the Marvis landing page (`apps/web`; the earlier
+static mock `assets/marvis-landing.html` predates it — see §10) and its
 brand assets (`assets/`). The visual language derives from the Notion design
 system — warm neutrals, whisper borders, compressed display typography —
 re-tuned for Marvis with a slate-blue accent and a wordmark in Galada.
@@ -160,12 +161,13 @@ Rules inherited from the Notion system:
   by the whisper border; `scroll-margin-top: 72px` for anchored nav.
 - White and warm-white sections alternate; one dark section (`#privacy`)
   provides the sole deep contrast.
-- Hero is centered (`max-width 700px`) with the h1 manually set to a 768px
-  measure via inline transform — preserve if editing.
+- Hero is centered (`max-width 700px`) with the h1 held to an 800px measure
+  via `translate(-50px,3px)` — preserve if editing.
 - Grids: `.grid-2`, `.grid-3` collapse to 1 column ≤920px.
-- Breakpoints: `1180` (hero ask-panel docks full-width below the editor),
-  `920` (grids stack, editor sidebar hides), `760` (nav links hide),
-  `640` (log-rows collapse, shot stage reflows), `480` (phone gutters).
+- Breakpoints: `1180` (hero Listen card docks below the meeting window),
+  `920` (grids stack, hero measure relaxes), `760` (nav links hide),
+  `640` (meeting tiles shrink, log-rows collapse, shot stage reflows),
+  `480` (phone gutters).
 
 ---
 
@@ -227,8 +229,9 @@ to `1fr | auto` ≤640px with the description hidden.
 ## 6. The `.mv-*` overlay-UI system — recreated product views
 
 The hero scene and `#interface` section recreate the real app views 1:1 in DOM
-(sources: `apps/native/src/views/Bar.tsx`, `AskPanel.tsx`,
-`ListenPanel.tsx` in the Marvis repo). They are honest recreations, not
+(sources: `apps/native/src/views/Bar.tsx` plus
+`apps/native/src/components/{ChatSection,ListenSection}.tsx` and
+`components/listen/*` in the Marvis repo). They are honest recreations, not
 screenshots — the page copy says so.
 
 **Scope tokens** (declared on `.mv`, light shadcn-style OKLch):
@@ -239,12 +242,21 @@ screenshots — the page copy says so.
 --mv-muted:     oklch(0.963 0.002 197.1)    muted fill
 --mv-muted-fg:  oklch(0.56 0.021 213.5)     muted text
 --mv-border:    oklch(0.925 0.005 214.3)    hairline
+--mv-input:     oklch(0.925 0.005 214.3)    input wells
 --mv-primary:   oklch(0.218 0.008 223.9)    dark primary (real app button)
 --mv-primary-fg:oklch(0.987 0.002 197.1)
+--mv-accent:    oklch(0.53 0.08 237)        deep slate — "You" voice + badges
+--mv-speaker-1: oklch(0.55 0.12 160)        teal-green
+--mv-speaker-2: oklch(0.62 0.12 60)         amber
+--mv-speaker-3: oklch(0.56 0.15 355)        rose
+--mv-speaker-4: oklch(0.55 0.12 295)        violet
 ```
 
 Font inside `.mv` is **Outfit 14px** — the app's real UI font — kept isolated
-from the page's NotionInter chrome.
+from the page's NotionInter chrome. `--mv-accent` and `--mv-speaker-1..4` are
+the app's own tokens verbatim (`apps/native/src/index.css`): the accent is the
+deep slate `#3a7294`, and the speaker hues hold lightness/chroma equal at
+spaced hues so no diarized voice reads as "the important one".
 
 ### Geometry (real window sizes)
 
@@ -252,15 +264,16 @@ from the page's NotionInter chrome.
 | --- | --- | --- |
 | Bar (`.mv-bar`) | **353×47** | 9999px pill, `card 80%` + `blur(14px)`, floats 21px below work-area top; rests as a **104px capsule** (`is-mini`), morphs open on click or type-to-wake |
 | Ask (`.mv-panel`) | **600px** | `radius 18px`, `card 90%` frosted, drops 8px under the bar |
-| Listen (`.mv-listen`) | **400px** wide | Frosted `rounded-2xl` card, docks 8px left of Ask when both open, centers under the bar when Ask is closed |
+| Listen card (`.mv-listen`) | **600px** | chat · listen · history share one grown card band |
 
 ### Bar states (`.mv-bar-inner`)
 
 Faithful to `Bar.tsx` — the real app has two gates plus a resting state:
 
-- `mini` — the 104px resting capsule: LogoMark + camera + mic icons.
-- `main` — LogoMark + `Ask Marvis…` input + mic icon (`is-off`, "Coming soon")
-  - settings icon.
+- `mini` — the 104px resting capsule: iris + screen-capture toggle +
+  Listen recorder (`MicAudioLinesIcon` starts a meeting Listen).
+- `main` — iris + `Ask Marvis…` input + dictation mic (live — speaks into
+  the field) + settings gear.
 - `needs_permission` — shield icon + "Screen recording needed" +
   primary `Grant` + link `Open settings`.
 
@@ -269,19 +282,28 @@ Faithful to `Bar.tsx` — the real app has two gates plus a resting state:
 Header = the submitted question (12px/500, line-clamp-2) + X close; body =
 14px markdown stream with `.mv-caret` block caret blinking at 1.05s steps.
 
-### Listen panel
+### Listen card
 
-`ListenPanel.tsx` today renders only its Phase-2 chrome — a muted five-bar
-waveform, "Listen arrives in Phase 2", and a `deepgram · stt` chip on a
-frosted `rounded-2xl` card. The mock (`.mv-listen` > `.mv-listen-chrome`)
-reproduces exactly that, so it stays honest rather than inventing a
-transcription UI that doesn't ship yet.
+`ListenSection.tsx` is the live capture surface inside the grown card — the
+mock (`.mv-panel.mv-listen`, same 18px radius + `card 90%` frost as Ask)
+recreates its four regions:
 
-### Dark variant (`.shots[data-theme="dark"]`)
+- Header — session title + mono sources/engine subline
+  (`mic + system audio · deepgram nova-2`), a `.mv-badge` LISTENING pill
+  (accent ring + pinging dot), pause + stop icon buttons.
+- Filter row (`.mv-filter`) — `all` + speaker chips (`you` in
+  `--mv-accent`, `speaker 1` in `--mv-speaker-1`), mono line/elapsed
+  counters, copy-transcript button.
+- Transcript (`.mv-tt`) — `m:ss` mono stamp + colored dot + name per
+  block; the streaming interim tail renders muted with the block caret.
+- TLDR (`.mv-tldr`) — pinned summary strip (`TLDR · topic`, two-line
+  clamp) fed by the app's rolling summary every five closed turns.
+
+### Dark variant (`[data-theme='dark'] .shots`)
 
 The `.mv-*` system is fully tokenized, so dark mode is a pure token swap using
 the app's real `.dark` scope from `packages/ui/src/index.css` — never an
-invented palette:
+invented palette (`--mv-accent` holds — the slate reads on both grounds):
 
 ```css
 --mv-card:      oklch(0.218 0.008 223.9)    dark panel fill
@@ -292,6 +314,10 @@ invented palette:
 --mv-input:     oklch(1 0 0 / 15%)          input wells
 --mv-primary:   oklch(0.925 0.005 214.3)    inverts — light pill, dark text
 --mv-primary-fg:oklch(0.218 0.008 223.9)
+--mv-speaker-1: oklch(0.72 0.13 160)        speakers lighten — same hues
+--mv-speaker-2: oklch(0.76 0.13 65)
+--mv-speaker-3: oklch(0.74 0.15 355)
+--mv-speaker-4: oklch(0.74 0.13 295)
 
 ```
 
@@ -306,33 +332,42 @@ page's light rhythm intact.
 
 ## 7. The `.shot-*` scene system (Interface section)
 
-Framed "screenshots" built from the `.mv-*` views:
+Framed "screenshots" built from the `.mv-*` views — plus the hero's `.meet`
+scene, which borrows the same window chrome without the `.shot` figure card:
 
+- `.scene` + `.meet` (hero) — a generic meeting window under the floating
+  bar: three-dot chrome + meeting meta ("Design sync — 4 participants"), a
+  2×2 grid of `.meet-tile` participants (avatar hues `.av-1..4` mirror the
+  speaker palette), and a floating `.meet-bar` call toolbar (mic · camera ·
+  share · leave). The Listen card (`.marvis-panel`) floats over it
+  bottom-right; ≤1180px it docks full-width below the window, ≤640px the
+  tiles stay 2×2 (their min-height just relaxes).
 - `.shot` — figure card: white, whisper border, `radius-lg`, `elev-raised`,
   `overflow hidden`.
 - `.shot-desktop` — 580px stage, radial warm gradient (`fg-2 8%` over
   `surface`), containing: `.shot-menubar` (26px frosted macOS menu strip),
-  `.ghost-win` (defocused browser at `opacity .72`), `.shot-dock` (frosted
-  dock; last tile is the real `assets/marvis-icon.svg`), `.shot-bar` (bar at
-  `top:47px` = 21px below the menubar) and `.shot-ask` (`top:102px` = 8px
-  below the bar) — both centered on the same axis.
+  `.ghost-win` (defocused agenda doc — `gw-url` title + `gw-lines` text
+  rules — at `opacity .72`), `.shot-dock` (frosted dock; last tile is the
+  real `assets/marvis-icon.svg`), `.shot-bar` (bar at `top:47px` = 21px
+  below the menubar) and `.shot-ask` (`top:102px` = 8px below the bar) —
+  both centered on the same axis.
 - `.shot-cap` — mono 11px caption row carrying real dimensions.
 - `.mv-stage` — diagonal warm gradient pad behind a single bar;
   `.mv-stage-center` for centered panels; `.gate-label` — mono caption naming
-  the real gate (`gate: main` etc.).
-- `.shot-listen` — second `.grid-2` row (figure left, copy right, alternating
-  the settings row) holding the 400px Listen window at actual size. Listen is
-  deliberately not inside the composite desktop shot: bar-centered Ask (600px)
-  plus a 400px panel docked to its left needs ~1008px of screen and would
-  overflow the shot card on most viewports.
+  the real state (`state: mini`, `gate: main`, …).
+- the Listen figure (`data-od-id="shot-listen"`) — a full-width `.shot`:
+  `.shot-pad` copy, then the 600px transcript card centered on
+  `.mv-stage-center`. The card now shares the grown 600px band, so the old
+  docked-geometry caveat is gone — it stays out of the composite shot
+  simply so it reads at actual size.
 - `.seg` / `.seg-btn` — Light|Dark segmented toggle, right-aligned in the
-  section header (`data-od-id="interface-theme-toggle"`). Sets `data-theme`
-  on the `.shots` container; `is-on` gets a white pill + hairline ring, and
-  the choice persists to `localStorage["marvis-iface-theme"]` (validated to
-  `light`/`dark`, default light). Reads/writes are try/catch-wrapped so
-  storage-less preview contexts degrade gracefully instead of breaking the
-  toggle. A 200ms `var(--motion-base)` transition eases the swap on surfaces,
-  borders, and text.
+  section header (`data-od-id="interface-theme-toggle"`). `next-themes`
+  writes `data-theme` on `<html>` and persists the choice to
+  `localStorage["marvis-iface-theme"]` (default light, no system); every
+  dark rule still scopes as `[data-theme='dark'] .shots …`, so only the
+  demos re-theme. `is-on` gets a white pill + hairline ring; a 200ms
+  `var(--motion-base)` transition eases the swap on surfaces, borders, and
+  text.
 
 Reflow ≤640px: stage grows to 640px, bar/panel offsets shift, ghost window
 goes full-bleed.
@@ -344,8 +379,8 @@ goes full-bleed.
 - `--motion-fast 150ms` / `--motion-base 200ms`,
   `--ease-standard cubic-bezier(0.2,0,0,1)`.
 - `.marvis-bar` floats ±6px over 7s (the only ambient animation).
-- `.mv-caret` blink, `.mv-spin` spinner — `prefers-reduced-motion` kills all
-  three.
+- `.mv-caret` blink, `.mv-spin` spinner, `.mv-badge` ping —
+  `prefers-reduced-motion` stills all of it.
 - Hover moves backgrounds (`accent → accent-hover`, `fg 5% → 9%`) or position —
   never lightens foreground text.
 - Every focusable element gets `--focus-ring` on `:focus-visible`.
@@ -356,11 +391,22 @@ goes full-bleed.
 
 - Every product claim on the page comes from the Marvis repo: 60s/120-frame/
   64MB ring buffer, `keys.json` plaintext at 0600 inside the 0700
-  `~/.marvis` root, masked `…last4` display, the 4 rebindable hotkeys,
-  `marvis://` deep links, real provider list
-  (OpenAI/Anthropic/Gemini/Ollama, Deepgram Phase 2), real model names.
+  `~/.marvis` root, masked `…last4` display, `marvis://` deep links, real
+  provider list (OpenAI/Anthropic/Gemini/OpenRouter/Ollama/OpenAI-compatible),
+  real model names.
+- Speaker colors: `You` renders in `--mv-accent` (deep slate); diarized
+  others rotate `--mv-speaker-1..4` by `speaker_idx % 4` — the same mapping
+  as `speakerColor` in `components/listen/model.ts`.
+- STT catalog: Deepgram `nova-2` (hosted streaming), whisper.cpp
+  `tiny`/`base`/`small` (`ggml-*.bin`, local), sherpa-onnx `sense-voice`
+  (local) — from `VoiceSetup.tsx` + `voice_models.rs`/`sherpa_models.rs`.
+- Hotkeys: five rebindable globals (`toggle_input` ⌘⌥Space ·
+  `toggle_capture` ⌘⌥R · `start_listen` ⌘⌥T · `show_history` ⌘⌥H ·
+  `toggle_lock` ⌘⇧L — `default_hotkeys()` in `config.rs`) plus four fixed
+  in-bar keys (Enter send · ⇧Enter new line · ⌘⏎ send with screen frame ·
+  ⌘, settings).
 - Platform honesty: macOS = "Available now" (green pill); Windows and Linux =
-  "In development" — the repo is explicit that Phase 1 is macOS-only.
+  "In development" — no platform claim beyond that anywhere.
 - No invented metrics, testimonials, or logos.
 
 ---
@@ -369,16 +415,18 @@ goes full-bleed.
 
 | File | Role |
 | --- | --- |
-| `assets/marvis-landing.html` | Self-contained landing page — tokens + all styles + markup |
+| `apps/web` | The live landing page (Next.js) — `components/mv.tsx` holds the `.mv-*` recreations, `app/globals.css` the tokens + scenes |
+| `assets/marvis-landing.html` | Earlier self-contained static mock — predates this pass; kept as a design artifact, not the shipped page |
 | `assets/marvis-mark.svg` | The mark (also favicon) |
 | `assets/marvis-logo.svg` | Horizontal lockup, Galada embedded as data URI |
 | `assets/marvis-icon.svg` | App icon source |
 | `assets/marvis-icon-1024.png` | 1024px raster of the icon |
-| `design.md` | This document |
+| `DESIGN.md` | This document |
 
-Sections in order: `hero` (live overlay scene over a code editor) →
-`features` (3 cells) → `privacy` (dark — file tree + stats) → `interface`
-(composite desktop shot, resting capsule + 2 gate states, listen at actual
-size, light/dark toggle persisted in `localStorage["marvis-iface-theme"]`) → `hotkeys`
-(table + deep links) → `providers` (tags + platform log rows) → `download`
-(CTA) → footer.
+Sections in order: `hero` (live overlay over a meeting window — `.meet`
+tiles + toolbar, floating bar + Listen card) → `features` (3 cells) →
+`privacy` (dark — file tree + stats) → `interface` (composite desktop
+shot, resting capsule + 2 gate states, the Listen card at actual size,
+light/dark toggle via `next-themes` on `localStorage["marvis-iface-theme"]`)
+→ `hotkeys` (global + in-bar tables, deep links) → `providers` (LLM + STT
+tags, platform log rows) → `download` (CTA) → footer.

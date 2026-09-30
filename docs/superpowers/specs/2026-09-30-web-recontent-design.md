@@ -74,10 +74,10 @@ from `apps/native/src/index.css` (light set; dark swap under
 | Hero | h1 → screen + meetings framing for everyone (e.g. "Ask anything about what's on your screen — and transcribe every meeting. All of it stays on your machine."); lead drops "developers and power users"; tags keep Free/MIT · No Account · No Cloud Sync |
 | Features | 3 real pillars: **Ask** (⌘⏎ screen-aware, streams markdown) · **Listen** (mic + system audio → speaker labels → TLDR every 5 turns) · **Private by design** (no account, keys masked `…last4`, BYO providers) |
 | Privacy (dark) | Copy stands; filetree fixes — `models/whisper/` = downloaded ggml models (no "planned"), `marvis.db` comment adds transcripts + summaries |
-| Interface | Lead + Listen copy updated ("ships today"); composite shot keeps real dims; Listen figure swaps the Phase-2 chrome for the new transcript mock at its real card width; desktop ghost window may swap github ghost for a generic doc |
+| Interface | Lead + Listen copy updated ("ships today"); composite shot keeps real dims; Listen figure swaps the Phase-2 chrome for the new transcript mock at its real card width; desktop ghost window swaps the github ghost for a generic doc/notes window (broad-audience neutral) |
 | Hotkeys | Table rebuilt: two groups — *Global (rebindable)* `⌘⌥Space` input / `⌘⌥R` capture / `⌘⌥T` listen / `⌘⌥H` history / `⌘⇧L` lock; *In the bar (fixed)* `Enter` send / `⇧Enter` newline / `⌘Enter` send+frame / `⌘,` settings. Deep-link card stays |
 | Providers | Tags += OpenRouter + "OpenAI-compatible"; copy covers failover chain (drag-rank, per-provider toggle), optional vision provider; new STT row: Deepgram streaming · bundled whisper.cpp · sherpa (sense-voice). Platform rows unchanged (macOS now · Win/Linux in dev) |
-| Nav | Link set follows final section ids (add/keep anchor for whatever Listen surface lands in Interface) |
+| Nav | Unchanged — Features · Privacy · Interface · Hotkeys · Providers (Listen surfaces inside Hero + Interface, no new anchor) |
 | Download CTA | h2 stays or "Your screen. Your meetings. Your machine."; lead unchanged in substance |
 
 ## CSS

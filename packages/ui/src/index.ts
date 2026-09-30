@@ -1,3 +1,5 @@
+"use client"
+
 export { cn } from "./lib/utils"
 export { ThemeProvider, useTheme } from "./components/theme-provider"
 

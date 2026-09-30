@@ -4,10 +4,17 @@ on:
   workflow_dispatch:
     inputs:
       package_app:
-        description: 'Build release app bundles (requires a pre-provisioned signing certificate)'
+        description: 'Build release app bundles (ad-hoc signed unless APPLE_SIGNING_IDENTITY is configured)'
         type: boolean
         required: true
         default: false
+  workflow_call:
+    inputs:
+      package_app:
+        description: 'Build release app bundles'
+        type: boolean
+        required: false
+        default: true
 
 permissions:
   contents: read

@@ -1,0 +1,83 @@
+name: Release
+
+# Tag push (v*) -> build whisper-cli + app bundles for every platform ->
+# attach them to a GitHub release for that tag.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: Build packages for all platforms
+    uses: ./.github/workflows/whisper-cli.yml
+    with:
+      package_app: true
+    # Forwards secrets so a future APPLE_SIGNING_IDENTITY produces a real
+    # Developer ID signature here too.
+    secrets: inherit
+    permissions:
+      contents: read
+
+  release:
+    name: Create GitHub release
+    needs: package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: marvis-*
+          path: dist
+          merge-multiple: true
+
+      - name: Write SHA256SUMS
+        working-directory: dist
+        run: |
+          find . -type f \( -name '*.dmg' -o -name '*.msi' -o -name '*-setup.exe' -o -name '*.AppImage' -o -name '*.deb' \) \
+            -exec sha256sum -b {} + \
+            | awk '{ n=$2; sub(/^\*/, "", n); sub(/.*\//, "", n); print $1 "  " n }' \
+            > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Write release notes
+        run: |
+          cat > release-notes.md <<'EOF'
+          Automated multi-platform build of **Marvis** — the Tauri app with the bundled `whisper-cli` sidecar.
+
+          ## Downloads
+
+          | Platform | File | Notes |
+          | --- | --- | --- |
+          | macOS Apple Silicon | `*_aarch64.dmg` | Ad-hoc signed — right-click → Open (or `xattr -cr Marvis.app`) |
+          | macOS Intel | `*_x64.dmg` | Ad-hoc signed — right-click → Open |
+          | Windows x64 | `*-setup.exe` | NSIS installer, unsigned — SmartScreen will warn |
+          | Windows x64 | `*_en-US.msi` | MSI installer, unsigned |
+          | Linux x64 | `*.AppImage` | chmod +x and run |
+          | Linux x64 | `*.deb` | `sudo dpkg -i` |
+
+          `SHA256SUMS.txt` covers all bundle files.
+
+          ## Caveats
+
+          - Unsigned test builds — no Developer ID signing, notarization, or Gatekeeper pass.
+          - Packages built by `whisper-cli.yml` package jobs for tag ${{ github.ref_name }}.
+          EOF
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Semver prerelease convention: tags like v1.0.0-rc.1 stay prerelease.
+          flag=()
+          case "${{ github.ref_name }}" in *-*) flag+=(--prerelease) ;; esac
+          gh release create "${{ github.ref_name }}" \
+            --title "Marvis ${{ github.ref_name }}" \
+            --notes-file release-notes.md \
+            "${flag[@]}" \
+            dist/dmg/*.dmg dist/msi/*.msi dist/nsis/*.exe \
+            dist/appimage/*.AppImage dist/deb/*.deb \
+            dist/SHA256SUMS.txt

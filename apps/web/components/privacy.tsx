@@ -3,7 +3,7 @@ import { PreLines } from './pre-lines';
 import { leadTop, sectionStack } from './styles';
 
 /* .filetree is white-space: pre — the 14-space source indent is content,
- * emitted by PreLines (same constraint as the hero editor). */
+ * emitted by PreLines, which renders literal newlines + indent inside <pre>. */
 const FILE_TREE: ReactNode[] = [
   '~/.marvis/',
   <Fragment key='keys'>
@@ -14,13 +14,19 @@ const FILE_TREE: ReactNode[] = [
   </Fragment>,
   <Fragment key='config'>
     ├── config.toml{' '}
-    <span className='dim'>0644 · models, hotkeys, window position</span>
+    <span className='dim'>
+      0644 · providers, models, hotkeys, window position
+    </span>
   </Fragment>,
   <Fragment key='db'>
-    ├── marvis.db <span className='dim'>0600 · SQLite sessions & messages</span>
+    ├── marvis.db{' '}
+    <span className='dim'>
+      0600 · SQLite — sessions, messages, transcripts, summaries
+    </span>
   </Fragment>,
   <Fragment key='models'>
-    └── models/ <span className='dim'>local model files (planned)</span>
+    └── models/whisper/{' '}
+    <span className='dim'>ggml models — tiny · base · small, on demand</span>
   </Fragment>,
 ];
 

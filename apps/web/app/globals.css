@@ -775,6 +775,11 @@ h3 {
   --mv-input: oklch(0.925 0.005 214.3);
   --mv-primary: oklch(0.218 0.008 223.9);
   --mv-primary-fg: oklch(0.987 0.002 197.1);
+  --mv-accent: oklch(0.53 0.08 237);
+  --mv-speaker-1: oklch(0.55 0.12 160);
+  --mv-speaker-2: oklch(0.62 0.12 60);
+  --mv-speaker-3: oklch(0.56 0.15 355);
+  --mv-speaker-4: oklch(0.55 0.12 295);
   font-family: var(--font-outfit, 'Outfit'), 'Outfit', var(--font-body);
   font-size: 14px;
   line-height: 1.5;
@@ -1011,64 +1016,14 @@ h3 {
 }
 
 /* resting capsule — the bar's `is-mini` state (Bar.tsx): 104px pill,
- * iris + camera + mic, before type-to-wake morphs it open */
+ * iris + capture toggle + Listen recorder, before type-to-wake morphs it
+ * open */
 .mv-bar.is-mini {
   width: 104px;
 }
 
 .mv-bar.is-mini .mv-bar-inner {
   justify-content: center;
-}
-
-/* listen phase-2 chrome — muted waveform, label, chip (ListenPanel.tsx) */
-.mv-wave {
-  display: flex;
-  align-items: center;
-  gap: 3px;
-  height: 18px;
-}
-
-.mv-wave i {
-  width: 3px;
-  border-radius: 2px;
-  background: var(--mv-muted-fg);
-}
-
-.mv-wave i:nth-child(1) {
-  height: 8px;
-}
-
-.mv-wave i:nth-child(2) {
-  height: 14px;
-}
-
-.mv-wave i:nth-child(3) {
-  height: 18px;
-}
-
-.mv-wave i:nth-child(4) {
-  height: 12px;
-}
-
-.mv-wave i:nth-child(5) {
-  height: 7px;
-}
-
-.mv-empty {
-  color: var(--mv-muted-fg);
-  font-size: 12.5px;
-}
-
-.mv-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  font-family: var(--font-mono);
-  font-size: 10.5px;
-  color: var(--mv-muted-fg);
-  border: 1px solid var(--mv-border);
-  border-radius: 999px;
-  padding: 3px 8px;
 }
 
 /* hero float */
@@ -1093,7 +1048,8 @@ h3 {
 @media (prefers-reduced-motion: reduce) {
   .marvis-bar,
   .mv-caret,
-  .mv-spin {
+  .mv-spin,
+  .mv-badge i {
     animation: none;
   }
 }
@@ -1455,36 +1411,207 @@ h3 {
   margin: 8px 4px 0;
 }
 
-/* listen — 400px window; today it ships its chrome (Phase-2 placeholder) */
+/* listen — live transcript card, faithful to ListenSection.tsx; the
+ * 600px card band shared by chat · listen · history */
 .mv-listen {
-  width: 400px;
+  width: 600px;
   max-width: 100%;
-  height: 280px;
-  padding: 4px;
 }
 
-.mv-listen-chrome {
-  height: 100%;
+.mv-listen-head {
   display: flex;
-  flex-direction: column;
   align-items: center;
-  justify-content: center;
-  gap: 6px;
-  border: 1px solid var(--mv-border);
-  border-radius: 16px;
-  background: color-mix(in oklch, var(--mv-card) 90%, transparent);
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
-  box-shadow:
-    0 10px 15px -3px rgba(0, 0, 0, 0.1),
-    0 4px 6px -4px rgba(0, 0, 0, 0.1);
+  gap: 8px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--mv-border);
+}
+
+.mv-listen-id {
+  flex: 1;
+  min-width: 0;
+}
+
+.mv-listen-title {
   font-size: 12px;
+  font-weight: 600;
+}
+
+.mv-listen-sub {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
   color: var(--mv-muted-fg);
 }
 
-.mv-listen-chrome svg {
-  width: 16px;
-  height: 16px;
+.mv-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: none;
+  border: 1px solid color-mix(in oklch, var(--mv-accent) 40%, transparent);
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--mv-accent);
+}
+
+.mv-badge i {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--mv-accent);
+  animation: mv-ping 2.6s cubic-bezier(0, 0, 0.2, 1) infinite;
+}
+
+@keyframes mv-ping {
+  75%,
+  100% {
+    transform: scale(1.9);
+    opacity: 0;
+  }
+}
+
+.mv-filter {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--mv-border);
+}
+
+.mv-spk {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: none;
+  border: 1px solid var(--mv-border);
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 10.5px;
+  color: var(--mv-muted-fg);
+}
+
+.mv-spk.is-on {
+  background: color-mix(in oklch, var(--mv-fg) 6%, transparent);
+  color: var(--mv-fg);
+  border-color: color-mix(in oklch, var(--mv-fg) 30%, transparent);
+}
+
+.mv-spk i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.mv-spk-you {
+  color: var(--mv-accent);
+}
+
+.mv-spk-1 {
+  color: var(--mv-speaker-1);
+}
+
+.mv-filter-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--mv-muted-fg);
+}
+
+.mv-filter-meta:first-of-type {
+  margin-left: auto;
+}
+
+.mv-filter-meta svg {
+  width: 12px;
+  height: 12px;
+}
+
+.mv-tt {
+  padding: 10px 14px;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.mv-tt-block + .mv-tt-block {
+  margin-top: 12px;
+}
+
+.mv-tt-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.mv-tt-time {
+  flex: none;
+  width: 32px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--mv-muted-fg);
+}
+
+.mv-tt-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.mv-tt-name {
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.mv-tt-you {
+  color: var(--mv-accent);
+}
+
+.mv-tt-1 {
+  color: var(--mv-speaker-1);
+}
+
+.mv-tt-text {
+  margin: 4px 0 0 38px;
+  color: var(--mv-fg);
+}
+
+.mv-tt-interim {
+  color: var(--mv-muted-fg);
+}
+
+.mv-tldr {
+  border-top: 1px solid var(--mv-border);
+  padding: 8px 14px 10px;
+}
+
+.mv-tldr-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.mv-tldr-head svg {
+  width: 14px;
+  height: 14px;
+  color: var(--mv-muted-fg);
+}
+
+.mv-tldr-text {
+  margin: 2px 0 0;
+  font-size: 12.5px;
+  color: var(--mv-fg);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
 @media (max-width: 640px) {
@@ -1586,7 +1713,9 @@ h3 {
 .shots .mv-panel,
 .shots .mv-stage,
 .shots .shot-cap,
-.shots .mv-listen-chrome,
+.shots .mv-listen-head,
+.shots .mv-filter,
+.shots .mv-tldr,
 .shots .mv-btn {
   transition:
     background var(--motion-base) var(--ease-standard),
@@ -1604,6 +1733,10 @@ h3 {
   --mv-input: oklch(1 0 0 / 15%);
   --mv-primary: oklch(0.925 0.005 214.3);
   --mv-primary-fg: oklch(0.218 0.008 223.9);
+  --mv-speaker-1: oklch(0.72 0.13 160);
+  --mv-speaker-2: oklch(0.76 0.13 65);
+  --mv-speaker-3: oklch(0.74 0.15 355);
+  --mv-speaker-4: oklch(0.74 0.13 295);
 }
 
 [data-theme='dark'] .shots .shot {

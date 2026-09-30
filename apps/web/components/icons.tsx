@@ -203,25 +203,7 @@ export const MonitorIcon = (props: IconProps) => (
   </svg>
 );
 
-export const KeyIcon = (props: IconProps) => (
-  <svg
-    viewBox='0 0 24 24'
-    fill='none'
-    stroke='currentColor'
-    strokeWidth='1.6'
-    strokeLinecap='round'
-    aria-hidden='true'
-    {...props}>
-    <circle
-      cx='8'
-      cy='12'
-      r='4'
-    />
-    <path d='M12 12h9M18 12v4M15 12v3' />
-  </svg>
-);
-
-export const CommandIcon = (props: IconProps) => (
+export const CaptionsIcon = (props: IconProps) => (
   <svg
     viewBox='0 0 24 24'
     fill='none'
@@ -231,7 +213,14 @@ export const CommandIcon = (props: IconProps) => (
     strokeLinejoin='round'
     aria-hidden='true'
     {...props}>
-    <path d='M15 6v12a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3V6a3 3 0 1 0-3 3h12a3 3 0 1 0-3-3' />
+    <rect
+      x='3'
+      y='5'
+      width='18'
+      height='14'
+      rx='2'
+    />
+    <path d='M7 15h4M15 15h2M7 11h2M13 11h4' />
   </svg>
 );
 

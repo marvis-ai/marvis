@@ -94,7 +94,7 @@ cd src-tauri && cargo test   # Rust unit tests
 
 ### Release Whisper packaging
 
-Release packaging consumes the exact artifacts from `.github/workflows/whisper-cli.yml`; do not build or commit binaries locally. On a macOS runner with the target toolchain, download the artifacts for the exact workflow run, stage and validate one target, then build and verify the signed app:
+Release packaging consumes the exact artifacts from `.github/workflows/marvis-build.yml`; do not build or commit binaries locally. On a macOS runner with the target toolchain, download the artifacts for the exact workflow run, stage and validate one target, then build and verify the signed app:
 
 ```bash
 RUN_ID=123456789

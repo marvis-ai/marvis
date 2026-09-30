@@ -20,7 +20,7 @@ const GATES: {
   {
     id: 'shot-state-mini',
     title: 'At rest — a capsule',
-    desc: 'The bar idles as a 104px capsule: iris, screen-capture toggle, and the Listen recorder. Click it or just start typing — it morphs open.',
+    desc: 'The bar idles as a 172px capsule: iris, screen-capture toggle, the Listen recorder, and history. Click the iris or just start typing — it morphs open.',
     gate: 'mini',
     label: 'state: mini',
   },
@@ -156,7 +156,7 @@ export const InterfaceSection = () => {
             </div>
           </div>
           <figcaption className='shot-cap'>
-            <span>bar · 353×47 · always on top</span>
+            <span>bar · 172px idle → 600px grown · always on top</span>
             <span>ask panel · 600px · drops 8px below the bar</span>
             <span>frameless translucent webviews</span>
           </figcaption>

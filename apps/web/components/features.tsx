@@ -1,4 +1,5 @@
-import { CaptionsIcon, LockIcon, MonitorIcon } from './icons';
+import { CaptionsIcon } from '@marvis/ui';
+import { LockIcon, MonitorIcon } from './icons';
 import { sectionStack } from './styles';
 
 export const Features = () => (
@@ -34,7 +35,7 @@ export const Features = () => (
           className='feature card-flat'
           data-od-id='feature-listen'>
           <div className='feature-mark'>
-            <CaptionsIcon />
+            <CaptionsIcon strokeWidth={1.6} />
           </div>
           <h3>Meetings, transcribed as they happen</h3>
           <p>

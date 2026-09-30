@@ -763,7 +763,8 @@ h3 {
 
 /* ─── real overlay UI — recreated 1:1 from apps/native views ────
  * Theme + metrics mirror packages/ui (Outfit, light shadcn tokens):
- * bar 353×47 · ask 600px · settings 240px (≤400) · listen 400px.
+ * bar 172px idle → 600×64 grown · ask 600px · settings 240px (≤400)
+ * · listen 600px.
  * Panels drop 8px under the bar; ask centers on the bar's center,
  * settings anchors to the bar's right edge. */
 .mv {
@@ -805,7 +806,9 @@ h3 {
   color: var(--mv-fg);
 }
 
-/* 353×47 translucent pill — the always-on-top bar window */
+/* translucent pill — the always-on-top bar window. The mock draws it
+ * at 353×47 for the scene; the real window is 172×64 idle → 600×64
+ * grown (windows/mod.rs). */
 .mv-bar {
   width: 353px;
   max-width: 100%;
@@ -1007,11 +1010,11 @@ h3 {
   }
 }
 
-/* resting capsule — the bar's `is-mini` state (Bar.tsx): 104px pill,
- * iris + capture toggle + Listen recorder, before type-to-wake morphs it
- * open */
+/* resting capsule — the bar's `is-mini` state (Bar.tsx): the real 172px
+ * pill, iris + capture toggle + Listen recorder + history, before
+ * type-to-wake morphs it open */
 .mv-bar.is-mini {
-  width: 104px;
+  width: 172px;
 }
 
 .mv-bar.is-mini .mv-bar-inner {
@@ -1178,7 +1181,6 @@ h3 {
 @media (max-width: 1180px) {
   .marvis-panel {
     position: static;
-    grid-column: 1 / -1;
     width: auto;
     margin: 0 var(--space-4) var(--space-4);
   }
@@ -1403,7 +1405,7 @@ h3 {
   margin-bottom: 8px;
 }
 
-.shot-pad p {
+.shot-pad p:not(.eyebrow) {
   margin: 0;
   color: var(--muted);
   font-size: 15px;

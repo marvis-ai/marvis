@@ -262,7 +262,7 @@ spaced hues so no diarized voice reads as "the important one".
 
 | View | Size | Notes |
 | --- | --- | --- |
-| Bar (`.mv-bar`) | **353×47** | 9999px pill, `card 80%` + `blur(14px)`, floats 21px below work-area top; rests as a **104px capsule** (`is-mini`), morphs open on click or type-to-wake |
+| Bar (`.mv-bar`) | **172×64 idle → 600×64 grown** | 9999px pill, `card 80%` + `blur(14px)`, floats 21px below work-area top; rests as a **172px capsule** (`is-mini`), morphs open on click or type-to-wake |
 | Ask (`.mv-panel`) | **600px** | `radius 18px`, `card 90%` frosted, drops 8px under the bar |
 | Listen card (`.mv-listen`) | **600px** | chat · listen · history share one grown card band |
 
@@ -270,8 +270,9 @@ spaced hues so no diarized voice reads as "the important one".
 
 Faithful to `Bar.tsx` — the real app has two gates plus a resting state:
 
-- `mini` — the 104px resting capsule: iris + screen-capture toggle +
-  Listen recorder (`MicAudioLinesIcon` starts a meeting Listen).
+- `mini` — the 172px resting capsule: iris + screen-capture toggle +
+  Listen recorder (`MicAudioLinesIcon` starts a meeting Listen) +
+  history (`HistoryIcon` opens the session list).
 - `main` — iris + `Ask Marvis…` input + dictation mic (live — speaks into
   the field) + settings gear.
 - `needs_permission` — shield icon + "Screen recording needed" +
@@ -340,7 +341,8 @@ scene, which borrows the same window chrome without the `.shot` figure card:
   2×2 grid of `.meet-tile` participants (avatar hues `.av-1..4` mirror the
   speaker palette), and a floating `.meet-bar` call toolbar (mic · camera ·
   share · leave). The Listen card (`.marvis-panel`) floats over it
-  bottom-right; ≤1180px it docks full-width below the window, ≤640px the
+  bottom-right; ≤1180px it docks in-flow inside `.meet` below
+  `.meet-bar` — side margins `var(--space-4)`; ≤640px the
   tiles stay 2×2 (their min-height just relaxes).
 - `.shot` — figure card: white, whisper border, `radius-lg`, `elev-raised`,
   `overflow hidden`.

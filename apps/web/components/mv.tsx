@@ -3,6 +3,7 @@ import {
   CaptionsIcon,
   ChevronDownIcon,
   CopyIcon,
+  HistoryIcon,
   MicAudioLinesIcon,
   MonitorDotIcon,
   PauseIcon,
@@ -13,10 +14,11 @@ import { CloseIcon, GearIcon, MicIcon, MvLogo, ShieldIcon } from './icons';
 
 type MvProps = HTMLAttributes<HTMLDivElement>;
 
-/* 353×47 translucent pill — the always-on-top bar (Bar.tsx). Two gates
- * exist: main and needs_permission. 'mini' is not a gate — it's the
- * 104px capsule the bar rests in until the iris is clicked or a
- * type-to-wake keypress morphs it into the input. */
+/* The always-on-top bar (Bar.tsx): the window is the pill — 172×64 at
+ * rest, grown to 600×64 for expanded content. Two gates exist: main and
+ * needs_permission. 'mini' is not a gate — it's the resting capsule
+ * (iris · capture · listen · history) the bar idles in until the iris
+ * is clicked or a type-to-wake keypress morphs it into the input. */
 type MvBarProps = MvProps & {
   gate?: 'main' | 'permission' | 'mini';
 };
@@ -42,6 +44,11 @@ export const MvBar = ({
             className='mv-icon-btn'
             title='Start listening'>
             <MicAudioLinesIcon />
+          </span>
+          <span
+            className='mv-icon-btn'
+            title='History'>
+            <HistoryIcon />
           </span>
         </>
       )}

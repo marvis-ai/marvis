@@ -3,7 +3,8 @@ import { PreLines } from './pre-lines';
 import { leadTop, sectionStack } from './styles';
 
 /* .filetree is white-space: pre — the 14-space source indent is content,
- * emitted by PreLines, which renders literal newlines + indent inside <pre>. */
+ * emitted by PreLines, which renders literal newlines + indent inside the
+ * div.filetree host. */
 const FILE_TREE: ReactNode[] = [
   '~/.marvis/',
   <Fragment key='keys'>
@@ -24,9 +25,24 @@ const FILE_TREE: ReactNode[] = [
       0600 · SQLite — sessions, messages, transcripts, summaries
     </span>
   </Fragment>,
+  <Fragment key='voiceprint'>
+    ├── voiceprint.bin{' '}
+    <span className='dim'>
+      enrolled speaker embedding — pins mic&rsquo;s speaker 0 to you
+    </span>
+  </Fragment>,
+  <Fragment key='audios'>
+    ├── audios/{' '}
+    <span className='dim'>
+      recording_*.wav at 0600 — retained session recordings
+    </span>
+  </Fragment>,
   <Fragment key='models'>
-    └── models/whisper/{' '}
-    <span className='dim'>ggml models — tiny · base · small, on demand</span>
+    ├── models/{' '}
+    <span className='dim'>whisper + sherpa speech engines, on demand</span>
+  </Fragment>,
+  <Fragment key='tmp'>
+    └── tmp/ <span className='dim'>scratch audio workspace</span>
   </Fragment>,
 ];
 
@@ -44,9 +60,12 @@ export const Privacy = () => (
         <p
           className='lead'
           style={leadTop}>
-          No accounts, no sync service, no Marvis servers. The only thing that
-          ever leaves your device is the request you send — your prompt plus one
-          screen frame — straight to the LLM provider you chose.
+          No accounts, no sync service, no Marvis servers. An ask sends your
+          prompt plus one screen frame to the LLM provider you chose; Listen
+          streams meeting audio to the speech engine you picked — whisper.cpp or
+          sherpa on-device, Deepgram hosted — and every five turns the rolling
+          TLDR sends transcript text to that LLM. Model files download on
+          demand; nothing else leaves.
         </p>
       </div>
       <div
@@ -102,11 +121,12 @@ export const Privacy = () => (
           </div>
           <div
             className='stat'
-            data-od-id='stat-three'>
-            <div className='stat-num num'>3</div>
+            data-od-id='stat-one'>
+            <div className='stat-num num'>1</div>
             <p className='stat-label'>
-              files hold everything Marvis writes — keys, config, and history —
-              all under <span className='num'>~/.marvis</span>.
+              folder holds everything Marvis writes — keys, config, history,
+              recordings, models — all under{' '}
+              <span className='num'>~/.marvis</span>.
             </p>
           </div>
           <p

@@ -1,5 +1,6 @@
 //! `menus.rs` — the ONE menu shared by the tray icon and the bar's
-//! idle-state right-click popup.
+//! idle-state right-click popup, plus the item builders the app
+//! menubar (menubar.rs) reuses.
 //!
 //! Every item lives under the `menu.*` id namespace and is dispatched by
 //! the single global `on_menu_event` listener registered in lib.rs
@@ -95,43 +96,9 @@ pub fn build(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
     let history = MenuItem::with_id(app, MENU_HISTORY, "History", true, accel("show_history"))?;
     let sep1 = PredefinedMenuItem::separator(app)?;
 
-    let mut edge_items: Vec<CheckMenuItem<Wry>> = Vec::new();
-    for (id, label, dir) in [
-        (MENU_POS_TOP, "Top", Dir::Up),
-        (MENU_POS_BOTTOM, "Bottom", Dir::Down),
-        (MENU_POS_LEFT, "Left", Dir::Left),
-        (MENU_POS_RIGHT, "Right", Dir::Right),
-    ] {
-        edge_items.push(CheckMenuItem::with_id(
-            app,
-            id,
-            label,
-            true,
-            edge == dir,
-            None::<&str>,
-        )?);
-    }
-    let pos_sep = PredefinedMenuItem::separator(app)?;
-    let center = MenuItem::with_id(app, MENU_POS_CENTER, "Center", true, None::<&str>)?;
-    let position = Submenu::with_id(app, MENU_POSITION, "Position", true)?;
-    {
-        let mut items: Vec<&dyn IsMenuItem<Wry>> = edge_items
-            .iter()
-            .map(|i| i as &dyn IsMenuItem<Wry>)
-            .collect();
-        items.push(&pos_sep);
-        items.push(&center);
-        position.append_items(&items)?;
-    }
+    let position = position_submenu(app, edge)?;
 
-    let lock = CheckMenuItem::with_id(
-        app,
-        MENU_LOCK,
-        "Lock Bar Position",
-        true,
-        locked,
-        accel("toggle_lock"),
-    )?;
+    let lock = lock_item(app, locked, accel("toggle_lock"))?;
     let sep2 = PredefinedMenuItem::separator(app)?;
     // Display-only accelerator (same caveat as the retired tray item) —
     // the real `Cmd+,` binding is the bar webview's keydown handler.
@@ -163,4 +130,53 @@ pub fn build(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
     }
     items.push(&quit);
     Menu::with_items(app, &items)
+}
+
+/// The `Lock Bar Position` check shared by the shared menu and the app
+/// menubar's `View`. The menubar passes `accel = None` — there the
+/// accelerator would be real, and the configured `toggle_lock` chord is
+/// already a global hotkey, so a menu key-equivalent would double-fire.
+pub(crate) fn lock_item(
+    app: &AppHandle,
+    locked: bool,
+    accel: Option<String>,
+) -> tauri::Result<CheckMenuItem<Wry>> {
+    CheckMenuItem::with_id(app, MENU_LOCK, "Lock Bar Position", true, locked, accel)
+}
+
+/// The `Position` submenu shared by the shared menu and the app
+/// menubar's `View` — edge items are checks against the live `edge`;
+/// `Center` is a plain action (it's a point, not an edge). The menubar
+/// copy is built once and kept fresh by
+/// `menubar::sync_position_checks`, not rebuilt like the tray's.
+pub(crate) fn position_submenu(app: &AppHandle, edge: Dir) -> tauri::Result<Submenu<Wry>> {
+    let mut edge_items: Vec<CheckMenuItem<Wry>> = Vec::new();
+    for (id, label, dir) in [
+        (MENU_POS_TOP, "Top", Dir::Up),
+        (MENU_POS_BOTTOM, "Bottom", Dir::Down),
+        (MENU_POS_LEFT, "Left", Dir::Left),
+        (MENU_POS_RIGHT, "Right", Dir::Right),
+    ] {
+        edge_items.push(CheckMenuItem::with_id(
+            app,
+            id,
+            label,
+            true,
+            edge == dir,
+            None::<&str>,
+        )?);
+    }
+    let pos_sep = PredefinedMenuItem::separator(app)?;
+    let center = MenuItem::with_id(app, MENU_POS_CENTER, "Center", true, None::<&str>)?;
+    let position = Submenu::with_id(app, MENU_POSITION, "Position", true)?;
+    {
+        let mut items: Vec<&dyn IsMenuItem<Wry>> = edge_items
+            .iter()
+            .map(|i| i as &dyn IsMenuItem<Wry>)
+            .collect();
+        items.push(&pos_sep);
+        items.push(&center);
+        position.append_items(&items)?;
+    }
+    Ok(position)
 }

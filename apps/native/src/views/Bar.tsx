@@ -31,7 +31,7 @@
  *
  * Errors go to the `alert` window (`raise`) — the pill has no room.
  */
-import { useEffect, useRef, useState } from 'react';
+import { Suspense, lazy, useEffect, useRef, useState } from 'react';
 import {
   HistoryIcon,
   MicAudioLinesIcon,
@@ -77,10 +77,15 @@ import { IrisButton } from '@/components/bar/IrisButton';
 import { PermissionRow } from '@/components/bar/PermissionRow';
 import { ChatSection } from '@/components/ChatSection';
 import { HistorySection } from '@/components/HistorySection';
-import { LaunchIntro } from '@/components/LaunchIntro';
 import { ListenSection } from '@/components/ListenSection';
 import type { ListenViewing } from '@/components/listen/model';
 import { PANEL } from '@/lib/classes';
+
+const LaunchIntro = lazy(() =>
+  import('@/components/LaunchIntro').then((m) => ({
+    default: m.LaunchIntro,
+  })),
+);
 
 const Bar = () => {
   const { gate, bootError, busy, setBusy, bootstrap, grantScreen } = useGate();
@@ -743,7 +748,11 @@ const Bar = () => {
             is a pure picker, so its card drops the row (its own header
             carries Back + Settings). */}
         {section !== 'history' && row()}
-        {showIntro && <LaunchIntro onDone={() => setIntroDone(true)} />}
+        {showIntro && (
+          <Suspense fallback={null}>
+            <LaunchIntro onDone={() => setIntroDone(true)} />
+          </Suspense>
+        )}
         {section === 'chat' && (
           <ChatSection
             onBack={() => void windowSetChatOpen(false).catch(() => {})}

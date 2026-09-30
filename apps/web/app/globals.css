@@ -717,12 +717,12 @@ h3 {
   margin-bottom: var(--space-5);
 }
 
-/* The hero h1 runs at a fixed 768px measure with a manual optical nudge
+/* The hero h1 runs at a fixed 800px measure with a manual optical nudge
    (design.md §Layout); below the stacking breakpoint the fixed measure
    would overflow, so it relaxes to auto. */
 .hero-h1 {
-  width: 768px;
-  transform: translate(-77px, 3px);
+  width: 800px;
+  transform: translate(-50px, 3px);
 }
 
 @media (max-width: 920px) {
@@ -755,7 +755,7 @@ h3 {
   margin-top: var(--space-4);
 }
 
-/* ─── hero scene: editor + floating bar ───────────────────────── */
+/* ─── hero scene: meeting window + floating bar ───────────────── */
 .scene {
   position: relative;
   margin-top: 64px;
@@ -1046,7 +1046,9 @@ h3 {
   }
 }
 
-.editor {
+/* hero scene — a generic meeting window under the floating bar:
+   2×2 participant tiles + call toolbar; the Listen card floats over it */
+.meet {
   position: relative;
   background: var(--bg);
   border: 1px solid var(--border);
@@ -1055,7 +1057,7 @@ h3 {
   box-shadow: var(--elev-raised);
 }
 
-.editor-chrome {
+.meet-chrome {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -1063,60 +1065,100 @@ h3 {
   border-bottom: 1px solid var(--border-soft);
 }
 
-.editor-chrome .dot {
+.meet-chrome .dot {
   width: 10px;
   height: 10px;
   border-radius: 50%;
   background: color-mix(in oklch, var(--fg) 16%, transparent);
 }
 
-.editor-chrome .meta {
+.meet-chrome .meta {
   margin-left: 10px;
 }
 
-.editor-body {
-  position: relative;
+.meet-body {
   display: grid;
-  grid-template-columns: 172px 1fr;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  padding: 14px;
   min-height: 380px;
 }
 
-.editor-side {
-  background: var(--surface);
-  border-right: 1px solid var(--border-soft);
-  padding: 16px 14px;
-  font-family: var(--font-mono);
-  font-size: var(--text-xs);
-  color: var(--muted);
+.meet-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  background: color-mix(in oklch, var(--fg) 3%, transparent);
 }
 
-.editor-side .file {
-  padding: 5px 8px;
-  border-radius: var(--radius-sm);
-  white-space: nowrap;
-}
-
-.editor-side .file.active {
-  color: var(--fg-2);
-  background: color-mix(in oklch, var(--fg) 6%, transparent);
+.meet-av {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  font-size: 14px;
   font-weight: 600;
+  background: color-mix(in oklch, var(--av, var(--muted)) 16%, var(--surface));
+  color: var(--av, var(--muted));
 }
 
-.editor-code {
-  padding: 20px 24px;
-  font-family: var(--font-mono);
-  font-size: 12.5px;
-  line-height: 1.9;
-  white-space: pre-wrap;
-  color: var(--fg);
+/* tile hues mirror the transcript's speaker palette (DESIGN.md §mv) */
+.av-1 {
+  --av: oklch(0.55 0.12 160);
+}
+.av-2 {
+  --av: oklch(0.62 0.12 60);
+}
+.av-3 {
+  --av: oklch(0.56 0.15 355);
+}
+.av-4 {
+  --av: oklch(0.55 0.12 295);
 }
 
-.editor-code .c-meta {
-  color: var(--meta);
-}
-
-.editor-code .c-mut {
+.meet-name {
+  font-size: 11px;
   color: var(--muted);
+}
+
+.meet-bar {
+  position: absolute;
+  left: 50%;
+  bottom: 14px;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 999px;
+  background: color-mix(in oklch, var(--bg) 72%, transparent);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid var(--border-soft);
+}
+
+.meet-btn {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+  background: color-mix(in oklch, var(--fg) 6%, transparent);
+}
+
+.meet-btn svg {
+  width: 14px;
+  height: 14px;
+}
+
+.meet-btn.is-leave {
+  background: color-mix(in oklch, var(--danger) 12%, transparent);
+  color: var(--danger);
 }
 
 .marvis-panel {
@@ -1127,14 +1169,9 @@ h3 {
   width: min(600px, calc(100% - 220px));
 }
 
-@media (max-width: 920px) {
-  .editor-body {
-    grid-template-columns: 1fr;
+@media (max-width: 640px) {
+  .meet-body {
     min-height: 0;
-  }
-
-  .editor-side {
-    display: none;
   }
 }
 

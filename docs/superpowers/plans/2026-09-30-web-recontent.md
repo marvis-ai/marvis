@@ -1,22 +1,38 @@
 # Web Landing Re-content Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use
+> superpowers:subagent-driven-development (recommended) or
+> superpowers:executing-plans to implement this plan task-by-task. Steps use
+> checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Re-content `apps/web` around the app's real features — meeting-scene hero with a faithful live-transcript Listen card — fixing every stale claim (Listen "Phase 2", wrong hotkeys, missing providers/STT, "planned" models dir).
+**Goal:** Re-content `apps/web` around the app's real features — meeting-scene
+hero with a faithful live-transcript Listen card — fixing every stale claim
+(Listen "Phase 2", wrong hotkeys, missing providers/STT, "planned" models dir).
 
-**Architecture:** Content + markup edits to existing section components, a rebuilt `MvListen` mock in `mv.tsx`, `.editor*` CSS replaced by `.meet*` + transcript `.mv-*` styles, then a `DESIGN.md` sync. No new sections, no routing changes, page stays server-componented.
+**Architecture:** Content + markup edits to existing section components, a
+rebuilt `MvListen` mock in `mv.tsx`, `.editor*` CSS replaced by `.meet*` +
+transcript `.mv-*` styles, then a `DESIGN.md` sync. No new sections, no routing
+changes, page stays server-componented.
 
-**Tech Stack:** Next.js 16 App Router, React 19, CSS tokens per `DESIGN.md`, `@marvis/ui` icon barrel.
+**Tech Stack:** Next.js 16 App Router, React 19, CSS tokens per `DESIGN.md`,
+`@marvis/ui` icon barrel.
 
 ## Global Constraints
 
 - `bun` for all scripts — never npm/yarn. Run inside `apps/web`.
-- Arrow-function components + named exports only. `page.tsx` stays a server component.
-- New icons come from the `@marvis/ui` barrel (`Icon`-suffixed names) — `lucide-react` is **not** a direct dep of `apps/web`.
-- DESIGN.md rules are binding: `--accent #78a1bb` is the only saturated hue; colors only via tokens/`color-mix`; whisper borders; `| --- | --- |` table style.
+- Arrow-function components + named exports only. `page.tsx` stays a server
+  component.
+- New icons come from the `@marvis/ui` barrel (`Icon`-suffixed names) —
+  `lucide-react` is **not** a direct dep of `apps/web`.
+- DESIGN.md rules are binding: `--accent #78a1bb` is the only saturated hue;
+  colors only via tokens/`color-mix`; whisper borders; `| --- | --- |` table
+  style.
 - Every product claim must trace to `apps/native` source — no invented metrics.
-- No unit-test harness exists for the web app (`bun test` is `--pass-with-no-tests`); verification = `bun run lint` + `bun run check-types` per task, `bun run build` at the end.
-- Remove imports/symbols **your** changes orphan; leave pre-existing dead code alone.
+- No unit-test harness exists for the web app (`bun test` is
+  `--pass-with-no-tests`); verification = `bun run lint` + `bun run check-types`
+  per task, `bun run build` at the end.
+- Remove imports/symbols **your** changes orphan; leave pre-existing dead code
+  alone.
 
 ---
 
@@ -26,15 +42,22 @@
 
 - Modify: `apps/web/components/mv.tsx`
 - Modify: `apps/web/app/globals.css` (mv scope + transcript styles)
-- Modify: `apps/web/components/icons.tsx` (delete `CameraIcon` — orphaned by this task)
+- Modify: `apps/web/components/icons.tsx` (delete `CameraIcon` — orphaned by
+  this task)
 
 **Interfaces:**
 
-- Produces: `MvListen` — `({ className?, ...rest }: HTMLAttributes<HTMLDivElement>)` — a static faithful mock of `ListenSection.tsx` (consumers: `hero.tsx`, `interface-section.tsx`). `MvBar` keeps `gate?: 'main' | 'permission' | 'mini'`.
+- Produces: `MvListen` — `({ className?, ...rest }:
+  HTMLAttributes<HTMLDivElement>)` — a static faithful mock of
+  `ListenSection.tsx` (consumers: `hero.tsx`, `interface-section.tsx`). `MvBar`
+  keeps `gate?: 'main' | 'permission' | 'mini'`.
 
 - [ ] **Step 1: Update `mv.tsx` imports + `MvBar` controls**
 
-Replace the import block and the `mini`/`main` gate bodies. The capsule now mirrors `Bar.tsx`: iris, screen-capture toggle (`MonitorDotIcon`), Listen recorder (`MicAudioLinesIcon`). The expanded bar's mic is working dictation — drop `is-off`/"Coming soon".
+Replace the import block and the `mini`/`main` gate bodies. The capsule now
+mirrors `Bar.tsx`: iris, screen-capture toggle (`MonitorDotIcon`), Listen
+recorder (`MicAudioLinesIcon`). The expanded bar's mic is working dictation —
+drop `is-off`/"Coming soon".
 
 ```tsx
 import type { HTMLAttributes, ReactNode } from 'react';
@@ -91,7 +114,9 @@ import { CloseIcon, GearIcon, MicIcon, MvLogo, ShieldIcon } from './icons';
 
 - [ ] **Step 2: Replace `MvListen` with the transcript card**
 
-Delete the Phase-2 chrome body and render the real card structure (header → speaker filter → blocks → pinned TLDR), matching `ListenSection.tsx` / `TranscriptBlocks.tsx` / `SpeakerFilter.tsx` / `SummaryStrip.tsx`:
+Delete the Phase-2 chrome body and render the real card structure (header →
+speaker filter → blocks → pinned TLDR), matching `ListenSection.tsx` /
+`TranscriptBlocks.tsx` / `SpeakerFilter.tsx` / `SummaryStrip.tsx`:
 
 ```tsx
 /* Listen — the card's live capture surface (ListenSection.tsx): header
@@ -198,7 +223,9 @@ export const MvListen = ({ className = '', ...rest }: MvProps) => (
 
 - [ ] **Step 3: mv-scope tokens + transcript CSS**
 
-In `globals.css`, inside the `.mv` token block (after `--mv-primary-fg`), add the app's real accent + speaker hues (verbatim from `apps/native/src/index.css` light set):
+In `globals.css`, inside the `.mv` token block (after `--mv-primary-fg`), add
+the app's real accent + speaker hues (verbatim from `apps/native/src/index.css`
+light set):
 
 ```css
   --mv-accent: oklch(0.53 0.08 237);
@@ -208,7 +235,8 @@ In `globals.css`, inside the `.mv` token block (after `--mv-primary-fg`), add th
   --mv-speaker-4: oklch(0.55 0.12 295);
 ```
 
-Replace the whole `/* listen — 400px window; … */ .mv-listen` / `.mv-listen-chrome` / `.mv-wave` / `.mv-empty` block with:
+Replace the whole `/* listen — 400px window; … */ .mv-listen` /
+`.mv-listen-chrome` / `.mv-wave` / `.mv-empty` block with:
 
 ```css
 /* listen — live transcript card, faithful to ListenSection.tsx; the
@@ -426,7 +454,8 @@ In `[data-theme='dark'] .shots .mv` token block add the dark speaker set:
   --mv-speaker-4: oklch(0.74 0.13 295);
 ```
 
-In the `.shots …` transition selector list, replace `.shots .mv-listen-chrome` with:
+In the `.shots …` transition selector list, replace `.shots .mv-listen-chrome`
+with:
 
 ```css
 .shots .mv-listen-head,
@@ -434,11 +463,13 @@ In the `.shots …` transition selector list, replace `.shots .mv-listen-chrome`
 .shots .mv-tldr,
 ```
 
-In the `prefers-reduced-motion` media query, add `.mv-badge i` to the killed-animation list.
+In the `prefers-reduced-motion` media query, add `.mv-badge i` to the
+killed-animation list.
 
 - [ ] **Step 5: Delete orphaned `CameraIcon`**
 
-Remove `CameraIcon` from `apps/web/components/icons.tsx` (nothing imports it after Step 1).
+Remove `CameraIcon` from `apps/web/components/icons.tsx` (nothing imports it
+after Step 1).
 
 - [ ] **Step 6: Verify**
 
@@ -597,11 +628,16 @@ export const Hero = () => (
 );
 ```
 
-`EDITOR_LINES` and the `PreLines` import are gone. `hero.tsx` stays `'use client'` (unchanged from before — the WaitlistDialog trigger is rendered through it).
+`EDITOR_LINES` and the `PreLines` import are gone. `hero.tsx` stays `'use
+client'` (unchanged from before — the WaitlistDialog trigger is rendered through
+it).
 
 - [ ] **Step 2: Swap `.editor*` for `.meet*` in `globals.css`**
 
-Delete the entire `.editor`, `.editor-chrome`, `.editor-chrome .dot`, `.editor-chrome .meta`, `.editor-body`, `.editor-side`, `.editor-side .file`, `.editor-side .file.active`, `.editor-code`, `.editor-code .c-meta`, `.editor-code .c-mut` block. Replace with:
+Delete the entire `.editor`, `.editor-chrome`, `.editor-chrome .dot`,
+`.editor-chrome .meta`, `.editor-body`, `.editor-side`, `.editor-side .file`,
+`.editor-side .file.active`, `.editor-code`, `.editor-code .c-meta`,
+`.editor-code .c-mut` block. Replace with:
 
 ```css
 /* hero scene — a generic meeting window under the floating bar:
@@ -712,9 +748,13 @@ Delete the entire `.editor`, `.editor-chrome`, `.editor-chrome .dot`, `.editor-c
 }
 ```
 
-Update the `.hero-h1` measure for the new copy (3 short sentences): `width: 800px; transform: translate(-50px, 3px);` — keep the `920px` relax rule as-is.
+Update the `.hero-h1` measure for the new copy (3 short sentences): `width:
+800px; transform: translate(-50px, 3px);` — keep the `920px` relax rule as-is.
 
-The existing `@media (max-width: 1180px)` `.marvis-panel` rule keeps working (panel is now inside `.meet`; change `margin: 0 var(--space-4) var(--space-4)` stays valid since it's in normal flow there). The `@media (max-width: 920px)` `.editor-body`/`.editor-side` rules are deleted; add:
+The existing `@media (max-width: 1180px)` `.marvis-panel` rule keeps working
+(panel is now inside `.meet`; change `margin: 0 var(--space-4) var(--space-4)`
+stays valid since it's in normal flow there). The `@media (max-width: 920px)`
+`.editor-body`/`.editor-side` rules are deleted; add:
 
 ```css
 @media (max-width: 640px) {
@@ -739,9 +779,11 @@ git commit -m "web: hero meeting scene — Listen card over a call window, broad
 **Files:**
 
 - Modify: `apps/web/components/features.tsx`
-- Modify: `apps/web/components/icons.tsx` (add `CaptionsIcon`; delete `KeyIcon`, `CommandIcon` — orphaned here)
+- Modify: `apps/web/components/icons.tsx` (add `CaptionsIcon`; delete `KeyIcon`,
+  `CommandIcon` — orphaned here)
 
-- [ ] **Step 1: Add `CaptionsIcon` to `icons.tsx` (feature-mark style, 1.6 stroke)**
+- [ ] **Step 1: Add `CaptionsIcon` to `icons.tsx` (feature-mark style, 1.6
+      stroke)**
 
 ```tsx
 export const CaptionsIcon = (props: IconProps) => (
@@ -840,7 +882,8 @@ export const Features = () => (
 );
 ```
 
-- [ ] **Step 3: Delete `KeyIcon` + `CommandIcon`** from `icons.tsx` (orphaned by this rewrite).
+- [ ] **Step 3: Delete `KeyIcon` + `CommandIcon`** from `icons.tsx` (orphaned by
+      this rewrite).
 
 - [ ] **Step 4: Verify + commit**
 
@@ -888,7 +931,8 @@ const FILE_TREE: ReactNode[] = [
 ];
 ```
 
-Body copy and stats stand (0 accounts · 60s ring · 3 files under `~/.marvis` — models are downloads, not app writes).
+Body copy and stats stand (0 accounts · 60s ring · 3 files under `~/.marvis` —
+models are downloads, not app writes).
 
 - [ ] **Step 2: Verify + commit**
 
@@ -908,7 +952,9 @@ git commit -m "web: privacy file tree reflects shipped models dir + transcript t
 
 - [ ] **Step 1: Rewrite**
 
-Two tables in the right column — the five rebindable globals plus the fixed in-bar keys (per `src-tauri/src/hotkey.rs` `Action` + defaults). `ds-table`/`kbd`/`card` styles already exist.
+Two tables in the right column — the five rebindable globals plus the fixed
+in-bar keys (per `src-tauri/src/hotkey.rs` `Action` + defaults).
+`ds-table`/`kbd`/`card` styles already exist.
 
 ```tsx
 import type { ReactNode } from 'react';
@@ -1178,16 +1224,21 @@ git commit -m "web: providers — full LLM catalog, failover chain, STT engines,
 **Files:**
 
 - Modify: `apps/web/components/interface-section.tsx`
-- Modify: `apps/web/app/globals.css` (drop `.mv-stage-center` margin tweak if needed — no; only text/dims change)
+- Modify: `apps/web/app/globals.css` (drop `.mv-stage-center` margin tweak if
+  needed — no; only text/dims change)
 
 - [ ] **Step 1: Update section head + gate copy + ghost window**
 
 - `h2` → `One bar. Cards when you need them.`; `lead` →
-  `Everything floats above your work — a capsule at rest, an input for asks, and cards for chat, listen, and history in one grown window. These are the app's real views, recreated at actual size. The toggle swaps in its dark theme.`
+  `Everything floats above your work — a capsule at rest, an input for asks, and
+  cards for chat, listen, and history in one grown window. These are the app's
+  real views, recreated at actual size. The toggle swaps in its dark theme.`
 - `ghost-win` `.gw-url` text → `Design sync — agenda` (generic doc, not github).
 - `GATES` descriptions:
-  - mini → `The bar idles as a 104px capsule: iris, screen-capture toggle, and the Listen recorder. Click it or just start typing — it morphs open.`
-  - main → `The default gate. Type — or dictate with the mic — and ⌘⏎ sends the latest screen frame with your question.`
+  - mini → `The bar idles as a 104px capsule: iris, screen-capture toggle, and
+    the Listen recorder. Click it or just start typing — it morphs open.`
+  - main → `The default gate. Type — or dictate with the mic — and ⌘⏎ sends the
+    latest screen frame with your question.`
   - permission — unchanged.
 
 - [ ] **Step 2: Replace the `.grid-2` Listen row with a full-width shot**
@@ -1218,7 +1269,8 @@ git commit -m "web: providers — full LLM catalog, failover chain, STT engines,
         </figure>
 ```
 
-(Removes the old `grid-2` block, `mutedBody` import if orphaned, and the "Phase 2" copy.)
+(Removes the old `grid-2` block, `mutedBody` import if orphaned, and the "Phase
+2" copy.)
 
 - [ ] **Step 3: Verify + commit**
 
@@ -1235,7 +1287,8 @@ git commit -m "web: interface section — Listen ships, real card width, generic
 **Files:**
 
 - Modify: `apps/web/app/layout.tsx` (`SITE.description`)
-- Modify: `apps/web/app/opengraph-image.alt.txt`, `apps/web/app/twitter-image.alt.txt`
+- Modify: `apps/web/app/opengraph-image.alt.txt`,
+  `apps/web/app/twitter-image.alt.txt`
 - Modify: `apps/web/components/download-cta.tsx` (h2)
 
 - [ ] **Step 1: Apply copy**
@@ -1247,9 +1300,11 @@ git commit -m "web: interface section — Listen ships, real card width, generic
     'Marvis is a private AI assistant for macOS. A floating bar sees your screen with permission, transcribes your meetings, and answers through the providers you choose — your keys and screen data never leave your device.',
 ```
 
-Both `*.alt.txt` files → `Marvis — private AI for your screen and your meetings`.
+Both `*.alt.txt` files → `Marvis — private AI for your screen and your
+meetings`.
 
-`download-cta.tsx` h2 → `Your screen. Your meetings. Your machine.` (lead unchanged).
+`download-cta.tsx` h2 → `Your screen. Your meetings. Your machine.` (lead
+unchanged).
 
 - [ ] **Step 2: Verify + commit**
 
@@ -1269,11 +1324,23 @@ git commit -m "web: metadata + CTA copy reflect screen-ask + meeting-listen scop
 
 - [ ] **Step 1: Update stale sections**
 
-- §6 geometry table: Listen row → `Listen card (.mv-listen) | 600px | chat · listen · history share one grown card band`; bar-state bullets: mini = iris + capture toggle + Listen recorder; main mic = dictation (live). Replace the "Listen panel" paragraph with a description of the transcript card (header + LISTENING badge, speaker filter, `m:ss` blocks with interim caret, pinned TLDR).
-- §6 token block: add `--mv-accent` + `--mv-speaker-1..4` (light values; dark swap values listed alongside).
-- §7: hero scene → meeting window (`.meet` tiles + toolbar) with the Listen card floating; `.shot-listen` → full-width `.shot` (600px card no longer needs the docked-geometry caveat); ghost window = generic agenda doc.
-- §9: speaker colors (`You` = deep slate accent, them = speaker-1..4), STT catalog (Deepgram nova-2 · whisper.cpp tiny/base/small · sherpa sense-voice), the five rebindable hotkeys + four fixed in-bar keys.
-- §10: section order — `hero` = live overlay over a meeting window; note `assets/marvis-landing.html` predates this pass and `apps/web` is the live implementation.
+- §6 geometry table: Listen row → `Listen card (.mv-listen) | 600px | chat ·
+  listen · history share one grown card band`; bar-state bullets: mini = iris +
+  capture toggle + Listen recorder; main mic = dictation (live). Replace the
+  "Listen panel" paragraph with a description of the transcript card (header +
+  LISTENING badge, speaker filter, `m:ss` blocks with interim caret, pinned
+  TLDR).
+- §6 token block: add `--mv-accent` + `--mv-speaker-1..4` (light values; dark
+  swap values listed alongside).
+- §7: hero scene → meeting window (`.meet` tiles + toolbar) with the Listen card
+  floating; `.shot-listen` → full-width `.shot` (600px card no longer needs the
+  docked-geometry caveat); ghost window = generic agenda doc.
+- §9: speaker colors (`You` = deep slate accent, them = speaker-1..4), STT
+  catalog (Deepgram nova-2 · whisper.cpp tiny/base/small · sherpa sense-voice),
+  the five rebindable hotkeys + four fixed in-bar keys.
+- §10: section order — `hero` = live overlay over a meeting window; note
+  `assets/marvis-landing.html` predates this pass and `apps/web` is the live
+  implementation.
 
 Keep `| --- | --- |` table style.
 
@@ -1287,9 +1354,13 @@ Expected: clean lint, zero type errors, build succeeds.
 
 - [ ] **Step 3: Visual checklist** (dev server `bun run dev` → :4010)
 
-- Hero: meeting tiles + toolbar under floating bar + Listen card; `≤1180px` panel docks below; `≤640px` tiles stay 2×2.
-- Interface: light/dark toggle restyles transcript card; speaker chips colored; no "Phase 2" text anywhere.
-- `grep -ri "phase 2\|editor\|github.com/marvis" apps/web/components apps/web/app` → no stale hits (except imports of `PreLines` in `privacy.tsx`, still used).
+- Hero: meeting tiles + toolbar under floating bar + Listen card; `≤1180px`
+  panel docks below; `≤640px` tiles stay 2×2.
+- Interface: light/dark toggle restyles transcript card; speaker chips colored;
+  no "Phase 2" text anywhere.
+- `grep -ri "phase 2\|editor\|github.com/marvis" apps/web/components
+  apps/web/app` → no stale hits (except imports of `PreLines` in `privacy.tsx`,
+  still used).
 
 - [ ] **Step 4: Commit**
 
@@ -1302,6 +1373,9 @@ git commit -m "docs: DESIGN.md sync — meeting hero, Listen transcript card, re
 
 ## Self-review notes
 
-- Spec coverage: hero ✓ (T2), mv rebuild ✓ (T1), features/privacy/hotkeys/providers/interface ✓ (T3–T7), metadata ✓ (T8), DESIGN.md ✓ (T9), nav untouched per spec decision.
+- Spec coverage: hero ✓ (T2), mv rebuild ✓ (T1),
+  features/privacy/hotkeys/providers/interface ✓ (T3–T7), metadata ✓ (T8),
+  DESIGN.md ✓ (T9), nav untouched per spec decision.
 - `PreLines` survives — `privacy.tsx` still uses it; hero drops its import.
-- Orphan cleanup: `CameraIcon` (T1), `KeyIcon`/`CommandIcon` (T3). `LockIcon` was already unused; this plan puts it to use rather than deleting it.
+- Orphan cleanup: `CameraIcon` (T1), `KeyIcon`/`CommandIcon` (T3). `LockIcon`
+  was already unused; this plan puts it to use rather than deleting it.

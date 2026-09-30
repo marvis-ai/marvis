@@ -3,7 +3,7 @@
 //!
 //! On macOS [`build`] produces the whole app row — `Marvis` (About,
 //! Settings, Services, Hide, Quit), `Edit`, `View` (Position, Lock Bar
-//! Position), `Window` — installed
+//! Position), `Window`, `Help` (Email Support) — installed
 //! via `app.set_menu` in `run`'s `setup`, replacing tauri's generated
 //! default. Windows and Linux have no app menubar: the same builder's
 //! reduced `File`/`View`/`Help` menu is attached to the prefs window in
@@ -38,6 +38,11 @@ const BUILD_NUMBER: Option<&'static str> = option_env!("MARVIS_BUILD_NUMBER");
 const VIEW_TITLE: &str = "View\u{200B}";
 #[cfg(not(target_os = "macos"))]
 const VIEW_TITLE: &str = "View";
+
+/// Support address opened by the Help menu's `menu.support` item —
+/// `mailto:` via the opener plugin, so it lands in the user's default
+/// mail client.
+pub(crate) const SUPPORT_MAILTO: &str = "mailto:support@getmarvis.com";
 
 /// About metadata shared by the macOS App-menu item and the
 /// Windows/Linux Help-menu one: `version (build)` + copyright.
@@ -91,6 +96,13 @@ pub fn build(app: &AppHandle, edge: Dir) -> tauri::Result<Menu<Wry>> {
             &lock,
         ],
     )?;
+    let support = MenuItem::with_id(
+        app,
+        menus::MENU_SUPPORT,
+        "Email Support…",
+        true,
+        None::<&str>,
+    )?;
 
     #[cfg(target_os = "macos")]
     {
@@ -127,7 +139,9 @@ pub fn build(app: &AppHandle, edge: Dir) -> tauri::Result<Menu<Wry>> {
             ],
         )?;
         // WINDOW_SUBMENU_ID registers this as the app's window menu, so
-        // macOS appends the live window list itself.
+        // macOS appends the live window list itself; HELP_SUBMENU_ID
+        // likewise marks the trailing menu as the app Help menu, which
+        // adds the standard Help search field.
         let window = Submenu::with_id_and_items(
             app,
             tauri::menu::WINDOW_SUBMENU_ID,
@@ -140,9 +154,16 @@ pub fn build(app: &AppHandle, edge: Dir) -> tauri::Result<Menu<Wry>> {
                 &PredefinedMenuItem::close_window(app, None)?,
             ],
         )?;
+        let help = Submenu::with_id_and_items(
+            app,
+            tauri::menu::HELP_SUBMENU_ID,
+            "Help",
+            true,
+            &[&support as &dyn IsMenuItem<Wry>],
+        )?;
         Menu::with_items(
             app,
-            &[&app_menu, &edit, &view, &window].map(|s| s as &dyn IsMenuItem<Wry>),
+            &[&app_menu, &edit, &view, &window, &help].map(|s| s as &dyn IsMenuItem<Wry>),
         )
     }
 
@@ -168,7 +189,16 @@ pub fn build(app: &AppHandle, edge: Dir) -> tauri::Result<Menu<Wry>> {
                 &quit,
             ],
         )?;
-        let help = Submenu::with_items(app, "Help", true, &[&about as &dyn IsMenuItem<Wry>])?;
+        let help = Submenu::with_items(
+            app,
+            "Help",
+            true,
+            &[
+                &support as &dyn IsMenuItem<Wry>,
+                &PredefinedMenuItem::separator(app)?,
+                &about,
+            ],
+        )?;
         Menu::with_items(
             app,
             &[&file, &view, &help].map(|s| s as &dyn IsMenuItem<Wry>),

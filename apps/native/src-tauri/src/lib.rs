@@ -66,6 +66,7 @@ use serde_json::json;
 use tauri::{AppHandle, Emitter, Manager, State};
 #[cfg(target_os = "macos")]
 use tauri_plugin_liquid_glass::LiquidGlassExt;
+use tauri_plugin_opener::OpenerExt;
 
 use ask::AskService;
 use capture::controller::{CaptureLifecycle, StartDecision, StopDecision};
@@ -738,6 +739,14 @@ fn menu_dispatch() -> impl Fn(&AppHandle, tauri::menu::MenuEvent) + Send + Sync 
             set_bar_locked(app, !locked);
         }
         menus::MENU_SETTINGS => show_settings(app),
+        menus::MENU_SUPPORT => {
+            if let Err(e) = app
+                .opener()
+                .open_url(menubar::SUPPORT_MAILTO, None::<&str>)
+            {
+                log::warn!("open support mailto failed: {e}");
+            }
+        }
         // The item is built only in debug builds (menus.rs), so this
         // arm compiles out in release — `menu.devtools` can't fire
         // there anyway. Menu events carry no window identity: the bar
@@ -2858,8 +2867,14 @@ mod tests {
         assert!(menubar.contains("lock_item"));
         assert!(menubar.contains("menus::MENU_LOCK"));
         assert!(menubar.contains("View\\u{200B}"));
+        // Help menu: native `HELP_SUBMENU_ID` (macOS adds its search
+        // field) + the support mailto through the shared dispatcher.
+        assert!(menubar.contains("HELP_SUBMENU_ID"));
+        assert!(menubar.contains("menus::MENU_SUPPORT"));
+        assert!(menubar.contains("mailto:support@getmarvis.com"));
         let lib = include_str!("lib.rs");
         assert!(lib.contains("menubar::sync_position_checks"));
+        assert!(lib.contains("menus::MENU_SUPPORT =>"));
         // The shared menu and the menubar must build their Position
         // submenus from the same helper — two hand-maintained copies of
         // the `menu.pos.*` items would silently drift.

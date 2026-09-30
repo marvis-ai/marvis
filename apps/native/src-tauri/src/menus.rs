@@ -33,6 +33,7 @@ pub const MENU_POS_RIGHT: &str = "menu.pos.right";
 pub const MENU_POS_CENTER: &str = "menu.pos.center";
 pub const MENU_LOCK: &str = "menu.lock";
 pub const MENU_SETTINGS: &str = "menu.settings";
+pub const MENU_SUPPORT: &str = "menu.support";
 /// Debug builds only — `menu_dispatch` and this item both compile out
 /// in release.
 #[cfg(debug_assertions)]

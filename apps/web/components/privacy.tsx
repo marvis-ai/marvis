@@ -61,11 +61,11 @@ export const Privacy = () => (
           className='lead'
           style={leadTop}>
           No accounts, no sync service, no Marvis servers. An ask sends your
-          prompt plus one screen frame to the LLM provider you chose; Listen
-          streams meeting audio to the speech engine you picked — whisper.cpp or
-          sherpa on-device, Deepgram hosted — and every five turns the rolling
-          TLDR sends transcript text to that LLM. Model files download on
-          demand; nothing else leaves.
+          prompt plus one screen frame to the LLM provider you chose; Listen and
+          dictation stream audio to the speech engine you picked — whisper.cpp
+          or sherpa on-device, Deepgram hosted — and every five turns the
+          rolling TLDR sends transcript text to that LLM. Model files download
+          on demand; nothing else leaves.
         </p>
       </div>
       <div

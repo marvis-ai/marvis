@@ -69,8 +69,8 @@ export const InterfaceSection = () => {
               style={leadTop}>
               Everything floats above your work — a capsule at rest, an input
               for asks, and cards for chat, listen, and history in one grown
-              window. These are the app&rsquo;s real views, recreated at actual
-              size. The toggle swaps in its dark theme.
+              window. These are the app&rsquo;s real views, recreated
+              faithfully. The toggle swaps in its dark theme.
             </p>
           </div>
           <div

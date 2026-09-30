@@ -1229,7 +1229,7 @@ h3 {
   }
 }
 
-/* ─── screenshots: the overlay at actual size ─────────────────── */
+/* ─── screenshots: the overlay views, recreated ────────────────── */
 .shot {
   margin: 0;
   background: var(--bg);
@@ -1783,7 +1783,7 @@ h3 {
   color: oklch(0.987 0.002 197.1);
 }
 
-[data-theme='dark'] .shots .shot-pad p,
+[data-theme='dark'] .shots .shot-pad p:not(.eyebrow),
 [data-theme='dark'] .shots .gate-label,
 [data-theme='dark'] .shots .shot-cap {
   color: oklch(0.723 0.014 214.4);

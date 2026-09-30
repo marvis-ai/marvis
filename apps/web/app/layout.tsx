@@ -74,7 +74,7 @@ const jsonLd = {
       name: SITE.name,
       description: SITE.description,
       operatingSystem: 'macOS',
-      applicationCategory: 'DeveloperApplication',
+      applicationCategory: 'ProductivityApplication',
       offers: {
         '@type': 'Offer',
         price: '0',

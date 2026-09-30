@@ -37,7 +37,7 @@ const WELCOME_TEXT = `Hi there,
 
 Thanks for joining the Marvis waitlist — we'll email you as soon as Marvis is ready to download on macOS, Windows, and Linux.
 
-Marvis is a private AI that floats above your desktop: it sees your screen only with permission, answers in an overlay, and never uploads your keys or screen data.
+Marvis is a private AI that floats above your desktop: it sees your screen with permission, transcribes your meetings with speaker labels, and answers through the providers you choose — your keys and screen data never leave your device.
 
 The Marvis AI Team
 ${SITE_URL}`;
@@ -65,7 +65,7 @@ const WELCOME_HTML = `<!doctype html>
               <td style="padding:32px 40px 40px;font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;">
                 <p style="margin:0 0 14px;font-size:12px;font-weight:600;letter-spacing:0.08em;text-transform:uppercase;color:#507184;">Waitlist confirmed</p>
                 <h1 style="margin:0 0 16px;font-size:28px;line-height:1.2;letter-spacing:-0.02em;font-weight:700;color:#31302e;">You&rsquo;re in.</h1>
-                <p style="margin:0 0 16px;font-size:16px;line-height:1.6;color:#615d59;">Thanks for joining the Marvis waitlist. Marvis is a private AI that floats above your desktop &mdash; it sees your screen only with permission, answers in an overlay, and never uploads your keys or screen data.</p>
+                <p style="margin:0 0 16px;font-size:16px;line-height:1.6;color:#615d59;">Thanks for joining the Marvis waitlist. Marvis is a private AI that floats above your desktop &mdash; it sees your screen with permission, transcribes your meetings with speaker labels, and answers through the providers you choose &mdash; your keys and screen data never leave your device.</p>
                 <p style="margin:0 0 16px;font-size:16px;line-height:1.6;color:#615d59;">We&rsquo;ll email you the moment it&rsquo;s ready to download, with builds for all three desktop platforms:</p>
                 <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:0 0 28px;">
                   <tr>

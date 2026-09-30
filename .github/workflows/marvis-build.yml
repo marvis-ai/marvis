@@ -1,4 +1,4 @@
-name: Build Whisper CLI
+name: Marvis Build
 
 on:
   workflow_dispatch:

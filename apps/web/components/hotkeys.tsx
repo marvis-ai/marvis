@@ -1,19 +1,31 @@
-import type { ReactNode } from 'react';
 import { leadTop, splitGrid, surfaceBg } from './styles';
 
-const GLOBAL: [ReactNode, string][] = [
-  ['Show / hide the input', '⌘ ⌥ Space'],
-  ['Toggle screen capture', '⌘ ⌥ R'],
-  ['Start a Listen', '⌘ ⌥ T'],
-  ['Session history', '⌘ ⌥ H'],
-  ['Lock bar position', '⌘ ⇧ L'],
-];
-
-const IN_BAR: [ReactNode, string][] = [
-  ['Send', 'Enter'],
-  ['New line', '⇧ Enter'],
-  ['Send with screen frame', '⌘ ⏎'],
-  ['Settings', '⌘ ,'],
+const GROUPS: {
+  label: string;
+  odId: string;
+  rows: [string, string][];
+}[] = [
+  {
+    label: 'Global — rebindable',
+    odId: 'hotkey-table-global',
+    rows: [
+      ['Show / hide the input', '⌘ ⌥ Space'],
+      ['Toggle screen capture', '⌘ ⌥ R'],
+      ['Start a Listen', '⌘ ⌥ T'],
+      ['Session history', '⌘ ⌥ H'],
+      ['Lock bar position', '⌘ ⇧ L'],
+    ],
+  },
+  {
+    label: 'In the bar — fixed',
+    odId: 'hotkey-table-bar',
+    rows: [
+      ['Send', 'Enter'],
+      ['New line', '⇧ Enter'],
+      ['Send with screen frame', '⌘ ⏎'],
+      ['Settings', '⌘ ,'],
+    ],
+  },
 ];
 
 export const Hotkeys = () => (
@@ -68,68 +80,39 @@ export const Hotkeys = () => (
       <div
         className='stack'
         style={{ gap: '28px' }}>
-        <div>
-          <p
-            className='meta'
-            style={{
-              letterSpacing: '0.04em',
-              textTransform: 'uppercase',
-              marginBottom: '8px',
-            }}>
-            Global — rebindable
-          </p>
-          <table
-            className='ds-table'
-            data-od-id='hotkey-table-global'>
-            <thead>
-              <tr>
-                <th>Action</th>
-                <th>Shortcut</th>
-              </tr>
-            </thead>
-            <tbody>
-              {GLOBAL.map(([action, keys]) => (
-                <tr key={keys}>
-                  <td>{action}</td>
-                  <td>
-                    <span className='kbd'>{keys}</span>
-                  </td>
+        {GROUPS.map(({ label, odId, rows }) => (
+          <div key={odId}>
+            <p
+              className='meta'
+              style={{
+                letterSpacing: '0.04em',
+                textTransform: 'uppercase',
+                marginBottom: '8px',
+              }}>
+              {label}
+            </p>
+            <table
+              className='ds-table'
+              data-od-id={odId}>
+              <thead>
+                <tr>
+                  <th>Action</th>
+                  <th>Shortcut</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-        <div>
-          <p
-            className='meta'
-            style={{
-              letterSpacing: '0.04em',
-              textTransform: 'uppercase',
-              marginBottom: '8px',
-            }}>
-            In the bar — fixed
-          </p>
-          <table
-            className='ds-table'
-            data-od-id='hotkey-table-bar'>
-            <thead>
-              <tr>
-                <th>Action</th>
-                <th>Shortcut</th>
-              </tr>
-            </thead>
-            <tbody>
-              {IN_BAR.map(([action, keys]) => (
-                <tr key={keys}>
-                  <td>{action}</td>
-                  <td>
-                    <span className='kbd'>{keys}</span>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody>
+                {rows.map(([action, keys]) => (
+                  <tr key={keys}>
+                    <td>{action}</td>
+                    <td>
+                      <span className='kbd'>{keys}</span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ))}
       </div>
     </div>
   </section>

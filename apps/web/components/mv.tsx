@@ -5,12 +5,16 @@ import {
   CopyIcon,
   HistoryIcon,
   MicAudioLinesIcon,
+  MicIcon,
   MonitorDotIcon,
   PauseIcon,
+  SettingsIcon,
+  ShieldAlertIcon,
   SquareIcon,
   TimerIcon,
+  XIcon,
 } from '@marvis/ui';
-import { CloseIcon, GearIcon, MicIcon, MvLogo, ShieldIcon } from './icons';
+import { MvLogo } from './icons';
 
 type MvProps = HTMLAttributes<HTMLDivElement>;
 
@@ -68,13 +72,13 @@ export const MvBar = ({
           <span
             className='mv-icon-btn'
             title='Settings'>
-            <GearIcon />
+            <SettingsIcon />
           </span>
         </>
       )}
       {gate === 'permission' && (
         <>
-          <ShieldIcon className='mv-shield' />
+          <ShieldAlertIcon className='mv-shield' />
           <span className='mv-perm'>Screen recording needed</span>
           <button className='mv-btn mv-btn-primary'>Grant</button>
           <button className='mv-btn mv-btn-link'>Open settings</button>
@@ -105,7 +109,7 @@ export const MvAskPanel = ({
       <span
         className='mv-icon-btn'
         title='Close'>
-        <CloseIcon />
+        <XIcon />
       </span>
     </div>
     <div className='mv-panel-body'>

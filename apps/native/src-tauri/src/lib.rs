@@ -715,51 +715,57 @@ fn deeplink_dispatch(app: &AppHandle) -> impl Fn(deeplink::Action) + Send + Sync
 /// in `setup`: menu events broadcast to EVERY listener, so this must
 /// be the only handler matching `menu.*` ids.
 fn menu_dispatch() -> impl Fn(&AppHandle, tauri::menu::MenuEvent) + Send + Sync + 'static {
-    move |app, event| match event.id().as_ref() {
-        menus::MENU_ASK => {
-            let _ = app.emit_to(windows::BAR_LABEL, EV_BAR_TOGGLE_INPUT, ());
+    move |app, event| {
+        let id: &str = event.id().as_ref();
+        // The four `menu.pos.*` edge ids share one table with the menu
+        // builders (menus::POS_EDGES) — looked up here rather than
+        // matched, so an edge can't drift from its `Dir`.
+        if let Some(dir) = menus::pos_edge_dir(id) {
+            snap_edge_and_refresh(app, dir);
+            return;
         }
-        menus::MENU_CAPTURE => toggle_capture(app),
-        menus::MENU_LISTEN => {
-            let _ = app.emit_to(windows::BAR_LABEL, EV_BAR_START_LISTEN, ());
-        }
-        menus::MENU_HISTORY => {
-            let _ = app.emit_to(windows::BAR_LABEL, EV_BAR_SHOW_HISTORY, ());
-        }
-        menus::MENU_POS_TOP => snap_edge_and_refresh(app, windows::Dir::Up),
-        menus::MENU_POS_BOTTOM => snap_edge_and_refresh(app, windows::Dir::Down),
-        menus::MENU_POS_LEFT => snap_edge_and_refresh(app, windows::Dir::Left),
-        menus::MENU_POS_RIGHT => snap_edge_and_refresh(app, windows::Dir::Right),
-        menus::MENU_POS_CENTER => {
-            app.state::<AppState>().pool.lock().recenter_bar();
-            refresh_tray_menu(app);
-        }
-        menus::MENU_LOCK => {
-            let locked = app.state::<AppState>().config.lock().window.bar_locked;
-            set_bar_locked(app, !locked);
-        }
-        menus::MENU_SETTINGS => show_settings(app),
-        menus::MENU_SUPPORT => {
-            if let Err(e) = app
-                .opener()
-                .open_url(menubar::SUPPORT_MAILTO, None::<&str>)
-            {
-                log::warn!("open support mailto failed: {e}");
+        match id {
+            menus::MENU_ASK => {
+                let _ = app.emit_to(windows::BAR_LABEL, EV_BAR_TOGGLE_INPUT, ());
             }
-        }
-        // The item is built only in debug builds (menus.rs), so this
-        // arm compiles out in release — `menu.devtools` can't fire
-        // there anyway. Menu events carry no window identity: the bar
-        // owns the only popup, so it's the target (the tray copy
-        // inspects the bar too).
-        #[cfg(debug_assertions)]
-        menus::MENU_DEVTOOLS => {
-            if let Some(bar) = app.get_webview_window(windows::BAR_LABEL) {
-                bar.open_devtools();
+            menus::MENU_CAPTURE => toggle_capture(app),
+            menus::MENU_LISTEN => {
+                let _ = app.emit_to(windows::BAR_LABEL, EV_BAR_START_LISTEN, ());
             }
+            menus::MENU_HISTORY => {
+                let _ = app.emit_to(windows::BAR_LABEL, EV_BAR_SHOW_HISTORY, ());
+            }
+            menus::MENU_POS_CENTER => {
+                app.state::<AppState>().pool.lock().recenter_bar();
+                refresh_tray_menu(app);
+            }
+            menus::MENU_LOCK => {
+                let locked = app.state::<AppState>().config.lock().window.bar_locked;
+                set_bar_locked(app, !locked);
+            }
+            menus::MENU_SETTINGS => show_settings(app),
+            menus::MENU_SUPPORT => {
+                if let Err(e) = app
+                    .opener()
+                    .open_url(menubar::SUPPORT_MAILTO, None::<&str>)
+                {
+                    log::warn!("open support mailto failed: {e}");
+                }
+            }
+            // The item is built only in debug builds (menus.rs), so this
+            // arm compiles out in release — `menu.devtools` can't fire
+            // there anyway. Menu events carry no window identity: the bar
+            // owns the only popup, so it's the target (the tray copy
+            // inspects the bar too).
+            #[cfg(debug_assertions)]
+            menus::MENU_DEVTOOLS => {
+                if let Some(bar) = app.get_webview_window(windows::BAR_LABEL) {
+                    bar.open_devtools();
+                }
+            }
+            menus::MENU_QUIT => app.exit(0),
+            _ => {}
         }
-        menus::MENU_QUIT => app.exit(0),
-        _ => {}
     }
 }
 
@@ -1834,9 +1840,7 @@ fn window_recenter(app: AppHandle) {
 /// from the live rect so a just-finished drag reads correctly.
 #[tauri::command]
 fn window_bar_edge(state: State<'_, AppState>) -> String {
-    let mut pool = state.pool.lock();
-    pool.refresh_bar_rect();
-    match pool.bar_edge() {
+    match state.pool.lock().live_bar_edge() {
         windows::Dir::Up => "top",
         windows::Dir::Down => "bottom",
         windows::Dir::Left => "left",
@@ -2652,16 +2656,11 @@ pub fn run() {
             // window in windows/mod.rs instead.
             #[cfg(target_os = "macos")]
             {
-                // `refresh_bar_rect` first (same as `menus::build`): the
-                // window's `Moved` rect can lag `position_bar_at_startup`'s
+                // `live_bar_edge` refreshes from the window's real rect
+                // first: a `Moved` frame can lag `position_bar_at_startup`'s
                 // `set_rect`, leaving `bar_rect` on the creation frame and
                 // the Position checks pinned to the wrong edge at launch.
-                let edge = {
-                    let state = handle.state::<AppState>();
-                    let mut pool = state.pool.lock();
-                    pool.refresh_bar_rect();
-                    pool.bar_edge()
-                };
+                let edge = handle.state::<AppState>().pool.lock().live_bar_edge();
                 match menubar::build(handle, edge) {
                     Ok(menu) => {
                         if let Err(e) = handle.set_menu(menu) {

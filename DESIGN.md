@@ -350,7 +350,8 @@ scene, which borrows the same window chrome without the `.shot` figure card:
   `surface`), containing: `.shot-menubar` (26px frosted macOS menu strip),
   `.ghost-win` (defocused agenda doc — `gw-url` title + `gw-lines` text
   rules — at `opacity .72`), `.shot-dock` (frosted dock; last tile is the
-  real `assets/marvis-icon.svg`), `.shot-bar` (bar at `top:47px` = 21px
+  app icon, redrawn as `<MarvisAppIcon>` in `icons.tsx`), `.shot-bar` (bar
+  at `top:47px` = 21px
   below the menubar) and `.shot-ask` (`top:102px` = 8px below the bar) —
   both centered on the same axis.
 - `.shot-cap` — mono 11px caption row carrying real dimensions.

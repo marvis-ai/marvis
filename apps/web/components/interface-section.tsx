@@ -2,7 +2,8 @@
 
 import { useTheme } from 'next-themes';
 import { useSyncExternalStore } from 'react';
-import { MarvisAppIcon, MoonIcon, SunIcon } from './icons';
+import { MoonIcon, SunIcon } from '@marvis/ui';
+import { MarvisAppIcon } from './icons';
 import { MvAskPanel, MvBar, MvListen } from './mv';
 import { leadTop, sectionStack } from './styles';
 
@@ -81,7 +82,6 @@ export const InterfaceSection = () => {
             <button
               type='button'
               className={`seg-btn ${active === 'light' ? 'is-on' : ''}`}
-              data-theme-btn='light'
               aria-pressed={active === 'light'}
               onClick={() => setTheme('light')}>
               <SunIcon />
@@ -90,7 +90,6 @@ export const InterfaceSection = () => {
             <button
               type='button'
               className={`seg-btn ${active === 'dark' ? 'is-on' : ''}`}
-              data-theme-btn='dark'
               aria-pressed={active === 'dark'}
               onClick={() => setTheme('dark')}>
               <MoonIcon />

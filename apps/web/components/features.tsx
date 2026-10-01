@@ -1,5 +1,4 @@
-import { CaptionsIcon } from '@marvis/ui';
-import { LockIcon, MonitorIcon } from './icons';
+import { CaptionsIcon, LockIcon, MonitorIcon } from '@marvis/ui';
 import { sectionStack } from './styles';
 
 export const Features = () => (
@@ -19,7 +18,7 @@ export const Features = () => (
           className='feature card-flat'
           data-od-id='feature-screen-aware'>
           <div className='feature-mark'>
-            <MonitorIcon />
+            <MonitorIcon strokeWidth={1.6} />
           </div>
           <h3>Answers with your screen in context</h3>
           <p>
@@ -53,7 +52,7 @@ export const Features = () => (
           className='feature card-flat'
           data-od-id='feature-private'>
           <div className='feature-mark'>
-            <LockIcon />
+            <LockIcon strokeWidth={1.6} />
           </div>
           <h3>Private by design</h3>
           <p>

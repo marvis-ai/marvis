@@ -14,8 +14,8 @@ dist-ssr
 .env
 .env.*
 .next
-.superpowers/
-.superpowers/sdd/*
+.superpowers/*
+.superpowers/**/*
 .open-next
 .wrangler
 

@@ -215,13 +215,7 @@ pub fn build(app: &AppHandle, edge: Dir) -> tauri::Result<Menu<Wry>> {
 /// main thread, the same rule as `refresh_tray_menu`.
 pub(crate) fn sync_position_checks(app: &AppHandle) {
     let state = app.state::<AppState>();
-    // `refresh_bar_rect` before `bar_edge` — same as `menus::build`; the
-    // committed rect can trail the window's real `Moved` frame.
-    let edge = {
-        let mut pool = state.pool.lock();
-        pool.refresh_bar_rect();
-        pool.bar_edge()
-    };
+    let edge = state.pool.lock().live_bar_edge();
     let locked = state.config.lock().window.bar_locked;
     for menu in [
         app.menu(),
@@ -248,14 +242,10 @@ fn sync_checks(items: &[MenuItemKind<Wry>], edge: Dir, locked: bool) {
                 }
             }
             MenuItemKind::Check(check) => {
-                let checked = match check.id().as_ref() {
-                    menus::MENU_POS_TOP => Some(edge == Dir::Up),
-                    menus::MENU_POS_BOTTOM => Some(edge == Dir::Down),
-                    menus::MENU_POS_LEFT => Some(edge == Dir::Left),
-                    menus::MENU_POS_RIGHT => Some(edge == Dir::Right),
-                    menus::MENU_LOCK => Some(locked),
-                    _ => None,
-                };
+                let id: &str = check.id().as_ref();
+                let checked = menus::pos_edge_dir(id)
+                    .map(|dir| edge == dir)
+                    .or_else(|| (id == menus::MENU_LOCK).then_some(locked));
                 if let Some(checked) = checked {
                     let _ = check.set_checked(checked);
                 }

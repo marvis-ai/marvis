@@ -28,7 +28,7 @@ const GATES: {
   {
     id: 'shot-gate-main',
     title: 'Ready to ask',
-    desc: 'The default gate. Type — or dictate with the mic — and ⌘⏎ sends the latest screen frame with your question.',
+    desc: 'The default gate. Type — or dictate with the mic — and ⌘⏎ (Ctrl+Enter on Windows/Linux) sends the latest screen frame with your question.',
     gate: 'main',
     label: 'gate: main',
   },

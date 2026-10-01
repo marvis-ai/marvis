@@ -25,9 +25,9 @@ const outfit = Outfit({
 const SITE = {
   name: 'Marvis',
   url: 'https://getmarvis.com',
-  title: 'Marvis — a private AI that floats above your desktop',
+  title: 'Marvis — a private AI for your desktop on all platforms',
   description:
-    'Marvis is a private AI assistant for macOS. A floating bar sees your screen with permission, transcribes your meetings, and answers through the providers you choose — your keys and screen data never leave your device.',
+    'Marvis is a private AI assistant for macOS, Windows, and Linux. A floating bar sees your screen with permission, transcribes your meetings, and answers through the providers you choose — your keys and screen data never leave your device.',
 };
 
 const GA_ID = 'G-DRDLX9D2CV';
@@ -36,6 +36,25 @@ export const metadata: Metadata = {
   metadataBase: new URL(SITE.url),
   title: SITE.title,
   description: SITE.description,
+  keywords: [
+    'Marvis',
+    'private AI assistant',
+    'desktop AI',
+    'screen-aware AI',
+    'AI assistant macOS',
+    'AI assistant Windows',
+    'AI assistant Linux',
+    'meeting transcription',
+    'screen-aware AI',
+    'local AI assistant',
+    'offline transcription',
+    'whisper transcription',
+    'bring your own API key',
+    'BYOK AI',
+    'Ollama desktop app',
+    'open source AI assistant',
+    'AI overlay',
+  ],
   alternates: {
     canonical: '/',
   },
@@ -73,7 +92,7 @@ const jsonLd = {
       '@id': `${SITE.url}/#software`,
       name: SITE.name,
       description: SITE.description,
-      operatingSystem: 'macOS',
+      operatingSystem: 'macOS, Windows, Linux',
       applicationCategory: 'ProductivityApplication',
       offers: {
         '@type': 'Offer',

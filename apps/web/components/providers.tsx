@@ -73,18 +73,20 @@ export const Providers = () => (
           className='log-row'
           data-od-id='platform-windows'>
           <h3>Windows</h3>
-          <span className='meta meta-desc'>Same Rust core, native capture</span>
+          <span className='meta meta-desc'>
+            x86_64 · WGC capture · WASAPI audio
+          </span>
           <span className='pull'>
-            <span className='tag'>In development</span>
+            <span className='pill pill-green'>Available now</span>
           </span>
         </article>
         <article
           className='log-row'
           data-od-id='platform-linux'>
           <h3>Linux</h3>
-          <span className='meta meta-desc'>Same Rust core, native capture</span>
+          <span className='meta meta-desc'>x86_64 · XDG portal + PipeWire</span>
           <span className='pull'>
-            <span className='tag'>In development</span>
+            <span className='pill pill-green'>Available now</span>
           </span>
         </article>
       </div>

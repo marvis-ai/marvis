@@ -15,9 +15,9 @@ EXPECTED_TARGETS=(
 
 usage() {
   cat <<'EOF'
-Usage: build-whisper-cli.sh [--check-only] [--require-staged] [--target TARGET]
-       build-whisper-cli.sh --stage ARTIFACT --target TARGET [--checksum CHECKSUM]
-       build-whisper-cli.sh --dev-stage --target TARGET
+Usage: build-marvis.sh [--check-only] [--require-staged] [--target TARGET]
+       build-marvis.sh --stage ARTIFACT --target TARGET [--checksum CHECKSUM]
+       build-marvis.sh --dev-stage --target TARGET
 
 Build the pinned whisper.cpp whisper-cli executable for the runner's OS, or
 stage a CI artifact using Tauri's target-triple external-binary convention.
@@ -27,7 +27,7 @@ EOF
 }
 
 fail() {
-  echo "build-whisper-cli.sh: $*" >&2
+  echo "build-marvis.sh: $*" >&2
   exit 1
 }
 

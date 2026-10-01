@@ -4,14 +4,20 @@
  * verbatim — the config file is user-editable, so the table must degrade
  * rather than drop a binding it doesn't recognize.
  */
+/** `CmdOrCtrl` resolves per platform — ⌘ on macOS, Ctrl elsewhere —
+ *  matching the expansion in `hotkey.rs`. `Ctrl` likewise renders as
+ *  text off macOS, where ⌃ is an Apple-only convention. */
+const IS_MAC = navigator.userAgent.includes('Mac');
+
 const GLYPHS: Record<string, string> = {
   Cmd: '⌘',
   Command: '⌘',
+  CmdOrCtrl: IS_MAC ? '⌘' : 'Ctrl',
   Shift: '⇧',
   Alt: '⌥',
   Option: '⌥',
-  Ctrl: '⌃',
-  Control: '⌃',
+  Ctrl: IS_MAC ? '⌃' : 'Ctrl',
+  Control: IS_MAC ? '⌃' : 'Ctrl',
   Enter: '⏎',
   Return: '⏎',
   Up: '↑',

@@ -1,6 +1,6 @@
 import { Badge, MicIcon, MonitorIcon, VideoIcon, XIcon } from '@marvis/ui';
 import { MvBar, MvListen } from './mv';
-import { WaitlistDialog } from './waitlist-dialog';
+import { GITHUB_RELEASES } from '@/lib/constants';
 
 const TILES: { initials: string; name: string; cls: string }[] = [
   { initials: 'AK', name: 'Ava', cls: 'av-1' },
@@ -16,10 +16,7 @@ export const Hero = () => (
     data-od-id='hero'>
     <div className='container hero-center'>
       <p className='eyebrow'>Private / Personal AI for All</p>
-      <h1 className='hero-h1'>
-        Ask about anything on your screen. Transcribe every meeting. Keep it all
-        on your machine.
-      </h1>
+      <h1 className='hero-h1'>Your screen, your meetings, your machine.</h1>
       <p className='lead'>
         Marvis is a small floating bar that lives above your work. It sees your
         screen only with permission, hears your meetings, and answers through
@@ -27,11 +24,14 @@ export const Hero = () => (
         leave your device.
       </p>
       <div className='hero-cta'>
-        <WaitlistDialog
-          triggerClassName='btn btn-primary'
-          triggerLabel='Join the waitlist'
-          triggerDataOdId='hero-cta-primary'
-        />
+        <a
+          className='btn btn-primary'
+          href={GITHUB_RELEASES}
+          target='_blank'
+          rel='noopener noreferrer'
+          data-od-id='hero-cta-primary'>
+          Download
+        </a>
         <a
           className='btn btn-ghost btn-arrow'
           href='#privacy'
@@ -40,8 +40,7 @@ export const Hero = () => (
         </a>
       </div>
       <p className='meta hero-note'>
-        macOS build in private testing — you&rsquo;ll get a download link by
-        email.
+        macOS, Windows, and Linux — the latest builds ship on GitHub Releases.
       </p>
       <div className='hero-meta'>
         <Badge

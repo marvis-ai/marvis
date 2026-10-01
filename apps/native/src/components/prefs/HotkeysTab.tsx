@@ -25,7 +25,7 @@ const FIXED: { label: string; sub: string; accels: string[] }[] = [
   {
     label: 'Settings',
     sub: 'Only while the bar is active',
-    accels: ['Cmd+,'],
+    accels: ['CmdOrCtrl+,'],
   },
   {
     label: 'Send · new line',
@@ -35,7 +35,7 @@ const FIXED: { label: string; sub: string; accels: string[] }[] = [
   {
     label: 'Send with screenshot',
     sub: 'At the input',
-    accels: ['Cmd+Enter'],
+    accels: ['CmdOrCtrl+Enter'],
   },
 ];
 

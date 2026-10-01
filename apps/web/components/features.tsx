@@ -22,9 +22,10 @@ export const Features = () => (
           </div>
           <h3>Answers with your screen in context</h3>
           <p>
-            Press ⌘⏎ and the latest screen frame rides along with your prompt —
-            “explain this”, “what changed”, “compare these”. The answer streams
-            back as markdown into the overlay.
+            Press ⌘⏎ (Ctrl+Enter on Windows/Linux) and the latest screen frame
+            rides along with your prompt — “explain this”, “what changed”,
+            “compare these”. The answer streams back as markdown into the
+            overlay.
           </p>
           <span className='meta'>
             frames live in a 60-second memory ring — never on disk

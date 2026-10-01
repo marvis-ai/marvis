@@ -284,14 +284,13 @@ const Bar = () => {
 
   // Type-to-wake on the collapsed pill; Esc collapses input → capsule,
   // and collapses the card via `ask_close` (cancel + `set_chat_open`).
-  // `Cmd+,` opens settings — a bar-local key (fires only while this
-  // window is focused), not a global hotkey.
+  // `Cmd`/`Ctrl+,` opens settings — a bar-local key (fires only while
+  // this window is focused), not a global hotkey.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (
         e.key === ',' &&
-        e.metaKey &&
-        !e.ctrlKey &&
+        (e.metaKey || e.ctrlKey) &&
         !e.altKey &&
         !e.shiftKey
       ) {
@@ -686,7 +685,7 @@ const Bar = () => {
 
         {/* Only rendered in the pill's input row — the idle capsule
             has no room for a fourth control and the card header
-            carries its own Settings (tray menu + Cmd+, reach it
+            carries its own Settings (tray menu + Cmd/Ctrl+, reach it
             anyway). */}
         {controls.includes('settings') && (
           <BarButton

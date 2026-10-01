@@ -95,6 +95,6 @@ if [[ "$FIXTURE_ONLY" == true ]]; then
 fi
 
 [[ -n "$TARGET" ]] || fail "--target is required for the staging check"
-bash "${SCRIPT_DIR}/build-whisper-cli.sh" \
+bash "${SCRIPT_DIR}/build-marvis.sh" \
   --check-only --require-staged --target "$TARGET"
 echo "Task 2 config and staged ${TARGET} artifact validated"

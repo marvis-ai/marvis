@@ -3,8 +3,22 @@ name: Web CI/CD
 on:
   push:
     branches: [master]
+    paths:
+      - 'apps/web/**'
+      - 'packages/**'
+      - 'bun.lock'
+      - 'package.json'
+      - 'turbo.json'
+      - '.github/workflows/web.yml'
   pull_request:
     branches: [master]
+    paths:
+      - 'apps/web/**'
+      - 'packages/**'
+      - 'bun.lock'
+      - 'package.json'
+      - 'turbo.json'
+      - '.github/workflows/web.yml'
 
 permissions:
   contents: read

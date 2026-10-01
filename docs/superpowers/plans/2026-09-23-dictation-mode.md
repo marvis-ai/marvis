@@ -349,7 +349,7 @@ git diff --check
 
 ```bash
 cd apps/native
-bash src-tauri/scripts/build-whisper-cli.sh --dev-stage --target aarch64-apple-darwin
+bash src-tauri/scripts/build-marvis.sh --dev-stage --target aarch64-apple-darwin
 bash src-tauri/scripts/check-task-2-packaging.sh --target aarch64-apple-darwin
 file src-tauri/target/debug/whisper-cli-aarch64-apple-darwin
 otool -L src-tauri/target/debug/whisper-cli-aarch64-apple-darwin

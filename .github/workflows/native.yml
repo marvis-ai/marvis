@@ -3,8 +3,22 @@ name: Native CI
 on:
   push:
     branches: [master]
+    paths:
+      - 'apps/native/**'
+      - 'packages/**'
+      - 'bun.lock'
+      - 'package.json'
+      - 'turbo.json'
+      - '.github/workflows/native.yml'
   pull_request:
     branches: [master]
+    paths:
+      - 'apps/native/**'
+      - 'packages/**'
+      - 'bun.lock'
+      - 'package.json'
+      - 'turbo.json'
+      - '.github/workflows/native.yml'
 
 permissions:
   contents: read

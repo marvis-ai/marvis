@@ -459,8 +459,8 @@ export const alertCurrent = () => invoke<AlertPayload | null>('alert_current');
 
 export const alertDismiss = () => invoke<void>('alert_dismiss');
 
-/** Same entry point as `Cmd+,` and the tray's Settings item — opens the
- * decorated `prefs` window in settings mode (any gate state). */
+/** Same entry point as `Cmd`/`Ctrl+,` and the tray's Settings item —
+ * opens the decorated `prefs` window in settings mode (any gate state). */
 export const windowShowSettings = () => invoke<void>('window_show_settings');
 
 /** The prefs window in onboarding mode — the sidebar's "Re-run setup". */

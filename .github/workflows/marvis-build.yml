@@ -32,11 +32,11 @@ jobs:
 
       - name: Validate build metadata
         working-directory: apps/native/src-tauri
-        run: bash scripts/build-whisper-cli.sh --check-only --target aarch64-apple-darwin
+        run: bash scripts/build-marvis.sh --check-only --target aarch64-apple-darwin
 
       - name: Build and validate whisper-cli
         working-directory: apps/native/src-tauri
-        run: bash scripts/build-whisper-cli.sh --target aarch64-apple-darwin
+        run: bash scripts/build-marvis.sh --target aarch64-apple-darwin
 
       - name: Upload arm64 artifact
         uses: actions/upload-artifact@v7
@@ -48,7 +48,7 @@ jobs:
           if-no-files-found: error
 
   build-x86-64:
-    name: Build whisper-cli (x86_64)
+    name: Build marvis (x86_64)
     # macos-15-intel is the final supported Intel runner path.
     runs-on: macos-15-intel
     steps:
@@ -56,11 +56,11 @@ jobs:
 
       - name: Validate build metadata
         working-directory: apps/native/src-tauri
-        run: bash scripts/build-whisper-cli.sh --check-only --target x86_64-apple-darwin
+        run: bash scripts/build-marvis.sh --check-only --target x86_64-apple-darwin
 
       - name: Build and validate whisper-cli
         working-directory: apps/native/src-tauri
-        run: bash scripts/build-whisper-cli.sh --target x86_64-apple-darwin
+        run: bash scripts/build-marvis.sh --target x86_64-apple-darwin
 
       - name: Upload x86_64 artifact
         uses: actions/upload-artifact@v7
@@ -72,7 +72,7 @@ jobs:
           if-no-files-found: error
 
   build-windows:
-    name: Build whisper-cli (windows x86_64)
+    name: Build marvis (windows x86_64)
     runs-on: windows-latest
     defaults:
       run:
@@ -82,11 +82,11 @@ jobs:
 
       - name: Validate build metadata
         working-directory: apps/native/src-tauri
-        run: bash scripts/build-whisper-cli.sh --check-only --target x86_64-pc-windows-msvc
+        run: bash scripts/build-marvis.sh --check-only --target x86_64-pc-windows-msvc
 
       - name: Build and validate whisper-cli
         working-directory: apps/native/src-tauri
-        run: bash scripts/build-whisper-cli.sh --target x86_64-pc-windows-msvc
+        run: bash scripts/build-marvis.sh --target x86_64-pc-windows-msvc
 
       - name: Upload windows artifact
         uses: actions/upload-artifact@v7
@@ -98,18 +98,18 @@ jobs:
           if-no-files-found: error
 
   build-linux:
-    name: Build whisper-cli (linux x86_64)
+    name: Build marvis (linux x86_64)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
 
       - name: Validate build metadata
         working-directory: apps/native/src-tauri
-        run: bash scripts/build-whisper-cli.sh --check-only --target x86_64-unknown-linux-gnu
+        run: bash scripts/build-marvis.sh --check-only --target x86_64-unknown-linux-gnu
 
       - name: Build and validate whisper-cli
         working-directory: apps/native/src-tauri
-        run: bash scripts/build-whisper-cli.sh --target x86_64-unknown-linux-gnu
+        run: bash scripts/build-marvis.sh --target x86_64-unknown-linux-gnu
 
       - name: Upload linux artifact
         uses: actions/upload-artifact@v7
@@ -141,7 +141,7 @@ jobs:
       - name: Stage and validate exact arm64 artifact
         working-directory: apps/native/src-tauri
         run: |
-          bash scripts/build-whisper-cli.sh --stage \
+          bash scripts/build-marvis.sh --stage \
             /tmp/whisper-cli-aarch64-apple-darwin/whisper-cli-aarch64-apple-darwin \
             --checksum /tmp/whisper-cli-aarch64-apple-darwin/whisper-cli-aarch64-apple-darwin.sha256 \
             --target aarch64-apple-darwin
@@ -186,7 +186,7 @@ jobs:
       - name: Stage and validate exact x86_64 artifact
         working-directory: apps/native/src-tauri
         run: |
-          bash scripts/build-whisper-cli.sh --stage \
+          bash scripts/build-marvis.sh --stage \
             /tmp/whisper-cli-x86_64-apple-darwin/whisper-cli-x86_64-apple-darwin \
             --checksum /tmp/whisper-cli-x86_64-apple-darwin/whisper-cli-x86_64-apple-darwin.sha256 \
             --target x86_64-apple-darwin
@@ -228,7 +228,7 @@ jobs:
       - name: Stage and validate exact windows artifact
         working-directory: apps/native/src-tauri
         run: |
-          bash scripts/build-whisper-cli.sh --stage \
+          bash scripts/build-marvis.sh --stage \
             "${{ runner.temp }}/whisper-cli-x86_64-pc-windows-msvc/whisper-cli-x86_64-pc-windows-msvc.exe" \
             --checksum "${{ runner.temp }}/whisper-cli-x86_64-pc-windows-msvc/whisper-cli-x86_64-pc-windows-msvc.exe.sha256" \
             --target x86_64-pc-windows-msvc
@@ -273,7 +273,7 @@ jobs:
       - name: Stage and validate exact linux artifact
         working-directory: apps/native/src-tauri
         run: |
-          bash scripts/build-whisper-cli.sh --stage \
+          bash scripts/build-marvis.sh --stage \
             "${{ runner.temp }}/whisper-cli-x86_64-unknown-linux-gnu/whisper-cli-x86_64-unknown-linux-gnu" \
             --checksum "${{ runner.temp }}/whisper-cli-x86_64-unknown-linux-gnu/whisper-cli-x86_64-unknown-linux-gnu.sha256" \
             --target x86_64-unknown-linux-gnu

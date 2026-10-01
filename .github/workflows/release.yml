@@ -4,7 +4,7 @@ name: Release
 # attach them to a GitHub release for that tag.
 on:
   push:
-    tags: ["v*"]
+    tags: ['v*']
 
 permissions:
   contents: read
@@ -70,6 +70,8 @@ jobs:
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # No checkout in this job — point gh at the repo explicitly.
+          GH_REPO: ${{ github.repository }}
         run: |
           # Semver prerelease convention: tags like v1.0.0-rc.1 stay prerelease.
           flag=()
@@ -78,6 +80,6 @@ jobs:
             --title "Marvis ${{ github.ref_name }}" \
             --notes-file release-notes.md \
             "${flag[@]}" \
-            dist/dmg/*.dmg dist/msi/*.msi dist/nsis/*.exe \
-            dist/appimage/*.AppImage dist/deb/*.deb \
+            dist/*.dmg dist/*.msi dist/*-setup.exe \
+            dist/*.AppImage dist/*.deb \
             dist/SHA256SUMS.txt

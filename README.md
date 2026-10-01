@@ -1,15 +1,23 @@
+<!-- markdownlint-disable MD041 -->
 <p align="center">
   <img src="assets/marvis-logo.svg" alt="Marvis" width="260">
 </p>
 
 <p align="center">
-  <strong>Private / Personal AI for All</strong> — a privacy-first AI co-pilot that lives on your desktop.
+  <strong>Private / Personal AI for All</strong> — a privacy-first AI
+  co-pilot that lives on your desktop.
 </p>
 
 <p align="center">
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
-  <img src="https://img.shields.io/badge/platform-macOS-lightgrey.svg" alt="Platform: macOS">
-  <a href="https://github.com/MarvisLLC/marvis/stargazers"><img src="https://img.shields.io/github/stars/MarvisLLC/marvis" alt="GitHub stars"></a>
+  <a href="LICENSE"><img
+    src="https://img.shields.io/badge/license-MIT-blue.svg"
+    alt="License: MIT"></a>
+  <img
+    src="https://img.shields.io/badge/platform-macOS_Windows_Linux-lightgrey"
+    alt="Platforms: macOS, Windows, Linux">
+  <a href="https://github.com/MarvisLLC/marvis/stargazers"><img
+    src="https://img.shields.io/github/stars/MarvisLLC/marvis"
+    alt="GitHub stars"></a>
 </p>
 
 Marvis is an always-available assistant that floats above your workspace as a
@@ -27,12 +35,12 @@ your device except the requests you send to the providers you choose.
 - **Overlay assistant** — a frameless, always-on-top bar that morphs from a
   breathing capsule into an input pill, then into a chat/listen card. Docks
   to any screen edge, drags anywhere, remembers its position.
-- **Ask** — type a question or press `Cmd+Enter`; Marvis grabs the latest
-  screen frame, sends it with your prompt to your LLM, and streams the
-  answer back as markdown. Screen content stays in an in-memory ring buffer
-  (~60 s horizon, capped at 120 frames / 64 MB) — screenshots are never
-  written to disk. An optional **vision provider** can read the frame first
-  and answer over its text description.
+- **Ask** — type a question or press `Cmd`/`Ctrl+Enter`; Marvis grabs
+  the latest screen frame, sends it with your prompt to your LLM, and
+  streams the answer back as markdown. Screen content stays in an
+  in-memory ring buffer (~60 s horizon, capped at 120 frames / 64 MB) —
+  screenshots are never written to disk. An optional **vision provider**
+  can read the frame first and answer over its text description.
 - **Listen** — dual-channel meeting capture: mic ("me") + system audio
   ("them") → streaming speech-to-text → live transcript with speaker labels
   → rolling AI summaries every 5 turns.
@@ -43,23 +51,37 @@ your device except the requests you send to the providers you choose.
 - **Your choice of STT** — Deepgram (streaming, interim results) or
   fully-local `whisper-cli` (bundled whisper.cpp sidecar; tiny / base /
   small models downloaded on demand from Hugging Face).
-- **Global hotkey** — `Cmd+Alt+Space` shows/hides the bar's input,
-  rebindable (see [Hotkeys](#hotkeys)).
+- **Global hotkey** — `Cmd`/`Ctrl+Alt+Space` shows/hides the bar's
+  input, rebindable (see [Hotkeys](#hotkeys)).
 - **Deep links** — `marvis://ask?text=...` focuses the bar and fires an Ask;
   any other `marvis://` link just surfaces the app.
 - **Onboarding + permission gates** — guided first-run wizard; the app
-  unlocks only after onboarding completes and Screen Recording is granted.
-- **Local persistence** — sessions, messages, transcripts, and summaries in
-  SQLite at `~/.marvis/marvis.db` (`0600`).
+  unlocks only after onboarding completes and screen consent exists —
+  macOS Screen Recording, the Linux portal pick, no preflight on
+  Windows.
+- **Local persistence** — sessions, messages, transcripts, and
+  summaries in SQLite at `~/.marvis/marvis.db` (`0600` on macOS/Linux).
 
 ## Requirements
 
-- **macOS** (Apple Silicon or Intel). Screen/audio capture uses
-  ScreenCaptureKit; permissions use CoreGraphics + AVFoundation.
+| | Screen capture | System audio | Screen consent |
+| --- | --- | --- | --- |
+| macOS (Apple Silicon / Intel) | ScreenCaptureKit | ScreenCaptureKit | Screen Recording permission |
+| Windows (x86_64) | Windows.Graphics.Capture | WASAPI loopback | none — WGC is the consent boundary |
+| Linux (x86_64) | XDG portal + PipeWire | PulseAudio monitor | portal picker (persisted token) |
+
+Build tooling:
+
 - [Bun](https://bun.sh) 1.3+
 - [Rust](https://rustup.rs) stable toolchain (for the Tauri core)
-- Xcode Command Line Tools (`xcode-select --install`)
-- Screen Recording + Microphone permission — requested in-app on first run
+- macOS: Xcode Command Line Tools (`xcode-select --install`)
+- Windows: Visual Studio C++ workload (MSVC)
+- Linux: `webkit2gtk-4.1`, `gtk-3`, `appindicator`, PipeWire and
+  PulseAudio dev packages — see `.github/workflows/marvis-build.yml`
+  for the exact `apt` list
+- Screen Recording + Microphone prompts appear in-app on first run
+  where the OS has them — Linux needs neither (the portal dialog is
+  the consent; PulseAudio mics need no permission)
 - At least one provider: an API key for OpenAI / Anthropic / Gemini /
   OpenRouter / a compatible endpoint, **or** a running
   [Ollama](https://ollama.com) daemon for local models
@@ -75,10 +97,10 @@ bun run build:dev
 ```
 
 On first launch, the onboarding wizard walks you through appearance →
-Screen Recording permission → a provider key (validated before saving, or
-pick an Ollama model) → optional voice models for local transcription. The
-floating bar appears once onboarding completes and screen permission is
-granted.
+screen consent → a provider key (validated before saving, or pick an
+Ollama model) → optional voice models for local transcription. The
+floating bar appears once onboarding completes and consent exists —
+instantly on Windows (no preflight), after the portal pick on Linux.
 
 Other root scripts:
 
@@ -102,16 +124,16 @@ The one global chord is rebindable under `[hotkeys]` in
 
 | Action | Shortcut |
 | --- | --- |
-| Show / hide the input | `Cmd+Alt+Space` |
+| Show / hide the input | `Cmd`/`Ctrl+Alt+Space` |
 
 Fixed keys inside the bar (they fire only while it's focused):
 
 | Action | Shortcut |
 | --- | --- |
-| Open settings | `Cmd+,` |
+| Open settings | `Cmd`/`Ctrl+,` |
 | Send | `Enter` |
 | New line | `Shift+Enter` |
-| Send with screenshot | `Cmd+Enter` |
+| Send with screenshot | `Cmd`/`Ctrl+Enter` |
 
 The bar itself moves by pointer drag or the Settings → Bar edge picker —
 there are no fixed move/scroll/click-through shortcuts.
@@ -145,8 +167,9 @@ bytes never cross that boundary. See
 
 ## Data locations
 
-Everything Marvis writes lives in a single dotdir created with `0700`
-permissions — no `~/Library/Application Support`, no temp files:
+Everything Marvis writes lives in a single dotdir — `~/.marvis`
+(`%USERPROFILE%\.marvis` on Windows), created `0700` where the OS has
+mode bits — no platform application-data dir, no temp files:
 
 ```text
 ~/.marvis/
@@ -156,9 +179,10 @@ permissions — no `~/Library/Application Support`, no temp files:
 └── models/whisper/ # downloaded ggml whisper models (tiny / base / small)
 ```
 
-**Honest note:** `keys.json` is plaintext inside the `0700` root — there is
-no encryption in the current build. Keys are never serialized to the UI
-(masked `…last4` only) and never logged.
+**Honest note:** `keys.json` is plaintext inside the `0700` root
+(mode bits are macOS/Linux; on Windows the user-profile ACL covers it)
+— there is no encryption in the current build. Keys are never
+serialized to the UI (masked `…last4` only) and never logged.
 
 ## Roadmap
 
@@ -166,6 +190,9 @@ no encryption in the current build. Keys are never serialized to the UI
   hotkey rebinding, deep links, tray icon, onboarding wizard.
 - **Done** — Listen: mic + system-audio transcription
   (Deepgram / bundled whisper.cpp), live transcript, rolling summaries.
+- **Done** — Windows + Linux ports: WGC capture / WASAPI loopback, XDG
+  portal + PipeWire + PulseAudio, per-OS consent flows; CI bundles for
+  all three OSes (dmg, msi/nsis, AppImage/deb).
 - **Next** — session history UI, prompt presets, Ollama model management,
   Gemini search grounding toggle.
 

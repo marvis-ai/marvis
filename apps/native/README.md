@@ -1,26 +1,28 @@
 # Marvis Desktop
 
 **Private, personal AI that lives on your desktop.** Marvis is an
-always-on-top floating bar for macOS: it can see your screen (with
-permission), hear your meetings, and answer through the AI providers
-*you* configure — your keys, your history, and your screen data never
-leave the machine except in the requests you choose to send.
+always-on-top floating bar for macOS, Windows, and Linux: it can see
+your screen (with permission), hear your meetings, and answer through
+the AI providers *you* configure — your keys, your history, and your
+screen data never leave the machine except in the requests you choose
+to send.
 
 Built with **Tauri 2** (Rust core) and **React 19 / TypeScript / Vite**
 (webview UI). The Rust core owns everything sensitive — capture, audio,
 keys, storage — the webview is UI only.
 
 > This package is `@marvis/native`, the desktop app in the
-> [Marvis monorepo](../../README.md). macOS-only today; platform seams
-> (`capture`, `audio`, `permissions`) sit behind traits so other OSes can
-> follow.
+> [Marvis monorepo](../../README.md). macOS, Windows, and Linux build
+> from one codebase — platform seams (`capture`, `audio`,
+> `permissions`) sit behind per-OS `{macos,windows,linux}.rs` modules.
 
 ## Features
 
 - **Floating bar** — a breathing capsule that morphs into an input pill,
   then into a chat/listen card. Docks to any screen edge (top / bottom /
   left / right rail), drags anywhere, remembers its position.
-- **Ask** — type a question (`Enter` / `Cmd+Enter` sends, `Shift+Enter`
+- **Ask** — type a question (`Enter` / `Cmd`/`Ctrl+Enter` sends,
+  `Shift+Enter`
   adds a line): the latest captured screen frame goes with it and the
   answer streams back as markdown. An optional **vision provider** reads
   the frame first and answers over its text description, so chat
@@ -34,33 +36,42 @@ keys, storage — the webview is UI only.
 - **Your choice of STT** — Deepgram (WebSocket streaming, interim
   results) or fully-local `whisper-cli` (bundled whisper.cpp sidecar;
   tiny / base / small models downloaded on demand from Hugging Face).
-- **Screen capture** — continuous ~4 fps ScreenCaptureKit stream into an
-  in-memory ring buffer (120 frames / 64 MB, JPEG @ 384 px). Screenshots
-  are never written to disk.
-- **Hotkeys** — `Cmd+Alt+Space` shows/hides the bar's input (global,
-  rebindable in Settings → Hotkeys). Inside the bar: `Cmd+,` opens settings,
-  `Enter` / `Cmd+Enter` sends, `Shift+Enter` adds a line.
+- **Screen capture** — continuous ~4 fps stream (ScreenCaptureKit on
+  macOS, Windows.Graphics.Capture, XDG portal + PipeWire on Linux) into
+  an in-memory ring buffer (120 frames / 64 MB, JPEG @ 384 px).
+  Screenshots are never written to disk.
+- **Hotkeys** — `Cmd`/`Ctrl+Alt+Space` shows/hides the bar's input
+  (global, rebindable in Settings → Hotkeys). Inside the bar:
+  `Cmd`/`Ctrl+,` opens settings, `Enter` / `Cmd`/`Ctrl+Enter` sends,
+  `Shift+Enter` adds a line.
 - **`marvis://` deep links** — `marvis://ask?text=…` asks; any other
   `marvis://*` link focuses the bar.
 - **Onboarding + permission gates** — guided first-run wizard, explicit
-  screen-recording and microphone flows, and a tray icon
+  screen-consent and microphone flows, and a tray icon
   (Show/Hide · Settings · Quit).
-- **Local-first privacy** — everything under `~/.marvis` (0700). See
-  [Data & privacy](#data--privacy).
+- **Local-first privacy** — everything under `~/.marvis` (0700 on
+  unix). See [Data & privacy](#data--privacy).
 
 ## Requirements
 
-- **macOS** — Apple Silicon or Intel. Screen/audio capture uses
-  ScreenCaptureKit; permissions use CoreGraphics + AVFoundation.
+- **macOS** (Apple Silicon or Intel), **Windows** x86_64, or **Linux**
+  x86_64 — capture uses ScreenCaptureKit / Windows.Graphics.Capture /
+  XDG portal + PipeWire; system audio uses SCK / WASAPI loopback /
+  PulseAudio monitor
 - [Bun](https://bun.sh) 1.3+
 - [Rust](https://rustup.rs) stable toolchain
-- Xcode Command Line Tools (`xcode-select --install`)
-- Screen Recording + Microphone permission — requested in-app on first run
+- macOS builds: Xcode Command Line Tools (`xcode-select --install`);
+  Windows builds: MSVC toolchain; Linux builds: `webkit2gtk-4.1`,
+  `gtk-3`, PipeWire/PulseAudio dev packages (apt list in
+  `.github/workflows/marvis-build.yml`)
+- Screen consent + Microphone permission — requested in-app on first
+  run where the OS has them (no screen preflight on Windows; Linux
+  consents via the portal pick)
 - At least one provider: an API key (OpenAI / Anthropic / Gemini /
   OpenRouter / compatible endpoint) **or** a local
   [Ollama](https://ollama.com) daemon
 - Optional for local transcription: a validated `whisper-cli-<target>` artifact
-  staged by `src-tauri/scripts/build-whisper-cli.sh`, or a PATH/Homebrew/user
+  staged by `src-tauri/scripts/build-marvis.sh`, or a PATH/Homebrew/user
   fallback
 
 ## Getting started
@@ -94,7 +105,11 @@ cd src-tauri && cargo test   # Rust unit tests
 
 ### Release Whisper packaging
 
-Release packaging consumes the exact artifacts from `.github/workflows/marvis-build.yml`; do not build or commit binaries locally. On a macOS runner with the target toolchain, download the artifacts for the exact workflow run, stage and validate one target, then build and verify the signed app:
+Release packaging consumes the exact artifacts from
+`.github/workflows/marvis-build.yml`; do not build or commit binaries
+locally. On a macOS runner with the target toolchain, download the
+artifacts for the exact workflow run, stage and validate one target,
+then build and verify the signed app:
 
 ```bash
 RUN_ID=123456789
@@ -103,7 +118,7 @@ mkdir -p /tmp/whisper-artifact
  gh run download "$RUN_ID" --repo MarvisLLC/marvis \
   --name "whisper-cli-$TARGET" --dir /tmp/whisper-artifact
 cd apps/native/src-tauri
-bash scripts/build-whisper-cli.sh --stage \
+bash scripts/build-marvis.sh --stage \
   "/tmp/whisper-artifact/whisper-cli-$TARGET" \
   --checksum "/tmp/whisper-artifact/whisper-cli-$TARGET.sha256" \
   --target "$TARGET"
@@ -116,15 +131,17 @@ bash scripts/verify-release-app.sh \
   "target/$TARGET/release/bundle/macos/Marvis.app" "$TARGET"
 ```
 
-The workflow is manual-only: the default run builds only unsigned CLI artifacts,
-and app packaging is enabled only by an explicit release-candidate input. Set `package_app` only for an intentional release
-candidate, after provisioning the signing certificate and identity in the
-runner keychain. `APPLE_SIGNING_IDENTITY` is a prerequisite, not certificate
-provisioning; no credentials are stored in this repository. The package jobs
-fail closed when the identity is absent, and `verify-release-app.sh` always runs
-strict recursive `codesign --verify --deep --strict` verification. An unsigned
-or invalid app is not reported as a release artifact. `/tmp` and `binaries/`
-are staging/build locations and remain ignored by Git.
+The workflow is manual-only: the default run builds only unsigned CLI
+artifacts, and app packaging is enabled only by an explicit
+release-candidate input. Set `package_app` only for an intentional
+release candidate, after provisioning the signing certificate and
+identity in the runner keychain. `APPLE_SIGNING_IDENTITY` is a
+prerequisite, not certificate provisioning; no credentials are stored
+in this repository. The package jobs fail closed when the identity is
+absent, and `verify-release-app.sh` always runs strict recursive
+`codesign --verify --deep --strict` verification. An unsigned or
+invalid app is not reported as a release artifact. `/tmp` and
+`binaries/` are staging/build locations and remain ignored by Git.
 
 The `.sha256` files generated by the pinned build and checked by `--stage` are
 build-output integrity checks for the exact downloaded artifact. They are not a
@@ -201,14 +218,14 @@ One webview bundle serves every window: each `WebviewWindow` loads
 
 | Layer | Technology |
 | --- | --- |
-| Shell | Tauri 2 (`macos-private-api`, tray-icon, liquid glass) |
+| Shell | Tauri 2 (tray-icon; liquid glass + `macos-private-api` on macOS) |
 | Frontend | React 19, TypeScript, Vite 8, Tailwind CSS 4, `@marvis/ui` (workspace), react-markdown + remark-gfm |
 | Backend | Rust 2021 — tokio, reqwest (rustls, SSE/NDJSON streaming), serde, parking_lot, thiserror/anyhow |
 | Storage | rusqlite (bundled SQLite, WAL, FK cascade) |
-| Screen | `screencapturekit` crate, `image` (JPEG encode/resize) |
-| Audio | `cpal` (mic), ScreenCaptureKit (system audio) → 16 kHz mono PCM |
+| Screen | `screencapturekit` (macOS), `windows-capture` / WGC (Windows), `ashpd` portal + `pipewire` (Linux); `image` (JPEG encode/resize) |
+| Audio | `cpal` (mic); system audio: ScreenCaptureKit (macOS), `wasapi` loopback (Windows), PulseAudio monitor (Linux) → 16 kHz mono PCM |
 | STT | `tokio-tungstenite` (Deepgram WS), `whisper-cli` sidecar process (whisper.cpp v1.9.2) |
-| macOS FFI | `objc2`, `objc2-av-foundation`, `block2`, CoreGraphics preflight |
+| Platform FFI | `objc2`, `objc2-av-foundation`, `block2`, CoreGraphics (macOS); `windows` crate (Windows); `ashpd` (Linux) |
 | Tauri plugins | global-shortcut, deep-link, opener, liquid-glass |
 | Package manager | [Bun](https://bun.sh) + Turbo (monorepo) |
 
@@ -222,7 +239,7 @@ apps/native/
 ├── src/                        # webview UI (React + TS + Tailwind)
 │   ├── App.tsx                 # ?view= router: bar (default) | alert | prefs
 │   ├── views/
-│   │   ├── Bar.tsx             # unified overlay: capsule ⇄ input ⇄ chat/listen card
+│   │   ├── Bar.tsx             # unified overlay: capsule ⇄ input ⇄ chat/listen
 │   │   ├── AlertToast.tsx      # auto-dismissing error/info toast window
 │   │   └── Prefs.tsx           # settings + onboarding window (mode-switch)
 │   ├── components/
@@ -267,7 +284,8 @@ apps/native/
 
 ## Data & privacy
 
-Everything Marvis stores lives in `~/.marvis` (created `0700`):
+Everything Marvis stores lives in `~/.marvis`
+(`%USERPROFILE%\.marvis` on Windows), created `0700` on unix:
 
 | File | Mode | Contents |
 | --- | --- | --- |

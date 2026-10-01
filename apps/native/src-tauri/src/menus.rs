@@ -31,6 +31,16 @@ pub const MENU_POS_BOTTOM: &str = "menu.pos.bottom";
 pub const MENU_POS_LEFT: &str = "menu.pos.left";
 pub const MENU_POS_RIGHT: &str = "menu.pos.right";
 pub const MENU_POS_CENTER: &str = "menu.pos.center";
+/// The four `menu.pos.*` edge items — the one id→label→`Dir` table
+/// behind `position_submenu`, `menu_dispatch`, and the menubar's
+/// `sync_checks`, so an edge can't drift between the three copies.
+/// `menu.pos.center` is absent: it's a point action, not an edge.
+pub(crate) const POS_EDGES: [(&str, &str, Dir); 4] = [
+    (MENU_POS_TOP, "Top", Dir::Up),
+    (MENU_POS_BOTTOM, "Bottom", Dir::Down),
+    (MENU_POS_LEFT, "Left", Dir::Left),
+    (MENU_POS_RIGHT, "Right", Dir::Right),
+];
 pub const MENU_LOCK: &str = "menu.lock";
 pub const MENU_SETTINGS: &str = "menu.settings";
 pub const MENU_SUPPORT: &str = "menu.support";
@@ -61,11 +71,7 @@ pub fn build(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
         .as_ref()
         .is_some_and(PlatformCapture::is_running);
     let listen_live = state.listen.status().is_listening();
-    let edge = {
-        let mut pool = state.pool.lock();
-        pool.refresh_bar_rect();
-        pool.bar_edge()
-    };
+    let edge = state.pool.lock().live_bar_edge();
 
     let ask = MenuItem::with_id(
         app,
@@ -150,14 +156,17 @@ pub(crate) fn lock_item(
 /// `Center` is a plain action (it's a point, not an edge). The menubar
 /// copy is built once and kept fresh by
 /// `menubar::sync_position_checks`, not rebuilt like the tray's.
+/// The edge a `menu.pos.*` id snaps to — `None` for `menu.pos.center`
+/// and every non-position id.
+pub(crate) fn pos_edge_dir(id: &str) -> Option<Dir> {
+    POS_EDGES
+        .iter()
+        .find_map(|&(item_id, _, dir)| (item_id == id).then_some(dir))
+}
+
 pub(crate) fn position_submenu(app: &AppHandle, edge: Dir) -> tauri::Result<Submenu<Wry>> {
     let mut edge_items: Vec<CheckMenuItem<Wry>> = Vec::new();
-    for (id, label, dir) in [
-        (MENU_POS_TOP, "Top", Dir::Up),
-        (MENU_POS_BOTTOM, "Bottom", Dir::Down),
-        (MENU_POS_LEFT, "Left", Dir::Left),
-        (MENU_POS_RIGHT, "Right", Dir::Right),
-    ] {
+    for &(id, label, dir) in POS_EDGES.iter() {
         edge_items.push(CheckMenuItem::with_id(
             app,
             id,

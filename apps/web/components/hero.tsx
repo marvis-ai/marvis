@@ -1,5 +1,3 @@
-'use client';
-
 import { Badge, MicIcon, MonitorIcon, VideoIcon, XIcon } from '@marvis/ui';
 import { MvBar, MvListen } from './mv';
 import { WaitlistDialog } from './waitlist-dialog';

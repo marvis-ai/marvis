@@ -842,6 +842,14 @@ impl WindowPool {
         };
     }
 
+    /// `bar_edge` after `refresh_bar_rect` — the committed rect can
+    /// trail the window's real `Moved` frame, so every edge read goes
+    /// through this. Callers must not already hold `pool`.
+    pub(crate) fn live_bar_edge(&mut self) -> Dir {
+        self.refresh_bar_rect();
+        self.bar_edge()
+    }
+
     /// The resting capsule rect — what `persist_bar_position` writes.
     /// Expansion recenters on center-x, so the persisted anchor is always
     /// the idle capsule: a drag on the expanded bar must not shift where

@@ -48,7 +48,8 @@ export const Hotkeys = () => (
             <span className='num'>[hotkeys]</span> in{' '}
             <span className='num'>~/.marvis/config.toml</span>. Inside the bar,
             four keys stay fixed. The bar itself drags anywhere and remembers;
-            Settings → Bar snaps it to a work-area edge.
+            Settings → Bar snaps it to a work-area edge. ⌘ reads Ctrl on Windows
+            and Linux.
           </p>
         </div>
         <div

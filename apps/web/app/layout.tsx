@@ -27,7 +27,7 @@ const SITE = {
   url: 'https://getmarvis.com',
   title: 'Marvis — a private AI that floats above your desktop',
   description:
-    'Marvis is a private AI assistant for macOS. A floating bar sees your screen with permission, transcribes your meetings, and answers through the providers you choose — your keys and screen data never leave your device.',
+    'Marvis is a private AI assistant for macOS, Windows, and Linux. A floating bar sees your screen with permission, transcribes your meetings, and answers through the providers you choose — your keys and screen data never leave your device.',
 };
 
 const GA_ID = 'G-DRDLX9D2CV';
@@ -73,7 +73,7 @@ const jsonLd = {
       '@id': `${SITE.url}/#software`,
       name: SITE.name,
       description: SITE.description,
-      operatingSystem: 'macOS',
+      operatingSystem: 'macOS, Windows, Linux',
       applicationCategory: 'ProductivityApplication',
       offers: {
         '@type': 'Offer',

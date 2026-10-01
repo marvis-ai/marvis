@@ -1,4 +1,5 @@
-import { CommandIcon, KeyIcon, MonitorIcon } from './icons';
+import { CaptionsIcon } from '@marvis/ui';
+import { LockIcon, MonitorIcon } from './icons';
 import { sectionStack } from './styles';
 
 export const Features = () => (
@@ -10,8 +11,8 @@ export const Features = () => (
       className='container stack'
       style={sectionStack}>
       <div style={{ maxWidth: '40ch' }}>
-        <p className='eyebrow'>What&rsquo;s different</p>
-        <h2>Built like part of your desktop, not a tab you visit.</h2>
+        <p className='eyebrow'>What it does</p>
+        <h2>Two jobs, done quietly — over everything you open.</h2>
       </div>
       <div className='grid-3'>
         <div
@@ -20,46 +21,48 @@ export const Features = () => (
           <div className='feature-mark'>
             <MonitorIcon />
           </div>
-          <h3>Screen-aware answers</h3>
+          <h3>Answers with your screen in context</h3>
           <p>
-            Press ⌘⏎ and Marvis attaches the latest screen frame to your prompt,
-            then streams a markdown answer into the panel. Frames sit in an
-            in-memory ring buffer — about 60 seconds, capped at 120 frames — and
-            are never written to disk.
+            Press ⌘⏎ and the latest screen frame rides along with your prompt —
+            “explain this”, “what changed”, “compare these”. The answer streams
+            back as markdown into the overlay.
           </p>
           <span className='meta'>
-            “explain this error” · “summarize this page” · “what changed here”
+            frames live in a 60-second memory ring — never on disk
           </span>
         </div>
         <div
           className='feature card-flat'
-          data-od-id='feature-byo-model'>
+          data-od-id='feature-listen'>
           <div className='feature-mark'>
-            <KeyIcon />
+            <CaptionsIcon strokeWidth={1.6} />
           </div>
-          <h3>No account, no proxy</h3>
+          <h3>Meetings, transcribed as they happen</h3>
           <p>
-            Your API key talks straight to the provider you choose — or run
-            fully local inference through Ollama with no key at all.
-            There&rsquo;s no Marvis account and no proxy in the middle.
+            Mic plus system audio become a speaker-labeled transcript while the
+            call runs — pause and resume anytime, filter by voice, copy the
+            whole thing. Every five turns, a rolling TLDR lands with follow-up
+            questions you can ask in one click.
           </p>
+          <span className='meta'>
+            deepgram · whisper.cpp · sherpa — your engine, fully local if you
+            want
+          </span>
         </div>
         <div
           className='feature card-flat'
-          data-od-id='feature-always-in-reach'>
+          data-od-id='feature-private'>
           <div className='feature-mark'>
-            <CommandIcon />
+            <LockIcon />
           </div>
-          <h3>Always in reach</h3>
+          <h3>Private by design</h3>
           <p>
-            Four global chords — toggle, ask, screenshot, settings — each
-            rebindable in Settings → Hotkeys. The bar drags anywhere and
-            remembers its spot; <span className='num'>marvis://</span> links
-            fire an ask from any app, script, or launcher.
+            No account, no sync, no Marvis servers. Keys live in{' '}
+            <span className='num'>~/.marvis</span> masked to{' '}
+            <span className='num'>…last4</span>, and calls go straight to the
+            provider you pick — or to Ollama, fully on-device.
           </p>
-          <span className='meta'>
-            ⌘/ · ⌘⏎ · ⌘⇧S · ⌘, — every key remappable
-          </span>
+          <span className='meta'>free &amp; open source · MIT</span>
         </div>
       </div>
     </div>

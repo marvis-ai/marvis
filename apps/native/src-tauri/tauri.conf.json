@@ -23,6 +23,7 @@
   },
   "bundle": {
     "active": true,
+    "copyright": "© 2026 Marvis AI LLC",
     "targets": "all",
     "externalBin": ["binaries/whisper-cli"],
     "icon": [

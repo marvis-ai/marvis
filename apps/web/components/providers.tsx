@@ -11,13 +11,13 @@ export const Providers = () => (
       <div className='stack'>
         <div style={{ maxWidth: '34ch' }}>
           <p className='eyebrow'>Your model, your call</p>
-          <h2>Bring your own model.</h2>
+          <h2>Bring your own everything.</h2>
           <p
             className='lead'
             style={{ ...leadTop, fontSize: '17px' }}>
-            Your key talks straight to the provider you pick — or nowhere at
-            all. With Ollama, inference runs fully on-device and no API key is
-            needed.
+            API keys talk straight to the providers you pick — no Marvis proxy
+            in the middle. Order them into a failover chain: a failed call hands
+            off to the next configured provider.
           </p>
         </div>
         <div
@@ -26,13 +26,35 @@ export const Providers = () => (
           <span className='tag'>OpenAI</span>
           <span className='tag'>Anthropic</span>
           <span className='tag'>Gemini</span>
+          <span className='tag'>OpenRouter</span>
           <span className='tag'>Ollama · local</span>
+          <span className='tag'>OpenAI-compatible</span>
+        </div>
+        <div>
+          <p
+            className='meta'
+            style={{
+              letterSpacing: '0.04em',
+              textTransform: 'uppercase',
+              marginBottom: '10px',
+            }}>
+            Transcription
+          </p>
+          <div
+            className='row'
+            style={{ flexWrap: 'wrap', gap: '10px' }}>
+            <span className='tag'>Deepgram · streaming</span>
+            <span className='tag'>whisper.cpp · local</span>
+            <span className='tag'>sherpa · local</span>
+          </div>
         </div>
         <p
           className='meta'
           style={{ margin: 0 }}>
-          Keys are stored in <span className='num'>keys.json</span> and only
-          ever shown masked — <span className='num'>…last4</span>.
+          Keys live in <span className='num'>keys.json</span>, shown masked —{' '}
+          <span className='num'>…last4</span>. An optional vision provider reads
+          each frame first, so any text model can still answer about your
+          screen.
         </p>
       </div>
       <div data-od-id='platform-list'>

@@ -1,6 +1,31 @@
 use std::process::Command;
 
 fn main() {
+    // The About panel's `version (build)` number is the git commit
+    // count, baked in at compile time. Watch HEAD (branch switches and
+    // detached-HEAD commits) plus the checked-out ref (normal commits)
+    // so the count stays live; a non-git build just gets no build
+    // number and the panel shows the bare version.
+    let git = |args: &[&str]| -> Option<String> {
+        let out = Command::new("git").args(args).output().ok()?;
+        out.status
+            .success()
+            .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+    };
+    if let Some(count) = git(&["rev-list", "--count", "HEAD"]).filter(|n| !n.is_empty()) {
+        println!("cargo:rustc-env=MARVIS_BUILD_NUMBER={count}");
+    }
+    for path in [
+        git(&["rev-parse", "--git-path", "HEAD"]),
+        git(&["symbolic-ref", "-q", "HEAD"])
+            .and_then(|reference| git(&["rev-parse", "--git-path", &reference])),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        println!("cargo:rerun-if-changed={path}");
+    }
+
     // Local Rust builds and tests do not bundle the release-only external binary.
     // Keep the checked-in Tauri config strict for `tauri build`, while omitting
     // externalBin from debug cargo builds until CI stages a real artifact.

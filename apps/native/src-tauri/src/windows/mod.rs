@@ -345,6 +345,20 @@ impl WindowPool {
             Some(w) => w.clone(),
             None => match build_prefs_window(app) {
                 Ok(w) => {
+                    // Windows/Linux have no app menubar — the prefs
+                    // window is the one decorated surface, so it hosts
+                    // the File/View/Help menu (menubar.rs). `bar_edge`
+                    // reads `self` directly: `state.pool` is already
+                    // locked by whoever called `show_prefs`.
+                    #[cfg(not(target_os = "macos"))]
+                    match crate::menubar::build(app, self.bar_edge()) {
+                        Ok(menu) => {
+                            if let Err(e) = w.set_menu(menu) {
+                                log::warn!("windows: prefs menu install failed: {e}");
+                            }
+                        }
+                        Err(e) => log::warn!("windows: prefs menu build failed: {e}"),
+                    }
                     // Center only on first show — after that the user's
                     // placement (normal macOS window behavior) is kept.
                     let _ = w.center();

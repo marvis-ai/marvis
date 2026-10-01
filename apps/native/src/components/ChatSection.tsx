@@ -14,10 +14,7 @@
  * whole card (this section contributes height naturally) and reports
  * total window height via `window_adjust_height`.
  */
-import { useEffect, useRef, useState } from 'react';
-import { openUrl } from '@tauri-apps/plugin-opener';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
+import { Suspense, lazy, useEffect, useRef, useState } from 'react';
 import { CheckIcon, CopyIcon, MessageSquareTextIcon } from '@marvis/ui';
 import {
   askCurrent,
@@ -48,6 +45,10 @@ import { CardHeader } from '@/components/shared/CardHeader';
 import { EmptyState } from '@/components/shared/EmptyState';
 import { ErrorBanner } from '@/components/shared/ErrorBanner';
 import { ChatMsgMenu, type ChatMsgMeta } from '@/components/ChatMsgMenu';
+
+const Markdown = lazy(() =>
+  import('@/components/Markdown').then((m) => ({ default: m.Markdown })),
+);
 
 type AskPhase = 'loading' | 'streaming' | 'idle';
 
@@ -383,23 +384,9 @@ export const ChatSection = ({ onBack }: { onBack: () => void }) => {
                   key={i}
                   className='group/row'>
                   <div className='prose prose-sm dark:prose-invert'>
-                    <ReactMarkdown
-                      remarkPlugins={[remarkGfm]}
-                      disallowedElements={['img']}
-                      components={{
-                        a: ({ href, children }) => (
-                          <a
-                            href={href}
-                            onClick={(e) => {
-                              e.preventDefault();
-                              if (href) void openUrl(href);
-                            }}>
-                            {children}
-                          </a>
-                        ),
-                      }}>
-                      {m.content}
-                    </ReactMarkdown>
+                    <Suspense fallback={m.content}>
+                      <Markdown>{m.content}</Markdown>
+                    </Suspense>
                   </div>
                   <div
                     className={cn(

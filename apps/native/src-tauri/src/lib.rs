@@ -43,6 +43,7 @@ mod hotkey;
 mod keystore;
 mod listen;
 mod llm;
+mod menubar;
 mod menus;
 mod paths;
 mod permissions;
@@ -65,6 +66,7 @@ use serde_json::json;
 use tauri::{AppHandle, Emitter, Manager, State};
 #[cfg(target_os = "macos")]
 use tauri_plugin_liquid_glass::LiquidGlassExt;
+use tauri_plugin_opener::OpenerExt;
 
 use ask::AskService;
 use capture::controller::{CaptureLifecycle, StartDecision, StopDecision};
@@ -574,24 +576,25 @@ fn snap_edge_and_refresh(app: &AppHandle, dir: windows::Dir) {
     refresh_tray_menu(app);
 }
 
-/// Rebuild the tray's copy of the shared menu — labels/checks track
-/// live state (recording, listening, nearest edge, lock, hotkey
-/// bindings), so each state-change funnel calls here. NEVER call while
-/// holding `pool`/`config`/`capture`/`hotkeys` locks: `set_menu`
-/// blocks on the main thread, and main-thread window-event handlers
+/// Rebuild the tray's copy of the shared menu AND sync the persistent
+/// menubar's Position checks — labels/checks track live state
+/// (recording, listening, nearest edge, lock, hotkey bindings), so
+/// each state-change funnel calls here. NEVER call while holding
+/// `pool`/`config`/`capture`/`hotkeys` locks: `set_menu`/`set_checked`
+/// block on the main thread, and main-thread window-event handlers
 /// take `pool` (`Resized` → `enforce_bar_bounds`).
 fn refresh_tray_menu(app: &AppHandle) {
-    let Some(tray) = app.tray_by_id("main") else {
-        return;
-    };
-    match menus::build(app) {
-        Ok(menu) => {
-            if let Err(e) = tray.set_menu(Some(menu)) {
-                log::warn!("tray menu refresh failed: {e}");
+    if let Some(tray) = app.tray_by_id("main") {
+        match menus::build(app) {
+            Ok(menu) => {
+                if let Err(e) = tray.set_menu(Some(menu)) {
+                    log::warn!("tray menu refresh failed: {e}");
+                }
             }
+            Err(e) => log::warn!("tray menu rebuild failed: {e}"),
         }
-        Err(e) => log::warn!("tray menu rebuild failed: {e}"),
     }
+    menubar::sync_position_checks(app);
 }
 
 /// Delta-swap to the config's current binding set via
@@ -736,6 +739,14 @@ fn menu_dispatch() -> impl Fn(&AppHandle, tauri::menu::MenuEvent) + Send + Sync 
             set_bar_locked(app, !locked);
         }
         menus::MENU_SETTINGS => show_settings(app),
+        menus::MENU_SUPPORT => {
+            if let Err(e) = app
+                .opener()
+                .open_url(menubar::SUPPORT_MAILTO, None::<&str>)
+            {
+                log::warn!("open support mailto failed: {e}");
+            }
+        }
         // The item is built only in debug builds (menus.rs), so this
         // arm compiles out in release — `menu.devtools` can't fire
         // there anyway. Menu events carry no window identity: the bar
@@ -2630,9 +2641,36 @@ pub fn run() {
             if let Err(e) = tray::init(handle) {
                 log::warn!("tray init failed: {e}");
             }
-            // One global dispatcher for every `menu.*` item — tray menu
-            // and bar popup share both the builder and this listener.
+            // One global dispatcher for every `menu.*` item — tray menu,
+            // bar popup, and the app menubar share both the builders and
+            // this listener.
             handle.on_menu_event(menu_dispatch());
+            // The app menubar replaces tauri's generated default. macOS
+            // only: `Builder::menu`/`app.set_menu` would attach the menu
+            // to EVERY menu-less window on Windows/Linux — including the
+            // borderless bar — so those platforms hang it on the prefs
+            // window in windows/mod.rs instead.
+            #[cfg(target_os = "macos")]
+            {
+                // `refresh_bar_rect` first (same as `menus::build`): the
+                // window's `Moved` rect can lag `position_bar_at_startup`'s
+                // `set_rect`, leaving `bar_rect` on the creation frame and
+                // the Position checks pinned to the wrong edge at launch.
+                let edge = {
+                    let state = handle.state::<AppState>();
+                    let mut pool = state.pool.lock();
+                    pool.refresh_bar_rect();
+                    pool.bar_edge()
+                };
+                match menubar::build(handle, edge) {
+                    Ok(menu) => {
+                        if let Err(e) = handle.set_menu(menu) {
+                            log::warn!("app menubar install failed: {e}");
+                        }
+                    }
+                    Err(e) => log::warn!("app menubar build failed: {e}"),
+                }
+            }
             // The one chrome-level binding is gate-independent; kept in
             // state so a `config_set` rebind delta-swaps against it.
             let binds = handle.state::<AppState>().config.lock().hotkeys.clone();
@@ -2808,6 +2846,40 @@ mod tests {
         assert!(source.contains("tauri::RunEvent::ExitRequested { .. }"));
         assert!(source.contains("| tauri::RunEvent::Exit"));
         assert!(source.contains("stop_speech(app);"));
+    }
+
+    /// The app menubar keeps its contract: About carries `version
+    /// (commit-count build)` + the copyright line, Settings and the
+    /// Position items reuse the shared `menu.*` ids so the single
+    /// dispatcher covers them, and the persistent menubar's Position
+    /// checks are re-synced from the shared refresh funnel (it is never
+    /// rebuilt like the tray copy).
+    #[test]
+    fn app_menubar_keeps_about_settings_and_position_wiring() {
+        let menubar = include_str!("menubar.rs");
+        assert!(menubar.contains("MARVIS_BUILD_NUMBER"));
+        assert!(menubar.contains("© 2026 Marvis AI LLC"));
+        assert!(menubar.contains("menus::MENU_SETTINGS"));
+        assert!(menubar.contains("position_submenu"));
+        // The View menu also carries the Lock check — synced by the
+        // same funnel — and dodges AppKit's "Enter Full Screen"
+        // injection via a zero-width-space title.
+        assert!(menubar.contains("lock_item"));
+        assert!(menubar.contains("menus::MENU_LOCK"));
+        assert!(menubar.contains("View\\u{200B}"));
+        // Help menu: native `HELP_SUBMENU_ID` (macOS adds its search
+        // field) + the support mailto through the shared dispatcher.
+        assert!(menubar.contains("HELP_SUBMENU_ID"));
+        assert!(menubar.contains("menus::MENU_SUPPORT"));
+        assert!(menubar.contains("mailto:support@getmarvis.com"));
+        let lib = include_str!("lib.rs");
+        assert!(lib.contains("menubar::sync_position_checks"));
+        assert!(lib.contains("menus::MENU_SUPPORT =>"));
+        // The shared menu and the menubar must build their Position
+        // submenus from the same helper — two hand-maintained copies of
+        // the `menu.pos.*` items would silently drift.
+        let menus = include_str!("menus.rs");
+        assert!(menus.contains("position_submenu(app, edge)?"));
     }
 
     /// The speech commands keep their documented guards in source: both

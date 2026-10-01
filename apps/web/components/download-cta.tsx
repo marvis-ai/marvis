@@ -10,7 +10,7 @@ export const DownloadCta = () => (
     <div
       className='container'
       style={{ maxWidth: '620px' }}>
-      <h2>Your screen. Your keys. Your machine.</h2>
+      <h2>Your screen. Your meetings. Your machine.</h2>
       <p
         className='lead'
         style={{ margin: '18px auto 32px' }}>

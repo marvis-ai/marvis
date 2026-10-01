@@ -10,7 +10,7 @@ const FILE_TREE: ReactNode[] = [
   <Fragment key='keys'>
     ├── keys.json{' '}
     <span className='dim'>
-      0600 · provider keys, masked as …last4 in the UI
+      0600 · BYOK — provider keys masked as …last4 in the UI
     </span>
   </Fragment>,
   <Fragment key='config'>
@@ -39,7 +39,9 @@ const FILE_TREE: ReactNode[] = [
   </Fragment>,
   <Fragment key='models'>
     ├── models/{' '}
-    <span className='dim'>whisper + sherpa speech engines, on demand</span>
+    <span className='dim'>
+      on-device whisper + sherpa ASR/STT models, on demand
+    </span>
   </Fragment>,
   <Fragment key='tmp'>
     └── tmp/ <span className='dim'>scratch audio workspace</span>
@@ -55,17 +57,18 @@ export const Privacy = () => (
       className='container stack'
       style={sectionStack}>
       <div style={{ maxWidth: '46ch' }}>
-        <p className='eyebrow'>Local-first architecture</p>
-        <h2>What&rsquo;s on your machine stays on your machine.</h2>
+        <p className='eyebrow'>BYOK · on-device speech</p>
+        <h2>Your keys, your voice, your machine.</h2>
         <p
           className='lead'
           style={leadTop}>
-          No accounts, no sync service, no Marvis servers. An ask sends your
-          prompt plus one screen frame to the LLM provider you chose; Listen and
-          dictation stream audio to the speech engine you picked — whisper.cpp
-          or sherpa on-device, Deepgram hosted — and every five turns the
-          rolling TLDR sends transcript text to that LLM. Model files download
-          on demand; nothing else leaves.
+          No accounts, no sync service, no Marvis servers. Marvis is BYOK — your
+          provider keys live in keys.json and go only to the LLM you choose.
+          Speech is local by default: Listen and dictation transcribe on-device
+          with whisper.cpp or sherpa ASR models under models/, with hosted
+          Deepgram strictly opt-in. An ask sends your prompt plus one screen
+          frame to your LLM; every five turns the rolling TLDR sends transcript
+          text to the same provider. Nothing else leaves.
         </p>
       </div>
       <div
@@ -104,8 +107,8 @@ export const Privacy = () => (
             data-od-id='stat-zero'>
             <div className='stat-num num'>0</div>
             <p className='stat-label'>
-              accounts, cloud syncs, or Marvis servers — there is nothing to
-              phone home to.
+              accounts, cloud syncs, or Marvis servers — keys are never proxied;
+              there is nothing to phone home to.
             </p>
           </div>
           <div

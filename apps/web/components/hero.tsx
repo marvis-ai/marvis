@@ -16,10 +16,7 @@ export const Hero = () => (
     data-od-id='hero'>
     <div className='container hero-center'>
       <p className='eyebrow'>Private / Personal AI for All</p>
-      <h1 className='hero-h1'>
-        Ask about anything on your screen. Transcribe every meeting. Keep it all
-        on your machine.
-      </h1>
+      <h1 className='hero-h1'>Your screen, your meetings, your machine.</h1>
       <p className='lead'>
         Marvis is a small floating bar that lives above your work. It sees your
         screen only with permission, hears your meetings, and answers through

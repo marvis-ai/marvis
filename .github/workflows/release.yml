@@ -76,10 +76,18 @@ jobs:
           # Semver prerelease convention: tags like v1.0.0-rc.1 stay prerelease.
           flag=()
           case "${{ github.ref_name }}" in *-*) flag+=(--prerelease) ;; esac
+          # Bundle files land in per-format subdirs: upload-artifact preserves
+          # paths below each artifact's common root (dmg/, msi/, nsis/, ...),
+          # and merge-multiple only merges artifact roots — it does not flatten.
+          # Re-tag pushes hit an existing release -> upload assets instead.
           gh release create "${{ github.ref_name }}" \
             --title "Marvis ${{ github.ref_name }}" \
             --notes-file release-notes.md \
             "${flag[@]}" \
-            dist/*.dmg dist/*.msi dist/*-setup.exe \
-            dist/*.AppImage dist/*.deb \
+            dist/dmg/*.dmg dist/msi/*.msi dist/nsis/*-setup.exe \
+            dist/appimage/*.AppImage dist/deb/*.deb \
+            dist/SHA256SUMS.txt \
+          || gh release upload "${{ github.ref_name }}" --clobber \
+            dist/dmg/*.dmg dist/msi/*.msi dist/nsis/*-setup.exe \
+            dist/appimage/*.AppImage dist/deb/*.deb \
             dist/SHA256SUMS.txt

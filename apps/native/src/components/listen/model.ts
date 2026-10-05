@@ -76,13 +76,31 @@ export interface TurnBlock {
   interim: Turn | null;
 }
 
+/** Same-speaker merging stays scannable: a block re-headers once it
+ *  spans ~30s of audio, or after a ~15s same-speaker pause — Otter /
+ *  Granola-style paragraphing so a long monologue isn't one giant
+ *  paragraph under a single stamp. */
+const BLOCK_MAX_SPAN_SECS = 30;
+const BLOCK_PAUSE_SECS = 15;
+
+/** `ts` of the block's latest activity — the riding interim, else the
+ *  last final, else the block's first turn. Turns carry no end stamp,
+ *  so inter-turn delta is the pause proxy. */
+const lastActivityTs = (b: TurnBlock) =>
+  b.interim?.ts ?? b.finals[b.finals.length - 1]?.ts ?? b.ts;
+
 /** The old `blocks` useMemo body as a pure function. */
 export const buildBlocks = (turns: Turn[]): TurnBlock[] => {
   const out: TurnBlock[] = [];
   for (const turn of turns) {
     const key = speakerKey(turn);
     let block = out[out.length - 1];
-    if (!block || block.key !== key) {
+    if (
+      !block ||
+      block.key !== key ||
+      turn.ts - block.ts > BLOCK_MAX_SPAN_SECS ||
+      turn.ts - lastActivityTs(block) > BLOCK_PAUSE_SECS
+    ) {
       block = {
         key,
         name: speakerName(turn),

@@ -9,8 +9,9 @@ use std::time::Duration;
 
 use parking_lot::Mutex;
 use sherpa_onnx::{
-    OfflineRecognizer, OfflineRecognizerConfig, OfflineSenseVoiceModelConfig, OnlinePunctuation,
-    OnlinePunctuationConfig, SileroVadModelConfig, VadModelConfig, VoiceActivityDetector,
+    OfflinePunctuation, OfflinePunctuationConfig, OfflineRecognizer, OfflineRecognizerConfig,
+    OfflineSenseVoiceModelConfig, OnlinePunctuation, OnlinePunctuationConfig, SileroVadModelConfig,
+    VadModelConfig, VoiceActivityDetector,
 };
 
 use crate::audio::PcmChunk;
@@ -142,20 +143,49 @@ fn create_punctuator(model: &Path, vocab: &Path) -> Option<OnlinePunctuation> {
     OnlinePunctuation::create(&config)
 }
 
-/// SenseVoice emits English uppercased with no punctuation. The CNN-BiLSTM
-/// punctuator's case head was trained on lowercase input, so the text is
-/// lowered before the call and the model restores word case plus `, . ?`.
-/// Segments without Latin letters (pure Chinese, numbers) skip the model so
-/// they can never be mangled by an English-trained punctuator.
-fn restore_punct_and_case(punct: Option<&OnlinePunctuation>, text: &str) -> String {
-    let Some(punct) = punct else {
-        return text.to_string();
-    };
+/// Load the optional zh-en CT-Transformer punctuator — same
+/// progressive-enhancement rule: any failure yields `None` and zh text
+/// passes through unpunctuated.
+fn create_punctuator_zh(model: &Path) -> Option<OfflinePunctuation> {
+    let mut config = OfflinePunctuationConfig::default();
+    config.model.ct_transformer = Some(model.display().to_string());
+    OfflinePunctuation::create(&config)
+}
+
+/// SenseVoice emits English uppercased with no punctuation — and, in the
+/// pinned 2025-09-09 export, `use_itn` is a no-op (upstream
+/// k2-fsa/sherpa-onnx#2742) so Chinese arrives unpunctuated too.
+/// CJK-bearing text routes to the zh-en CT-Transformer; Latin-only text
+/// goes through the CNN-BiLSTM's case head (lowered first — it was
+/// trained on lowercase input — and the model restores word case plus
+/// `, . ?`). The CT-Transformer keeps input case, so it must never touch
+/// the all-caps English path; anything else passes through untouched.
+fn restore_punct_and_case(
+    punct_en: Option<&OnlinePunctuation>,
+    punct_zh: Option<&OfflinePunctuation>,
+    text: &str,
+) -> String {
+    if text.chars().any(is_cjk) {
+        if let Some(punct) = punct_zh {
+            return punct
+                .add_punctuation(text)
+                .unwrap_or_else(|| text.to_string());
+        }
+    }
     if !text.bytes().any(|b| b.is_ascii_alphabetic()) {
         return text.to_string();
     }
+    let Some(punct) = punct_en else {
+        return text.to_string();
+    };
     let lowered = text.to_lowercase();
     punct.add_punctuation(&lowered).unwrap_or(lowered)
+}
+
+/// CJK Unified Ideographs (incl. ext-A and compatibility forms) — the
+/// script class the zh-en CT-Transformer punctuates.
+fn is_cjk(c: char) -> bool {
+    matches!(c, '\u{3400}'..='\u{9fff}' | '\u{f900}'..='\u{faff}')
 }
 
 // The multi-field `default()` + reassignment shape mirrors the recognizer
@@ -228,8 +258,9 @@ impl SttProvider for SherpaProvider {
         let cancel = Arc::clone(&self.cancel);
         let channel = self.channel;
         let diarize = self.diarize;
-        let punct_paths =
-            crate::sherpa_models::punctuation_model_paths(&crate::paths::sherpa_models_dir());
+        let sherpa_root = crate::paths::sherpa_models_dir();
+        let punct_paths = crate::sherpa_models::punctuation_model_paths(&sherpa_root);
+        let punct_zh_path = crate::sherpa_models::punctuation_zh_model_path(&sherpa_root);
         self.worker = Some(thread::spawn(move || {
             run_worker(
                 receiver,
@@ -238,6 +269,7 @@ impl SttProvider for SherpaProvider {
                 channel,
                 diarize,
                 punct_paths,
+                punct_zh_path,
                 cancel,
                 callback,
                 error_callback,
@@ -280,6 +312,7 @@ fn run_worker(
     channel: SpeakerChannel,
     diarize: bool,
     punct_paths: Option<(PathBuf, PathBuf)>,
+    punct_zh_path: Option<PathBuf>,
     cancel: Arc<AtomicBool>,
     callback: Box<dyn Fn(TranscriptEvent) + Send + Sync>,
     error_callback: Box<dyn Fn(String) + Send + Sync>,
@@ -287,10 +320,11 @@ fn run_worker(
     // Punctuation is progressive enhancement like diarization: absent or
     // unloadable model files leave the raw transcript unchanged.
     let punct = punct_paths.and_then(|(model, vocab)| create_punctuator(&model, &vocab));
+    let punct_zh = punct_zh_path.and_then(|model| create_punctuator_zh(&model));
     let decode = |samples: &[f32]| {
         engine
             .decode(samples.to_vec())
-            .map(|text| restore_punct_and_case(punct.as_ref(), &text))
+            .map(|text| restore_punct_and_case(punct.as_ref(), punct_zh.as_ref(), &text))
     };
     // Diarization is progressive enhancement: a missing/unloadable
     // embedding model leaves `speaker_idx` unset rather than failing STT.
@@ -468,12 +502,26 @@ mod tests {
         assert_eq!(errors.lock().unwrap().len(), 1);
     }
 
-    /// Without the punctuation model installed every byte passes through
+    /// Without the punctuation models installed every byte passes through
     /// unchanged — the all-caps behavior is then upstream's, not ours.
     #[test]
     fn restore_punct_and_case_passes_through_without_a_model() {
-        assert_eq!(restore_punct_and_case(None, "HELLO 你好"), "HELLO 你好");
-        assert_eq!(restore_punct_and_case(None, ""), "");
+        assert_eq!(
+            restore_punct_and_case(None, None, "HELLO 你好"),
+            "HELLO 你好"
+        );
+        assert_eq!(restore_punct_and_case(None, None, ""), "");
+    }
+
+    /// The zh/en routing hinge: ideographs route to the CT-Transformer,
+    /// Latin and punctuation alone do not.
+    #[test]
+    fn is_cjk_flags_only_ideographs() {
+        assert!(is_cjk('你'));
+        assert!(is_cjk('\u{f901}')); // compatibility ideograph
+        assert!(!is_cjk('a'));
+        assert!(!is_cjk('。'));
+        assert!(!is_cjk('あ')); // kana alone stays off the zh model
     }
 
     #[test]

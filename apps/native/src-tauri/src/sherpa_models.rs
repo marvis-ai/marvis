@@ -23,6 +23,7 @@ pub enum SherpaModelId {
     SenseVoice,
     SpeakerEmbedding,
     PunctEn,
+    PunctZh,
 }
 impl SherpaModelId {
     pub const fn as_str(self) -> &'static str {
@@ -30,6 +31,7 @@ impl SherpaModelId {
             Self::SenseVoice => "sense-voice",
             Self::SpeakerEmbedding => "speaker-id",
             Self::PunctEn => "punct-en",
+            Self::PunctZh => "punct-zh",
         }
     }
 }
@@ -122,7 +124,20 @@ const PUNCT_EN_FILES: &[SherpaFileSpec] = &[
     },
 ];
 
-const CATALOG: [SherpaCatalogEntry; 3] = [
+// sherpa-onnx-punct-ct-transformer-zh-en-vocab272727-2024-04-12-int8 —
+// CT-Transformer punctuation for zh + en text. SenseVoice's `use_itn` is
+// a no-op in the pinned 2025-09-09 export (upstream k2-fsa/sherpa-onnx
+// #2742), so zh segments reach the transcript with no punctuation at all
+// without this. The pinned digest was verified byte-identical to the
+// official `punctuation-models` release tarball.
+const PUNCT_ZH_FILES: &[SherpaFileSpec] = &[SherpaFileSpec {
+    filename: "model.int8.onnx",
+    url: "https://huggingface.co/lorneluo/sherpa-onnx-punct-ct-transformer-zh-en-vocab272727-2024-04-12-int8/resolve/main/model.int8.onnx",
+    bytes: 75_519_198,
+    sha256: "65a3fb9f5ad7bfb96bf69e0dc4481df97f6ee60513c1d94ce981ba6effd524b1",
+}];
+
+const CATALOG: [SherpaCatalogEntry; 4] = [
     SherpaCatalogEntry {
         id: SherpaModelId::SenseVoice,
         dirname: "sense-voice",
@@ -144,9 +159,18 @@ const CATALOG: [SherpaCatalogEntry; 3] = [
     SherpaCatalogEntry {
         id: SherpaModelId::PunctEn,
         dirname: "punct-en",
-        label: "Punctuation",
+        label: "Punctuation (English)",
         description: "English punctuation and capitalization — SenseVoice emits English in all caps; this restores normal casing and , . ? in English segments.",
         files: PUNCT_EN_FILES,
+        source: CATALOG_SOURCE,
+        kind: SherpaModelKind::Punctuation,
+    },
+    SherpaCatalogEntry {
+        id: SherpaModelId::PunctZh,
+        dirname: "punct-zh",
+        label: "Punctuation (中文)",
+        description: "Chinese punctuation — SenseVoice drops ，。？ entirely in zh segments; this restores them in Chinese and mixed text.",
+        files: PUNCT_ZH_FILES,
         source: CATALOG_SOURCE,
         kind: SherpaModelKind::Punctuation,
     },
@@ -203,6 +227,13 @@ pub fn punctuation_model_paths(root: &Path) -> Option<(PathBuf, PathBuf)> {
     let dir = entry_dir(root, entry);
     entry_installed_at(root, entry).then(|| (dir.join("model.int8.onnx"), dir.join("bpe.vocab")))
 }
+/// Path of the zh-en CT-Transformer punctuator when its catalog entry is
+/// installed — `None` leaves zh segments as the recognizer emits them.
+pub fn punctuation_zh_model_path(root: &Path) -> Option<PathBuf> {
+    let entry = entry_for_id(SherpaModelId::PunctZh.as_str())?;
+    let path = entry_dir(root, entry).join(entry.files[0].filename);
+    entry_installed_at(root, entry).then_some(path)
+}
 /// An entry is installed only when its entire file set is present.
 pub fn entry_installed_at(root: &Path, entry: &SherpaCatalogEntry) -> bool {
     let dir = entry_dir(root, entry);
@@ -243,12 +274,14 @@ struct ActiveDownload {
 struct ManagerState {
     active: Option<ActiveDownload>,
     selected: Option<SherpaModelId>,
-    punct_attempted: bool,
+    /// Punctuation entries already auto-attempted this run — one shot
+    /// each so a failing add-on doesn't retry on every refresh.
+    punct_attempted: Vec<SherpaModelId>,
 }
 pub struct SherpaModelManager {
     root: PathBuf,
     client: reqwest::Client,
-    state: Mutex<ManagerState>,
+    state: Arc<Mutex<ManagerState>>,
     app: Mutex<Option<AppHandle>>,
     cancel_gate: tokio::sync::Mutex<()>,
     install_gate: Arc<tokio::sync::Mutex<()>>,
@@ -301,11 +334,11 @@ impl SherpaModelManager {
         Self {
             root,
             client: reqwest::Client::new(),
-            state: Mutex::new(ManagerState {
+            state: Arc::new(Mutex::new(ManagerState {
                 active: None,
                 selected: None,
-                punct_attempted: false,
-            }),
+                punct_attempted: Vec::new(),
+            })),
             app: Mutex::new(None),
             cancel_gate: tokio::sync::Mutex::new(()),
             install_gate: Arc::new(tokio::sync::Mutex::new(())),
@@ -392,6 +425,8 @@ impl SherpaModelManager {
             total: entry_bytes(&entry),
         }));
         let task_progress = Arc::clone(&progress);
+        let done_progress = Arc::clone(&progress);
+        let task_state = Arc::clone(&self.state);
         let task = tauri::async_runtime::spawn(async move {
             let result = download(
                 entry,
@@ -409,6 +444,22 @@ impl SherpaModelManager {
                 // A finished install may resolve a durable speech setup
                 // error — re-validate so the stale banner clears now.
                 Ok(()) => {
+                    // Clear our own `active` first — it still names this
+                    // finishing task, and `refresh_speech_setup` →
+                    // `ensure_punct` must be free to queue the next
+                    // missing add-on in the same wake. Identity-checked:
+                    // a cancel+restart could have installed a different
+                    // download meanwhile.
+                    {
+                        let mut state = task_state.lock();
+                        if state
+                            .active
+                            .as_ref()
+                            .is_some_and(|a| Arc::ptr_eq(&a.progress, &done_progress))
+                        {
+                            state.active = None;
+                        }
+                    }
                     if let Some(app) = &app {
                         crate::refresh_speech_setup(app);
                     }
@@ -423,9 +474,12 @@ impl SherpaModelManager {
         });
         Ok(())
     }
-    /// Download the punctuation add-on once per run when sherpa is the
-    /// active provider and its STT model is installed but punct is missing.
-    /// Silent best-effort: `Busy`/errors surface only as `sherpa:*` events.
+    /// Download each missing punctuation add-on once per run when sherpa
+    /// is the active provider and its STT model is installed. One
+    /// download at a time: a completed install clears `active` then
+    /// re-enters through `refresh_speech_setup` → `ensure_punct`, which
+    /// queues the next missing entry. Silent best-effort — `Busy`/errors
+    /// surface only as `sherpa:*` events.
     pub fn ensure_punct(&self, provider: &str, stt_model: &str) {
         if provider != "sherpa" {
             return;
@@ -436,18 +490,22 @@ impl SherpaModelManager {
         if !entry_installed_at(&self.root, stt) {
             return;
         }
-        let punct = entry_for_id(SherpaModelId::PunctEn.as_str()).expect("catalog");
-        if entry_installed_at(&self.root, punct) {
-            return;
-        }
-        {
+        let next = {
             let mut state = self.state.lock();
-            if state.active.is_some() || state.punct_attempted {
+            if state.active.is_some() {
                 return;
             }
-            state.punct_attempted = true;
-        }
-        let _ = self.start_download(SherpaModelId::PunctEn);
+            let Some(entry) = catalog().iter().find(|e| {
+                e.kind == SherpaModelKind::Punctuation
+                    && !entry_installed_at(&self.root, e)
+                    && !state.punct_attempted.contains(&e.id)
+            }) else {
+                return;
+            };
+            state.punct_attempted.push(entry.id);
+            entry.id
+        };
+        let _ = self.start_download(next);
     }
     pub async fn cancel_download(&self) -> Result<(), VoiceDownloadError> {
         let _gate = self.cancel_gate.lock().await;
@@ -708,7 +766,7 @@ mod tests {
 
     #[test]
     fn catalog_is_the_approved_file_set() {
-        assert_eq!(catalog().len(), 3);
+        assert_eq!(catalog().len(), 4);
         let entry = &catalog()[0];
         assert_eq!(entry.id.as_str(), "sense-voice");
         assert_eq!(entry.dirname, "sense-voice");
@@ -739,6 +797,17 @@ mod tests {
         assert!(punct.files.iter().all(|f| f.url.starts_with("https://")
             && f.sha256.len() == 64
             && f.sha256.chars().all(|c| c.is_ascii_hexdigit())));
+        let punct_zh = &catalog()[3];
+        assert_eq!(punct_zh.id.as_str(), "punct-zh");
+        assert_eq!(punct_zh.dirname, "punct-zh");
+        assert_eq!(punct_zh.kind, SherpaModelKind::Punctuation);
+        assert_eq!(
+            punct_zh.files.iter().map(|f| f.filename).collect::<Vec<_>>(),
+            ["model.int8.onnx"]
+        );
+        assert!(punct_zh.files.iter().all(|f| f.url.starts_with("https://")
+            && f.sha256.len() == 64
+            && f.sha256.chars().all(|c| c.is_ascii_hexdigit())));
     }
 
     /// Non-STT entries are downloadable but must never be selectable as the
@@ -746,7 +815,7 @@ mod tests {
     /// general lookup still resolves them for download/remove.
     #[test]
     fn aux_models_are_downloadable_but_never_an_stt_model() {
-        for id in ["speaker-id", "punct-en"] {
+        for id in ["speaker-id", "punct-en", "punct-zh"] {
             assert!(entry_for_value(id).is_some());
             assert!(stt_entry_for_value(id).is_none());
             assert!(crate::config::validate_sherpa_model(id).is_err());
@@ -817,7 +886,9 @@ mod tests {
         let address = listener.local_addr().unwrap();
         let expected = body.clone();
         std::thread::spawn(move || {
-            if let Ok((mut stream, _)) = listener.accept() {
+            // Loop-accept: a source may be re-fetched — the punctuation
+            // chain downloads more than one catalog entry per manager.
+            while let Ok((mut stream, _)) = listener.accept() {
                 let mut request = [0; 1024];
                 let _ = stream.read(&mut request);
                 let header = format!(
@@ -1079,7 +1150,15 @@ mod tests {
             tokio::task::yield_now().await;
         }
         assert!(entry_installed_at(&root, entry_for_id("punct-en").unwrap()));
-        // Second call is a no-op — no Busy error, nothing re-queued.
+        // Each further call queues the next missing add-on — the zh
+        // punctuator here (it consumes the same positional fixtures).
+        manager.ensure_punct("sherpa", "sense-voice");
+        while manager.status().download.is_some() {
+            tokio::task::yield_now().await;
+        }
+        assert!(entry_installed_at(&root, entry_for_id("punct-zh").unwrap()));
+        // Once everything is installed the call is a no-op — no Busy
+        // error, nothing re-queued.
         manager.ensure_punct("sherpa", "sense-voice");
         assert!(manager.status().download.is_none());
         let _ = fs::remove_dir_all(root);

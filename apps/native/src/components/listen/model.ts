@@ -108,8 +108,12 @@ export const buildBlocks = (turns: Turn[]): TurnBlock[] => {
     ) {
       // A newer turn supersedes whatever interim rode the previous
       // block — left behind it renders as stale dimmed text
-      // mid-document.
-      if (block) block.interim = null;
+      // mid-document. An interim-only block would become a bare
+      // header over an empty paragraph, so it's dropped outright.
+      if (block) {
+        if (block.finals.length === 0) out.pop();
+        else block.interim = null;
+      }
       block = {
         key,
         name: speakerName(turn),

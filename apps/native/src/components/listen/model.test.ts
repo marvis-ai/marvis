@@ -79,4 +79,31 @@ describe('buildBlocks', () => {
     ]);
     expect(blocks[0]!.interim).toBeNull();
   });
+
+  test('an interim-only block is reused by the turn that splits it', () => {
+    // The interim at t=5 never finalized — clearing it would leave a
+    // bare header over an empty paragraph, so the new turn takes the
+    // block instead.
+    const blocks = buildBlocks([
+      turn(5, { interim: true, final: false }),
+      turn(30),
+    ]);
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0]!.ts).toBe(30);
+  });
+
+  test('an interim-only block is dropped on speaker change', () => {
+    const blocks = buildBlocks([
+      turn(0),
+      turn(5, {
+        speaker: 'me',
+        speaker_idx: null,
+        interim: true,
+        final: false,
+      }),
+      turn(10),
+    ]);
+    expect(blocks).toHaveLength(2);
+    expect(blocks[1]!.ts).toBe(10);
+  });
 });

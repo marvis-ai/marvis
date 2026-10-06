@@ -4,8 +4,11 @@ import { cn } from '@/lib/classes';
 /** The Ask field — a growing textarea shared by the input pill and the
  *  card header. Enter submits; Cmd/Ctrl+Enter submits with a forced
  *  screen read (plain Enter submits normally); Shift+Enter is the
- *  textarea's default newline. `onChange`/`onSelect` feed the dictation
- *  tracker. */
+ *  textarea's default newline. An Enter that commits an IME (CJK)
+ *  composition never submits — WKWebView dispatches `compositionend`
+ *  before that keydown, so `isComposing` is already false and
+ *  `keyCode === 229` is the reliable signal (WebKit bug 165004).
+ *  `onChange`/`onSelect` feed the dictation tracker. */
 export const AskInput = ({
   ref,
   value,
@@ -33,7 +36,12 @@ export const AskInput = ({
     value={value}
     rows={1}
     onKeyDown={(e) => {
-      if (e.key === 'Enter' && !e.shiftKey) {
+      if (
+        e.key === 'Enter' &&
+        !e.shiftKey &&
+        !e.nativeEvent.isComposing &&
+        e.keyCode !== 229
+      ) {
         e.preventDefault();
         onSubmit(e.metaKey || e.ctrlKey);
       }

@@ -215,11 +215,14 @@ consistent:
   `apps/native/src/lib/commands.ts` / `events.ts` and the Rust emits
   together.
 
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full contributor guide.
+
 ## Security
 
 Marvis handles screen captures, microphone audio, and provider API keys. If
 you find a vulnerability, please report it privately to
-<support@getmarvis.com> instead of opening a public issue.
+<support@getmarvis.com> instead of opening a public issue — see
+[SECURITY.md](SECURITY.md) for the full policy.
 
 ## License
 

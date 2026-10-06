@@ -1,6 +1,7 @@
 /**
- * Tauri event contract — names mirror the constants in
- * `src-tauri/src/{lib,ask}.rs`; change both sides together.
+ * Tauri event contract — names mirror the `EV_*` constants in
+ * `src-tauri/src/` (lib, ask, voice_models, sherpa_models); change both
+ * sides together.
  */
 import { useEffect, useRef } from 'react';
 import { listen } from '@tauri-apps/api/event';
@@ -29,19 +30,23 @@ export const EV_DICTATION_ERROR = 'dictation:error';
 export const EV_WHISPER_DOWNLOAD_PROGRESS = 'whisper:download-progress';
 /** Whisper model download failure; contains only the model and safe error text. */
 export const EV_WHISPER_DOWNLOAD_ERROR = 'whisper:download-error';
-export interface WhisperDownloadProgressPayload {
+/** The `*:download-*` payload shapes — whisper and sherpa downloads carry
+ * identical fields over their own event names. */
+export interface DownloadProgressPayload {
   model: string;
   received: number;
   total: number;
 }
-export interface WhisperDownloadErrorPayload {
+export interface DownloadErrorPayload {
   model: string;
   message: string;
 }
+export type WhisperDownloadProgressPayload = DownloadProgressPayload;
+export type WhisperDownloadErrorPayload = DownloadErrorPayload;
 export const EV_SHERPA_DOWNLOAD_PROGRESS = 'sherpa:download-progress';
 export const EV_SHERPA_DOWNLOAD_ERROR = 'sherpa:download-error';
-export type SherpaDownloadProgressPayload = WhisperDownloadProgressPayload;
-export type SherpaDownloadErrorPayload = WhisperDownloadErrorPayload;
+export type SherpaDownloadProgressPayload = DownloadProgressPayload;
+export type SherpaDownloadErrorPayload = DownloadErrorPayload;
 export interface ListenStatePayload {
   state: 'idle' | 'listening' | 'paused' | 'error';
   provider: string | null;

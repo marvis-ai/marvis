@@ -38,7 +38,8 @@ so `punct-en` stays for Latin text.
 **`sherpa_models.rs`** — new catalog entry `punct-zh`
 (`SherpaModelId::PunctZh`, kind `Punctuation`, single `model.int8.onnx`,
 sha256 `65a3fb9f…`, verified byte-identical to the official GitHub release
-tarball). `punctuation_zh_model_path(root)` mirrors the en accessor.
+tarball). `punctuation_paths(root)` hands the worker the installed en/zh
+pair.
 `ManagerState.punct_attempted` becomes a `Vec<SherpaModelId>`;
 `ensure_punct` attempts the first missing, unattempted punctuation entry.
 `ManagerState` moves behind `Arc<Mutex<_>>` so the download task can clear

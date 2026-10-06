@@ -68,4 +68,15 @@ describe('buildBlocks', () => {
     expect(blocks).toHaveLength(2);
     expect(blocks[1]!.ts).toBe(30);
   });
+
+  test('a split drops the stale interim off the previous block', () => {
+    // The t=5 interim never finalized — once t=30 splits it must not
+    // keep rendering as dimmed text on block 0.
+    const blocks = buildBlocks([
+      turn(0),
+      turn(5, { interim: true, final: false }),
+      turn(30),
+    ]);
+    expect(blocks[0]!.interim).toBeNull();
+  });
 });

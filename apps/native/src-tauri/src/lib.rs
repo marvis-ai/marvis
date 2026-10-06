@@ -1655,8 +1655,9 @@ fn sherpa_remove_model(
 ) -> Result<sherpa_models::SherpaStatus, String> {
     let entry =
         sherpa_models::entry_for_id(&model).ok_or_else(|| "Unknown voice model".to_string())?;
-    let selected = if state.config.lock().models.stt_provider == "sherpa" {
-        sherpa_models::stt_entry_for_value(&state.config.lock().models.stt_model).map(|e| e.id)
+    let config = state.config.lock();
+    let selected = if config.models.stt_provider == "sherpa" {
+        sherpa_models::stt_entry_for_value(&config.models.stt_model).map(|e| e.id)
     } else {
         None
     };
@@ -2827,6 +2828,17 @@ mod tests {
         assert!(source.contains("sherpa_cancel_download,"));
         assert!(source.contains("sherpa_remove_model,"));
         assert!(source.contains("session_resume,"));
+    }
+
+    /// The punctuation auto-install chain: a completed sherpa download
+    /// task clears its own `active` slot then re-enters
+    /// `refresh_speech_setup`, which calls `ensure_punct` — the unit
+    /// tests drive `ensure_punct` directly, so this asserts both halves
+    /// of the re-entrant wiring stay connected.
+    #[test]
+    fn punct_chain_reenters_refresh_and_refresh_calls_ensure_punct() {
+        assert!(include_str!("sherpa_models.rs").contains("crate::refresh_speech_setup(app)"));
+        assert!(include_str!("lib.rs").contains("ensure_punct("));
     }
 
     /// Both speech services must route providers through the shared

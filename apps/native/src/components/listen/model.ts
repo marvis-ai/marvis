@@ -44,9 +44,14 @@ export interface TurnIdentity {
 export const speakerKey = (turn: TurnIdentity) =>
   `${turn.speaker}:${turn.speaker_idx ?? (turn.speaker === 'me' ? 0 : '')}`;
 
+/** A `me`-channel turn the diarizer clustered to someone other than the
+ *  enrolled voice — a guest on the user's mic, shown as "Guest N". */
+const isMicGuest = (turn: TurnIdentity) =>
+  turn.speaker === 'me' && turn.speaker_idx != null && turn.speaker_idx > 0;
+
 export const speakerName = (turn: TurnIdentity) =>
   turn.speaker === 'me'
-    ? turn.speaker_idx != null && turn.speaker_idx > 0
+    ? isMicGuest(turn)
       ? `Guest ${turn.speaker_idx}`
       : 'You'
     : turn.speaker_idx == null
@@ -61,7 +66,7 @@ export const SPEAKER_COLOR_CLASSES = [
 ] as const;
 
 export const speakerColor = (turn: TurnIdentity) =>
-  turn.speaker === 'me' && !(turn.speaker_idx != null && turn.speaker_idx > 0)
+  turn.speaker === 'me' && !isMicGuest(turn)
     ? 'text-accent'
     : turn.speaker_idx == null
       ? 'text-fg-2'
@@ -101,6 +106,10 @@ export const buildBlocks = (turns: Turn[]): TurnBlock[] => {
       turn.ts - block.ts > BLOCK_MAX_SPAN_SECS ||
       turn.ts - lastActivityTs(block) > BLOCK_PAUSE_SECS
     ) {
+      // A newer turn supersedes whatever interim rode the previous
+      // block — left behind it renders as stale dimmed text
+      // mid-document.
+      if (block) block.interim = null;
       block = {
         key,
         name: speakerName(turn),

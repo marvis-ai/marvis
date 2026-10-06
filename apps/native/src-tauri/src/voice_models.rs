@@ -15,6 +15,9 @@ use tokio_util::sync::CancellationToken;
 use crate::{paths, stt};
 
 pub const HUGGING_FACE_PREFIX: &str = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/";
+/// `whisper:download-*` — mirrors `EV_WHISPER_*` in `src/lib/events.ts`.
+const EV_WHISPER_DOWNLOAD_PROGRESS: &str = "whisper:download-progress";
+const EV_WHISPER_DOWNLOAD_ERROR: &str = "whisper:download-error";
 const CATALOG_SOURCE: &str = "Hugging Face · ggerganov/whisper.cpp";
 const SIZE_TOLERANCE_PERCENT: u64 = 10;
 
@@ -168,8 +171,10 @@ pub struct WhisperDownloadStatus {
     pub download: Option<WhisperDownloadProgress>,
 }
 
+/// The `*:download-error` payload shared by the whisper and sherpa
+/// emitters — provider-neutral because the wire shape is identical.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-pub struct WhisperDownloadError {
+pub struct DownloadErrorPayload {
     pub model: &'static str,
     pub message: &'static str,
 }
@@ -562,7 +567,7 @@ fn terminal_progress(model: &'static str, received: u64) -> WhisperDownloadProgr
 
 fn emit_progress(app: &Option<AppHandle>, progress: WhisperDownloadProgress) {
     if let Some(app) = app {
-        let _ = app.emit("whisper:download-progress", progress);
+        let _ = app.emit(EV_WHISPER_DOWNLOAD_PROGRESS, progress);
     }
 }
 
@@ -580,8 +585,8 @@ fn emit_error(app: &Option<AppHandle>, model: &'static str, error: &VoiceDownloa
     };
     if let Some(app) = app {
         let _ = app.emit(
-            "whisper:download-error",
-            WhisperDownloadError { model, message },
+            EV_WHISPER_DOWNLOAD_ERROR,
+            DownloadErrorPayload { model, message },
         );
     }
 }
@@ -673,7 +678,7 @@ mod tests {
 
     #[test]
     fn download_error_dto_has_only_safe_fields() {
-        let value = serde_json::to_value(WhisperDownloadError {
+        let value = serde_json::to_value(DownloadErrorPayload {
             model: "tiny",
             message: "download failed",
         })

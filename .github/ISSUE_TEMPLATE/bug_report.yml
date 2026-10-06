@@ -1,0 +1,84 @@
+name: Bug report
+description: Report a reproducible problem with Marvis
+title: '[Bug]: '
+labels: ['bug']
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug. For questions and ideas,
+        use [Discussions](https://github.com/marvis-ai/marvis/discussions)
+        instead. **Never include API keys or other secrets in your report.**
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: >-
+        A clear description of the bug and what you expected to happen
+        instead.
+      placeholder: When I press Cmd+Alt+Space, the bar doesn't appear...
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Launch Marvis
+        2. ...
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - macOS (Apple Silicon)
+        - macOS (Intel)
+        - Windows
+        - Linux
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: App version
+      description: The release you installed, e.g. 0.1.0
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Affected area
+      description: Which part of the app is misbehaving?
+      multiple: true
+      options:
+        - Ask (screen-aware chat)
+        - Listen (meeting transcription)
+        - Dictation
+        - Onboarding / permissions
+        - Settings / providers
+        - Model downloads (whisper / sherpa)
+        - Overlay window / hotkeys
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs or screenshots
+      description: >-
+        Paste any relevant output. If you include files from ~/.marvis,
+        redact anything sensitive — never paste keys.json.
+      render: shell
+    validations:
+      required: false
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing issues and this is not a duplicate
+          required: true
+        - label: This report contains no API keys or secrets
+          required: true

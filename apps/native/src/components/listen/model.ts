@@ -44,9 +44,14 @@ export interface TurnIdentity {
 export const speakerKey = (turn: TurnIdentity) =>
   `${turn.speaker}:${turn.speaker_idx ?? (turn.speaker === 'me' ? 0 : '')}`;
 
+/** A `me`-channel turn the diarizer clustered to someone other than the
+ *  enrolled voice — a guest on the user's mic, shown as "Guest N". */
+const isMicGuest = (turn: TurnIdentity) =>
+  turn.speaker === 'me' && turn.speaker_idx != null && turn.speaker_idx > 0;
+
 export const speakerName = (turn: TurnIdentity) =>
   turn.speaker === 'me'
-    ? turn.speaker_idx != null && turn.speaker_idx > 0
+    ? isMicGuest(turn)
       ? `Guest ${turn.speaker_idx}`
       : 'You'
     : turn.speaker_idx == null
@@ -61,7 +66,7 @@ export const SPEAKER_COLOR_CLASSES = [
 ] as const;
 
 export const speakerColor = (turn: TurnIdentity) =>
-  turn.speaker === 'me' && !(turn.speaker_idx != null && turn.speaker_idx > 0)
+  turn.speaker === 'me' && !isMicGuest(turn)
     ? 'text-accent'
     : turn.speaker_idx == null
       ? 'text-fg-2'
@@ -76,13 +81,39 @@ export interface TurnBlock {
   interim: Turn | null;
 }
 
+/** Same-speaker merging stays scannable: a block re-headers once it
+ *  spans ~30s of audio, or after a ~15s same-speaker pause — Otter /
+ *  Granola-style paragraphing so a long monologue isn't one giant
+ *  paragraph under a single stamp. */
+const BLOCK_MAX_SPAN_SECS = 30;
+const BLOCK_PAUSE_SECS = 15;
+
+/** `ts` of the block's latest activity — the riding interim, else the
+ *  last final, else the block's first turn. Turns carry no end stamp,
+ *  so inter-turn delta is the pause proxy. */
+const lastActivityTs = (b: TurnBlock) =>
+  b.interim?.ts ?? b.finals[b.finals.length - 1]?.ts ?? b.ts;
+
 /** The old `blocks` useMemo body as a pure function. */
 export const buildBlocks = (turns: Turn[]): TurnBlock[] => {
   const out: TurnBlock[] = [];
   for (const turn of turns) {
     const key = speakerKey(turn);
     let block = out[out.length - 1];
-    if (!block || block.key !== key) {
+    if (
+      !block ||
+      block.key !== key ||
+      turn.ts - block.ts > BLOCK_MAX_SPAN_SECS ||
+      turn.ts - lastActivityTs(block) > BLOCK_PAUSE_SECS
+    ) {
+      // A newer turn supersedes whatever interim rode the previous
+      // block — left behind it renders as stale dimmed text
+      // mid-document. An interim-only block would become a bare
+      // header over an empty paragraph, so it's dropped outright.
+      if (block) {
+        if (block.finals.length === 0) out.pop();
+        else block.interim = null;
+      }
       block = {
         key,
         name: speakerName(turn),

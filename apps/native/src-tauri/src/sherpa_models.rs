@@ -13,9 +13,12 @@ use tauri::{async_runtime::JoinHandle, AppHandle, Emitter};
 use tokio_util::sync::CancellationToken;
 
 use crate::paths;
-use crate::voice_models::{VoiceDownloadError, WhisperDownloadError};
+use crate::voice_models::{DownloadErrorPayload, VoiceDownloadError};
 
 pub const CATALOG_SOURCE: &str = "Hugging Face · csukuangfj + k2-fsa/sherpa-onnx";
+/// `sherpa:download-*` — mirrors `EV_SHERPA_*` in `src/lib/events.ts`.
+const EV_SHERPA_DOWNLOAD_PROGRESS: &str = "sherpa:download-progress";
+const EV_SHERPA_DOWNLOAD_ERROR: &str = "sherpa:download-error";
 const SIZE_TOLERANCE_PERCENT: u64 = 10;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,6 +26,7 @@ pub enum SherpaModelId {
     SenseVoice,
     SpeakerEmbedding,
     PunctEn,
+    PunctZh,
 }
 impl SherpaModelId {
     pub const fn as_str(self) -> &'static str {
@@ -30,6 +34,7 @@ impl SherpaModelId {
             Self::SenseVoice => "sense-voice",
             Self::SpeakerEmbedding => "speaker-id",
             Self::PunctEn => "punct-en",
+            Self::PunctZh => "punct-zh",
         }
     }
 }
@@ -122,7 +127,20 @@ const PUNCT_EN_FILES: &[SherpaFileSpec] = &[
     },
 ];
 
-const CATALOG: [SherpaCatalogEntry; 3] = [
+// sherpa-onnx-punct-ct-transformer-zh-en-vocab272727-2024-04-12-int8 —
+// CT-Transformer punctuation for zh + en text. SenseVoice's `use_itn` is
+// a no-op in the pinned 2025-09-09 export (upstream k2-fsa/sherpa-onnx
+// #2742), so zh segments reach the transcript with no punctuation at all
+// without this. The pinned digest was verified byte-identical to the
+// official `punctuation-models` release tarball.
+const PUNCT_ZH_FILES: &[SherpaFileSpec] = &[SherpaFileSpec {
+    filename: "model.int8.onnx",
+    url: "https://huggingface.co/lorneluo/sherpa-onnx-punct-ct-transformer-zh-en-vocab272727-2024-04-12-int8/resolve/main/model.int8.onnx",
+    bytes: 75_519_198,
+    sha256: "65a3fb9f5ad7bfb96bf69e0dc4481df97f6ee60513c1d94ce981ba6effd524b1",
+}];
+
+const CATALOG: [SherpaCatalogEntry; 4] = [
     SherpaCatalogEntry {
         id: SherpaModelId::SenseVoice,
         dirname: "sense-voice",
@@ -144,9 +162,18 @@ const CATALOG: [SherpaCatalogEntry; 3] = [
     SherpaCatalogEntry {
         id: SherpaModelId::PunctEn,
         dirname: "punct-en",
-        label: "Punctuation",
+        label: "Punctuation (English)",
         description: "English punctuation and capitalization — SenseVoice emits English in all caps; this restores normal casing and , . ? in English segments.",
         files: PUNCT_EN_FILES,
+        source: CATALOG_SOURCE,
+        kind: SherpaModelKind::Punctuation,
+    },
+    SherpaCatalogEntry {
+        id: SherpaModelId::PunctZh,
+        dirname: "punct-zh",
+        label: "Punctuation (中文)",
+        description: "Chinese punctuation — SenseVoice drops ，。？ entirely in zh segments; this restores them in Chinese and mixed text.",
+        files: PUNCT_ZH_FILES,
         source: CATALOG_SOURCE,
         kind: SherpaModelKind::Punctuation,
     },
@@ -198,10 +225,32 @@ pub fn speaker_embedding_model_path(root: &Path) -> Option<PathBuf> {
 }
 /// Paths `(cnn_bilstm, bpe_vocab)` of the English punctuation model when its
 /// catalog entry is installed — `None` keeps sherpa transcripts unmodified.
-pub fn punctuation_model_paths(root: &Path) -> Option<(PathBuf, PathBuf)> {
+fn punctuation_en_paths(root: &Path) -> Option<(PathBuf, PathBuf)> {
     let entry = entry_for_id(SherpaModelId::PunctEn.as_str())?;
     let dir = entry_dir(root, entry);
     entry_installed_at(root, entry).then(|| (dir.join("model.int8.onnx"), dir.join("bpe.vocab")))
+}
+/// Path of the zh-en CT-Transformer punctuator when its catalog entry is
+/// installed — `None` leaves zh segments as the recognizer emits them.
+fn punctuation_zh_path(root: &Path) -> Option<PathBuf> {
+    let entry = entry_for_id(SherpaModelId::PunctZh.as_str())?;
+    let path = entry_dir(root, entry).join(entry.files[0].filename);
+    entry_installed_at(root, entry).then_some(path)
+}
+/// The optional punctuation add-ons' installed paths — `en` is the
+/// CNN-BiLSTM `(model, vocab)` pair, `zh` the CT-Transformer model. A
+/// `None` side passes that script's text through unmodified.
+pub struct PunctuationPaths {
+    pub en: Option<(PathBuf, PathBuf)>,
+    pub zh: Option<PathBuf>,
+}
+/// Installed punctuation paths for the speech worker — one lookup keeps
+/// the en/zh pair symmetric.
+pub fn punctuation_paths(root: &Path) -> PunctuationPaths {
+    PunctuationPaths {
+        en: punctuation_en_paths(root),
+        zh: punctuation_zh_path(root),
+    }
 }
 /// An entry is installed only when its entire file set is present.
 pub fn entry_installed_at(root: &Path, entry: &SherpaCatalogEntry) -> bool {
@@ -243,12 +292,14 @@ struct ActiveDownload {
 struct ManagerState {
     active: Option<ActiveDownload>,
     selected: Option<SherpaModelId>,
-    punct_attempted: bool,
+    /// Punctuation entries already auto-attempted this run — one shot
+    /// each so a failing add-on doesn't retry on every refresh.
+    punct_attempted: Vec<SherpaModelId>,
 }
 pub struct SherpaModelManager {
     root: PathBuf,
     client: reqwest::Client,
-    state: Mutex<ManagerState>,
+    state: Arc<Mutex<ManagerState>>,
     app: Mutex<Option<AppHandle>>,
     cancel_gate: tokio::sync::Mutex<()>,
     install_gate: Arc<tokio::sync::Mutex<()>>,
@@ -301,11 +352,11 @@ impl SherpaModelManager {
         Self {
             root,
             client: reqwest::Client::new(),
-            state: Mutex::new(ManagerState {
+            state: Arc::new(Mutex::new(ManagerState {
                 active: None,
                 selected: None,
-                punct_attempted: false,
-            }),
+                punct_attempted: Vec::new(),
+            })),
             app: Mutex::new(None),
             cancel_gate: tokio::sync::Mutex::new(()),
             install_gate: Arc::new(tokio::sync::Mutex::new(())),
@@ -392,6 +443,8 @@ impl SherpaModelManager {
             total: entry_bytes(&entry),
         }));
         let task_progress = Arc::clone(&progress);
+        let done_progress = Arc::clone(&progress);
+        let task_state = Arc::clone(&self.state);
         let task = tauri::async_runtime::spawn(async move {
             let result = download(
                 entry,
@@ -409,11 +462,42 @@ impl SherpaModelManager {
                 // A finished install may resolve a durable speech setup
                 // error — re-validate so the stale banner clears now.
                 Ok(()) => {
+                    // Clear our own `active` first — it still names this
+                    // finishing task, and `refresh_speech_setup` →
+                    // `ensure_punct` must be free to queue the next
+                    // missing add-on in the same wake. Identity-checked:
+                    // a cancel+restart could have installed a different
+                    // download meanwhile.
+                    {
+                        let mut state = task_state.lock();
+                        if state
+                            .active
+                            .as_ref()
+                            .is_some_and(|a| Arc::ptr_eq(&a.progress, &done_progress))
+                        {
+                            state.active = None;
+                        }
+                    }
                     if let Some(app) = &app {
                         crate::refresh_speech_setup(app);
                     }
                 }
-                Err(error) => emit_error(&app, entry.id.as_str(), &error),
+                Err(error) => {
+                    // Same identity-checked release as the Ok arm — a
+                    // failed task must not leave its finished self
+                    // registered as `active` for a reaper to find later.
+                    {
+                        let mut state = task_state.lock();
+                        if state
+                            .active
+                            .as_ref()
+                            .is_some_and(|a| Arc::ptr_eq(&a.progress, &done_progress))
+                        {
+                            state.active = None;
+                        }
+                    }
+                    emit_error(&app, entry.id.as_str(), &error);
+                }
             }
         });
         state.active = Some(ActiveDownload {
@@ -423,9 +507,12 @@ impl SherpaModelManager {
         });
         Ok(())
     }
-    /// Download the punctuation add-on once per run when sherpa is the
-    /// active provider and its STT model is installed but punct is missing.
-    /// Silent best-effort: `Busy`/errors surface only as `sherpa:*` events.
+    /// Download each missing punctuation add-on once per run when sherpa
+    /// is the active provider and its STT model is installed. One
+    /// download at a time: a completed install clears `active` then
+    /// re-enters through `refresh_speech_setup` → `ensure_punct`, which
+    /// queues the next missing entry. Silent best-effort — `Busy`/errors
+    /// surface only as `sherpa:*` events.
     pub fn ensure_punct(&self, provider: &str, stt_model: &str) {
         if provider != "sherpa" {
             return;
@@ -436,33 +523,66 @@ impl SherpaModelManager {
         if !entry_installed_at(&self.root, stt) {
             return;
         }
-        let punct = entry_for_id(SherpaModelId::PunctEn.as_str()).expect("catalog");
-        if entry_installed_at(&self.root, punct) {
-            return;
-        }
-        {
+        // A task that died before reaching its finishing arm leaves a
+        // completed handle registered as `active` — reap it like
+        // `status`/`start_download`/`remove_model` do or the chain stalls.
+        self.reap();
+        // Catalog scan + filesystem stats stay outside the state lock.
+        let missing: Vec<SherpaModelId> = catalog()
+            .iter()
+            .filter(|e| {
+                e.kind == SherpaModelKind::Punctuation && !entry_installed_at(&self.root, e)
+            })
+            .map(|e| e.id)
+            .collect();
+        let next = {
             let mut state = self.state.lock();
-            if state.active.is_some() || state.punct_attempted {
+            if state.active.is_some() {
                 return;
             }
-            state.punct_attempted = true;
+            let Some(&id) = missing
+                .iter()
+                .find(|id| !state.punct_attempted.contains(id))
+            else {
+                return;
+            };
+            state.punct_attempted.push(id);
+            id
+        };
+        // A start that lost the `active` race never spawned anything —
+        // the once-per-run mark must roll back so the next refresh can
+        // still heal this entry this run.
+        if self.start_download(next).is_err() {
+            self.state
+                .lock()
+                .punct_attempted
+                .retain(|id| *id != next);
         }
-        let _ = self.start_download(SherpaModelId::PunctEn);
     }
     pub async fn cancel_download(&self) -> Result<(), VoiceDownloadError> {
         let _gate = self.cancel_gate.lock().await;
-        let task = {
+        let (task, progress) = {
             let mut state = self.state.lock();
             let Some(active) = state.active.as_mut() else {
                 return Ok(());
             };
             active.cancel.cancel();
-            active.task.take()
+            (active.task.take(), Arc::clone(&active.progress))
         };
         if let Some(task) = task {
             let _ = task.await;
         }
-        self.state.lock().active = None;
+        // Identity-checked like the task-side clear: while the cancelled
+        // task wound down its finishing arm may have freed the slot and a
+        // new download registered — a blind clear would orphan it.
+        let mut state = self.state.lock();
+        if state
+            .active
+            .as_ref()
+            .is_some_and(|a| Arc::ptr_eq(&a.progress, &progress))
+        {
+            state.active = None;
+        }
         Ok(())
     }
     pub fn set_selected_model(&self, model: Option<SherpaModelId>) {
@@ -674,7 +794,7 @@ fn terminal_progress(model: &'static str, received: u64) -> SherpaDownloadProgre
 
 fn emit_progress(app: &Option<AppHandle>, progress: SherpaDownloadProgress) {
     if let Some(app) = app {
-        let _ = app.emit("sherpa:download-progress", progress);
+        let _ = app.emit(EV_SHERPA_DOWNLOAD_PROGRESS, progress);
     }
 }
 
@@ -695,8 +815,8 @@ fn emit_error(app: &Option<AppHandle>, model: &'static str, error: &VoiceDownloa
     };
     if let Some(app) = app {
         let _ = app.emit(
-            "sherpa:download-error",
-            WhisperDownloadError { model, message },
+            EV_SHERPA_DOWNLOAD_ERROR,
+            DownloadErrorPayload { model, message },
         );
     }
 }
@@ -708,7 +828,7 @@ mod tests {
 
     #[test]
     fn catalog_is_the_approved_file_set() {
-        assert_eq!(catalog().len(), 3);
+        assert_eq!(catalog().len(), 4);
         let entry = &catalog()[0];
         assert_eq!(entry.id.as_str(), "sense-voice");
         assert_eq!(entry.dirname, "sense-voice");
@@ -739,6 +859,17 @@ mod tests {
         assert!(punct.files.iter().all(|f| f.url.starts_with("https://")
             && f.sha256.len() == 64
             && f.sha256.chars().all(|c| c.is_ascii_hexdigit())));
+        let punct_zh = &catalog()[3];
+        assert_eq!(punct_zh.id.as_str(), "punct-zh");
+        assert_eq!(punct_zh.dirname, "punct-zh");
+        assert_eq!(punct_zh.kind, SherpaModelKind::Punctuation);
+        assert_eq!(
+            punct_zh.files.iter().map(|f| f.filename).collect::<Vec<_>>(),
+            ["model.int8.onnx"]
+        );
+        assert!(punct_zh.files.iter().all(|f| f.url.starts_with("https://")
+            && f.sha256.len() == 64
+            && f.sha256.chars().all(|c| c.is_ascii_hexdigit())));
     }
 
     /// Non-STT entries are downloadable but must never be selectable as the
@@ -746,7 +877,7 @@ mod tests {
     /// general lookup still resolves them for download/remove.
     #[test]
     fn aux_models_are_downloadable_but_never_an_stt_model() {
-        for id in ["speaker-id", "punct-en"] {
+        for id in ["speaker-id", "punct-en", "punct-zh"] {
             assert!(entry_for_value(id).is_some());
             assert!(stt_entry_for_value(id).is_none());
             assert!(crate::config::validate_sherpa_model(id).is_err());
@@ -817,7 +948,9 @@ mod tests {
         let address = listener.local_addr().unwrap();
         let expected = body.clone();
         std::thread::spawn(move || {
-            if let Ok((mut stream, _)) = listener.accept() {
+            // Loop-accept: a source may be re-fetched — the punctuation
+            // chain downloads more than one catalog entry per manager.
+            while let Ok((mut stream, _)) = listener.accept() {
                 let mut request = [0; 1024];
                 let _ = stream.read(&mut request);
                 let header = format!(
@@ -1079,7 +1212,15 @@ mod tests {
             tokio::task::yield_now().await;
         }
         assert!(entry_installed_at(&root, entry_for_id("punct-en").unwrap()));
-        // Second call is a no-op — no Busy error, nothing re-queued.
+        // Each further call queues the next missing add-on — the zh
+        // punctuator here (it consumes the same positional fixtures).
+        manager.ensure_punct("sherpa", "sense-voice");
+        while manager.status().download.is_some() {
+            tokio::task::yield_now().await;
+        }
+        assert!(entry_installed_at(&root, entry_for_id("punct-zh").unwrap()));
+        // Once everything is installed the call is a no-op — no Busy
+        // error, nothing re-queued.
         manager.ensure_punct("sherpa", "sense-voice");
         assert!(manager.status().download.is_none());
         let _ = fs::remove_dir_all(root);
@@ -1124,6 +1265,117 @@ mod tests {
             tokio::task::yield_now().await;
         }
         assert!(entry_installed_at(&root, entry_for_id("punct-en").unwrap()));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// A task that died before reaching its finishing arm leaves a
+    /// completed handle registered as `active`. `ensure_punct` must reap
+    /// it like `status`/`start_download` do — otherwise the chain stalls
+    /// until something else happens to reap.
+    #[tokio::test]
+    async fn ensure_punct_reaps_a_finished_active_before_deciding() {
+        let root = temp_root();
+        let stt_dir = entry_dir(&root, &catalog()[0]);
+        fs::create_dir_all(&stt_dir).unwrap();
+        for f in catalog()[0].files {
+            fs::write(stt_dir.join(f.filename), b"x").unwrap();
+        }
+        let sources = fixture_set(&[b"punct model".to_vec(), b"bpe vocab".to_vec()], Duration::ZERO);
+        let manager = SherpaModelManager::with_test_files(root.clone(), SherpaModelId::PunctEn, sources);
+        // The state a dead task leaves behind: a finished handle still
+        // named in `active`.
+        let task = tauri::async_runtime::spawn(async {});
+        manager.state.lock().active = Some(ActiveDownload {
+            cancel: CancellationToken::new(),
+            task: Some(task),
+            progress: Arc::new(Mutex::new(SherpaDownloadProgress {
+                model: "punct-en",
+                received: 0,
+                total: 1,
+            })),
+        });
+        // Let the spawned task finish — `status()` would reap, so wait on
+        // the raw handle instead.
+        loop {
+            let done = manager
+                .state
+                .lock()
+                .active
+                .as_ref()
+                .and_then(|a| a.task.as_ref())
+                .is_some_and(|t| t.inner().is_finished());
+            if done {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        manager.ensure_punct("sherpa", "sense-voice");
+        while manager.status().download.is_some() {
+            tokio::task::yield_now().await;
+        }
+        assert!(entry_installed_at(&root, entry_for_id("punct-en").unwrap()));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// The cancelled task's finishing arm can free `active` and a new
+    /// download register before the stale cancel resumes — its final
+    /// clear must be identity-checked or it orphans the newer download.
+    #[tokio::test]
+    async fn cancel_does_not_orphan_a_download_registered_after_the_old_one() {
+        let root = temp_root();
+        let manager = Arc::new(SherpaModelManager::at(root.clone()));
+        // A registered download whose completion the test controls — the
+        // shape `active` takes while a download is in flight.
+        let (finish_tx, finish_rx) = tokio::sync::oneshot::channel::<()>();
+        let a_progress = Arc::new(Mutex::new(SherpaDownloadProgress {
+            model: "sense-voice",
+            received: 0,
+            total: 1,
+        }));
+        manager.state.lock().active = Some(ActiveDownload {
+            cancel: CancellationToken::new(),
+            task: Some(tauri::async_runtime::spawn(async move {
+                let _ = finish_rx.await;
+            })),
+            progress: a_progress,
+        });
+        let canceller = Arc::clone(&manager);
+        let cancel = tokio::spawn(async move { canceller.cancel_download().await });
+        // Wait until the cancel has lifted the task handle and parked on
+        // its completion.
+        loop {
+            let parked = manager
+                .state
+                .lock()
+                .active
+                .as_ref()
+                .is_some_and(|a| a.task.is_none());
+            if parked {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        // A "finished on its own" mid-cancel: the slot freed and a new
+        // download registered before the stale cancel resumed.
+        let b_progress = Arc::new(Mutex::new(SherpaDownloadProgress {
+            model: "punct-en",
+            received: 0,
+            total: 1,
+        }));
+        manager.state.lock().active = Some(ActiveDownload {
+            cancel: CancellationToken::new(),
+            task: None,
+            progress: Arc::clone(&b_progress),
+        });
+        let _ = finish_tx.send(());
+        cancel.await.unwrap().unwrap();
+        // B's registration survives — the stale cancel only cleared its own.
+        assert!(manager
+            .state
+            .lock()
+            .active
+            .as_ref()
+            .is_some_and(|a| Arc::ptr_eq(&a.progress, &b_progress)));
         let _ = fs::remove_dir_all(root);
     }
 }

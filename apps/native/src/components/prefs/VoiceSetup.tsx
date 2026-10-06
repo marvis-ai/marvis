@@ -23,7 +23,7 @@ import {
   type VoiceprintStatus,
   type WhisperBinarySource,
   type WhisperStatus,
-} from '../../lib/commands';
+} from '@/lib/commands';
 import {
   EV_SHERPA_DOWNLOAD_ERROR,
   EV_SHERPA_DOWNLOAD_PROGRESS,
@@ -34,7 +34,7 @@ import {
   type SherpaDownloadProgressPayload,
   type WhisperDownloadErrorPayload,
   type WhisperDownloadProgressPayload,
-} from '../../lib/events';
+} from '@/lib/events';
 import {
   BTN_DANGER,
   BTN_LG,
@@ -50,8 +50,9 @@ import {
   PROV_ERR,
   PROV_NOTE,
   cn,
-} from '../../lib/classes';
+} from '@/lib/classes';
 import type { PrefsData } from './types';
+import { AuxModelCard } from './AuxModelCard';
 import { VoiceModelGrid } from './VoiceModelGrid';
 
 const DEEPGRAM_MODELS = [
@@ -69,12 +70,6 @@ const DEEPGRAM_MODELS = [
 ];
 
 const safeVoiceError = (fallback: string) => fallback;
-
-const formatVoiceBytes = (bytes: number) => {
-  if (bytes >= 1024 * 1024 * 1024)
-    return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
-  return `${Math.round(bytes / (1024 * 1024))} MB`;
-};
 
 const whisperSourceLabel = (source: WhisperBinarySource | null) => {
   if (source === 'Bundled') return 'Bundled with Marvis';
@@ -390,14 +385,9 @@ export const VoiceSetup = ({
     (sherpaActiveDownload?.model === speakerModel.id
       ? sherpaActiveDownload
       : (sherpaProgress[speakerModel.id] ?? null));
-  const punctModel = sherpa?.models.find(
+  const punctModels = sherpa?.models.filter(
     (entry) => entry.kind === 'punctuation',
   );
-  const punctProgress =
-    punctModel &&
-    (sherpaActiveDownload?.model === punctModel.id
-      ? sherpaActiveDownload
-      : (sherpaProgress[punctModel.id] ?? null));
   const save = (
     key: 'models.stt_provider' | 'models.stt_model',
     value: string,
@@ -712,139 +702,35 @@ export const VoiceSetup = ({
           <p className={PROV_ERR}>{error || downloadError}</p>
         )}
       </div>
-      {provider === 'sherpa' && punctModel && (
-        <div className={cn(PROV_CARD, 'border-border')}>
-          <div className='flex items-center gap-2'>
-            <span
-              className={cn(
-                'size-1.75 flex-none rounded-full',
-                punctModel.installed
-                  ? 'bg-accent'
-                  : 'bg-[color-mix(in_oklch,var(--fg)_20%,transparent)]',
-              )}
-            />
-            <span className={LBL}>Punctuation & casing</span>
-            <span
-              className={cn(
-                NUM,
-                'ml-auto text-[10.5px] text-muted-foreground',
-              )}>
-              {formatVoiceBytes(punctModel.bytes)}
-            </span>
-          </div>
-          <p className={PROV_NOTE}>
-            {punctModel.description} Downloads automatically with SenseVoice —
-            remove it only if you prefer the raw transcript.
-          </p>
-          {punctProgress && (
-            <div className='mt-2'>
-              <div className='flex justify-between text-[10px] text-muted-foreground'>
-                <span>Downloading…</span>
-                <span className={NUM}>
-                  {formatVoiceBytes(punctProgress.received)} /{' '}
-                  {formatVoiceBytes(punctProgress.total)}
-                </span>
-              </div>
-              <progress
-                className='mt-1 h-1.5 w-full accent-accent'
-                value={punctProgress.received}
-                max={punctProgress.total}
-              />
-            </div>
-          )}
-          <div className='mt-2 flex gap-1.5'>
-            {sherpaActiveDownload?.model === punctModel.id ? (
-              <button
-                type='button'
-                className={cn(BTN_LG, BTN_OUTLINE)}
-                onClick={() => void cancelSherpaDownload()}>
-                Cancel
-              </button>
-            ) : !punctModel.installed ? (
-              <button
-                type='button'
-                className={cn(BTN_LG, BTN_PRIMARY)}
-                disabled={Boolean(sherpaActiveDownload)}
-                onClick={() => void startSherpaDownload(punctModel.id)}>
-                Download
-              </button>
-            ) : (
-              <button
-                type='button'
-                className={cn(BTN_LINK_LG, BTN_DANGER)}
-                onClick={() => void removeSherpaModel(punctModel.id)}>
-                Remove
-              </button>
-            )}
-          </div>
-        </div>
-      )}
+      {provider === 'sherpa' &&
+        punctModels?.map((punctModel) => (
+          <AuxModelCard
+            key={punctModel.id}
+            entry={punctModel}
+            title={punctModel.label}
+            note='Downloads automatically with SenseVoice — remove it only if you prefer the raw transcript.'
+            progress={
+              sherpaActiveDownload?.model === punctModel.id
+                ? sherpaActiveDownload
+                : (sherpaProgress[punctModel.id] ?? null)
+            }
+            activeDownload={sherpaActiveDownload?.model ?? null}
+            onDownload={(id) => void startSherpaDownload(id)}
+            onCancel={() => void cancelSherpaDownload()}
+            onRemove={(id) => void removeSherpaModel(id)}
+          />
+        ))}
       {provider !== 'deepgram' && speakerModel && (
-        <div className={cn(PROV_CARD, 'border-border')}>
-          <div className='flex items-center gap-2'>
-            <span
-              className={cn(
-                'size-1.75 flex-none rounded-full',
-                speakerModel.installed
-                  ? 'bg-accent'
-                  : 'bg-[color-mix(in_oklch,var(--fg)_20%,transparent)]',
-              )}
-            />
-            <span className={LBL}>Speaker diarization</span>
-            <span
-              className={cn(
-                NUM,
-                'ml-auto text-[10.5px] text-muted-foreground',
-              )}>
-              {formatVoiceBytes(speakerModel.bytes)}
-            </span>
-          </div>
-          <p className={PROV_NOTE}>
-            {speakerModel.description} Optional — shared by Whisper and Sherpa;
-            the transcript works without it, just without per-voice labels.
-          </p>
-          {speakerProgress && (
-            <div className='mt-2'>
-              <div className='flex justify-between text-[10px] text-muted-foreground'>
-                <span>Downloading…</span>
-                <span className={NUM}>
-                  {formatVoiceBytes(speakerProgress.received)} /{' '}
-                  {formatVoiceBytes(speakerProgress.total)}
-                </span>
-              </div>
-              <progress
-                className='mt-1 h-1.5 w-full accent-accent'
-                value={speakerProgress.received}
-                max={speakerProgress.total}
-              />
-            </div>
-          )}
-          <div className='mt-2 flex gap-1.5'>
-            {sherpaActiveDownload?.model === speakerModel.id ? (
-              <button
-                type='button'
-                className={cn(BTN_LG, BTN_OUTLINE)}
-                onClick={() => void cancelSherpaDownload()}>
-                Cancel
-              </button>
-            ) : !speakerModel.installed ? (
-              <button
-                type='button'
-                className={cn(BTN_LG, BTN_PRIMARY)}
-                disabled={Boolean(sherpaActiveDownload)}
-                onClick={() => void startSherpaDownload(speakerModel.id)}>
-                Download
-              </button>
-            ) : (
-              <button
-                type='button'
-                className={cn(BTN_LINK_LG, BTN_DANGER)}
-                onClick={() => void removeSherpaModel(speakerModel.id)}>
-                Remove
-              </button>
-            )}
-          </div>
-        </div>
+        <AuxModelCard
+          entry={speakerModel}
+          title='Speaker diarization'
+          note='Optional — shared by Whisper and Sherpa; the transcript works without it, just without per-voice labels.'
+          progress={speakerProgress ?? null}
+          activeDownload={sherpaActiveDownload?.model ?? null}
+          onDownload={(id) => void startSherpaDownload(id)}
+          onCancel={() => void cancelSherpaDownload()}
+          onRemove={(id) => void removeSherpaModel(id)}
+        />
       )}
       {provider !== 'deepgram' && speakerModel && (
         <div className={cn(PROV_CARD, 'border-border')}>

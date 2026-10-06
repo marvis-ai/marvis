@@ -205,3 +205,11 @@ below is the existing contract — extend it, don't fork it.
   `std::env::current_exe()` like `bundled_whisper`
 - Rust verification: `cargo test` in `src-tauri` — the `lib.rs` test module
   asserts the command contract from source; update it when the surface changes
+
+### 20. Webview Imports: `@/` Alias, Never `../../`
+
+- Inside `apps/native/src` (the webview), cross-directory imports use the `@/`
+  alias (`tsconfig.json` maps `@/*` → `./src/*`) — never climb out with `../../`
+- ✅ `import { sherpaStatus } from '@/lib/commands'` / `import { cn } from '@/lib/classes'`
+- ❌ `import { sherpaStatus } from '../../lib/commands'`
+- Same-directory sibling imports stay `./` (`./types`, `./AuxModelCard`)

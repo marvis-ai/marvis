@@ -1610,11 +1610,13 @@ fn whisper_remove_model(
 ) -> Result<voice_models::WhisperDownloadStatus, String> {
     let entry =
         voice_models::entry_for_id(&model).ok_or_else(|| "Unknown voice model".to_string())?;
-    let config = state.config.lock();
-    let selected = if config.models.stt_provider == "whisper" {
-        voice_models::entry_for_id(&config.models.stt_model).map(|entry| entry.id)
-    } else {
-        None
+    let selected = {
+        let config = state.config.lock();
+        if config.models.stt_provider == "whisper" {
+            voice_models::entry_for_id(&config.models.stt_model).map(|entry| entry.id)
+        } else {
+            None
+        }
     };
     state.voice_models.set_selected_model(selected);
     state

@@ -62,9 +62,11 @@ regex alternation or equivalent ordered scan; matches never overlap):
 2. `[label](url)` — emits `mark` `[`, `link` label, `mark` `](` + `mark`
    `)` with the url span as a `mark` token carrying no style of its own;
    the `link` token's `href` is the url
-3. autolinks `https?://…` and `www.…` — trailing `.,!?;:)\]` stripped;
-   `www.` tokens display verbatim but get `href = https://` + match so
-   `openUrl` receives a valid URL
+3. autolinks `https?://…` and `www.…` — need a non-word left boundary
+   (`xhttps://a.b` stays literal); trailing `.,!?;:'"`, emphasis marks
+   (`*_~`), and unbalanced `)`/`]` are stripped; `www.` tokens display
+   verbatim but get `href = https://` + match so `openUrl` receives a
+   valid URL
 4. emails `user@host.tld` — `href = mailto:…`
 5. `**bold**` / `__bold__`, `*italic*` / `_italic_`, `~~strike~~` — marks
    emit as `mark` tokens, inner content as `strong`/`em`/`strike`
@@ -75,13 +77,19 @@ already consumed by `[t](u)` or code are not re-matched.
 
 ### 2. `src/components/shared/RichText.tsx` (new) — token renderer
 
-Named arrow export, one component, prop-driven modes:
+Named arrow export, one component, `interactive?: boolean` prop:
 
-- `mode='highlight'` (input overlay): every token is a `<span>`; `mark`
-  → `text-muted-foreground`, `strong` → `font-semibold`, `em` → `italic`,
-  `strike` → `line-through`, `code` → `font-mono` + subtle chip,
-  `url`/`email`/`link` → `text-accent underline`
-- `mode='interactive'` (user bubble): marks are dropped entirely;
+- default (input overlay, `interactive` unset): every token is a
+  `<span>`; `mark` → `text-muted-foreground/60`, `strong` →
+  `-webkit-text-stroke` fake-bold, `em` → `-skew-x-[8deg]` fragments
+  split at whitespace, `strike` → `line-through`, `code` → `bg-fg-soft`
+  chip with no font change, `url`/`email`/`link` → `text-accent
+  underline`. Every class is metric-safe — no font-weight/family/size
+  shifts — so each character keeps the textarea's advance width and
+  the overlay stays aligned with the invisible caret. `em` splits at
+  whitespace because `inline-block` is atomic: an unsplit multi-word
+  em couldn't wrap where the textarea beneath can.
+- `interactive` (user bubble): marks are dropped entirely;
   `strong`/`em`/`strike`/`code` become semantic elements; `url`/`email`/
   `link` become `<a>` whose click calls `openUrl(href)` (the
   `Markdown.tsx` pattern) with `e.preventDefault()`
@@ -96,7 +104,7 @@ Named arrow export, one component, prop-driven modes:
   pointer-events-none select-none whitespace-pre-wrap wrap-break-word`,
   sharing a `METRICS` class constant with the textarea (`text-[14px]
   leading-5`, plus `pl-2` when `cardOpen`) so wrapping matches; renders
-  `<RichText mode='highlight'>` over `useMemo(() => tokenizeInline(value))`
+  `<RichText text={value} />` (tokenizer output `useMemo`-cached inside)
 - Textarea: gains `w-full text-transparent`, keeps `caret-accent`,
   `field-sizing-content`, all existing handlers; loses `flex-1 min-w-0
   self-center` (wrapper owns them)
@@ -110,7 +118,7 @@ Named arrow export, one component, prop-driven modes:
 ### 4. `src/components/ChatSection.tsx` — user bubble
 
 The user `<p>` keeps its bubble classes; `{m.content}` becomes
-`<RichText text={m.content} mode='interactive' />`. Inline-only — no
+`<RichText text={m.content} interactive />`. Inline-only — no
 block markdown (headers/lists), so the bubble stays compact and
 right-aligned. Links open in the system browser via `openUrl`.
 

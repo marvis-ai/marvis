@@ -14,10 +14,14 @@
 //! `ask:error` fire. A text description rides a `<screen_context>`
 //! block, so chat providers never need image support.
 //! Both sides of the exchange land in the `ask` session's `messages`
-//! rows (the user row persists once, before the first attempt). A provider
-//! `MultimodalUnsupported` rejection retries once without the image
-//! (per attempt); [`AskService::close`] aborts any in-flight stream via
-//! a [`CancellationToken`].
+//! rows (the user row persists once, before the first attempt). The
+//! first answered send on a still-untitled session also names it — the
+//! answering provider condenses the question into `sessions.title` via
+//! a sidecar call AFTER `ask:state{idle}` (history shows the
+//! first-question fallback until it lands, then `sessions:changed`
+//! refreshes it). A provider `MultimodalUnsupported` rejection retries
+//! once without the image (per attempt); [`AskService::close`] aborts
+//! any in-flight stream via a [`CancellationToken`].
 //!
 //! Event protocol (emitted to the `bar` window via `app.emit_to`):
 //! - `ask:state` `{"state": "loading"|"streaming"|"idle"}` — `streaming`
@@ -49,6 +53,7 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use parking_lot::Mutex;
 use serde_json::json;
@@ -71,9 +76,23 @@ const EV_STATE: &str = "ask:state";
 const EV_CHUNK: &str = "ask:chunk";
 const EV_DONE: &str = "ask:done";
 const EV_ERROR: &str = "ask:error";
+/// A generated session title landed — the history list re-reads to swap
+/// its first-question fallback.
+const EV_SESSIONS_CHANGED: &str = "sessions:changed";
 
 /// `send_screen_only`'s fixed question — the camera button's ask.
 const SCREEN_ONLY_PROMPT: &str = "Describe what is on my screen and how you can help.";
+
+/// The sidecar call that names a still-untitled session. The title's
+/// only evidence is the question itself, so it gets the raw text, not
+/// the context-wrapped wire prompt.
+const TITLE_PROMPT: &str = "Write a very short title for the conversation this question starts — 6 words or fewer, in the question's language. Reply with the title only: no quotes, no trailing punctuation.";
+/// A pasted giant first question still titles from its head — bound the
+/// sidecar's input instead of riding the request whole.
+const TITLE_QUESTION_CAP: usize = 1000;
+/// `stream_chat` bounds only the connect — a hung title call would leak
+/// the run's task, so the sidecar gets a total deadline too.
+const TITLE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Context window: only the trailing N persisted `messages` ride
 /// along with each ask (spec: last 20, text-only).
@@ -493,11 +512,12 @@ pub(crate) struct ChainOpts<'a> {
 /// 3. Each [`ProviderCandidate`] streams via [`stream_candidate`]:
 ///    `Done` → persist assistant + `ask:done{full, provider, model,
 ///    usage}` +
-///    `ask:state{idle}`; `Failed` → warn-log, re-emit `loading` (the
-///    card resets its buffer — a dead provider's partial chunks must
-///    not bleed into the next attempt), and try the NEXT candidate;
-///    `Cancelled` → `ask:state{idle}` and stop immediately — the user
-///    asked to stop, so no failover may start a new request.
+///    `ask:state{idle}`, then the title sidecar ([`maybe_title_session`])
+///    on a still-untitled session; `Failed` → warn-log, re-emit
+///    `loading` (the card resets its buffer — a dead provider's partial
+///    chunks must not bleed into the next attempt), and try the NEXT
+///    candidate; `Cancelled` → `ask:state{idle}` and stop immediately —
+///    the user asked to stop, so no failover may start a new request.
 /// 4. Every candidate failed → `ask:error{message}` (the LAST failure's
 ///    message — the most actionable one) + `ask:state{idle}`.
 ///
@@ -656,6 +676,10 @@ pub(crate) async fn send_chain(
                     }),
                 );
                 emit(EV_STATE, json!({"state": "idle"}));
+                // The sidecar runs after `idle` so the stream's end never
+                // waits on it; its spend isn't part of the turn's usage
+                // (done/persisted already).
+                maybe_title_session(db, &*cand.provider, session_id, text, emit, cancel).await;
                 return Ok(reply.full);
             }
             // User row stays — it was already sent. Never fall over on
@@ -1110,6 +1134,80 @@ fn persist_assistant_message(
     }
 }
 
+/// A still-untitled session gets named by the provider that just
+/// answered — a small `stream_chat` for a short title over the raw
+/// question, then `session_set_title`'s `title IS NULL` write guard
+/// makes it first-wins (a failed call retries on the next send, a
+/// landed one is never redone). Failure is silent to the run: the
+/// history row keeps the first-question fallback. `sessions:changed`
+/// goes out through the run's gen-guarded `emit` — a stale run's ping
+/// drops, but the next run's `idle` refresh picks the title up anyway.
+async fn maybe_title_session(
+    db: &Db,
+    provider: &dyn Provider,
+    session_id: Option<i64>,
+    question: &str,
+    emit: &(dyn Fn(&str, serde_json::Value) + Send + Sync),
+    cancel: &CancellationToken,
+) {
+    let Some(sid) = session_id else { return };
+    match db.session_title(sid) {
+        Ok(None) => {}
+        Ok(Some(_)) => return, // already named — never retitle
+        Err(e) => {
+            log::warn!("ask: session title read failed: {e}");
+            return;
+        }
+    }
+    let question: String = question.chars().take(TITLE_QUESTION_CAP).collect();
+    let msgs = [
+        ChatMessage::text(Role::System, TITLE_PROMPT),
+        ChatMessage::text(Role::User, question),
+    ];
+    let mut sink = |_: &str| {};
+    let reply = tokio::select! {
+        _ = cancel.cancelled() => return,
+        r = tokio::time::timeout(TITLE_TIMEOUT, provider.stream_chat(&msgs, &mut sink)) => r,
+    };
+    let title = match reply {
+        Ok(Ok(r)) => clean_title(&r.full),
+        Ok(Err(e)) => {
+            log::warn!("ask: title generation failed: {e}");
+            return;
+        }
+        Err(_) => {
+            log::warn!("ask: title generation timed out");
+            return;
+        }
+    };
+    if title.is_empty() {
+        return;
+    }
+    match db.session_set_title(sid, &title) {
+        Ok(true) => emit(EV_SESSIONS_CHANGED, json!({"id": sid})),
+        Ok(false) => {}
+        Err(e) => log::warn!("ask: session title write failed: {e}"),
+    }
+}
+
+/// The title reply → the row label: first line only, a `Title:` prefix
+/// or wrapping quotes stripped, trailing sentence punctuation dropped,
+/// capped at the old substr bound. Empty means "don't write".
+fn clean_title(raw: &str) -> String {
+    let mut line = raw.lines().next().unwrap_or_default().trim();
+    if let Some(rest) = line
+        .strip_prefix("Title:")
+        .or_else(|| line.strip_prefix("title:"))
+    {
+        line = rest.trim();
+    }
+    line = line
+        .trim_matches(|c: char| c == '"' || c == '`')
+        .trim_end_matches(['.', '…', '。', '!', '！', '?', '？'])
+        .trim_end();
+    line.chars().take(60).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1388,9 +1486,11 @@ mod tests {
         assert_eq!(msgs[1].role, "assistant");
         assert_eq!(msgs[1].content, "Hello world");
 
-        // One provider call, and its user message carried the image.
+        // The answer call's user message carried the image; the second
+        // call is the title sidecar (its empty default reply writes no
+        // title and emits no `sessions:changed`).
         let calls = calls.lock();
-        assert_eq!(calls.len(), 1);
+        assert_eq!(calls.len(), 2);
         assert_eq!(calls[0][1].role, Role::User);
         assert!(has_image(&calls[0][1]));
 
@@ -1429,7 +1529,8 @@ mod tests {
         .unwrap();
         assert_eq!(full, "ok");
         assert_eq!(first_calls.lock().len(), 1);
-        assert_eq!(second_calls.lock().len(), 1);
+        // The answer plus the title sidecar on the provider that spoke.
+        assert_eq!(second_calls.lock().len(), 2);
 
         // loading → (fail) → loading reset → streaming → done naming the
         // SECOND provider — no ask:error between the attempts.
@@ -1575,9 +1676,10 @@ mod tests {
         .unwrap();
         assert_eq!(full, "answer");
 
-        // Call 1 carried the image; the retry must be text-only.
+        // Call 1 carried the image; the retry must be text-only; call 3
+        // is the title sidecar.
         let calls = calls.lock();
-        assert_eq!(calls.len(), 2);
+        assert_eq!(calls.len(), 3);
         assert!(has_image(&calls[0][1]));
         assert!(!has_image(&calls[1][1]));
         assert_request_text(&calls[1][1], "q");
@@ -1729,7 +1831,7 @@ mod tests {
         .unwrap();
 
         let calls = calls.lock();
-        assert_eq!(calls.len(), 1);
+        assert_eq!(calls.len(), 2); // answer + title sidecar
         assert_request_text(&calls[0][1], "q");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1823,7 +1925,7 @@ mod tests {
         assert!(has_image(&vcalls[0][0]));
         drop(vcalls);
         let ccalls = chat_calls.lock();
-        assert_eq!(ccalls.len(), 1);
+        assert_eq!(ccalls.len(), 2); // answer + title sidecar
         let user = &ccalls[0][1];
         assert!(!has_image(user));
         assert_eq!(
@@ -1893,7 +1995,7 @@ mod tests {
         assert_eq!(full, "ok");
 
         let ccalls = chat_calls.lock();
-        assert_eq!(ccalls.len(), 1);
+        assert_eq!(ccalls.len(), 2); // answer + title sidecar
         assert!(has_image(&ccalls[0][1]));
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -2433,6 +2535,165 @@ mod tests {
         assert!(request.contains("the earliest decision"));
         assert!(request.contains(&format!("filler turn {}", HISTORY_TAIL + 4)));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The first answered send names a still-untitled session: the
+    /// provider that answered gets one extra call — [title prompt, raw
+    /// question] — its reply is cleaned, stored first-wins, and pinged
+    /// to the card after `idle`.
+    #[tokio::test]
+    async fn send_chain_titles_an_untitled_session() {
+        let dir = tmp_dir();
+        let db = Db::at(dir.join("marvis.db")).unwrap();
+        let provider = MockProvider::new(vec![
+            Behavior::Tokens(vec!["answer".into()]),
+            Behavior::Tokens(vec!["\"Capsule width fix\"\nignored".into()]),
+        ]);
+        let calls = provider.calls();
+        let (events, emit) = recorder();
+        let reader = screen_read::ScreenReader::new();
+        let ring = Mutex::new(RingBuffer::new(4, 1 << 20));
+        let input = input(&reader, &ring);
+        let cancel = CancellationToken::new();
+
+        send_chain(
+            vec![candidate("openai", provider)],
+            None,
+            &db,
+            &emit,
+            &input,
+            &cancel,
+            ChainOpts {
+                text: "how do I fix the capsule width?",
+                language: "en",
+                ..ChainOpts::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        let sid = db.session_active_id("ask").unwrap().unwrap();
+        assert_eq!(
+            db.session_title(sid).unwrap().as_deref(),
+            Some("Capsule width fix")
+        );
+
+        // The sidecar gets the raw question, not the context-wrapped
+        // wire text.
+        let calls = calls.lock();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[1][0].role, Role::System);
+        assert_request_text(&calls[1][1], "how do I fix the capsule width?");
+        drop(calls);
+
+        // The ping lands after `idle` — an open history list re-reads.
+        let got = events.lock().clone();
+        assert_eq!(
+            got[got.len() - 2..],
+            [
+                ev(EV_STATE, json!({"state": "idle"})),
+                ev(EV_SESSIONS_CHANGED, json!({"id": sid})),
+            ]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An already-titled session never retitles — the NULL guard
+    /// short-circuits before the provider sees a sidecar call.
+    #[tokio::test]
+    async fn send_chain_never_retitles_a_named_session() {
+        let dir = tmp_dir();
+        let db = Db::at(dir.join("marvis.db")).unwrap();
+        let sid = db.session_get_or_create_active("ask").unwrap();
+        assert!(db.session_set_title(sid, "already named").unwrap());
+        let provider = MockProvider::new(vec![Behavior::Tokens(vec!["ok".into()])]);
+        let calls = provider.calls();
+        let (events, emit) = recorder();
+        let reader = screen_read::ScreenReader::new();
+        let ring = Mutex::new(RingBuffer::new(4, 1 << 20));
+        let input = input(&reader, &ring);
+        let cancel = CancellationToken::new();
+
+        send_chain(
+            vec![candidate("openai", provider)],
+            None,
+            &db,
+            &emit,
+            &input,
+            &cancel,
+            ChainOpts {
+                text: "q",
+                language: "en",
+                ..ChainOpts::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(calls.lock().len(), 1); // the answer only — no title call
+        assert_eq!(
+            db.session_title(sid).unwrap().as_deref(),
+            Some("already named")
+        );
+        assert!(events.lock().iter().all(|(n, _)| n != EV_SESSIONS_CHANGED));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A failed title call writes nothing and emits nothing — the run
+    /// is unaffected and the next send retries.
+    #[tokio::test]
+    async fn send_chain_title_failure_keeps_the_fallback() {
+        let dir = tmp_dir();
+        let db = Db::at(dir.join("marvis.db")).unwrap();
+        let provider = MockProvider::new(vec![
+            Behavior::Tokens(vec!["ok".into()]),
+            Behavior::Fail(LlmError::Auth),
+        ]);
+        let (events, emit) = recorder();
+        let reader = screen_read::ScreenReader::new();
+        let ring = Mutex::new(RingBuffer::new(4, 1 << 20));
+        let input = input(&reader, &ring);
+        let cancel = CancellationToken::new();
+
+        send_chain(
+            vec![candidate("openai", provider)],
+            None,
+            &db,
+            &emit,
+            &input,
+            &cancel,
+            ChainOpts {
+                text: "q",
+                language: "en",
+                ..ChainOpts::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        let sid = db.session_active_id("ask").unwrap().unwrap();
+        assert_eq!(db.session_title(sid).unwrap(), None);
+        // The row still reads as its first question in the list, and
+        // no ping went out.
+        let session = db
+            .session_list()
+            .unwrap()
+            .into_iter()
+            .find(|s| s.id == sid)
+            .unwrap();
+        assert_eq!(session.title.as_deref(), Some("q"));
+        assert!(events.lock().iter().all(|(n, _)| n != EV_SESSIONS_CHANGED));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn clean_title_strips_wrapping_punctuation_and_caps() {
+        assert_eq!(clean_title("\"Capsule width fix\"\n"), "Capsule width fix");
+        assert_eq!(clean_title("Title: Deploy plan."), "Deploy plan");
+        assert_eq!(clean_title("`Quoted`\nrest"), "Quoted");
+        assert_eq!(clean_title(""), "");
+        assert_eq!(clean_title("  \nsecond line"), "");
+        assert_eq!(clean_title(&"x".repeat(80)).chars().count(), 60);
     }
 
     #[test]

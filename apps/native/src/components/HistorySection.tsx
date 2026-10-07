@@ -3,8 +3,9 @@
  * rows (chats + meetings). A chat row resumes that session and lands on
  * the Chat section; a listen row opens the finished document (or the
  * live capture when the session is still open). The list re-reads on
- * `listen:state` and on an ask run finishing (`ask:state{idle}`) — the
- * two mutations that change it while the card is up.
+ * `listen:state`, on an ask run finishing (`ask:state{idle}`), and on a
+ * generated session title landing (`sessions:changed`) — the mutations
+ * that change it while the card is up.
  */
 import { useEffect, useState } from 'react';
 import {
@@ -22,6 +23,7 @@ import {
 import {
   EV_ASK_STATE,
   EV_LISTEN_STATE,
+  EV_SESSIONS_CHANGED,
   useTauriEvent,
   type ListenStatePayload,
 } from '@/lib/events';
@@ -59,6 +61,9 @@ export const HistorySection = ({
   useTauriEvent<{ state: AskActivity }>(EV_ASK_STATE, (p) => {
     if (p.state === 'idle') refresh();
   });
+  // A generated title lands after the run's `idle` — re-read to swap
+  // the first-question fallback for it.
+  useTauriEvent<{ id: number }>(EV_SESSIONS_CHANGED, refresh);
 
   const openRow = (s: Session) => {
     if (s.kind === 'ask') {

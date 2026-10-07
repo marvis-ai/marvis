@@ -19,8 +19,10 @@
 //!
 //! `summaries` holds one row per session — the live summary is an upsert,
 //! not a version history: `created_at` stamps the first write,
-//! `updated_at` the latest. `sessions.title` is persisted (first ask user
-//! message / newest listen summary topic) rather than computed at read.
+//! `updated_at` the latest. `sessions.title` is persisted (an ask
+//! session's generated title / newest listen summary topic) rather than
+//! computed at read — a NULL ask title reads as the first user message
+//! via `session_list`'s COALESCE until the generated one lands.
 //!
 //! All timestamps are unix-epoch seconds (`i64`).
 
@@ -350,7 +352,8 @@ impl Db {
 
     /// Every session, most recently active first. `title` is
     /// COALESCE(stored title, first ask user message, latest listen summary
-    /// topic) — the fallback covers rows written before titles persisted.
+    /// topic) — the fallback covers untitled rows: pre-title writes and
+    /// ask sessions whose generated name hasn't landed yet.
     pub fn session_list(&self) -> anyhow::Result<Vec<Session>> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
@@ -402,6 +405,30 @@ impl Db {
             params![stt, id],
         )?;
         Ok(())
+    }
+
+    /// The stored title — `None` while the session's only label is the
+    /// `session_list` read-time fallback (ask: first user message).
+    pub fn session_title(&self, id: i64) -> anyhow::Result<Option<String>> {
+        Ok(self
+            .conn
+            .lock()
+            .query_row("SELECT title FROM sessions WHERE id = ?1", [id], |row| {
+                row.get(0)
+            })
+            .optional()?
+            .flatten())
+    }
+
+    /// First-write-wins title setter — the ask pipeline's generated name
+    /// lands only on a still-NULL title, so a title that already landed
+    /// (or a future rename) is never clobbered. Returns whether the
+    /// write happened.
+    pub fn session_set_title(&self, id: i64, title: &str) -> anyhow::Result<bool> {
+        Ok(self.conn.lock().execute(
+            "UPDATE sessions SET title = ?2 WHERE id = ?1 AND title IS NULL",
+            params![id, title],
+        )? > 0)
     }
 
     /// Delete a session; its child records cascade away via their FKs and
@@ -461,15 +488,6 @@ impl Db {
             "UPDATE sessions SET last_active_at = ?1 WHERE id = ?2",
             params![ts, session_id],
         )?;
-        if role == "user" {
-            // First question becomes the title — `title IS NULL` keeps a
-            // later write (or a user rename) from being clobbered.
-            conn.execute(
-                "UPDATE sessions SET title = substr(?2, 1, 60)
-                 WHERE id = ?1 AND title IS NULL",
-                params![session_id, content],
-            )?;
-        }
         Ok(conn.last_insert_rowid())
     }
 
@@ -790,7 +808,8 @@ fn migrate(conn: &Connection) -> anyhow::Result<()> {
             }
         }
         // Ask-session title backfill: first user message, matching the
-        // write-time rule in `message_add`.
+        // `session_list` fallback — rows written before generated titles
+        // keep the question label instead of paying for a title call.
         conn.execute_batch(
             "UPDATE sessions SET title = (
                SELECT substr(m.content, 1, 60) FROM messages m
@@ -1339,10 +1358,12 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The first user message titles the session once — later messages
-    /// don't rewrite it.
+    /// Messages no longer write titles — an ask session's stored title
+    /// stays NULL until the pipeline's generated name lands, and
+    /// `session_list` falls back to the first user message meanwhile.
+    /// `session_set_title` is first-write-wins.
     #[test]
-    fn first_user_message_sets_the_ask_title() {
+    fn ask_title_falls_back_until_a_generated_one_lands() {
         let dir = tmp_dir();
         let db = Db::at(dir.join("marvis.db")).unwrap();
         let sid = db.session_get_or_create_active("ask").unwrap();
@@ -1351,6 +1372,7 @@ mod tests {
         db.message_add(sid, "user", "first question").unwrap();
         db.message_add(sid, "user", "second question").unwrap();
 
+        assert_eq!(db.session_title(sid).unwrap(), None);
         let session = db
             .session_list()
             .unwrap()
@@ -1358,6 +1380,14 @@ mod tests {
             .find(|s| s.id == sid)
             .unwrap();
         assert_eq!(session.title.as_deref(), Some("first question"));
+
+        // The generated title lands once — later writes don't clobber.
+        assert!(db.session_set_title(sid, "Capsule fix").unwrap());
+        assert!(!db.session_set_title(sid, "later write").unwrap());
+        assert_eq!(
+            db.session_title(sid).unwrap().as_deref(),
+            Some("Capsule fix")
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

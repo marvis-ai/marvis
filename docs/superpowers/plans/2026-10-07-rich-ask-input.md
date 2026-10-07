@@ -1,34 +1,62 @@
 # Rich Ask Input + Formatted User Bubbles Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use
+> superpowers:subagent-driven-development (recommended) or
+> superpowers:executing-plans to implement this plan task-by-task.
+> Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** The Ask input live-highlights links, emails, and inline markdown marks while typing, and the sent user bubble renders the same formatting with clickable links — via one shared tokenizer.
+**Goal:** The Ask input live-highlights links, emails, and inline
+markdown marks while typing, and the sent user bubble renders the same
+formatting with clickable links — via one shared tokenizer.
 
-**Architecture:** A pure `tokenizeInline` in `src/lib/richtext.ts` produces flat, non-overlapping `{start, end, role, href?}` tokens. `RichText` (`src/components/shared/RichText.tsx`) renders tokens in two modes: `highlight` (spans, for the input overlay) and `interactive` (semantic elements + `openUrl` anchors, for user bubbles). `AskInput` keeps its real `<textarea>` — text goes transparent over a mirrored highlight `<div>` — so `useDictation`'s `selectionStart`-based caret math and the CJK IME handling are untouched.
+**Architecture:** A pure `tokenizeInline` in `src/lib/richtext.ts`
+produces flat, non-overlapping `{start, end, role, href?}` tokens.
+`RichText` (`src/components/shared/RichText.tsx`) renders tokens in two
+modes: `highlight` (spans, for the input overlay) and `interactive`
+(semantic elements + `openUrl` anchors, for user bubbles). `AskInput`
+keeps its real `<textarea>` — text goes transparent over a mirrored
+highlight `<div>` — so `useDictation`'s `selectionStart`-based caret
+math and the CJK IME handling are untouched.
 
 **Spec:** `docs/superpowers/specs/2026-10-07-rich-ask-input-design.md`
 
-**Tech Stack:** React 19, Tailwind CSS 4, `bun test`, `@tauri-apps/plugin-opener` (`openUrl`), no new dependencies.
+**Tech Stack:** React 19, Tailwind CSS 4, `bun test`,
+`@tauri-apps/plugin-opener` (`openUrl`), no new dependencies.
 
 ## Global Constraints
 
-- Package manager is **bun** (`bun test`, `bun run check-types` in `apps/native`).
-- Components are arrow functions with named exports; imports inside `apps/native/src` use the `@/` alias, never `../../`.
-- The textarea keeps a real editable surface — **do not** introduce `contenteditable` or an editor library.
-- **Metric-safe overlay styles only:** any property that changes glyph advance (font-weight, font-family, font-size, letter-spacing, padding on inline spans) desyncs the overlay from the invisible caret. Bold is faked with `-webkit-text-stroke`, italic with `skewX`, decoration via color/underline/background only.
-- Links in `interactive` mode open via `openUrl` from `@tauri-apps/plugin-opener` (the `Markdown.tsx` pattern) — never raw navigation.
-- `bun test` picks up `*.test.ts(x)` next to sources; test files start with `/// <reference types="bun-types" />` and import from `bun:test`.
+- Package manager is **bun** (`bun test`, `bun run check-types` in
+  `apps/native`).
+- Components are arrow functions with named exports; imports inside
+  `apps/native/src` use the `@/` alias, never `../../`.
+- The textarea keeps a real editable surface — **do not** introduce
+  `contenteditable` or an editor library.
+- **Metric-safe overlay styles only:** any property that changes glyph
+  advance (font-weight, font-family, font-size, letter-spacing, padding
+  on inline spans) desyncs the overlay from the invisible caret. Bold
+  is faked with `-webkit-text-stroke`, italic with `skewX`, decoration
+  via color/underline/background only.
+- Links in `interactive` mode open via `openUrl` from
+  `@tauri-apps/plugin-opener` (the `Markdown.tsx` pattern) — never raw
+  navigation.
+- `bun test` picks up `*.test.ts(x)` next to sources; test files start
+  with `/// <reference types="bun-types" />` and import from `bun:test`.
 
 ---
 
 ### Task 1: `tokenizeInline` tokenizer
 
 **Files:**
+
 - Create: `apps/native/src/lib/richtext.ts`
 - Test: `apps/native/src/lib/richtext.test.ts`
 
 **Interfaces:**
-- Produces: `TokenRole` (`'text' | 'mark' | 'strong' | 'em' | 'strike' | 'code' | 'url' | 'email' | 'link'`), `Token` (`{start, end, role, href?}`), `tokenizeInline(text: string): Token[]` — consumed by `RichText` in Task 2.
+
+- Produces: `TokenRole` (`'text' | 'mark' | 'strong' | 'em' | 'strike'
+  | 'code' | 'url' | 'email' | 'link'`), `Token` (`{start, end, role,
+  href?}`), `tokenizeInline(text: string): Token[]` — consumed by
+  `RichText` in Task 2.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -159,7 +187,8 @@ describe('tokenizeInline', () => {
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `cd apps/native && bun test src/lib/richtext.test.ts`
-Expected: FAIL — `Cannot find module './richtext'` (or `tokenizeInline is not a function`).
+Expected: FAIL — `Cannot find module './richtext'` (or
+`tokenizeInline is not a function`).
 
 - [ ] **Step 3: Implement `tokenizeInline`**
 
@@ -201,12 +230,15 @@ export interface Token {
 const INLINE = new RegExp(
   [
     '`(?<code>[^`]+)`',
-    '\\[(?<label>[^\\]\\n]+)\\]\\((?<target>(?:https?://|mailto:|www\\.)[^\\s)]+)\\)',
+    '\\[(?<label>[^\\]\\n]+)\\]' +
+      '\\((?<target>(?:https?://|mailto:|www\\.)[^\\s)]+)\\)',
     '(?<url>https?://[^\\s<>\'")\\]]+|www\\.[^\\s<>\'")\\]]+)',
     '(?<mail>[\\w.+-]+@[\\w-]+(?:\\.[\\w-]+)+)',
-    '(?<strong>\\*\\*(?=\\S)[\\s\\S]*?\\S\\*\\*|(?<![\\w])__(?=\\S)[\\s\\S]*?\\S__(?![\\w]))',
+    '(?<strong>\\*\\*(?=\\S)[\\s\\S]*?\\S\\*\\*' +
+      '|(?<![\\w])__(?=\\S)[\\s\\S]*?\\S__(?![\\w]))',
     '(?<strike>~~(?=\\S)[\\s\\S]*?\\S~~)',
-    '(?<em>\\*(?=\\S)[\\s\\S]*?\\S\\*|(?<![\\w])_(?=\\S)[\\s\\S]*?\\S_(?![\\w]))',
+    '(?<em>\\*(?=\\S)[\\s\\S]*?\\S\\*' +
+      '|(?<![\\w])_(?=\\S)[\\s\\S]*?\\S_(?![\\w]))',
   ].join('|'),
   'g',
 );
@@ -308,7 +340,7 @@ Expected: PASS — all 14 tests.
 
 ```bash
 cd apps/native && git add src/lib/richtext.ts src/lib/richtext.test.ts
-git commit -m "feat(native): inline tokenizer for links, emails, markdown marks"
+git commit -m "feat(native): inline richtext tokenizer"
 ```
 
 ---
@@ -316,18 +348,26 @@ git commit -m "feat(native): inline tokenizer for links, emails, markdown marks"
 ### Task 2: `RichText` token renderer
 
 **Files:**
+
 - Create: `apps/native/src/components/shared/RichText.tsx`
 - Test: `apps/native/src/components/shared/RichText.test.tsx`
 
 **Interfaces:**
-- Consumes: `tokenizeInline`, `Token`, `TokenRole` from `@/lib/richtext` (Task 1).
-- Produces: `RichText({ text, interactive }: { text: string; interactive?: boolean })` — Task 3 uses `<RichText text={value} />` (highlight mode), Task 4 uses `<RichText text={m.content} interactive />`.
 
-No `cn` import — the render is a flat role→class lookup, and keeping `@marvis/ui` out of the file keeps the bun test hermetic.
+- Consumes: `tokenizeInline`, `Token`, `TokenRole` from
+  `@/lib/richtext` (Task 1).
+- Produces: `RichText({ text, interactive }: { text: string;
+  interactive?: boolean })` — Task 3 uses `<RichText text={value} />`
+  (highlight mode), Task 4 uses `<RichText text={m.content}
+  interactive />`.
+
+No `cn` import — the render is a flat role→class lookup, and keeping
+`@marvis/ui` out of the file keeps the bun test hermetic.
 
 - [ ] **Step 1: Write the failing test**
 
-`apps/native/src/components/shared/RichText.test.tsx` (server-render assertions only — no DOM needed):
+`apps/native/src/components/shared/RichText.test.tsx` (server-render
+assertions only — no DOM needed):
 
 ```tsx
 /// <reference types="bun-types" />
@@ -354,9 +394,8 @@ describe('RichText', () => {
   });
 
   test('interactive mode renders anchors with resolved hrefs', () => {
-    const html = renderToStaticMarkup(
-      <RichText text='www.a.b and me@x.io and [docs](https://a.b)' interactive />,
-    );
+    const src = 'www.a.b and me@x.io and [docs](https://a.b)';
+    const html = renderToStaticMarkup(<RichText text={src} interactive />);
     expect(html).toContain('href="https://www.a.b"');
     expect(html).toContain('href="mailto:me@x.io"');
     expect(html).toContain('href="https://a.b"');
@@ -382,7 +421,11 @@ Expected: FAIL — `Cannot find module './RichText'`.
 ```tsx
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { useMemo, type ReactNode } from 'react';
-import { tokenizeInline, type Token, type TokenRole } from '@/lib/richtext';
+import {
+  tokenizeInline,
+  type Token,
+  type TokenRole,
+} from '@/lib/richtext';
 
 /**
  * Renders `tokenizeInline` output in two modes:
@@ -480,14 +523,14 @@ export const RichText = ({
 
 - [ ] **Step 4: Run tests + typecheck**
 
-Run: `cd apps/native && bun test src/components/shared/RichText.test.tsx src/lib/richtext.test.ts && bun run check-types`
+Run: `cd apps/native && bun test && bun run check-types`
 Expected: all PASS; typecheck clean.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd apps/native && git add src/components/shared/RichText.tsx src/components/shared/RichText.test.tsx
-git commit -m "feat(native): RichText renderer (highlight + interactive modes)"
+cd apps/native && git add src/components/shared/
+git commit -m "feat(native): RichText token renderer"
 ```
 
 ---
@@ -495,13 +538,20 @@ git commit -m "feat(native): RichText renderer (highlight + interactive modes)"
 ### Task 3: `AskInput` mirrored highlight overlay
 
 **Files:**
+
 - Modify: `apps/native/src/components/bar/AskInput.tsx`
 
 **Interfaces:**
+
 - Consumes: `RichText` from `@/components/shared/RichText` (Task 2).
 - Produces: unchanged public props — `Bar.tsx` needs no edits.
 
-Mechanics: the textarea goes `text-transparent` over an `absolute inset-0` overlay that renders the styled tokens with identical metrics; `scrollTop` is synced on `onScroll`; during an IME composition (`onCompositionStart`/`End`) the textarea briefly shows real `text-foreground` and the overlay hides, because `color: transparent` would also hide the CJK marked-text preview.
+Mechanics: the textarea goes `text-transparent` over an `absolute
+inset-0` overlay that renders the styled tokens with identical
+metrics; `scrollTop` is synced on `onScroll`; during an IME
+composition (`onCompositionStart`/`End`) the textarea briefly shows
+real `text-foreground` and the overlay hides, because
+`color: transparent` would also hide the CJK marked-text preview.
 
 - [ ] **Step 1: Replace the file**
 
@@ -568,7 +618,11 @@ export const AskInput = ({
   return (
     <div
       className={cn(
-        'relative min-w-0 flex-1 self-center transition-[max-width_var(--motion-base)_var(--ease),opacity_var(--motion-fast)_var(--ease),margin-inline_var(--motion-base)_var(--ease)] motion-reduce:transition-none',
+        'relative min-w-0 flex-1 self-center',
+        'transition-[max-width_var(--motion-base)_var(--ease),' +
+          'opacity_var(--motion-fast)_var(--ease),' +
+          'margin-inline_var(--motion-base)_var(--ease)]',
+        'motion-reduce:transition-none',
         visible
           ? 'max-w-full'
           : 'pointer-events-none -mx-0.75 max-w-0 opacity-0',
@@ -577,7 +631,8 @@ export const AskInput = ({
         ref={overlayRef}
         aria-hidden
         className={cn(
-          'pointer-events-none absolute inset-0 select-none overflow-hidden whitespace-pre-wrap wrap-break-word',
+          'pointer-events-none absolute inset-0 select-none',
+          'overflow-hidden whitespace-pre-wrap wrap-break-word',
           METRICS,
           cardOpen && 'pl-2',
           composing && 'opacity-0',
@@ -611,7 +666,10 @@ export const AskInput = ({
         placeholder='Ask Marvis…'
         aria-label='Ask Marvis'
         className={cn(
-          'field-sizing-content relative w-full resize-none self-center overflow-y-auto border-0 bg-transparent caret-accent outline-none select-text placeholder:text-muted-foreground focus-visible:shadow-none',
+          'field-sizing-content relative w-full resize-none self-center',
+          'overflow-y-auto border-0 bg-transparent caret-accent',
+          'outline-none select-text placeholder:text-muted-foreground',
+          'focus-visible:shadow-none',
           METRICS,
           composing ? 'text-foreground' : 'text-transparent',
           // Line cap: 2 inside the fixed-height pill (scrolls past),
@@ -624,7 +682,9 @@ export const AskInput = ({
 };
 ```
 
-Note the `relative` on the textarea is load-bearing: positioned elements paint above the earlier `absolute` overlay, keeping the caret and selection tint on top.
+Note the `relative` on the textarea is load-bearing: positioned
+elements paint above the earlier `absolute` overlay, keeping the caret
+and selection tint on top.
 
 - [ ] **Step 2: Typecheck**
 
@@ -633,13 +693,20 @@ Expected: clean.
 
 - [ ] **Step 3: Manual smoke — `bun run build:dev`**
 
-Type into the collapsed pill: `check https://marvis.ai and me@x.io`, then `**bold** _it_ `code` ~~gone~~`, then a `[docs](https://a.b)`. Expect: urls/emails accent+underlined, `**`/`_`/`` ` ``/`~~` dimmed with content stroked-bold / skewed / chipped / struck. Verify: caret sits correctly inside styled words, placeholder still shows when empty, Enter still submits, Shift+Enter newline, and — if a CJK IME is handy — the marked-text preview stays visible while composing. Type >2 lines and scroll: overlay tracks the textarea's scroll.
+Type into the collapsed pill: `check https://marvis.ai and me@x.io`,
+then `**bold** _it_`code`~~gone~~`, then a `[docs](https://a.b)`.
+Expect: urls/emails accent+underlined, `**`/`_`/`` ` ``/`~~` dimmed
+with content stroked-bold / skewed / chipped / struck. Verify: caret
+sits correctly inside styled words, placeholder still shows when
+empty, Enter still submits, Shift+Enter newline, and — if a CJK IME is
+handy — the marked-text preview stays visible while composing. Type
+>2 lines and scroll: overlay tracks the textarea's scroll.
 
 - [ ] **Step 4: Commit**
 
 ```bash
 cd apps/native && git add src/components/bar/AskInput.tsx
-git commit -m "feat(native): highlight links, emails, markdown marks live in the Ask input"
+git commit -m "feat(native): live highlight in the Ask input"
 ```
 
 ---
@@ -647,14 +714,19 @@ git commit -m "feat(native): highlight links, emails, markdown marks live in the
 ### Task 4: Formatted user bubble in `ChatSection`
 
 **Files:**
-- Modify: `apps/native/src/components/ChatSection.tsx` (user `<p>` around line 352)
+
+- Modify: `apps/native/src/components/ChatSection.tsx` (user `<p>`
+  around line 352)
 
 **Interfaces:**
-- Consumes: `RichText` from `@/components/shared/RichText` (Task 2), interactive mode.
+
+- Consumes: `RichText` from `@/components/shared/RichText` (Task 2),
+  interactive mode.
 
 - [ ] **Step 1: Import `RichText`**
 
-Add to the import block (component imports are grouped after the `lib/classes` import):
+Add to the import block (component imports are grouped after the
+`lib/classes` import):
 
 ```tsx
 import { ChatMsgMenu, type ChatMsgMeta } from '@/components/ChatMsgMenu';
@@ -666,7 +738,12 @@ import { RichText } from '@/components/shared/RichText';
 Replace the `<p>`'s `{m.content}` child:
 
 ```tsx
-<p className='max-w-[85%] rounded-2xl rounded-br-sm bg-accent/10 px-4 py-2 text-[14px] leading-normal wrap-break-word whitespace-pre-wrap select-text text-accent'>
+<p
+  className={cn(
+    'max-w-[85%] rounded-2xl rounded-br-sm bg-accent/10 px-4 py-2',
+    'text-[14px] leading-normal wrap-break-word whitespace-pre-wrap',
+    'select-text text-accent',
+  )}>
   <RichText text={m.content} interactive />
 </p>
 ```
@@ -678,13 +755,17 @@ Expected: clean; all tests pass.
 
 - [ ] **Step 4: Manual smoke — `bun run build:dev`**
 
-Send a message containing `https://marvis.ai`, `me@x.io`, `**bold**`, `_it_`, `` `code` ``, `~~gone~~`, `[docs](https://a.b)`. Expect the sent bubble to show clickable underlined links (opening in the system browser), real bold/italic/code/strike, and no visible `**`/`_` marks. Copy button still copies raw text.
+Send a message containing `https://marvis.ai`, `me@x.io`, `**bold**`,
+`_it_`, `` `code` ``, `~~gone~~`, `[docs](https://a.b)`. Expect the
+sent bubble to show clickable underlined links (opening in the system
+browser), real bold/italic/code/strike, and no visible `**`/`_` marks.
+Copy button still copies raw text.
 
 - [ ] **Step 5: Commit**
 
 ```bash
 cd apps/native && git add src/components/ChatSection.tsx
-git commit -m "feat(native): render markdown marks and links in user chat bubbles"
+git commit -m "feat(native): formatted user chat bubbles"
 ```
 
 ---
@@ -700,11 +781,17 @@ Expected: all pass, clean.
 
 - [ ] **Step 2: Pill ↔ card transitions**
 
-Run `bun run build:dev`. Focus the input to open the card, collapse back to the pill — the `max-w-0` collapse animation still runs on the wrapper and the overlay doesn't ghost outside it. Resize between states with styled text present.
+Run `bun run build:dev`. Focus the input to open the card, collapse
+back to the pill — the `max-w-0` collapse animation still runs on the
+wrapper and the overlay doesn't ghost outside it. Resize between
+states with styled text present.
 
 - [ ] **Step 3: Dictation regression check**
 
-Start dictation (mic button), dictate a phrase containing "at gmail dot com" or similar — dictated drafts still insert at the caret and pick up highlighting. The `useDictation` selection tracker was untouched, but confirm visually.
+Start dictation (mic button), dictate a phrase containing "at gmail
+dot com" or similar — dictated drafts still insert at the caret and
+pick up highlighting. The `useDictation` selection tracker was
+untouched, but confirm visually.
 
 - [ ] **Step 4: Done**
 

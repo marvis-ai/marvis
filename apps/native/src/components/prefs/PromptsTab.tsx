@@ -51,10 +51,7 @@ export const PromptsTab = ({ data }: { data: PrefsData }) => {
   const [editing, setEditing] = useState<Preset | null>(null);
   const [isNew, setIsNew] = useState(false);
 
-  const write = (next: Preset[]) =>
-    void configSet('prompts.custom', next)
-      .then(data.setConfig)
-      .catch(() => {});
+  const write = (next: Preset[]) => configSet('prompts.custom', next);
 
   const startNew = () => {
     setIsNew(true);
@@ -71,8 +68,14 @@ export const PromptsTab = ({ data }: { data: PrefsData }) => {
     const next = isNew
       ? [...customs, clean]
       : customs.map((p) => (p.id === clean.id ? clean : p));
-    write(next);
-    setEditing(null);
+    // Close only on success — a rejected write keeps the editor open so
+    // the draft isn't silently lost.
+    void write(next)
+      .then((c) => {
+        data.setConfig(c);
+        setEditing(null);
+      })
+      .catch(() => {});
   };
 
   return (
@@ -113,7 +116,11 @@ export const PromptsTab = ({ data }: { data: PrefsData }) => {
               type='button'
               aria-label={`Delete ${p.name}`}
               className={ICON_BTN}
-              onClick={() => write(customs.filter((x) => x.id !== p.id))}>
+              onClick={() =>
+                void write(customs.filter((x) => x.id !== p.id))
+                  .then(data.setConfig)
+                  .catch(() => {})
+              }>
               <Trash2Icon className='size-3.5' />
             </button>
           </PrefRow>
@@ -129,6 +136,7 @@ export const PromptsTab = ({ data }: { data: PrefsData }) => {
             <div className='flex items-center gap-3'>
               <input
                 aria-label='Preset name'
+                maxLength={24}
                 placeholder='Name — also the /name'
                 className={cn(INPUT, 'w-48')}
                 value={editing.name}
@@ -145,6 +153,7 @@ export const PromptsTab = ({ data }: { data: PrefsData }) => {
             </div>
             <textarea
               aria-label='Preset text'
+              maxLength={2000}
               placeholder={
                 editing.kind === 'instruct'
                   ? 'Instruction appended to the send — e.g. Answer like a skeptical reviewer.'
@@ -154,6 +163,12 @@ export const PromptsTab = ({ data }: { data: PrefsData }) => {
               value={editing.text}
               onChange={(e) => setEditing({ ...editing, text: e.target.value })}
             />
+            {editing.kind === 'template' && (
+              <div className={PR_SUB}>
+                <code>{'{input}'}</code> expands to the typed message,{' '}
+                <code>{'{lang}'}</code> to your main language.
+              </div>
+            )}
             <div className='flex justify-end gap-2'>
               <button
                 type='button'

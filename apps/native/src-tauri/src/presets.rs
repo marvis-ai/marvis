@@ -139,6 +139,10 @@ pub fn validate(p: &Preset) -> Result<(), String> {
             p.id
         ));
     }
+    // The bare prefix names nothing — `u:` must carry a suffix.
+    if p.id.len() == 2 {
+        return Err(format!("custom preset id {:?} has an empty suffix", p.id));
+    }
     Ok(())
 }
 
@@ -236,5 +240,7 @@ mod tests {
         long_text.text = "t".repeat(2001);
         assert!(validate_custom(vec![long_text]).is_err());
         assert!(validate_custom(vec![custom("b:zzz", "x", PresetKind::Instruct)]).is_err());
+        // The bare `u:` prefix with no suffix names nothing.
+        assert!(validate_custom(vec![custom("u:", "x", PresetKind::Instruct)]).is_err());
     }
 }

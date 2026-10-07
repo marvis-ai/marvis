@@ -62,7 +62,7 @@ interface AskStatePayload {
   /** Present on `loading` — the submitted question (ask.rs). */
   question?: string;
   /** Present on `send_chain`'s `loading` — the armed preset id
-   *  (ask.rs); absent on a bare retry's `loading`. */
+   *  (ask.rs); absent on `pre_spawn_error`'s `loading` emit. */
   preset?: string | null;
 }
 

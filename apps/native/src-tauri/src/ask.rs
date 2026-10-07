@@ -29,7 +29,8 @@
 //!   `"question"` so the card resets its buffer + header per run AND
 //!   per failover retry (pre-flight errors emit `loading` → `error` →
 //!   `idle` too); `send_chain`'s `loading`s also carry `"preset"` —
-//!   the armed `instruct` preset id, `null` for a plain send.
+//!   the armed `instruct` preset id, `null` for a plain send or an id
+//!   that didn't resolve.
 //! - `ask:chunk` `{"text": token}` per token.
 //! - `ask:done` `{"full": full_reply, "provider": id, "model": id,
 //!   "usage": {"input": n?, "output": n?} | null}` on success — the pair
@@ -145,8 +146,9 @@ pub struct Deps<'a> {
 /// re-ask-the-last-turn mode; `listen_id` binds the send to a listen
 /// doc's own ask session (`send` only — a retry inherits the link from
 /// its session row); `preset` is the armed `instruct` preset's id
-/// (`presetId` invoke arg) — resolved to its text inside `kick` and
-/// persisted on the user row so `retry` re-arms it.
+/// (`presetId` invoke arg) — resolved to its text inside `kick`; only a
+/// RESOLVED id persists on the user row (so `retry` re-arms it) and
+/// rides the `loading` emits.
 #[derive(Default)]
 pub(crate) struct SendOpts<'a> {
     pub text: &'a str,
@@ -397,7 +399,11 @@ impl AskService {
         let reader = Arc::clone(&deps.reader);
         let ring = Arc::clone(&deps.ring);
         let capture_running = deps.capture_running;
-        let preset_id = preset; // Option<String> → moved into the task
+        // `None` when the id didn't resolve — a stale/deleted preset
+        // must not persist `preset = "u:dead"` on the user row or claim
+        // steering it never applied in the `loading` emits (the send
+        // itself still proceeds per the warn above).
+        let preset_id = preset.filter(|_| instruction.is_some());
         tauri::async_runtime::spawn(async move {
             // Outgoing events also fold into Rust-side state — but only
             // while this run is the current generation; a cancelled
@@ -521,8 +527,8 @@ pub(crate) struct ChainOpts<'a> {
     pub language: &'a str,
     /// Resolved `instruct` preset text — appended to the system prompt.
     pub instruction: Option<&'a str>,
-    /// The armed preset id — persisted on the user row so `retry`
-    /// re-resolves it.
+    /// The armed preset id — `None` when it didn't resolve; persisted
+    /// on the user row so `retry` re-resolves it.
     pub preset_id: Option<&'a str>,
 }
 
@@ -1578,7 +1584,7 @@ mod tests {
         let db = Db::at(dir.join("marvis.db")).unwrap();
         let provider = MockProvider::new(vec![Behavior::Tokens(vec!["ok".into()])]);
         let calls = provider.calls();
-        let (_events, emit) = recorder();
+        let (events, emit) = recorder();
         let reader = screen_read::ScreenReader::new();
         let ring = Mutex::new(RingBuffer::new(4, 1 << 20));
         let input = input(&reader, &ring);
@@ -1611,6 +1617,15 @@ mod tests {
             };
             assert!(system.contains("Be terse."));
         }
+
+        // The `loading` emit announces the armed id to the card.
+        assert_eq!(
+            events.lock()[0],
+            ev(
+                EV_STATE,
+                json!({"state": "loading", "question": "hi", "preset": "b:concise"})
+            )
+        );
 
         // The armed id persists on the user row — `retry` re-resolves it.
         let sid = db.session_active_id("ask").unwrap().unwrap();

@@ -22,6 +22,7 @@ import {
   ICON_BTN,
   PRF_ROW,
   PRF_ROWS,
+  PROV_ERR,
   PR_LABEL,
   PR_SUB,
   SUB,
@@ -50,11 +51,15 @@ export const PromptsTab = ({ data }: { data: PrefsData }) => {
 
   const [editing, setEditing] = useState<Preset | null>(null);
   const [isNew, setIsNew] = useState(false);
+  /** A rejected `prompts.custom` write — the server string is already
+   *  user-surfaceable (`presets::validate_custom`). */
+  const [saveError, setSaveError] = useState('');
 
   const write = (next: Preset[]) => configSet('prompts.custom', next);
 
   const startNew = () => {
     setIsNew(true);
+    setSaveError('');
     setEditing({ id: mintId(), name: '', kind: 'instruct', text: '' });
   };
   const save = () => {
@@ -69,13 +74,14 @@ export const PromptsTab = ({ data }: { data: PrefsData }) => {
       ? [...customs, clean]
       : customs.map((p) => (p.id === clean.id ? clean : p));
     // Close only on success — a rejected write keeps the editor open so
-    // the draft isn't silently lost.
+    // the draft isn't silently lost, and says why.
+    setSaveError('');
     void write(next)
       .then((c) => {
         data.setConfig(c);
         setEditing(null);
       })
-      .catch(() => {});
+      .catch((e) => setSaveError(typeof e === 'string' ? e : 'Save failed'));
   };
 
   return (
@@ -108,6 +114,7 @@ export const PromptsTab = ({ data }: { data: PrefsData }) => {
               className={cn(BTN_SM, BTN_OUTLINE)}
               onClick={() => {
                 setIsNew(false);
+                setSaveError('');
                 setEditing(p);
               }}>
               Edit
@@ -169,6 +176,7 @@ export const PromptsTab = ({ data }: { data: PrefsData }) => {
                 <code>{'{lang}'}</code> to your main language.
               </div>
             )}
+            {saveError && <p className={PROV_ERR}>{saveError}</p>}
             <div className='flex justify-end gap-2'>
               <button
                 type='button'
@@ -191,7 +199,8 @@ export const PromptsTab = ({ data }: { data: PrefsData }) => {
               <div className={PR_LABEL}>New preset</div>
               <div className={PR_SUB}>
                 Name it something short — it becomes the <code>/name</code>{' '}
-                shorthand too.
+                shorthand too (<code>Reply nicely</code> →{' '}
+                <code>/reply-nicely</code>).
               </div>
             </div>
             <span className='inline-flex flex-none items-center gap-2'>

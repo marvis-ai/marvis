@@ -140,7 +140,15 @@ const Bar = () => {
    *  menu and the `/name` shorthand; `armed` is the per-send instruct
    *  preset chip. `mainLang` feeds `{lang}` template expansion. */
   const [presets, setPresets] = useState<Preset[]>([]);
-  const [armedPreset, setArmedPreset] = useState<Preset | null>(null);
+  const [armedPreset, setArmedPresetState] = useState<Preset | null>(null);
+  /** Live mirror of `armedPreset` for `sendAsk` — `dictation.submit`
+   *  can defer the send behind a settling stop, so the render-time
+   *  state would read stale there (same shape as `textRef`). */
+  const armedPresetRef = useRef<Preset | null>(null);
+  const setArmedPreset = (p: Preset | null) => {
+    armedPresetRef.current = p;
+    setArmedPresetState(p);
+  };
   const [mainLang, setMainLang] = useState('en');
 
   const { cardOpen } = useCardGeometry(cardRef, stageRef);
@@ -190,6 +198,12 @@ const Bar = () => {
     section !== 'history' &&
     !bootError &&
     gate !== 'needs_permission';
+  /** Live mirror of `inputRendered` for `bar:preset-pick` — the event
+   *  can land between a render and the listener's closure refresh
+   *  (a pick on a surface whose composer just unmounted must no-op,
+   *  same as the context-menu gate). */
+  const inputRenderedRef = useRef(inputRendered);
+  inputRenderedRef.current = inputRendered;
   /** The row's control set for this surface — `bar-state.ts` owns the
    *  contract, the conditionals below consume it so the two can't
    *  drift. */
@@ -379,14 +393,22 @@ const Bar = () => {
   const applyPreset = (p: Preset) => {
     dictation.discard();
     if (p.kind === 'template') {
-      setText(expandTemplate(p.text, textRef.current, langName(mainLang)));
+      // A leftover `/` (the send-time menu shortcut leaves it in the
+      // field) isn't an argument — expand against empty input.
+      const input = textRef.current.trim() === '/' ? '' : textRef.current;
+      setText(expandTemplate(p.text, input, langName(mainLang)));
     } else {
       setArmedPreset(p);
     }
     inputRef.current?.focus();
   };
   useTauriEvent<Preset>(EV_PRESET_PICK, (p) => {
-    if (dictation.state === 'listening') return;
+    // The native menu outlives the webview's render — a pick landing
+    // after the composer unmounted (history card, gate/error rows)
+    // must no-op rather than mutate a hidden field.
+    if (dictation.state === 'listening' || !inputRenderedRef.current) {
+      return;
+    }
     applyPreset(p);
   });
 
@@ -422,7 +444,7 @@ const Bar = () => {
    *  from the listen card binds to that doc's own chat — the viewed
    *  session's id, else the live session's. */
   const sendAsk = async (withScreen = false, question?: string) => {
-    let presetId = armedPreset?.id;
+    let presetId = armedPresetRef.current?.id;
     if (question === undefined) {
       const raw = textRef.current;
       // Bare `/` opens the preset menu instead of sending a slash.
@@ -440,10 +462,14 @@ const Bar = () => {
           setText(expandTemplate(hit.preset.text, rest, langName(mainLang)));
           return;
         }
-        setArmedPreset(hit.preset);
         setText(rest);
         presetId = hit.preset.id;
-        if (!rest) return; // armed — the request is still to come
+        if (!rest) {
+          // Armed — the request is still to come. A send that fires
+          // skips the arm entirely (the one-shot clear below owns it).
+          setArmedPreset(hit.preset);
+          return;
+        }
       }
     }
     const t = (question ?? textRef.current).trim();
@@ -829,9 +855,10 @@ const Bar = () => {
       onContextMenu={(e) => {
         e.preventDefault();
         if (gate !== 'main') return;
-        // The input row's right-click is the preset picker; the idle
-        // capsule's is the shared menu.
-        if (showInputRow) {
+        // The composer's right-click is the preset picker; surfaces
+        // without one (idle capsule, history card, gate/error rows)
+        // get the shared menu — a pick needs a field to land in.
+        if (inputRendered) {
           void presetsMenu().catch(() => {});
         } else {
           void barContextMenu().catch(() => {});

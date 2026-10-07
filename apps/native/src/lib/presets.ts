@@ -7,8 +7,9 @@
 import type { Preset } from './commands';
 
 /** The caret-0 `/token`: `text` starts with `/`; the token is the
- *  `[a-z0-9-]` run after it (case-insensitive — `/Sum` and `/sum` are
- *  the same token); `rest` is everything that follows (leading
+ *  `[a-z0-9-]` run after it — the `i` flag admits A–Z too, so `token`
+ *  keeps its typed case (`/Sum` → `Sum`; `matchPreset` lowercases for
+ *  the compare). `rest` is everything that follows (leading
  *  whitespace included). `null` when text isn't a slash command. */
 export const slashToken = (
   text: string,
@@ -18,9 +19,21 @@ export const slashToken = (
   return { token: m[1], rest: m[2] };
 };
 
+/** A name's `/`-token form — lowercase, each non-`[a-z0-9]` run
+ *  collapses to one `-`, edges trimmed (`Reply nicely` →
+ *  `reply-nicely`, `Devil's advocate` → `devil-s-advocate`). Customs
+ *  have no memorable id suffix, so this keeps spaced/punctuated names
+ *  typeable inside the token charset. */
+export const presetToken = (name: string): string =>
+  name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+
 /** First preset matching `token` — full id, id suffix (`b:sum` →
- *  `sum`), or name, all case-insensitive; list order is the catalog's
- *  (built-ins then customs), so a custom never shadows a built-in. */
+ *  `sum`), name, or the name's `presetToken` slug, all
+ *  case-insensitive; list order is the catalog's (built-ins then
+ *  customs), so a custom never shadows a built-in. */
 export const matchPreset = (
   token: string,
   presets: Preset[],
@@ -32,7 +45,8 @@ export const matchPreset = (
       (p) =>
         p.id.toLowerCase() === t ||
         p.id.split(':')[1]?.toLowerCase() === t ||
-        p.name.toLowerCase() === t,
+        p.name.toLowerCase() === t ||
+        presetToken(p.name) === t,
     ) ?? null
   );
 };

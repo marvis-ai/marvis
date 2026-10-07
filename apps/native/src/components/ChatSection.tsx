@@ -137,6 +137,9 @@ const rowsToMsgs = (rows: Message[]): ChatMsg[] =>
       tokensOut: r.tokens_out,
     }));
 
+/** Show the active chat's saved and streaming messages, with interactive
+ *  inline formatting for user text and Markdown for assistant replies.
+ *  The header's Back action delegates to `onBack`. */
 export const ChatSection = ({ onBack }: { onBack: () => void }) => {
   const [msgs, setMsgs] = useState<ChatMsg[]>([]);
   const [phase, setPhase] = useState<AskPhase>('idle');

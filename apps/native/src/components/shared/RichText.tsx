@@ -30,6 +30,9 @@ const HL: Record<Exclude<TokenRole, 'text'>, string> = {
 
 const CODE_CHIP = 'rounded-[3px] bg-fg-soft px-0.5 font-mono text-[0.92em]';
 
+/** Render inline rich text, preserving all characters for input highlighting.
+ *  `interactive` hides parsed marks and opens links through the Tauri opener
+ *  on click; opener failures are not caught or displayed here. */
 export const RichText = ({
   text,
   interactive = false,

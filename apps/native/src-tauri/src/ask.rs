@@ -524,9 +524,13 @@ pub(crate) struct ChainOpts<'a> {
 /// Db failures are `log::warn`ed and ignored — a storage hiccup must
 /// never block the stream.
 ///
-/// Resolves to the full assistant text. Cancel resolves to a
+/// Resolves to the full assistant text. Cancellation before an answer returns a
 /// `status:0`/`"cancelled"` [`LlmError::Http`] sentinel — the events, not
 /// the return value, drive the UI.
+/// Exhausting the chain returns the last provider error, or
+/// [`LlmError::NoModel`] for an empty chain. Success waits for the title
+/// attempt after emitting `idle`; title failures do not change the answer,
+/// and title usage is excluded from the reported turn usage.
 ///
 /// `regenerate` (ask_retry): the run re-asks the session's last user
 /// row instead of persisting a new one, and the rejected reply's row is
@@ -1142,6 +1146,9 @@ fn persist_assistant_message(
 /// history row keeps the first-question fallback. `sessions:changed`
 /// goes out through the run's gen-guarded `emit` — a stale run's ping
 /// drops, but the next run's `idle` refresh picks the title up anyway.
+/// Only the first 1,000 Unicode scalar values of `question` are sent.
+/// The provider call has a 30-second deadline; cancellation, timeout,
+/// provider/storage errors, or an empty cleaned title leave it unwritten.
 async fn maybe_title_session(
     db: &Db,
     provider: &dyn Provider,
@@ -1190,9 +1197,9 @@ async fn maybe_title_session(
     }
 }
 
-/// The title reply → the row label: first line only, a `Title:` prefix
-/// or wrapping quotes stripped, trailing sentence punctuation dropped,
-/// capped at the old substr bound. Empty means "don't write".
+/// Turn the trimmed first reply line into a label: strip `Title:` or
+/// `title:`, then edge double quotes/backticks, then trailing `. … 。 ! ！ ? ？`
+/// and whitespace. Cap at 60 Unicode scalar values. Empty means "don't write".
 fn clean_title(raw: &str) -> String {
     let mut line = raw.lines().next().unwrap_or_default().trim();
     if let Some(rest) = line

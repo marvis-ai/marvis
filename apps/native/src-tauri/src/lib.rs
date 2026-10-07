@@ -1971,6 +1971,11 @@ fn capture_stop(app: AppHandle) -> serde_json::Value {
 /// (window / display / application) — same UI Zoom shows. Marvis's own
 /// bundle id is excluded so it can never offer itself. Cancel is a
 /// silent no-op; `capture:state` reports the picked `target`.
+/// Display picks are re-resolved to exclude Marvis windows; if that fails,
+/// capture uses the picker's original filter without that exclusion.
+/// A valid pick replaces a running capture only while the gate remains Main;
+/// a pick arriving during a gate transition is discarded. Picker and dispatch
+/// failures do not propagate to the caller.
 ///
 /// The picker is a main-thread API (its config setters require it), so
 /// the command hops via `run_on_main_thread`; `show` is non-blocking

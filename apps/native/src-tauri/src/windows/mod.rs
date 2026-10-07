@@ -880,6 +880,11 @@ fn accent_glass_tint(accent: &str) -> Option<String> {
     (accent.len() == 7 && accent.starts_with('#')).then(|| format!("{accent}15"))
 }
 
+/// Build a hidden overlay for `index.html?view={label}`, sized in logical
+/// pixels by `w` and `h`. On macOS, `corner_radius` and `tint_color` configure
+/// the glass surface. On Windows, request capture protection when a Marvis
+/// capture guard is held. Window creation errors propagate; workspace,
+/// capture-protection, and material failures do not prevent returning the window.
 fn build_window(
     app: &AppHandle,
     label: &str,
@@ -989,6 +994,8 @@ fn set_glass_radius(app: &AppHandle, win: &WebviewWindow, corner_radius: f64) {
 /// `CloseRequested` is intercepted into a hide: the window is owned by
 /// the pool for the app's lifetime, so the red light must not destroy
 /// the webview (a fresh build would lose scroll/tab state).
+/// Returns the window hidden. Window creation errors propagate; workspace,
+/// capture-protection, and material failures do not prevent returning the window.
 fn build_prefs_window(app: &AppHandle) -> anyhow::Result<WebviewWindow> {
     let url = WebviewUrl::App(format!("index.html?view={PREFS_LABEL}").into());
     let builder = WebviewWindowBuilder::new(app, PREFS_LABEL, url)

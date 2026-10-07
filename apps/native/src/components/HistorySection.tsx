@@ -34,6 +34,9 @@ import { ConfirmButton } from '@/components/shared/ConfirmButton';
 import { relTime, type ListenViewing } from '@/components/listen/model';
 import { EmptyState } from '@/components/shared/EmptyState';
 
+/** List chats and meetings, refreshing on session activity and title changes.
+ *  Chat rows resume before navigation and are disabled while `askBusy`.
+ *  Failed list, resume, or delete requests leave the current view in place. */
 export const HistorySection = ({
   askBusy,
   onOpenChat,

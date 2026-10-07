@@ -117,6 +117,7 @@ const trimUrlTail = (raw: string): string => {
   return s;
 };
 
+/** Append a token to `out` only when its end offset exceeds its start. */
 const push = (
   out: Token[],
   start: number,
@@ -127,6 +128,13 @@ const push = (
   if (end > start) out.push({ start, end, role, href });
 };
 
+/** Split inline marks, links, and emails into ordered, non-overlapping
+ *  tokens covering `text`. Offsets are UTF-16 code units, with an
+ *  exclusive end, suitable for `text.slice(start, end)`. Matched content
+ *  is not parsed recursively; unmatched text stays literal. Delimiters
+ *  are separate `mark` tokens, and empty input returns no tokens.
+ *  Link hrefs add `https://` to `www.` targets and `mailto:` to emails;
+ *  trailing punctuation trimmed from bare URLs remains plain text. */
 export const tokenizeInline = (text: string): Token[] => {
   const out: Token[] = [];
   let cursor = 0;

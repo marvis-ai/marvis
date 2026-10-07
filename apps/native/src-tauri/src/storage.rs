@@ -414,6 +414,8 @@ impl Db {
 
     /// The stored title — `None` while the session's only label is the
     /// `session_list` read-time fallback (ask: first user message).
+    /// Also returns `None` when `id` does not exist. Database query and
+    /// value-conversion errors propagate to the caller.
     pub fn session_title(&self, id: i64) -> anyhow::Result<Option<String>> {
         Ok(self
             .conn
@@ -428,7 +430,9 @@ impl Db {
     /// First-write-wins title setter — the ask pipeline's generated name
     /// lands only on a still-NULL title, so a title that already landed
     /// (or a future rename) is never clobbered. Returns whether the
-    /// write happened.
+    /// write happened; `false` also covers a missing session. Stores
+    /// `title` verbatim, including an empty string, without updating activity.
+    /// Database update errors propagate to the caller.
     pub fn session_set_title(&self, id: i64, title: &str) -> anyhow::Result<bool> {
         Ok(self.conn.lock().execute(
             "UPDATE sessions SET title = ?2 WHERE id = ?1 AND title IS NULL",
@@ -464,6 +468,10 @@ impl Db {
     }
 
     /// `message_add` + the assistant-row provenance/spend columns.
+    /// Returns the inserted row id and updates the session's last-active
+    /// time without setting its title. Database errors propagate, including
+    /// a foreign-key error for a missing session; if the activity update
+    /// fails, the inserted message remains stored.
     pub fn message_add_meta(
         &self,
         session_id: i64,

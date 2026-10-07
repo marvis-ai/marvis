@@ -62,6 +62,7 @@ static CAPTURE_DEPTH: Mutex<usize> = Mutex::new(0);
 /// Whether a Marvis capture session is live — `build_window` reads
 /// this so a window born mid-capture starts protected instead of
 /// leaking into the stream until it ends.
+/// Reports a held protection guard, not whether Windows applied the affinity.
 pub(crate) fn protection_engaged() -> bool {
     *CAPTURE_DEPTH.lock() > 0
 }
@@ -71,6 +72,8 @@ pub(crate) fn protection_engaged() -> bool {
 struct SelfProtection;
 
 impl SelfProtection {
+    /// Hold capture protection, attempting to exclude Marvis windows on the
+    /// first acquisition. OS failures are ignored; the guard still counts.
     fn acquire() -> Self {
         let mut depth = CAPTURE_DEPTH.lock();
         if *depth == 0 {
@@ -82,6 +85,8 @@ impl SelfProtection {
 }
 
 impl Drop for SelfProtection {
+    /// Release this guard, attempting to restore capture visibility when
+    /// the last guard drops. OS failures are ignored.
     fn drop(&mut self) {
         let mut depth = CAPTURE_DEPTH.lock();
         *depth -= 1;
@@ -94,6 +99,8 @@ impl Drop for SelfProtection {
 /// Flip display affinity on every Marvis-owned HWND. Enumeration is
 /// fresh on each call — pool windows live for the app's lifetime, so
 /// the set only changes when a lazy window (picker/prefs) is built.
+/// `true` requests capture exclusion; `false` clears it. Enumeration,
+/// process lookup, and display-affinity failures are silently ignored.
 fn set_own_windows_protected(protected: bool) {
     let Ok(windows) = Window::enumerate() else {
         return;
@@ -243,6 +250,10 @@ impl WindowsCapture {
 }
 
 impl FrameSource for WindowsCapture {
+    /// Consume the source and deliver encoded frames to `on_frame` on a worker
+    /// thread, holding best-effort window exclusion until stopped. Later calls
+    /// do nothing, even after a failed start. WGC startup errors are swallowed
+    /// after cleanup, so callers must check `is_running`.
     fn start(&self, on_frame: Box<dyn Fn(Frame) + Send>) {
         let Some(source) = self.source.lock().take() else {
             log::warn!("capture: WindowsCapture already consumed");
@@ -304,8 +315,10 @@ impl Drop for WindowsCapture {
 
 /// One-shot capture of a resolved `Source` — picker thumbnails and the
 /// "read my screen" path share it. `Ok(None)` means WGC produced no
-/// frame within [`ONESHOT_TIMEOUT`] (occluded/minimized targets can
-/// legitimately do that).
+/// frame within [`ONESHOT_TIMEOUT`] or the frame channel disconnected
+/// (occluded/minimized targets may produce no frame). `fps` is the requested
+/// maximum frames per second, floored at one. Holds best-effort Marvis window
+/// exclusion for the call. WGC startup errors propagate; stop errors are ignored.
 fn oneshot_capture(source: Source, fps: u32) -> Result<Option<RawFrame>> {
     let _protection = SelfProtection::acquire();
     let (tx, rx) = mpsc::sync_channel(FRAME_QUEUE);

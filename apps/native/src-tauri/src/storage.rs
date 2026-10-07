@@ -471,6 +471,7 @@ impl Db {
     }
 
     /// Append a message to a session; returns the new row id.
+    #[allow(dead_code)] // test convenience — prod writes carry `MessageMeta`
     pub fn message_add(&self, session_id: i64, role: &str, content: &str) -> anyhow::Result<i64> {
         self.message_add_meta(session_id, role, content, &MessageMeta::default())
     }

@@ -680,7 +680,9 @@ fn deeplink_dispatch(app: &AppHandle) -> impl Fn(deeplink::Action) + Send + Sync
                 if let Some(bar) = bar {
                     let _ = bar.set_focus();
                 }
-                state.ask.send(&app, &state.deps(), &text, false, None);
+                state
+                    .ask
+                    .send(&app, &state.deps(), &text, false, None, None);
             } else {
                 // Not ready yet — if the bar is visible (onboarding done,
                 // permission pending) surface its gate card instead of
@@ -1247,8 +1249,17 @@ async fn model_list_available(app: AppHandle, provider: String) -> Vec<String> {
 /// (optional) is the explicit attach flag — a screen read runs even when
 /// the text shows no intent. `listenId` (optional) binds the send to a
 /// listen doc — its own ask session, its summary+transcript as context.
+/// `presetId` (optional) arms an `instruct` preset — its text appends
+/// to the system prompt for this send and rides the user row so
+/// `ask_retry` re-applies it.
 #[tauri::command]
-fn ask_send(app: AppHandle, text: String, with_screen: Option<bool>, listen_id: Option<i64>) {
+fn ask_send(
+    app: AppHandle,
+    text: String,
+    with_screen: Option<bool>,
+    listen_id: Option<i64>,
+    preset_id: Option<String>,
+) {
     let state = app.state::<AppState>();
     // Crafted-invoke guard: the shipped UI gates sends behind `Main`,
     // but a crafted invoke during onboarding would otherwise proceed —
@@ -1263,6 +1274,7 @@ fn ask_send(app: AppHandle, text: String, with_screen: Option<bool>, listen_id: 
         &text,
         with_screen.unwrap_or(false),
         listen_id,
+        preset_id,
     );
 }
 

@@ -186,15 +186,24 @@ serialized to the UI (masked `…last4` only) and never logged.
 
 ## Roadmap
 
+North star: a screen-aware copilot with a meeting assistant built in —
+its own memory on your machine, tools and skills, and simple agentic
+loops under your approval. The full plan lives in
+[ROADMAP.md](ROADMAP.md); phases are ordered by dependency, not date.
+
 - **Done** — overlay bar, provider failover chain, screen-aware Ask,
-  hotkey rebinding, deep links, tray icon, onboarding wizard.
-- **Done** — Listen: mic + system-audio transcription
-  (Deepgram / bundled whisper.cpp), live transcript, rolling summaries.
-- **Done** — Windows + Linux ports: WGC capture / WASAPI loopback, XDG
-  portal + PipeWire + PulseAudio, per-OS consent flows; CI bundles for
-  all three OSes (dmg, msi/nsis, AppImage/deb).
-- **Next** — session history UI, prompt presets, Ollama model management,
-  Gemini search grounding toggle.
+  Listen (mic + system-audio transcription, diarized live transcript,
+  rolling summaries), dictation, hotkey rebinding, deep links, tray,
+  onboarding wizard, Windows + Linux ports with CI bundles for all
+  three OSes.
+- **Phase 0 — Ship-ready** — signed + notarized builds, auto-update,
+  opt-in crash reporting, package-manager distribution.
+- **Phase 1 — Deepen the loop** — session history polish, prompt
+  presets, Ollama model management, Gemini search grounding, transcript
+  export, WAV playback.
+- **Phases 2–4 — Memory, Skills & tools, Agentic loops** — local recall,
+  guarded tool execution (MCP), and bounded observe→propose→approve
+  cycles. All `exploring` — design discussions on GitHub issues first.
 
 ## Contributing
 

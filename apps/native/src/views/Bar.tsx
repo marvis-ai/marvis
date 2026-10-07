@@ -31,7 +31,14 @@
  *
  * Errors go to the `alert` window (`raise`) — the pill has no room.
  */
-import { Suspense, lazy, useEffect, useRef, useState } from 'react';
+import {
+  Suspense,
+  lazy,
+  useEffect,
+  useRef,
+  useState,
+  type ChangeEvent,
+} from 'react';
 import {
   HistoryIcon,
   MicAudioLinesIcon,
@@ -39,6 +46,8 @@ import {
   MonitorDotIcon,
   SettingsIcon,
   ShineBorder,
+  WandSparklesIcon,
+  XIcon,
   cn,
 } from '@marvis/ui';
 import {
@@ -50,18 +59,22 @@ import {
   configGet,
   listenStart,
   listenStatus,
+  presetsList,
+  presetsMenu,
   raise,
   windowFocusBar,
   windowSetBarExpanded,
   windowSetChatOpen,
   windowShowSettings,
   type Config,
+  type Preset,
 } from '@/lib/commands';
 import {
   EV_BAR_SHOW_HISTORY,
   EV_BAR_START_LISTEN,
   EV_BAR_TOGGLE_INPUT,
   EV_CONFIG_CHANGED,
+  EV_PRESET_PICK,
   useTauriEvent,
 } from '@/lib/events';
 import { barControls, hasActiveWork } from '@/lib/bar-state';
@@ -80,6 +93,7 @@ import { HistorySection } from '@/components/HistorySection';
 import { ListenSection } from '@/components/ListenSection';
 import type { ListenViewing } from '@/components/listen/model';
 import { PANEL } from '@/lib/classes';
+import { expandTemplate, langName, resolveSlash } from '@/lib/presets';
 
 const LaunchIntro = lazy(() =>
   import('@/components/LaunchIntro').then((m) => ({
@@ -122,6 +136,12 @@ const Bar = () => {
   const [listenViewing, setListenViewing] = useState<ListenViewing | null>(
     null,
   );
+  /** The merged preset list (built-ins + customs) behind the wand
+   *  menu and the `/name` shorthand; `armed` is the per-send instruct
+   *  preset chip. `mainLang` feeds `{lang}` template expansion. */
+  const [presets, setPresets] = useState<Preset[]>([]);
+  const [armedPreset, setArmedPreset] = useState<Preset | null>(null);
+  const [mainLang, setMainLang] = useState('en');
 
   const { cardOpen } = useCardGeometry(cardRef, stageRef);
   /** Live mirror of `cardOpen` for async callbacks — the card can
@@ -247,11 +267,21 @@ const Bar = () => {
   const [barLocked, setBarLocked] = useState(false);
   useEffect(() => {
     void configGet()
-      .then((cfg) => setBarLocked(cfg.window.bar_locked ?? false))
+      .then((cfg) => {
+        setBarLocked(cfg.window.bar_locked ?? false);
+        setMainLang(cfg.app.main_language);
+      })
+      .catch(() => {});
+    void presetsList()
+      .then(setPresets)
       .catch(() => {});
   }, []);
   useTauriEvent<Config>(EV_CONFIG_CHANGED, (cfg) => {
     setBarLocked(cfg.window.bar_locked ?? false);
+    setMainLang(cfg.app.main_language);
+    void presetsList()
+      .then(setPresets)
+      .catch(() => {});
   });
 
   // Every card open starts unpinned with no viewed session.
@@ -305,8 +335,9 @@ const Bar = () => {
         }
         // Esc discards the field — a pending stop's returned draft must
         // not land in the cleared text, and a live anchor stops without
-        // applying.
+        // applying. The armed preset chip disarms with the field.
         dictation.discard();
+        setArmedPreset(null);
         setText('');
         setOpen(false);
         inputRef.current?.blur();
@@ -341,6 +372,47 @@ const Bar = () => {
     inputRef.current?.blur();
   };
 
+  /** Menu pick (`bar:preset-pick`) — templates expand the composer's
+   *  text into `{input}` for editing; instructions arm the chip.
+   *  Paused while dictation owns the field (the tracker would splice
+   *  its final draft over the rewrite). */
+  const applyPreset = (p: Preset) => {
+    dictation.discard();
+    if (p.kind === 'template') {
+      setText(expandTemplate(p.text, textRef.current, langName(mainLang)));
+    } else {
+      setArmedPreset(p);
+    }
+    inputRef.current?.focus();
+  };
+  useTauriEvent<Preset>(EV_PRESET_PICK, (p) => {
+    if (dictation.state === 'listening') return;
+    applyPreset(p);
+  });
+
+  /** Slash shorthand: an exact `/name` token followed by a space
+   *  applies on the spot (end-of-text tokens wait for send — a prefix
+   *  name can't swallow a longer one mid-typing). */
+  const onFieldChange = (e: ChangeEvent<HTMLTextAreaElement>) => {
+    dictation.handleChange(e);
+    if (dictation.state === 'listening') return;
+    const hit = resolveSlash(e.target.value, presets, false);
+    if (!hit) return;
+    dictation.discard();
+    if (hit.preset.kind === 'template') {
+      setText(
+        expandTemplate(
+          hit.preset.text,
+          hit.rest.trimStart(),
+          langName(mainLang),
+        ),
+      );
+    } else {
+      setArmedPreset(hit.preset);
+      setText(hit.rest);
+    }
+  };
+
   /** Send a question — the field's text by default, or an explicit one
    *  (`question`, e.g. a summary follow-up chip — the field's draft is
    *  untouched then). Field text reads off `textRef` so the Enter
@@ -350,6 +422,30 @@ const Bar = () => {
    *  from the listen card binds to that doc's own chat — the viewed
    *  session's id, else the live session's. */
   const sendAsk = async (withScreen = false, question?: string) => {
+    let presetId = armedPreset?.id;
+    if (question === undefined) {
+      const raw = textRef.current;
+      // Bare `/` opens the preset menu instead of sending a slash.
+      if (raw.trim() === '/') {
+        void presetsMenu().catch(() => {});
+        return;
+      }
+      const hit = resolveSlash(raw, presets, true);
+      if (hit) {
+        const rest = hit.rest.trim();
+        dictation.discard();
+        if (hit.preset.kind === 'template') {
+          // The expansion waits in the composer for editing — nothing
+          // sends until the user submits it.
+          setText(expandTemplate(hit.preset.text, rest, langName(mainLang)));
+          return;
+        }
+        setArmedPreset(hit.preset);
+        setText(rest);
+        presetId = hit.preset.id;
+        if (!rest) return; // armed — the request is still to come
+      }
+    }
     const t = (question ?? textRef.current).trim();
     if (!t) {
       return;
@@ -357,6 +453,7 @@ const Bar = () => {
     if (question === undefined) {
       setText('');
     }
+    setArmedPreset(null); // one-shot: the chip clears when a send fires
     let listenId = section === 'listen' ? listenViewing?.id : undefined;
     if (section === 'listen' && listenId === undefined) {
       listenId =
@@ -364,7 +461,9 @@ const Bar = () => {
           .then((s) => s.session_id)
           .catch(() => null)) ?? undefined;
     }
-    void askSend(t, withScreen, listenId).catch(() => raise('Send failed'));
+    void askSend(t, withScreen, listenId, presetId).catch(() =>
+      raise('Send failed'),
+    );
   };
 
   // Submit = ask (a follow-up while the card is open). The backend
@@ -584,16 +683,40 @@ const Bar = () => {
             disabled={gate !== 'main'}
           />
         )}
+        {/* The armed instruct preset — a one-shot chip: ✕ disarms,
+            Esc shares the field discard, a fired send clears it. */}
+        {armedPreset && (
+          <span className='flex flex-none items-center gap-1 self-center rounded-full bg-accent-soft px-2 py-0.75 text-[11.5px] font-medium text-accent-text'>
+            {armedPreset.name}
+            <button
+              type='button'
+              aria-label={`Remove ${armedPreset.name} preset`}
+              onClick={() => setArmedPreset(null)}
+              className='-mr-0.5 rounded-full p-0.25 text-accent-text/70 transition-colors duration-(--motion-fast) hover:text-accent-text focus-visible:outline-2 focus-visible:outline-accent'>
+              <XIcon className='size-3' />
+            </button>
+          </span>
+        )}
         <AskInput
           ref={inputRef}
           value={text}
           cardOpen={cardOpen}
           visible={showInputRow}
-          onChange={dictation.handleChange}
+          onChange={onFieldChange}
           onSelect={dictation.handleSelect}
           onFocus={() => gate === 'main' && setOpen(true)}
           onSubmit={submitAsk}
         />
+        {/* Preset picker — a native popup (the pill's fixed 64px can't
+            host a webview menu); picks arrive as bar:preset-pick. */}
+        {showInputRow && (
+          <BarButton
+            label='Prompt presets'
+            disabled={gate !== 'main'}
+            onPress={() => void presetsMenu().catch(() => {})}>
+            <WandSparklesIcon className='size-5' />
+          </BarButton>
+        )}
         {/* Collapsed-only recorders (`barControls(false)`): the screen
             capture toggle and meeting Listen. The expanded row renders
             neither — it gets dictation + settings instead. */}
@@ -705,9 +828,12 @@ const Bar = () => {
       ref={stageRef}
       onContextMenu={(e) => {
         e.preventDefault();
-        // The shared menu is the idle capsule's surface — expanded
-        // rows and open cards have their own chrome.
-        if (gate === 'main' && !showInputRow) {
+        if (gate !== 'main') return;
+        // The input row's right-click is the preset picker; the idle
+        // capsule's is the shared menu.
+        if (showInputRow) {
+          void presetsMenu().catch(() => {});
+        } else {
           void barContextMenu().catch(() => {});
         }
       }}

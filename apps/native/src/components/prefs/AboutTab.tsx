@@ -37,7 +37,7 @@ export const AboutTab = () => {
           <Tag>{version}</Tag>
         </PrefRow>
         <PrefRow label='License'>
-          <Tag>MIT</Tag>
+          <Tag>Apache-2.0</Tag>
         </PrefRow>
         <PrefRow label='Platforms'>
           <Tag>macOS now · windows / linux planned</Tag>

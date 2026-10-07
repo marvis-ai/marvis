@@ -135,8 +135,8 @@ export const Privacy = () => (
           <p
             className='meta'
             style={{ margin: 0 }}>
-            Open source under MIT — every claim on this page maps to a file in
-            the repo.
+            Open source under Apache-2.0 — every claim on this page maps to a
+            file in the repo.
           </p>
         </div>
       </div>

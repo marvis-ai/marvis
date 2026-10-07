@@ -62,7 +62,7 @@ export const Features = () => (
             <span className='num'>…last4</span>, and calls go straight to the
             provider you pick — or to Ollama, fully on-device.
           </p>
-          <span className='meta'>free &amp; open source · MIT</span>
+          <span className='meta'>free &amp; open source · Apache-2.0</span>
         </div>
       </div>
     </div>

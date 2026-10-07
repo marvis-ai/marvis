@@ -10,8 +10,8 @@
 
 <p align="center">
   <a href="LICENSE"><img
-    src="https://img.shields.io/badge/license-MIT-blue.svg"
-    alt="License: MIT"></a>
+    src="https://img.shields.io/badge/license-Apache_2.0-blue.svg"
+    alt="License: Apache-2.0"></a>
   <img
     src="https://img.shields.io/badge/platform-macOS_Windows_Linux-lightgrey"
     alt="Platforms: macOS, Windows, Linux">
@@ -235,7 +235,8 @@ you find a vulnerability, please report it privately to
 
 ## License
 
-Marvis is open source under the [MIT License](LICENSE) © 2026 Marvis AI.
+Marvis is open source under the [Apache License 2.0](LICENSE) © 2026 Marvis
+AI.
 
 ---
 

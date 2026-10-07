@@ -14,8 +14,8 @@ export const DownloadCta = () => (
       <p
         className='lead'
         style={{ margin: '18px auto 32px' }}>
-        Free and open source under MIT. Builds for macOS, Windows, and Linux
-        ship on GitHub Releases.
+        Free and open source under Apache-2.0. Builds for macOS, Windows, and
+        Linux ship on GitHub Releases.
       </p>
       <div className='hero-cta'>
         <a

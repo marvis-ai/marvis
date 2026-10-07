@@ -191,7 +191,7 @@ transform + background + border-color + color, 150ms `--ease-standard`.
   `4px 10px`, 12px/600, `0.04em`.
 - `.pill-green`: success-tinted variant (platform "Available now").
 - `.tag`: bordered neutral chip — used for provider names and hero meta
-  ("Free & open source · MIT", "No account", "No cloud sync").
+  ("Free & open source · Apache-2.0", "No account", "No cloud sync").
 
 ### Cards
 

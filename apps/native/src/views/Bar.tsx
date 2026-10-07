@@ -685,7 +685,7 @@ const Bar = () => {
         )}
         {/* The armed instruct preset — a one-shot chip: ✕ disarms,
             Esc shares the field discard, a fired send clears it. */}
-        {armedPreset && (
+        {showInputRow && armedPreset && (
           <span className='flex flex-none items-center gap-1 self-center rounded-full bg-accent-soft px-2 py-0.75 text-[11.5px] font-medium text-accent-text'>
             {armedPreset.name}
             <button

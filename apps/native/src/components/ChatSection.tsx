@@ -19,16 +19,20 @@ import { CheckIcon, CopyIcon, MessageSquareTextIcon } from '@marvis/ui';
 import {
   askCurrent,
   askRetry,
+  presetsList,
   sessionEndActive,
   sessionGet,
   sessionList,
+  type Config,
   type Message,
+  type Preset,
 } from '@/lib/commands';
 import {
   EV_ASK_CHUNK,
   EV_ASK_DONE,
   EV_ASK_ERROR,
   EV_ASK_STATE,
+  EV_CONFIG_CHANGED,
   useTauriEvent,
 } from '@/lib/events';
 import {
@@ -57,6 +61,9 @@ interface AskStatePayload {
   state: AskPhase;
   /** Present on `loading` — the submitted question (ask.rs). */
   question?: string;
+  /** Present on `send_chain`'s `loading` — the armed preset id
+   *  (ask.rs); absent on a bare retry's `loading`. */
+  preset?: string | null;
 }
 
 /** Meta fields surface in the ⋯ menu, not inline; absent while the
@@ -67,6 +74,9 @@ interface ChatMsg extends ChatMsgMeta {
   /** Epoch seconds — persisted `messages.ts`, or a local stamp for live
    *  rows (send time on user turns, finish time on replies). */
   ts?: number;
+  /** The armed `instruct` preset id — user rows only; the meta row
+   *  renders it as `· {name}` (falls back to the raw id). */
+  preset?: string | null;
 }
 
 /** Distance from the bottom that still counts as pinned for autoscroll. */
@@ -74,8 +84,14 @@ const PIN_PX = 24;
 
 const nowSecs = () => Math.floor(Date.now() / 1000);
 
-/** Fold a `loading` boundary into the message list (see file doc). */
-const applyLoading = (prev: ChatMsg[], q: string): ChatMsg[] => {
+/** Fold a `loading` boundary into the message list (see file doc).
+ *  `preset` is the run's armed preset id — only the appended user row
+ *  carries it (retries/resyncs reuse the persisted row's own). */
+const applyLoading = (
+  prev: ChatMsg[],
+  q: string,
+  preset?: string | null,
+): ChatMsg[] => {
   const last = prev[prev.length - 1];
   if (
     last?.role === 'assistant' &&
@@ -91,7 +107,7 @@ const applyLoading = (prev: ChatMsg[], q: string): ChatMsg[] => {
   }
   return [
     ...prev,
-    { role: 'user', content: q, ts: nowSecs() },
+    { role: 'user', content: q, ts: nowSecs(), preset },
     { role: 'assistant', content: '' },
   ];
 };
@@ -131,6 +147,7 @@ const rowsToMsgs = (rows: Message[]): ChatMsg[] =>
       role: r.role as ChatMsg['role'],
       content: r.content,
       ts: r.ts,
+      preset: r.preset,
       provider: r.provider,
       model: r.model,
       tokensIn: r.tokens_in,
@@ -206,6 +223,21 @@ export const ChatSection = ({ onBack }: { onBack: () => void }) => {
     };
   }, []);
 
+  // The `· {name}` suffix resolves a user row's preset id against this
+  // list — refetched on `config:changed` (a custom may be
+  // added/renamed/removed); an unknown id falls back to rendering raw.
+  const [presets, setPresets] = useState<Preset[]>([]);
+  useEffect(() => {
+    void presetsList()
+      .then(setPresets)
+      .catch(() => {});
+  }, []);
+  useTauriEvent<Config>(EV_CONFIG_CHANGED, () => {
+    void presetsList()
+      .then(setPresets)
+      .catch(() => {});
+  });
+
   useTauriEvent<AskStatePayload>(EV_ASK_STATE, (p) => {
     if (p.state === 'loading') {
       setError(null);
@@ -232,7 +264,7 @@ export const ChatSection = ({ onBack }: { onBack: () => void }) => {
         const buffered = chunkBufRef.current ?? '';
         chunkBufRef.current = null;
         setMsgs((prev) => {
-          const next = applyLoading(base ?? prev, p.question ?? '');
+          const next = applyLoading(base ?? prev, p.question ?? '', p.preset);
           return buffered ? appendTail(next, buffered) : next;
         });
       })();
@@ -372,6 +404,16 @@ export const ChatSection = ({ onBack }: { onBack: () => void }) => {
                         'text-[10px] text-muted-foreground opacity-0 transition-opacity group-hover/row:opacity-100',
                       )}>
                       {sessionDateLabel(m.ts)}
+                    </span>
+                  )}
+                  {m.preset && (
+                    <span
+                      className={cn(
+                        NUM,
+                        'text-[10px] text-muted-foreground opacity-0 transition-opacity group-hover/row:opacity-100',
+                      )}>
+                      ·{' '}
+                      {presets.find((p) => p.id === m.preset)?.name ?? m.preset}
                     </span>
                   )}
                   <button

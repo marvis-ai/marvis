@@ -16,6 +16,10 @@ export const EV_ASK_STATE = 'ask:state'; // { state: 'loading'|'streaming'|'idle
 export const EV_ASK_CHUNK = 'ask:chunk'; // { text: string }
 export const EV_ASK_DONE = 'ask:done'; // { full, provider, model } — who answered
 export const EV_ASK_ERROR = 'ask:error'; // { message: string, needs_setup?: bool }
+/** Emitted to the `bar` window when a session's generated title lands
+ *  (ask.rs `maybe_title_session`) — the history list re-reads to swap
+ *  its first-question fallback. */
+export const EV_SESSIONS_CHANGED = 'sessions:changed'; // { id: number }
 /** Listen lifecycle, transcript, summary, and terminal error events. */
 export const EV_LISTEN_STATE = 'listen:state';
 export const EV_LISTEN_TURN = 'listen:turn';

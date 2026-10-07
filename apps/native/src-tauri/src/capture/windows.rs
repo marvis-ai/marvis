@@ -19,6 +19,10 @@ use std::time::Duration;
 use anyhow::{anyhow, Result};
 use base64::{engine::general_purpose, Engine as _};
 use parking_lot::Mutex;
+use windows::Win32::Foundation::HWND;
+use windows::Win32::UI::WindowsAndMessaging::{
+    SetWindowDisplayAffinity, WDA_EXCLUDEFROMCAPTURE, WDA_NONE,
+};
 use windows_capture::capture::{CaptureControl, Context, GraphicsCaptureApiHandler};
 use windows_capture::frame::Frame as WgcFrame;
 use windows_capture::graphics_capture_api::InternalCaptureControl;
@@ -43,6 +47,78 @@ const FRAME_QUEUE: usize = 2;
 /// One-shot captures give up after this — an occluded/minimized window
 /// may simply never produce a frame.
 const ONESHOT_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Live capture sessions holding self-protection. WGC can't exclude
+/// windows from a monitor grab, so Marvis's HWNDs go
+/// `WDA_EXCLUDEFROMCAPTURE` while ANY session is live and back to
+/// `WDA_NONE` when the last one ends — the same asymmetry
+/// `SCContentFilter` gives macOS for free (visible to the user,
+/// invisible to our own captures). Counted, not boolean: a one-shot
+/// (`thumb_for`/`shot_fullscreen`) can overlap a running stream, and
+/// the lock serializes the flip so a late unprotect can't outlive a
+/// concurrent acquire.
+static CAPTURE_DEPTH: Mutex<usize> = Mutex::new(0);
+
+/// Whether a Marvis capture session is live — `build_window` reads
+/// this so a window born mid-capture starts protected instead of
+/// leaking into the stream until it ends.
+/// Reports a held protection guard, not whether Windows applied the affinity.
+pub(crate) fn protection_engaged() -> bool {
+    *CAPTURE_DEPTH.lock() > 0
+}
+
+/// RAII guard: apply display-affinity self-exclusion for a session's
+/// lifetime, then restore user-side capturability on the last drop.
+struct SelfProtection;
+
+impl SelfProtection {
+    /// Hold capture protection, attempting to exclude Marvis windows on the
+    /// first acquisition. OS failures are ignored; the guard still counts.
+    fn acquire() -> Self {
+        let mut depth = CAPTURE_DEPTH.lock();
+        if *depth == 0 {
+            set_own_windows_protected(true);
+        }
+        *depth += 1;
+        Self
+    }
+}
+
+impl Drop for SelfProtection {
+    /// Release this guard, attempting to restore capture visibility when
+    /// the last guard drops. OS failures are ignored.
+    fn drop(&mut self) {
+        let mut depth = CAPTURE_DEPTH.lock();
+        *depth -= 1;
+        if *depth == 0 {
+            set_own_windows_protected(false);
+        }
+    }
+}
+
+/// Flip display affinity on every Marvis-owned HWND. Enumeration is
+/// fresh on each call — pool windows live for the app's lifetime, so
+/// the set only changes when a lazy window (picker/prefs) is built.
+/// `true` requests capture exclusion; `false` clears it. Enumeration,
+/// process lookup, and display-affinity failures are silently ignored.
+fn set_own_windows_protected(protected: bool) {
+    let Ok(windows) = Window::enumerate() else {
+        return;
+    };
+    let own_pid = std::process::id();
+    let affinity = if protected {
+        WDA_EXCLUDEFROMCAPTURE
+    } else {
+        WDA_NONE
+    };
+    for w in &windows {
+        if w.process_id().map(|p| p == own_pid).unwrap_or(false) {
+            unsafe {
+                let _ = SetWindowDisplayAffinity(HWND(w.as_raw_hwnd()), affinity);
+            }
+        }
+    }
+}
 
 /// What a capture session targets: a resolved monitor or window handle —
 /// the WGC equivalent of an `SCContentFilter`.
@@ -135,6 +211,9 @@ struct Running {
     control: CaptureControl<Handler, anyhow::Error>,
     worker: JoinHandle<()>,
     stop: Arc<AtomicBool>,
+    /// Held for the session's life — `stop`'s field drop restores
+    /// user-side capturability once the last session ends.
+    _protection: SelfProtection,
 }
 
 /// The production [`FrameSource`] on Windows.
@@ -171,6 +250,10 @@ impl WindowsCapture {
 }
 
 impl FrameSource for WindowsCapture {
+    /// Consume the source and deliver encoded frames to `on_frame` on a worker
+    /// thread, holding best-effort window exclusion until stopped. Later calls
+    /// do nothing, even after a failed start. WGC startup errors are swallowed
+    /// after cleanup, so callers must check `is_running`.
     fn start(&self, on_frame: Box<dyn Fn(Frame) + Send>) {
         let Some(source) = self.source.lock().take() else {
             log::warn!("capture: WindowsCapture already consumed");
@@ -186,12 +269,17 @@ impl FrameSource for WindowsCapture {
             tx,
             warned: Arc::new(AtomicBool::new(false)),
         };
+        // Protect BEFORE the stream starts so the first delivered frame
+        // already excludes our windows; on a failed start the guard
+        // drops here and restores capturability.
+        let protection = SelfProtection::acquire();
         match Handler::start_free_threaded(Self::settings(source, flags, self.fps)) {
             Ok(control) => {
                 *self.state.lock() = Some(Running {
                     control,
                     worker,
                     stop,
+                    _protection: protection,
                 });
             }
             Err(e) => {
@@ -227,9 +315,12 @@ impl Drop for WindowsCapture {
 
 /// One-shot capture of a resolved `Source` — picker thumbnails and the
 /// "read my screen" path share it. `Ok(None)` means WGC produced no
-/// frame within [`ONESHOT_TIMEOUT`] (occluded/minimized targets can
-/// legitimately do that).
+/// frame within [`ONESHOT_TIMEOUT`] or the frame channel disconnected
+/// (occluded/minimized targets may produce no frame). `fps` is the requested
+/// maximum frames per second, floored at one. Holds best-effort Marvis window
+/// exclusion for the call. WGC startup errors propagate; stop errors are ignored.
 fn oneshot_capture(source: Source, fps: u32) -> Result<Option<RawFrame>> {
+    let _protection = SelfProtection::acquire();
     let (tx, rx) = mpsc::sync_channel(FRAME_QUEUE);
     let flags = HandlerFlags {
         tx,

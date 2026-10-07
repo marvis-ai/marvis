@@ -63,18 +63,14 @@ pub(crate) fn primary_display_source() -> anyhow::Result<(SCContentFilter, u32, 
         .ok_or_else(|| anyhow::anyhow!("no shareable display"))?;
     let (width, height) = (display.width(), display.height());
     let own_pid = std::process::id() as i32;
-    let windows = content.windows();
-    let own: Vec<&SCWindow> = windows
+    let applications = content.applications();
+    let own = applications
         .iter()
-        .filter(|window| {
-            window
-                .owning_application()
-                .is_some_and(|app| app.process_id() == own_pid)
-        })
-        .collect();
+        .find(|app| app.process_id() == own_pid)
+        .ok_or_else(|| anyhow::anyhow!("Marvis application unavailable for exclusion"))?;
     let filter = SCContentFilter::create()
         .with_display(&display)
-        .with_excluding_windows(&own)
+        .with_excluding_applications(&[own], &[])
         .build();
     Ok((filter, width, height))
 }
@@ -202,19 +198,8 @@ pub(crate) fn pick_candidates() -> anyhow::Result<Vec<PickCandidate>> {
 pub(crate) fn resolve_candidate(id: &str) -> anyhow::Result<PickResolution> {
     let content = SCShareableContent::get()?;
     let own_pid = std::process::id() as i32;
-    // Borrow Marvis's own windows the same way primary_display_filter
-    // does — `windows()` returns an owned Vec, so bind it first
-    // (`displays()` likewise: borrowing `.iter()` off a temporary
-    // Vec would not live past the statement).
     let windows = content.windows();
     let displays = content.displays();
-    let own: Vec<&SCWindow> = windows
-        .iter()
-        .filter(|w| {
-            w.owning_application()
-                .is_some_and(|a| a.process_id() == own_pid)
-        })
-        .collect();
     let (filter, kind, label) = if let Some(did) = id.strip_prefix("d:") {
         let did: u32 = did.parse().map_err(|_| anyhow::anyhow!("bad display id"))?;
         let idx = displays
@@ -225,10 +210,17 @@ pub(crate) fn resolve_candidate(id: &str) -> anyhow::Result<PickResolution> {
             .iter()
             .find(|d| d.display_id() == did)
             .ok_or_else(|| anyhow::anyhow!("display no longer available"))?;
+        // Excluding the application also covers windows created after
+        // this filter, such as the lazily opened preferences window.
+        let applications = content.applications();
+        let own = applications
+            .iter()
+            .find(|app| app.process_id() == own_pid)
+            .ok_or_else(|| anyhow::anyhow!("Marvis application unavailable for exclusion"))?;
         (
             SCContentFilter::create()
                 .with_display(d)
-                .with_excluding_windows(&own)
+                .with_excluding_applications(&[own], &[])
                 .build(),
             "display",
             format!("Screen {}", idx + 1),
@@ -489,6 +481,27 @@ mod tests {
         assert_eq!(super::super::frame_interval_secs(4), 0.25);
         assert_eq!(super::super::frame_interval_secs(2), 0.5);
         assert_eq!(super::super::frame_interval_secs(0), 1.0); // defensive floor
+    }
+
+    /// The display filter's application exclusion is load-bearing:
+    /// Marvis's windows are NOT `set_content_protected` on macOS (the
+    /// user must be able to screenshot them), so
+    /// `primary_display_source`'s `with_excluding_applications(&[own], &[])` is the
+    /// only thing keeping Marvis out of its own captures.
+    #[test]
+    fn primary_display_source_excludes_own_windows() {
+        let source = include_str!("macos.rs");
+        let body = source
+            .split("fn primary_display_source(")
+            .nth(1)
+            .and_then(|rest| rest.split("\npub(crate) fn ").next())
+            .expect("primary_display_source body not found");
+        for needle in [
+            "process_id() == own_pid",
+            "with_excluding_applications(&[own], &[])",
+        ] {
+            assert!(body.contains(needle), "display filter must keep {needle}");
+        }
     }
 
     /// `pick_candidates` can never run in tests (needs real

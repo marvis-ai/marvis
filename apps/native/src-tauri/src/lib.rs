@@ -1971,6 +1971,11 @@ fn capture_stop(app: AppHandle) -> serde_json::Value {
 /// (window / display / application) — same UI Zoom shows. Marvis's own
 /// bundle id is excluded so it can never offer itself. Cancel is a
 /// silent no-op; `capture:state` reports the picked `target`.
+/// Display picks are re-resolved to exclude Marvis windows; if that fails,
+/// capture uses the picker's original filter without that exclusion.
+/// A valid pick replaces a running capture only while the gate remains Main;
+/// a pick arriving during a gate transition is discarded. Picker and dispatch
+/// failures do not propagate to the caller.
 ///
 /// The picker is a main-thread API (its config setters require it), so
 /// the command hops via `run_on_main_thread`; `show` is non-blocking
@@ -2001,24 +2006,54 @@ fn capture_pick_and_start(app: AppHandle) {
         SCContentSharingPicker::show(&cfg, move |outcome| {
             match outcome {
                 SCPickerOutcome::Picked(result) => {
-                    let (w, h) = result.pixel_size();
-                    let target = match result.source() {
-                        SCPickedSource::Window(t) => CaptureTarget {
-                            kind: "window",
-                            label: t,
-                        },
-                        SCPickedSource::Display(id) => CaptureTarget {
-                            kind: "display",
-                            label: format!("Display {id}"),
-                        },
-                        SCPickedSource::Application(n) => CaptureTarget {
-                            kind: "app",
-                            label: n,
-                        },
-                        SCPickedSource::Unknown => CaptureTarget {
-                            kind: "app",
-                            label: "Screen".into(),
-                        },
+                    // The picker's own filter carries no self-exclusion,
+                    // and Marvis's windows are no longer content-protected
+                    // — a display pick would composite our bar into the
+                    // model's recording. Re-resolve display picks through
+                    // `resolve_candidate` (the `d:` path rebuilds the
+                    // display filter excluding our application). Window/app
+                    // picks can't be ours (`excluded_bundle_ids`), so
+                    // their filters pass through untouched.
+                    let (filter, w, h, target) = match result.source() {
+                        SCPickedSource::Display(id) => {
+                            match capture::resolve_candidate(&format!("d:{id}")) {
+                                Ok(res) => (
+                                    res.source,
+                                    res.w,
+                                    res.h,
+                                    CaptureTarget {
+                                        kind: res.kind,
+                                        label: res.label,
+                                    },
+                                ),
+                                // Preserve the current capture if we cannot build
+                                // a display filter that excludes Marvis.
+                                Err(e) => {
+                                    log::warn!(
+                                        "capture_pick_and_start: display {id} re-resolve failed: {e}"
+                                    );
+                                    return;
+                                }
+                            }
+                        }
+                        other => {
+                            let (w, h) = result.pixel_size();
+                            let target = match other {
+                                SCPickedSource::Window(t) => CaptureTarget {
+                                    kind: "window",
+                                    label: t,
+                                },
+                                SCPickedSource::Application(n) => CaptureTarget {
+                                    kind: "app",
+                                    label: n,
+                                },
+                                _ => CaptureTarget {
+                                    kind: "app",
+                                    label: "Screen".into(),
+                                },
+                            };
+                            (result.filter(), w, h, target)
+                        }
                     };
                     // The pick can land after a leave-Main transition ran
                     // `stop_capture` — the invoke-time check can't see it.
@@ -2052,7 +2087,7 @@ fn capture_pick_and_start(app: AppHandle) {
                     {
                         stop_capture(&app2);
                     }
-                    start_capture(&app2, result.filter(), w, h, Some(target));
+                    start_capture(&app2, filter, w, h, Some(target));
                 }
                 SCPickerOutcome::Error(e) => {
                     log::warn!("capture_pick_and_start: picker error: {e}");
@@ -2998,6 +3033,58 @@ mod tests {
             body.contains("gate_transition.try_lock()"),
             "the picked callback must re-check the gate under gate_transition \
              via try_lock (main-thread callback must never park on it)"
+        );
+    }
+
+    /// Marvis's windows stay user-capturable on macOS (no
+    /// `set_content_protected`), so the picker's own filter — which
+    /// carries no self-exclusion — would composite our bar into a
+    /// DISPLAY pick's recording. The display arm must re-resolve
+    /// through `resolve_candidate` (`d:` = display minus own windows);
+    /// window/app picks can't be ours (`excluded_bundle_ids`).
+    #[test]
+    fn capture_pick_and_start_reresolves_display_picks() {
+        let src = include_str!("lib.rs");
+        let body = src
+            .split("fn capture_pick_and_start")
+            .nth(1)
+            .and_then(|rest| rest.split("\nfn ").next())
+            .expect("command exists");
+        assert!(
+            body.contains("resolve_candidate(&format!(\"d:{id}\"))"),
+            "a display pick must rebuild the filter via resolve_candidate (self-excluding)"
+        );
+        assert!(
+            body.contains("set_excluded_bundle_ids"),
+            "Marvis must stay excluded from the picker's offer list"
+        );
+    }
+
+    /// Windows parity with the macOS rule "visible to the user,
+    /// invisible to Marvis's own captures": WGC can't exclude windows
+    /// from a monitor grab, so `capture/windows.rs` applies
+    /// `WDA_EXCLUDEFROMCAPTURE` dynamically — a refcounted guard holds
+    /// it only while a capture session is live, then restores
+    /// `WDA_NONE`. `build_window` must consult `protection_engaged`
+    /// (not protect unconditionally) so a window born mid-capture
+    /// starts protected without hiding Marvis from user screenshots
+    /// the rest of the time.
+    #[test]
+    fn windows_self_protects_only_while_capturing() {
+        let backend = include_str!("capture/windows.rs");
+        for needle in [
+            "struct SelfProtection",
+            "SetWindowDisplayAffinity",
+            "WDA_EXCLUDEFROMCAPTURE",
+            "WDA_NONE",
+            "pub(crate) fn protection_engaged()",
+        ] {
+            assert!(backend.contains(needle), "windows backend must keep {needle}");
+        }
+        let pool = include_str!("windows/mod.rs");
+        assert!(
+            pool.contains("set_content_protected(crate::capture::protection_engaged())"),
+            "windows builds must consult protection_engaged, not protect unconditionally"
         );
     }
 

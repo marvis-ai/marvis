@@ -4,8 +4,8 @@
 //! an in-memory [`RingBuffer`]. Frame bytes are never written to disk and
 //! never serialized to JavaScript — only the local LLM pipeline consumes
 //! them. The one deliberate exception is the share picker: small JPEG
-//! thumbs go to Marvis's own content-protected `picker` window so the
-//! user can see what they're choosing.
+//! thumbs go to Marvis's own `picker` window so the user can see what
+//! they're choosing.
 //!
 //! [`PlatformCapture`] is the production [`FrameSource`]:
 //! ScreenCaptureKit on macOS, Windows.Graphics.Capture on Windows, and
@@ -41,7 +41,9 @@ pub(crate) use macos::{primary_display_source, shot_fullscreen};
 #[cfg(target_os = "windows")]
 pub(crate) use windows::shot_fullscreen;
 #[cfg(target_os = "windows")]
-pub(crate) use windows::{pick_candidates, primary_display_source, resolve_candidate, thumb_for};
+pub(crate) use windows::{
+    pick_candidates, primary_display_source, protection_engaged, resolve_candidate, thumb_for,
+};
 
 /// The production capture type for this OS — `lib.rs` holds
 /// `Mutex<Option<PlatformCapture>>` and treats it uniformly.

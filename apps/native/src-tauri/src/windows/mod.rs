@@ -101,7 +101,7 @@ const ALERT_W: f64 = 340.0;
 /// Fixed toast height — informational only, so one layout suffices.
 const ALERT_H: f64 = 100.0;
 /// The share-picker surface (`?view=picker`) — lazy like `prefs`,
-/// borderless glass via `build_window` (content-protected, so it
+/// borderless glass via `build_window` (own-pid filtered, so it
 /// never appears in its own candidate list).
 pub const PICKER_LABEL: &str = "picker";
 const PICKER_W: f64 = 760.0;
@@ -866,8 +866,8 @@ impl WindowPool {
 
 /// Shared builder flags for every Marvis overlay window (spec): frameless,
 /// transparent, always-on-top, non-resizable, skip-taskbar, no shadow —
-/// then `set_visible_on_all_workspaces`, `set_content_protected`, and the
-/// liquid-glass material. `corner_radius` matches the surface's CSS radius —
+/// then `set_visible_on_all_workspaces` and the liquid-glass material.
+/// `corner_radius` matches the surface's CSS radius —
 /// the glass view fills the window, so its shape IS the surface shape.
 /// `app.accent` (`#rrggbb`) at 8% alpha (`{accent}15`) → the bar's glass
 /// `tint_color`.
@@ -880,6 +880,11 @@ fn accent_glass_tint(accent: &str) -> Option<String> {
     (accent.len() == 7 && accent.starts_with('#')).then(|| format!("{accent}15"))
 }
 
+/// Build a hidden overlay for `index.html?view={label}`, sized in logical
+/// pixels by `w` and `h`. On macOS, `corner_radius` and `tint_color` configure
+/// the glass surface. On Windows, request capture protection when a Marvis
+/// capture guard is held. Window creation errors propagate; workspace,
+/// capture-protection, and material failures do not prevent returning the window.
 fn build_window(
     app: &AppHandle,
     label: &str,
@@ -909,8 +914,17 @@ fn build_window(
     if let Err(e) = win.set_visible_on_all_workspaces(true) {
         log::warn!("windows: set_visible_on_all_workspaces failed for {label}: {e}");
     }
-    // Unconditional per arch rule — no toggle.
-    if let Err(e) = win.set_content_protected(true) {
+    // WGC can't exclude windows from a monitor grab, so Windows applies
+    // display affinity dynamically: `capture::windows` protects our
+    // HWNDs only while a capture session is live, and this flag read
+    // makes a window born mid-capture start protected. The rest of the
+    // time the user CAN screenshot/record Marvis — the macOS asymmetry
+    // (visible to the user, invisible to our own captures) without
+    // SCContentFilter. macOS itself needs nothing here (its filters do
+    // the exclusion) and Linux's tao backend no-ops the call anyway —
+    // the portal can't self-exclude either.
+    #[cfg(target_os = "windows")]
+    if let Err(e) = win.set_content_protected(crate::capture::protection_engaged()) {
         log::warn!("windows: set_content_protected failed for {label}: {e}");
     }
     apply_surface_material(app, &win, corner_radius, tint_color, label);
@@ -973,12 +987,15 @@ fn set_glass_radius(app: &AppHandle, win: &WebviewWindow, corner_radius: f64) {
 /// uses. It joins the bar's floating
 /// level ONLY while focused (so it can overlap the bar the user keeps
 /// on top) and drops back on blur — focus events keep `always_on_top`
-/// mirroring the window's active state. It stays content-protected
-/// (the privacy spec holds for every window) and joinable on all
-/// workspaces so it can be summoned over any space.
+/// mirroring the window's active state. It follows `build_window`'s
+/// protection rule (Windows: display affinity only while a Marvis
+/// capture is live) and joinable on all workspaces so it can be
+/// summoned over any space.
 /// `CloseRequested` is intercepted into a hide: the window is owned by
 /// the pool for the app's lifetime, so the red light must not destroy
 /// the webview (a fresh build would lose scroll/tab state).
+/// Returns the window hidden. Window creation errors propagate; workspace,
+/// capture-protection, and material failures do not prevent returning the window.
 fn build_prefs_window(app: &AppHandle) -> anyhow::Result<WebviewWindow> {
     let url = WebviewUrl::App(format!("index.html?view={PREFS_LABEL}").into());
     let builder = WebviewWindowBuilder::new(app, PREFS_LABEL, url)
@@ -1027,7 +1044,8 @@ fn build_prefs_window(app: &AppHandle) -> anyhow::Result<WebviewWindow> {
     if let Err(e) = win.set_visible_on_all_workspaces(true) {
         log::warn!("windows: set_visible_on_all_workspaces failed for prefs: {e}");
     }
-    if let Err(e) = win.set_content_protected(true) {
+    #[cfg(target_os = "windows")]
+    if let Err(e) = win.set_content_protected(crate::capture::protection_engaged()) {
         log::warn!("windows: set_content_protected failed for prefs: {e}");
     }
     // Same detached warn-only pattern as `apply_surface_material`; the

@@ -45,6 +45,7 @@ import { CardHeader } from '@/components/shared/CardHeader';
 import { EmptyState } from '@/components/shared/EmptyState';
 import { ErrorBanner } from '@/components/shared/ErrorBanner';
 import { ChatMsgMenu, type ChatMsgMeta } from '@/components/ChatMsgMenu';
+import { RichText } from '@/components/shared/RichText';
 
 const Markdown = lazy(() =>
   import('@/components/Markdown').then((m) => ({ default: m.Markdown })),
@@ -136,6 +137,9 @@ const rowsToMsgs = (rows: Message[]): ChatMsg[] =>
       tokensOut: r.tokens_out,
     }));
 
+/** Show the active chat's saved and streaming messages, with interactive
+ *  inline formatting for user text and Markdown for assistant replies.
+ *  The header's Back action delegates to `onBack`. */
 export const ChatSection = ({ onBack }: { onBack: () => void }) => {
   const [msgs, setMsgs] = useState<ChatMsg[]>([]);
   const [phase, setPhase] = useState<AskPhase>('idle');
@@ -349,8 +353,16 @@ export const ChatSection = ({ onBack }: { onBack: () => void }) => {
               <div
                 key={i}
                 className='group/row flex flex-col items-end gap-1'>
-                <p className='max-w-[85%] rounded-2xl rounded-br-sm bg-accent/10 px-4 py-2 text-[14px] leading-normal wrap-break-word whitespace-pre-wrap select-text text-accent'>
-                  {m.content}
+                <p
+                  className={cn(
+                    'max-w-[85%] rounded-2xl rounded-br-sm bg-accent/10 px-4 py-2',
+                    'text-[14px] leading-normal wrap-break-word whitespace-pre-wrap',
+                    'select-text text-accent',
+                  )}>
+                  <RichText
+                    text={m.content}
+                    interactive
+                  />
                 </p>
                 <div className='flex items-center justify-end gap-1'>
                   {m.ts != null && (

@@ -1,6 +1,6 @@
 {
   "name": "marvis",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Private and Personal AI for all",
   "keywords": [
     "AI",
@@ -41,7 +41,7 @@
     "hono": "^4.13.8",
     "pg": "^8.23.0",
     "resend": "^6.28.1",
-    "turbo": "^2.11.5",
+    "turbo": "^2.11.7",
     "typescript": "^6.0.3"
   },
   "devEngines": {

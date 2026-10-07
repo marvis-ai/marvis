@@ -28,6 +28,8 @@ pub struct Config {
     pub compat: CompatPrefs,
     /// The dedicated screen reader — see [`VisionPrefs`].
     pub vision: VisionPrefs,
+    /// User-defined prompt presets — see [`PromptPrefs`].
+    pub prompts: PromptPrefs,
 }
 
 impl Default for Config {
@@ -41,6 +43,7 @@ impl Default for Config {
             window: WindowPrefs::default(),
             compat: CompatPrefs::default(),
             vision: VisionPrefs::default(),
+            prompts: PromptPrefs::default(),
         }
     }
 }
@@ -302,6 +305,36 @@ impl VisionPrefs {
     }
 }
 
+/// `[prompts]` — user-defined prompt presets; built-ins ship in
+/// `presets.rs`, never in this file. Custom `id`s are webview-minted
+/// `u:` strings; `prompts.custom` writes replace the whole list.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PromptPrefs {
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub custom: Vec<crate::presets::Preset>,
+}
+
+/// Apply the `prompts.*` config command keys — same handled-shape as
+/// [`apply_stt_config`].
+pub(crate) fn apply_prompts_config(
+    prompts: &mut PromptPrefs,
+    key: &str,
+    value: &serde_json::Value,
+) -> Result<bool, String> {
+    match key {
+        "prompts.custom" => {
+            let raw: Vec<crate::presets::Preset> = serde_json::from_value(value.clone())
+                .map_err(|e| format!("prompts.custom must be an array of presets: {e}"))?;
+            *prompts = PromptPrefs {
+                custom: crate::presets::validate_custom(raw)?,
+            };
+            Ok(true)
+        }
+        _ => Ok(false),
+    }
+}
+
 /// Provider enable/order/model memory (`[providers]`). The ordered list
 /// IS the failover chain: asks try providers front-to-back, skipping
 /// `disabled` entries and any provider that isn't usable (no key where
@@ -499,6 +532,16 @@ impl Config {
         self.vision
             .models
             .retain(|id, m| vision(id) && !m.is_empty());
+
+        // A hand-edited `[[prompts.custom]]` keeps its valid rows —
+        // malformed rows and duplicate ids drop.
+        let mut seen = std::collections::HashSet::new();
+        self.prompts.custom.retain_mut(|p| {
+            p.id = p.id.trim().to_string();
+            p.name = p.name.trim().to_string();
+            p.text = p.text.trim().to_string();
+            crate::presets::validate(p).is_ok() && seen.insert(p.id.clone())
+        });
 
         if !matches!(
             self.app.main_language.as_str(),
@@ -1086,5 +1129,54 @@ mod tests {
         assert_eq!(cfg.app.main_language, "en");
         assert_eq!(cfg.recording.fps, 4);
         assert_eq!(cfg.recording.summary_prompt, "pad");
+    }
+
+    #[test]
+    fn prompts_custom_roundtrips_and_normalizes() {
+        // Round-trip: a custom preset survives save/load.
+        let dir = tempfile_dir();
+        let path = dir.join("config.toml");
+        let mut cfg = Config::default();
+        cfg.prompts.custom = vec![crate::presets::Preset {
+            id: "u:test".into(),
+            name: "Test".into(),
+            kind: crate::presets::PresetKind::Instruct,
+            text: "Be terse.".into(),
+        }];
+        cfg.save_to(&path).unwrap();
+        let loaded = Config::load_from(&path).unwrap();
+        assert_eq!(loaded.prompts.custom.len(), 1);
+        assert_eq!(loaded.prompts.custom[0].id, "u:test");
+
+        // A hand-edited file keeps valid rows and drops malformed ones.
+        std::fs::write(
+            &path,
+            "[[prompts.custom]]\n\
+             id = \"u:ok\"\nname = \"Ok\"\nkind = \"instruct\"\ntext = \"t\"\n\
+             [[prompts.custom]]\n\
+             id = \"\"\nname = \"bad\"\nkind = \"instruct\"\ntext = \"t\"\n\
+             [[prompts.custom]]\n\
+             id = \"u:ok\"\nname = \"dup\"\nkind = \"instruct\"\ntext = \"t\"\n",
+        )
+        .unwrap();
+        let loaded = Config::load_from(&path).unwrap();
+        assert_eq!(loaded.prompts.custom.len(), 1);
+        assert_eq!(loaded.prompts.custom[0].id, "u:ok");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn prompts_custom_write_validates() {
+        let mut prompts = PromptPrefs::default();
+        let good = serde_json::json!([{
+            "id": "u:a1", "name": "A", "kind": "template", "text": "do {input}"
+        }]);
+        assert!(apply_prompts_config(&mut prompts, "prompts.custom", &good).unwrap());
+        assert_eq!(prompts.custom[0].kind, crate::presets::PresetKind::Template);
+        assert!(!apply_prompts_config(&mut prompts, "other.key", &serde_json::json!([])).unwrap());
+
+        let bad =
+            serde_json::json!([{ "id": "u:a1", "name": "", "kind": "instruct", "text": "x" }]);
+        assert!(apply_prompts_config(&mut prompts, "prompts.custom", &bad).is_err());
     }
 }

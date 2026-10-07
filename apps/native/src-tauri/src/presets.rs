@@ -145,6 +145,16 @@ pub fn validate(p: &Preset) -> Result<(), String> {
     if BUILTIN_ROWS.iter().any(|(bid, ..)| *bid == p.id) {
         return Err(format!("preset id {:?} collides with a built-in", p.id));
     }
+    // `validate` only ever sees custom rows (built-ins come from the
+    // catalog, never through `validate_custom`/`normalize`), so every
+    // id it accepts must be a webview-minted `u:` string — a hand-made
+    // `b:`/`x:` id can't squat on the catalog's or any future namespace.
+    if !p.id.starts_with("u:") {
+        return Err(format!(
+            "custom preset id {:?} must start with \"u:\"",
+            p.id
+        ));
+    }
     Ok(())
 }
 
@@ -231,5 +241,16 @@ mod tests {
         let mut empty_text = custom("u:2", "x", PresetKind::Instruct);
         empty_text.text = "  ".into();
         assert!(validate_custom(vec![empty_text]).is_err());
+
+        // Limits: name ≤24 chars, text ≤2000 chars, and a custom id
+        // must be a webview-minted `u:` string — `b:` is the catalog's
+        // namespace even when the id isn't a shipped built-in.
+        assert!(
+            validate_custom(vec![custom("u:3", &"n".repeat(25), PresetKind::Instruct)]).is_err()
+        );
+        let mut long_text = custom("u:4", "x", PresetKind::Instruct);
+        long_text.text = "t".repeat(2001);
+        assert!(validate_custom(vec![long_text]).is_err());
+        assert!(validate_custom(vec![custom("b:zzz", "x", PresetKind::Instruct)]).is_err());
     }
 }

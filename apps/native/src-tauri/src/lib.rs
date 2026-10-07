@@ -2380,7 +2380,9 @@ fn config_get(state: State<'_, AppState>) -> Config {
 /// `recording.fps` (`8|4|2` — a write during a live capture restarts it
 /// so the new rate applies now), `recording.read_interval_secs` (u64
 /// ≥1 — minimum seconds between ambient screen reads; applies on the
-/// next capture start), and `recording.summary_prompt` (string).
+/// next capture start), `recording.summary_prompt` (string), and
+/// `prompts.custom` (array of `{id, name, kind, text}` presets —
+/// replaces the whole custom list; rejected rows fail the write).
 /// Provider order/switches/models have
 /// their own commands (`providers_reorder`,
 /// `provider_set_enabled`, `model_set_selected`). Persists `config.toml`
@@ -2450,6 +2452,7 @@ fn config_set(app: AppHandle, key: String, value: serde_json::Value) -> Result<C
                 )?;
             }
             key if config::apply_recording_config(&mut cfg.recording, key, &value)? => {}
+            key if config::apply_prompts_config(&mut cfg.prompts, key, &value)? => {}
             "compat.name" => {
                 cfg.compat.name = value
                     .as_str()

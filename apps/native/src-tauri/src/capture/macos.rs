@@ -491,6 +491,24 @@ mod tests {
         assert_eq!(super::super::frame_interval_secs(0), 1.0); // defensive floor
     }
 
+    /// The display filter's own-window exclusion is load-bearing:
+    /// Marvis's windows are NOT `set_content_protected` on macOS (the
+    /// user must be able to screenshot them), so
+    /// `primary_display_source`'s `with_excluding_windows(&own)` is the
+    /// only thing keeping Marvis out of its own captures.
+    #[test]
+    fn primary_display_source_excludes_own_windows() {
+        let source = include_str!("macos.rs");
+        let body = source
+            .split("fn primary_display_source(")
+            .nth(1)
+            .and_then(|rest| rest.split("\npub(crate) fn ").next())
+            .expect("primary_display_source body not found");
+        for needle in ["process_id() == own_pid", "with_excluding_windows(&own)"] {
+            assert!(body.contains(needle), "display filter must keep {needle}");
+        }
+    }
+
     /// `pick_candidates` can never run in tests (needs real
     /// `SCShareableContent`), so guard the exclusion logic at source:
     /// `pick_window_ok` must drop own-pid windows AND filter by

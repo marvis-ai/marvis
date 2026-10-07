@@ -10,41 +10,25 @@ use serde::{Deserialize, Serialize};
 /// `instruct` presets append `text` to the ask's system prompt for
 /// that send only; `template` presets are composer-side text
 /// expansions (`{input}`/`{lang}`) — they never ride `ask_send`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PresetKind {
+    #[default]
     Instruct,
     Template,
-}
-
-impl Default for PresetKind {
-    fn default() -> Self {
-        Self::Instruct
-    }
 }
 
 /// One preset — built-in (`b:` id) or user-defined (`u:` id).
 /// `#[serde(default)]` keeps a hand-edited `[[prompts.custom]]` row
 /// with a missing field from failing the whole `Config` load —
 /// `validate`/`normalize` then drop the malformed row.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Preset {
     pub id: String,
     pub name: String,
     pub kind: PresetKind,
     pub text: String,
-}
-
-impl Default for Preset {
-    fn default() -> Self {
-        Self {
-            id: String::new(),
-            name: String::new(),
-            kind: PresetKind::Instruct,
-            text: String::new(),
-        }
-    }
 }
 
 /// The shipped catalog — `(id, name, kind, text)` rows. `{input}` =

@@ -642,6 +642,9 @@ const EV_BAR_TOGGLE_INPUT: &str = "bar:toggle-input";
 /// dispatch only emits.
 const EV_BAR_START_LISTEN: &str = "bar:start-listen";
 const EV_BAR_SHOW_HISTORY: &str = "bar:show-history";
+/// Emitted to the `bar` window only — a `preset.*` menu pick
+/// (menu_dispatch); payload is the full `Preset`.
+const EV_PRESET_PICK: &str = "bar:preset-pick";
 
 /// Map [`hotkey::Action`]s onto pool calls / bar events. Owns an
 /// `AppHandle` and re-resolves `AppState` per press, so the same
@@ -725,6 +728,13 @@ fn menu_dispatch() -> impl Fn(&AppHandle, tauri::menu::MenuEvent) + Send + Sync 
         // matched, so an edge can't drift from its `Dir`.
         if let Some(dir) = menus::pos_edge_dir(id) {
             snap_edge_and_refresh(app, dir);
+            return;
+        }
+        if let Some(pid) = menus::preset_item_id(id) {
+            let custom = app.state::<AppState>().config.lock().prompts.custom.clone();
+            if let Some(p) = presets::find(pid, &custom) {
+                let _ = app.emit_to(windows::BAR_LABEL, EV_PRESET_PICK, p);
+            }
             return;
         }
         match id {
@@ -1880,6 +1890,32 @@ fn bar_context_menu(app: AppHandle) -> Result<(), String> {
     bar.popup_menu(&menu).map_err(|e| e.to_string())
 }
 
+/// The merged preset list — built-ins first, then `prompts.custom`.
+/// The bar's picker/chip matcher and the prefs tab read it; `ask_send`
+/// resolves ids against the same order server-side.
+#[tauri::command]
+fn presets_list(state: State<'_, AppState>) -> Vec<presets::Preset> {
+    presets::all(&state.config.lock().prompts.custom)
+}
+
+/// The composer wand's popup (and the input-row right-click): the
+/// preset menu pops at the cursor, built fresh so customs always show.
+/// Gate-guarded like `ask_send` — a crafted invoke during onboarding
+/// must not pop chrome over the wizard.
+#[tauri::command]
+fn presets_menu(app: AppHandle) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    if *state.gate.lock() != Gate::Main {
+        log::warn!("presets_menu dropped while gate != Main");
+        return Ok(());
+    }
+    let menu = menus::build_preset_menu(&app).map_err(|e| e.to_string())?;
+    let bar = app
+        .get_webview_window(windows::BAR_LABEL)
+        .ok_or("bar window missing")?;
+    bar.popup_menu(&menu).map_err(|e| e.to_string())
+}
+
 /// Dev-only inspector for webviews without the shared menu (prefs,
 /// alert): opens the CALLING window's devtools — their right-click
 /// invokes this under `import.meta.env.DEV`. No-op in release, where
@@ -2805,6 +2841,8 @@ pub fn run() {
             window_bar_edge,
             window_set_bar_expanded,
             bar_context_menu,
+            presets_list,
+            presets_menu,
             open_devtools,
             permissions_status,
             permissions_request_screen,
@@ -2883,6 +2921,21 @@ mod tests {
         assert!(source.contains("sherpa_cancel_download,"));
         assert!(source.contains("sherpa_remove_model,"));
         assert!(source.contains("session_resume,"));
+    }
+
+    /// The preset surface: both commands registered, the `preset.*`
+    /// dispatch arm present, and the pick event constant declared —
+    /// all asserted against the registration source itself. `concat!`
+    /// keeps each literal out of this file's text (same trick as the
+    /// `concat!("listen_", "stub")` negative assert above) so the
+    /// asserts can't self-satisfy.
+    #[test]
+    fn preset_commands_and_dispatch_are_in_the_contract() {
+        let source = include_str!("lib.rs");
+        assert!(source.contains(concat!("presets", "_list,")));
+        assert!(source.contains(concat!("presets", "_menu,")));
+        assert!(source.contains(concat!("preset", "_item_id")));
+        assert!(source.contains(concat!("EV_", "PRESET_PICK")));
     }
 
     /// The punctuation auto-install chain: a completed sherpa download

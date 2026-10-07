@@ -47,6 +47,7 @@ mod menubar;
 mod menus;
 mod paths;
 mod permissions;
+mod presets;
 mod prompts;
 mod screen_read;
 mod sherpa_models;

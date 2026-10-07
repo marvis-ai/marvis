@@ -45,6 +45,13 @@ describe('RichText', () => {
     expect(html).toContain('<span');
   });
 
+  // `inline-block` is atomic — a multi-word em must split at whitespace
+  // so it can wrap where the textarea beneath does (caret alignment).
+  test('highlight mode splits multi-word em, space stays raw text', () => {
+    const html = renderToStaticMarkup(<RichText text='_a b_' />);
+    expect(html).toContain('a</span> <span');
+  });
+
   test('interactive mode renders ~~ as <s>', () => {
     const html = renderToStaticMarkup(
       <RichText

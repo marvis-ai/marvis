@@ -35,7 +35,7 @@ const INLINE = new RegExp(
     '`(?<code>[^`]+)`',
     '\\[(?<label>[^\\]\\n]+)\\]' +
       '\\((?<target>(?:https?://|mailto:|www\\.)[^\\s)]+)\\)',
-    '(?<url>https?://[^\\s<>\'"]+|www\\.[^\\s<>\'"]+)',
+    '(?<![\\w])(?<url>https?://[^\\s<>\'"]+|www\\.[^\\s<>\'"]+)',
     '(?<mail>[\\w.+-]+@[\\w-]+(?:\\.[\\w-]+)+)',
     '(?<strong>\\*\\*(?=\\S)[\\s\\S]*?\\S\\*\\*' +
       '|(?<![\\w])__(?=\\S)[\\s\\S]*?\\S__(?![\\w]))',
@@ -46,8 +46,10 @@ const INLINE = new RegExp(
   'g',
 );
 
-/** Wrapping punctuation the reader didn't mean as part of the url. */
-const TRAILING = /[.,!?;:'"]+$/;
+/** Wrapping punctuation — GFM also drops trailing emphasis marks — the
+ *  reader didn't mean as part of the url. Only the tail strips, so
+ *  `foo_bar` mid-string is untouched. */
+const TRAILING = /[.,!?;:'"*_~]+$/;
 
 /** Strip sentence-tail punctuation, plus a trailing `)`/`]` only when
  *  it has no opener inside the match — `x_(y)` keeps its paren. Repeats
@@ -59,12 +61,11 @@ const trimUrlTail = (raw: string): string => {
     prev = s;
     s = s.replace(TRAILING, '');
     const last = s.slice(-1);
-    const open = last === ')' ? '(' : '[';
-    if (
-      (last === ')' || last === ']') &&
-      s.split(last).length - 1 > s.split(open).length - 1
-    ) {
-      s = s.slice(0, -1);
+    if (last === ')' || last === ']') {
+      const open = last === ')' ? '(' : '[';
+      if (s.split(last).length - 1 > s.split(open).length - 1) {
+        s = s.slice(0, -1);
+      }
     }
   } while (prev !== s);
   return s;

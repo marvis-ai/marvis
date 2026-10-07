@@ -106,7 +106,7 @@ export const AskInput = ({
         placeholder='Ask Marvis…'
         aria-label='Ask Marvis'
         className={cn(
-          'field-sizing-content relative w-full resize-none self-center',
+          'field-sizing-content relative w-full resize-none',
           'overflow-y-auto border-0 bg-transparent caret-accent',
           'outline-none select-text placeholder:text-muted-foreground',
           'focus-visible:shadow-none',

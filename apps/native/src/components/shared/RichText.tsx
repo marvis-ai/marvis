@@ -54,7 +54,7 @@ export const RichText = ({
             return slice.split(/(\s)/).map((frag, j) =>
               frag.trim() ? (
                 <span
-                  key={j}
+                  key={`${i}-${j}`}
                   className={HL.em}>
                   {frag}
                 </span>

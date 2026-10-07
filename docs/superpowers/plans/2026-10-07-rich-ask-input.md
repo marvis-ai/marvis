@@ -101,7 +101,7 @@ describe('tokenizeInline', () => {
   });
 
   test('www. autolinks get an https:// href but display verbatim', () => {
-    const t = tokenizeInline('go www.a.b/c')[0];
+    const t = tokenizeInline('go www.a.b/c')[1];
     expect(t.role).toBe('url');
     expect(t.href).toBe('https://www.a.b/c');
   });

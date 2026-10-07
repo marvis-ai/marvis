@@ -122,6 +122,42 @@ describe('tokenizeInline', () => {
     expect(parts('an **open pair')).toEqual([['text', 'an **open pair']]);
   });
 
+  test('unmatched double stars cannot open single-star emphasis', () => {
+    expect(parts('**open *ok*')).toEqual([
+      ['text', '**open '],
+      ['mark', '*'],
+      ['em', 'ok'],
+      ['mark', '*'],
+    ]);
+    expect(parts('**open*')).toEqual([['text', '**open*']]);
+    expect(parts('a*x*b')).toEqual([
+      ['text', 'a'],
+      ['mark', '*'],
+      ['em', 'x'],
+      ['mark', '*'],
+      ['text', 'b'],
+    ]);
+  });
+
+  test('unmatched openers remain literal at input scale', () => {
+    for (const delimiter of ['*', '**', '_', '__', '~~']) {
+      const input = `${delimiter}a `.repeat(20000);
+      expect(parts(input)).toEqual([['text', input]]);
+    }
+  }, 1000);
+
+  test('pairs preserve multiline content and single-character emphasis', () => {
+    expect(parts('*a\nb* _x_')).toEqual([
+      ['mark', '*'],
+      ['em', 'a\nb'],
+      ['mark', '*'],
+      ['text', ' '],
+      ['mark', '_'],
+      ['em', 'x'],
+      ['mark', '_'],
+    ]);
+  });
+
   test('no nesting: **a *b* c** is one strong run', () => {
     expect(parts('**a *b* c**')).toEqual([
       ['mark', '**'],

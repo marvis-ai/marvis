@@ -20,9 +20,10 @@ us uphold it, and how to report accessibility issues.
   action has a key (see [Hotkeys](README.md#hotkeys)). Pointer drag must never
   be the only way to operate a control — the bar also docks via Settings → Bar
   edge picker.
-- **Screen reader support** — the webview renders semantic HTML with a logical
-  heading hierarchy so it can be navigated with VoiceOver (macOS), NVDA, JAWS,
-  and Narrator (Windows), and Orca (Linux).
+- **Screen reader requirements** — the webview must use semantic HTML and a
+  logical heading hierarchy. Navigation testing targets are VoiceOver (macOS),
+  NVDA, JAWS, and Narrator (Windows), and Orca (Linux); support has not been
+  verified.
 - **Motion is state — and optional** — per `apps/native/DESIGN.md`, animation
   exists only to communicate state changes. `prefers-reduced-motion` stills the
   breathing idle, capsule morphs, waveforms, and the caret; new motion must

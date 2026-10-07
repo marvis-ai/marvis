@@ -185,6 +185,11 @@ impl Db {
         let conn = Connection::open(&path)?;
         migrate(&conn)?;
         conn.execute_batch(SCHEMA)?;
+        // Fresh databases have no legacy titles to backfill on restart.
+        conn.execute(
+            "INSERT OR IGNORE INTO migrations (name) VALUES ('ask_title_backfill')",
+            [],
+        )?;
         // After open so an existing file's mode is corrected too.
         #[cfg(unix)]
         {
@@ -696,6 +701,7 @@ impl Db {
 /// rebuild all have to happen here first or every query against the
 /// new shape would fail.
 fn migrate(conn: &Connection) -> anyhow::Result<()> {
+    conn.execute_batch("CREATE TABLE IF NOT EXISTS migrations (name TEXT PRIMARY KEY)")?;
     let table_exists = |name: &str| -> rusqlite::Result<bool> {
         conn.query_row(
             "SELECT COUNT(*) > 0 FROM sqlite_master
@@ -807,16 +813,25 @@ fn migrate(conn: &Connection) -> anyhow::Result<()> {
                 conn.execute_batch(&format!("ALTER TABLE messages ADD COLUMN {col} {ty}"))?;
             }
         }
-        // Ask-session title backfill: first user message, matching the
-        // `session_list` fallback — rows written before generated titles
-        // keep the question label instead of paying for a title call.
-        conn.execute_batch(
-            "UPDATE sessions SET title = (
-               SELECT substr(m.content, 1, 60) FROM messages m
-               WHERE m.session_id = sessions.id AND m.role = 'user'
-               ORDER BY m.ts ASC, m.id ASC LIMIT 1)
-             WHERE sessions.type = 'ask' AND sessions.title IS NULL;",
+        // Backfill legacy asks once. New NULL titles must survive reopen
+        // so a failed generated-title request can be retried.
+        let tx = conn.unchecked_transaction()?;
+        let backfilled: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM migrations WHERE name = 'ask_title_backfill')",
+            [],
+            |row| row.get(0),
         )?;
+        if !backfilled {
+            tx.execute_batch(
+                "UPDATE sessions SET title = (
+                   SELECT substr(m.content, 1, 60) FROM messages m
+                   WHERE m.session_id = sessions.id AND m.role = 'user'
+                   ORDER BY m.ts ASC, m.id ASC LIMIT 1)
+                 WHERE sessions.type = 'ask' AND sessions.title IS NULL;
+                 INSERT INTO migrations (name) VALUES ('ask_title_backfill');",
+            )?;
+        }
+        tx.commit()?;
     }
     Ok(())
 }
@@ -1225,6 +1240,65 @@ mod tests {
         db.transcript_add(1, "them", "new turn", Some(1)).unwrap();
         let transcripts = db.transcripts_for(1, None).unwrap();
         assert_eq!(transcripts[1].speaker_idx, Some(1));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ask_title_backfill_runs_once_on_existing_databases() {
+        let dir = tmp_dir();
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("marvis.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(SCHEMA).unwrap();
+            conn.execute_batch(
+                "INSERT INTO sessions (type, started_at, last_active_at)
+                 VALUES ('ask', 1, 1), ('ask', 2, 2);
+                 INSERT INTO messages (session_id, role, content, ts)
+                 VALUES (1, 'user', 'legacy question', 1);",
+            )
+            .unwrap();
+        }
+        {
+            let db = Db::at(&path).unwrap();
+            assert_eq!(
+                db.session_title(1).unwrap().as_deref(),
+                Some("legacy question")
+            );
+            // This session was empty during migration, then title generation failed.
+            db.message_add(2, "user", "retry this title").unwrap();
+        }
+        {
+            let db = Db::at(&path).unwrap();
+            assert_eq!(
+                db.session_title(1).unwrap().as_deref(),
+                Some("legacy question")
+            );
+            assert_eq!(db.session_title(2).unwrap(), None);
+            assert!(db.session_set_title(2, "Retried title").unwrap());
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn fresh_database_skips_ask_title_backfill_on_restart() {
+        let dir = tmp_dir();
+        let path = dir.join("marvis.db");
+        let sid;
+        {
+            let db = Db::at(&path).unwrap();
+            sid = db.session_get_or_create_active("ask").unwrap();
+            db.message_add(sid, "user", "retry after restart").unwrap();
+        }
+        {
+            let db = Db::at(&path).unwrap();
+            assert_eq!(db.session_title(sid).unwrap(), None);
+            assert_eq!(
+                db.session_list().unwrap()[0].title.as_deref(),
+                Some("retry after restart")
+            );
+            assert!(db.session_set_title(sid, "Retried title").unwrap());
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

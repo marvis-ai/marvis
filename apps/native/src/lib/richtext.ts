@@ -37,14 +37,60 @@ const INLINE = new RegExp(
       '\\((?<target>(?:https?://|mailto:|www\\.)[^\\s)]+)\\)',
     '(?<![\\w])(?<url>https?://[^\\s<>\'"]+|www\\.[^\\s<>\'"]+)',
     '(?<mail>[\\w.+-]+@[\\w-]+(?:\\.[\\w-]+)+)',
-    '(?<strong>\\*\\*(?=\\S)[\\s\\S]*?\\S\\*\\*' +
-      '|(?<![\\w])__(?=\\S)[\\s\\S]*?\\S__(?![\\w]))',
-    '(?<strike>~~(?=\\S)[\\s\\S]*?\\S~~)',
-    '(?<em>\\*(?=\\S)[\\s\\S]*?\\S\\*' +
-      '|(?<![\\w])_(?=\\S)[\\s\\S]*?\\S_(?![\\w]))',
+    '(?<delimiter>\\*\\*|__|~~|\\*|_)',
   ].join('|'),
   'g',
 );
+
+/** Index valid pairs once per delimiter. The closing pointer only moves
+ * forward, so a run of unmatched openers never rescans its suffix.
+ * Pair contents remain flat and may contain other delimiter types. */
+const emphasisPairs = (text: string): Map<number, Token> => {
+  const pairs = new Map<number, Token>();
+  for (const [delimiter, role] of [
+    ['**', 'strong'],
+    ['__', 'strong'],
+    ['~~', 'strike'],
+    ['*', 'em'],
+    ['_', 'em'],
+  ] as const) {
+    const width = delimiter.length;
+    const openings: number[] = [];
+    const closings: number[] = [];
+    for (
+      let at = text.indexOf(delimiter);
+      at !== -1;
+      at = text.indexOf(delimiter, at + 1)
+    ) {
+      const before = text[at - 1] ?? '';
+      const after = text[at + width] ?? '';
+      // Neither half of a double-star run is a single-star delimiter.
+      if (delimiter === '*' && (before === '*' || after === '*')) continue;
+      if (
+        /\S/.test(after) &&
+        (!delimiter.startsWith('_') || !/\w/.test(before))
+      ) {
+        openings.push(at);
+      }
+      if (
+        /\S/.test(before) &&
+        (!delimiter.startsWith('_') || !/\w/.test(after))
+      ) {
+        closings.push(at);
+      }
+    }
+    let closing = 0;
+    for (const at of openings) {
+      while (closing < closings.length && closings[closing] < at + width + 1) {
+        closing++;
+      }
+      if (closing < closings.length && !pairs.has(at)) {
+        pairs.set(at, { start: at, end: closings[closing] + width, role });
+      }
+    }
+  }
+  return pairs;
+};
 
 /** Wrapping punctuation — GFM also drops trailing emphasis marks — the
  *  reader didn't mean as part of the url. Only the tail strips, so
@@ -84,10 +130,15 @@ const push = (
 export const tokenizeInline = (text: string): Token[] => {
   const out: Token[] = [];
   let cursor = 0;
-  for (const m of text.matchAll(INLINE)) {
+  const pairs = emphasisPairs(text);
+  const pattern = new RegExp(INLINE);
+  for (let m; (m = pattern.exec(text)) !== null; ) {
     const at = m.index!;
-    const raw = m[0];
     const g = m.groups!;
+    const pair = g.delimiter === undefined ? undefined : pairs.get(at);
+    if (g.delimiter !== undefined && pair === undefined) continue;
+    const raw = pair ? text.slice(at, pair.end) : m[0];
+    if (pair) pattern.lastIndex = pair.end;
     if (at > cursor) push(out, cursor, at, 'text');
     if (g.code !== undefined) {
       // `x` — backticks dim, content is code.
@@ -121,14 +172,8 @@ export const tokenizeInline = (text: string): Token[] => {
     } else if (g.mail !== undefined) {
       push(out, at, at + raw.length, 'email', `mailto:${raw}`);
     } else {
-      const wide = g.strong !== undefined || g.strike !== undefined;
-      const role: TokenRole =
-        g.strong !== undefined
-          ? 'strong'
-          : g.strike !== undefined
-            ? 'strike'
-            : 'em';
-      const d = wide ? 2 : 1;
+      const role = pair!.role;
+      const d = role === 'strong' || role === 'strike' ? 2 : 1;
       push(out, at, at + d, 'mark');
       push(out, at + d, at + raw.length - d, role);
       push(out, at + raw.length - d, at + raw.length, 'mark');

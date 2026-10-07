@@ -2006,7 +2006,7 @@ fn capture_pick_and_start(app: AppHandle) {
                     // — a display pick would composite our bar into the
                     // model's recording. Re-resolve display picks through
                     // `resolve_candidate` (the `d:` path rebuilds the
-                    // display filter minus our own windows). Window/app
+                    // display filter excluding our application). Window/app
                     // picks can't be ours (`excluded_bundle_ids`), so
                     // their filters pass through untouched.
                     let (filter, w, h, target) = match result.source() {
@@ -2021,24 +2021,13 @@ fn capture_pick_and_start(app: AppHandle) {
                                         label: res.label,
                                     },
                                 ),
-                                // Display vanished between pick and
-                                // resolve — degrade to the picker's own
-                                // filter rather than dropping the user's
-                                // selection entirely.
+                                // Preserve the current capture if we cannot build
+                                // a display filter that excludes Marvis.
                                 Err(e) => {
                                     log::warn!(
                                         "capture_pick_and_start: display {id} re-resolve failed: {e}"
                                     );
-                                    let (w, h) = result.pixel_size();
-                                    (
-                                        result.filter(),
-                                        w,
-                                        h,
-                                        CaptureTarget {
-                                            kind: "display",
-                                            label: format!("Display {id}"),
-                                        },
-                                    )
+                                    return;
                                 }
                             }
                         }

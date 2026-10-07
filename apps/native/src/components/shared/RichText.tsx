@@ -8,11 +8,10 @@ import { tokenizeInline, type Token, type TokenRole } from '@/lib/richtext';
  * - `highlight` (default) — the Ask input's overlay. Every token is a
  *   span and `mark` delimiters just dim: the characters stay 1:1 with
  *   the real textarea text, so the invisible caret never drifts. Every
- *   class here is metric-safe — no font-weight/family/size changes
- *   (bold is a `text-stroke`, italic a `skewX`), or the overlay would
- *   land at a different x than the caret. Italic spans additionally
- *   split at whitespace: `inline-block` is atomic, so an unsplit
- *   multi-word `em` couldn't wrap where the textarea beneath can.
+ *   class here preserves the text size and family. Bold uses a text
+ *   stroke; emphasis uses an inline oblique style so even long words
+ *   can wrap inside the span. Outfit has no italic face, so the browser
+ *   synthesizes the slant without changing glyph advance widths.
  * - `interactive` — the sent user bubble. Marks drop out entirely and
  *   the roles become semantic elements with real `<a>`s that open via
  *   the opener plugin (the `Markdown.tsx` pattern).
@@ -21,7 +20,7 @@ import { tokenizeInline, type Token, type TokenRole } from '@/lib/richtext';
 const HL: Record<Exclude<TokenRole, 'text'>, string> = {
   mark: 'text-muted-foreground/60',
   strong: 'font-normal [-webkit-text-stroke:0.45px]',
-  em: 'inline-block -skew-x-[8deg]',
+  em: '[font-style:oblique_8deg]',
   strike: 'line-through decoration-muted-foreground/70',
   code: 'rounded-[3px] bg-fg-soft',
   url: 'text-accent underline decoration-accent/60 underline-offset-2',
@@ -46,23 +45,6 @@ export const RichText = ({
         const slice = text.slice(t.start, t.end);
         if (!interactive) {
           if (t.role === 'text') return slice;
-          // `inline-block` makes a span atomic, so a multi-word em
-          // couldn't wrap internally while the textarea beneath can —
-          // split at whitespace: words stay skewed spans, whitespace
-          // stays wrappable inline text (same advance widths).
-          if (t.role === 'em') {
-            return slice.split(/(\s)/).map((frag, j) =>
-              frag.trim() ? (
-                <span
-                  key={`${i}-${j}`}
-                  className={HL.em}>
-                  {frag}
-                </span>
-              ) : (
-                frag
-              ),
-            );
-          }
           return (
             <span
               key={i}

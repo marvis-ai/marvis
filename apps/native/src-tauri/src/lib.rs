@@ -3066,6 +3066,34 @@ mod tests {
         );
     }
 
+    /// Windows parity with the macOS rule "visible to the user,
+    /// invisible to Marvis's own captures": WGC can't exclude windows
+    /// from a monitor grab, so `capture/windows.rs` applies
+    /// `WDA_EXCLUDEFROMCAPTURE` dynamically — a refcounted guard holds
+    /// it only while a capture session is live, then restores
+    /// `WDA_NONE`. `build_window` must consult `protection_engaged`
+    /// (not protect unconditionally) so a window born mid-capture
+    /// starts protected without hiding Marvis from user screenshots
+    /// the rest of the time.
+    #[test]
+    fn windows_self_protects_only_while_capturing() {
+        let backend = include_str!("capture/windows.rs");
+        for needle in [
+            "struct SelfProtection",
+            "SetWindowDisplayAffinity",
+            "WDA_EXCLUDEFROMCAPTURE",
+            "WDA_NONE",
+            "pub(crate) fn protection_engaged()",
+        ] {
+            assert!(backend.contains(needle), "windows backend must keep {needle}");
+        }
+        let pool = include_str!("windows/mod.rs");
+        assert!(
+            pool.contains("set_content_protected(crate::capture::protection_engaged())"),
+            "windows builds must consult protection_engaged, not protect unconditionally"
+        );
+    }
+
     /// The custom picker's begin/select share `capture_start`'s
     /// crafted-invoke guard: `gate_transition` held across the check +
     /// action so a racing leave-Main can't interleave. `select`

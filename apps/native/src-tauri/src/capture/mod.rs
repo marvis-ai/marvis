@@ -41,7 +41,9 @@ pub(crate) use macos::{primary_display_source, shot_fullscreen};
 #[cfg(target_os = "windows")]
 pub(crate) use windows::shot_fullscreen;
 #[cfg(target_os = "windows")]
-pub(crate) use windows::{pick_candidates, primary_display_source, resolve_candidate, thumb_for};
+pub(crate) use windows::{
+    pick_candidates, primary_display_source, protection_engaged, resolve_candidate, thumb_for,
+};
 
 /// The production capture type for this OS — `lib.rs` holds
 /// `Mutex<Option<PlatformCapture>>` and treats it uniformly.

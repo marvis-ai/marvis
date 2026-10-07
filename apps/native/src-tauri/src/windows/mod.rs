@@ -909,15 +909,17 @@ fn build_window(
     if let Err(e) = win.set_visible_on_all_workspaces(true) {
         log::warn!("windows: set_visible_on_all_workspaces failed for {label}: {e}");
     }
-    // Window-level protection is the ONLY self-exclusion mechanism on
-    // Windows (WGC monitor grabs) and Linux (the portal) — it keeps
-    // Marvis out of its own captures there, at the cost of hiding the
-    // windows from the user's screenshots too. macOS doesn't need it:
-    // every Marvis-built display filter excludes our own windows
-    // (`capture::macos`), so leaving them unprotected lets the user
-    // screenshot/record Marvis without Marvis ever filming itself.
-    #[cfg(not(target_os = "macos"))]
-    if let Err(e) = win.set_content_protected(true) {
+    // WGC can't exclude windows from a monitor grab, so Windows applies
+    // display affinity dynamically: `capture::windows` protects our
+    // HWNDs only while a capture session is live, and this flag read
+    // makes a window born mid-capture start protected. The rest of the
+    // time the user CAN screenshot/record Marvis — the macOS asymmetry
+    // (visible to the user, invisible to our own captures) without
+    // SCContentFilter. macOS itself needs nothing here (its filters do
+    // the exclusion) and Linux's tao backend no-ops the call anyway —
+    // the portal can't self-exclude either.
+    #[cfg(target_os = "windows")]
+    if let Err(e) = win.set_content_protected(crate::capture::protection_engaged()) {
         log::warn!("windows: set_content_protected failed for {label}: {e}");
     }
     apply_surface_material(app, &win, corner_radius, tint_color, label);
@@ -980,10 +982,10 @@ fn set_glass_radius(app: &AppHandle, win: &WebviewWindow, corner_radius: f64) {
 /// uses. It joins the bar's floating
 /// level ONLY while focused (so it can overlap the bar the user keeps
 /// on top) and drops back on blur — focus events keep `always_on_top`
-/// mirroring the window's active state. It stays content-protected off
-/// macOS (the `build_window` rule — those platforms can't exclude
-/// themselves from their own captures any other way) and joinable on
-/// all workspaces so it can be summoned over any space.
+/// mirroring the window's active state. It follows `build_window`'s
+/// protection rule (Windows: display affinity only while a Marvis
+/// capture is live) and joinable on all workspaces so it can be
+/// summoned over any space.
 /// `CloseRequested` is intercepted into a hide: the window is owned by
 /// the pool for the app's lifetime, so the red light must not destroy
 /// the webview (a fresh build would lose scroll/tab state).
@@ -1035,8 +1037,8 @@ fn build_prefs_window(app: &AppHandle) -> anyhow::Result<WebviewWindow> {
     if let Err(e) = win.set_visible_on_all_workspaces(true) {
         log::warn!("windows: set_visible_on_all_workspaces failed for prefs: {e}");
     }
-    #[cfg(not(target_os = "macos"))]
-    if let Err(e) = win.set_content_protected(true) {
+    #[cfg(target_os = "windows")]
+    if let Err(e) = win.set_content_protected(crate::capture::protection_engaged()) {
         log::warn!("windows: set_content_protected failed for prefs: {e}");
     }
     // Same detached warn-only pattern as `apply_surface_material`; the

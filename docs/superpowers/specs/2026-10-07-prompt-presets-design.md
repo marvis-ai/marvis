@@ -109,16 +109,17 @@ time in the webview.
   built-ins-then-customs order. It applies in two moments, whichever
   comes first:
   - **Eager** — the token exactly equals a match AND is followed by
-    whitespace or is the whole text: the preset applies (template
-    inserts, instruct arms) and the `/token` is removed along with one
-    following space, leaving the rest intact. Exact-match required, so
-    `/s` never fires while `summarize` is still being typed — but a
-    `sum`-vs-`summarize` prefix collision resolves to the shorter name
-    only at a terminator; mid-token text always wins.
-  - **At send** — a still-unresolved leading `/token` (e.g. typed then
-    immediately Entered) tries the same match once: hit → apply +
-    send; miss → the text is sent literally, `/` included — the
-    shortcut never eats text.
+    whitespace: the preset applies (template inserts, instruct arms)
+    and the `/token` is removed along with one following space, leaving
+    the rest intact. An end-of-text token does NOT apply eagerly —
+    `/sum` must stay typeable when `summarize` also exists (the longer
+    name would be unreachable otherwise).
+  - **At send** — a still-unresolved leading `/token` tries the same
+    exact match once: hit → apply, then the send proceeds (an
+    `instruct` hit with nothing after the token arms the chip and the
+    send early-returns on the now-empty text — the field stays armed
+    for the next input); miss → the text is sent literally, `/`
+    included — the shortcut never eats text.
 - Text equal to exactly `/` + Enter opens the preset menu instead of
   sending a bare slash.
 - Both paths pause while `dictation.state === 'listening'` (the tracker

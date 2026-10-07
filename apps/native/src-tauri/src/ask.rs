@@ -1132,6 +1132,8 @@ fn persist_assistant_message(
         model: Some(model.to_string()),
         tokens_in: usage.and_then(|u| u.input.map(|n| n as i64)),
         tokens_out: usage.and_then(|u| u.output.map(|n| n as i64)),
+        // Armed presets ride user rows, not assistant replies.
+        preset: None,
     };
     if let Err(e) = db.message_add_meta(sid, "assistant", full, &meta) {
         log::warn!("ask: failed to persist assistant message: {e}");

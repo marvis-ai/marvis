@@ -60,6 +60,14 @@ describe('resolveSlash', () => {
     expect(resolveSlash('/sum  two', presets, false)?.rest).toBe(' two');
     expect(resolveSlash('/sum two', presets, false)?.rest).toBe('two');
   });
+
+  test('end-to-end: the longer name wins through the resolver', () => {
+    // `/sum ` hits b:sum; `/summarize ` must reach b:summarize — a
+    // prefix match must not swallow the full token.
+    expect(resolveSlash('/summarize ', presets, false)?.preset.id).toBe(
+      'b:summarize',
+    );
+  });
 });
 
 describe('expandTemplate', () => {
@@ -82,4 +90,7 @@ describe('expandTemplate', () => {
 test('langName mirrors prompts.rs', () => {
   expect(langName('zh')).toBe('Chinese');
   expect(langName('bogus')).toBe('English');
+  // Prototype keys are not languages — a plain-object lookup would leak
+  // `Object.prototype.toString` here.
+  expect(langName('toString')).toBe('English');
 });

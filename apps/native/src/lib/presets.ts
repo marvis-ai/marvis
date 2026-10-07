@@ -7,9 +7,9 @@
 import type { Preset } from './commands';
 
 /** The caret-0 `/token`: `text` starts with `/`; the token is the
- *  `[a-z0-9-]` run after it; `rest` is everything that follows
- *  (leading whitespace included). `null` when text isn't a slash
- *  command. */
+ *  `[a-z0-9-]` run after it (case-insensitive — `/Sum` and `/sum` are
+ *  the same token); `rest` is everything that follows (leading
+ *  whitespace included). `null` when text isn't a slash command. */
 export const slashToken = (
   text: string,
 ): { token: string; rest: string } | null => {
@@ -64,17 +64,19 @@ export const resolveSlash = (
 };
 
 /** English names mirroring `prompts::language_name` — `{lang}` expands
- *  at pick time so the composer shows the concrete instruction. */
-const LANG_NAMES: Record<string, string> = {
-  zh: 'Chinese',
-  ja: 'Japanese',
-  ko: 'Korean',
-  fr: 'French',
-  es: 'Spanish',
-};
+ *  at pick time so the composer shows the concrete instruction. A Map,
+ *  not a plain object: `Record` lookup leaks prototype keys
+ *  (`langName('toString')` would return a function). */
+const LANG_NAMES = new Map<string, string>([
+  ['zh', 'Chinese'],
+  ['ja', 'Japanese'],
+  ['ko', 'Korean'],
+  ['fr', 'French'],
+  ['es', 'Spanish'],
+]);
 
 export const langName = (code: string): string =>
-  LANG_NAMES[code.trim()] ?? 'English';
+  LANG_NAMES.get(code.trim()) ?? 'English';
 
 /** `{lang}`/`{input}` substitution. `{input}` absent → `input`
  *  appended after the template; empty input clears the placeholder so

@@ -8,6 +8,7 @@ import {
   InfoIcon,
   KeyboardIcon,
   KeyRoundIcon,
+  MessageSquareTextIcon,
   PanelTopIcon,
   ShieldIcon,
   SlidersHorizontalIcon,
@@ -18,6 +19,7 @@ import { BarTab } from './BarTab';
 import { GeneralTab } from './GeneralTab';
 import { HotkeysTab } from './HotkeysTab';
 import { PrivacyTab } from './PrivacyTab';
+import { PromptsTab } from './PromptsTab';
 import { ProvidersTab } from './ProvidersTab';
 import { RecordingTab } from './RecordingTab';
 import { cn } from '../../lib/classes';
@@ -27,6 +29,7 @@ const TABS = [
   { id: 'general', label: 'General', icon: SlidersHorizontalIcon },
   { id: 'bar', label: 'Bar', icon: PanelTopIcon },
   { id: 'recording', label: 'Recording', icon: VideoIcon },
+  { id: 'prompts', label: 'Prompts', icon: MessageSquareTextIcon },
   { id: 'providers', label: 'Providers', icon: KeyRoundIcon },
   { id: 'hotkeys', label: 'Hotkeys', icon: KeyboardIcon },
   { id: 'privacy', label: 'Privacy & data', icon: ShieldIcon },
@@ -72,6 +75,7 @@ export const SettingsMode = ({ data }: { data: PrefsData }) => {
         {tab === 'general' && <GeneralTab data={data} />}
         {tab === 'bar' && <BarTab />}
         {tab === 'recording' && <RecordingTab data={data} />}
+        {tab === 'prompts' && <PromptsTab data={data} />}
         {tab === 'providers' && <ProvidersTab data={data} />}
         {tab === 'hotkeys' && <HotkeysTab data={data} />}
         {tab === 'privacy' && <PrivacyTab />}

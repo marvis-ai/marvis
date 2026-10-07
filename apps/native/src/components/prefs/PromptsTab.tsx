@@ -1,0 +1,195 @@
+/**
+ * Prompts — the Ask preset list. Built-ins ship with the app
+ * (read-only); custom presets persist as `prompts.custom` and apply
+ * per-send from the composer's wand menu or `/name` shorthand.
+ * `instruct` presets steer the reply (system-prompt append);
+ * `template` presets expand into the composer — `{input}` is the typed
+ * text, `{lang}` the main language.
+ */
+import { useEffect, useState } from 'react';
+import { Trash2Icon } from '@marvis/ui';
+import {
+  configSet,
+  presetsList,
+  type Preset,
+  type PresetKind,
+} from '@/lib/commands';
+import {
+  BTN_OUTLINE,
+  BTN_PRIMARY,
+  BTN_SM,
+  H2,
+  ICON_BTN,
+  PRF_ROW,
+  PRF_ROWS,
+  PR_LABEL,
+  PR_SUB,
+  SUB,
+  cn,
+} from '@/lib/classes';
+import { PrefRow, Seg, Tag } from './bits';
+import type { PrefsData } from './types';
+
+const KINDS: { id: PresetKind; label: string }[] = [
+  { id: 'instruct', label: 'Instruction' },
+  { id: 'template', label: 'Template' },
+];
+
+const INPUT =
+  'w-full rounded-lg border border-border bg-input-well px-2.5 py-1.5 text-[12.5px] text-foreground outline-none transition-[border-color,box-shadow] duration-(--motion-fast) ease-(--ease) focus:border-accent focus:shadow-(--focus-ring)';
+
+const mintId = () => `u:${Math.random().toString(36).slice(2, 10)}`;
+
+export const PromptsTab = ({ data }: { data: PrefsData }) => {
+  const customs = data.config?.prompts.custom ?? [];
+  const [presets, setPresets] = useState<Preset[]>([]);
+  useEffect(() => {
+    void presetsList().then(setPresets).catch(() => {});
+  }, []);
+  const builtins = presets.filter((p) => p.id.startsWith('b:'));
+
+  const [editing, setEditing] = useState<Preset | null>(null);
+  const [isNew, setIsNew] = useState(false);
+
+  const write = (next: Preset[]) =>
+    void configSet('prompts.custom', next)
+      .then(data.setConfig)
+      .catch(() => {});
+
+  const startNew = () => {
+    setIsNew(true);
+    setEditing({ id: mintId(), name: '', kind: 'instruct', text: '' });
+  };
+  const save = () => {
+    if (!editing) return;
+    const clean = {
+      ...editing,
+      name: editing.name.trim(),
+      text: editing.text.trim(),
+    };
+    if (!clean.name || !clean.text) return;
+    const next = isNew
+      ? [...customs, clean]
+      : customs.map((p) => (p.id === clean.id ? clean : p));
+    write(next);
+    setEditing(null);
+  };
+
+  return (
+    <>
+      <h2 className={H2}>Prompts</h2>
+      <p className={SUB}>
+        Presets apply to one Ask send — pick them from the composer's
+        wand menu, or type <code>/</code> + a name (like{' '}
+        <code>/summarize</code>). Instructions steer the reply;
+        templates expand into your message.
+      </p>
+
+      <div className={PRF_ROWS}>
+        {builtins.map((p) => (
+          <PrefRow
+            key={p.id}
+            label={p.name}
+            sub={p.text}>
+            <Tag>{p.kind === 'instruct' ? 'Instruction' : 'Template'}</Tag>
+          </PrefRow>
+        ))}
+      </div>
+
+      <h3 className='mt-6 mb-2 text-[13px] font-[550]'>Your presets</h3>
+      <div className={PRF_ROWS}>
+        {customs.map((p) => (
+          <PrefRow key={p.id} label={p.name} sub={p.text}>
+            <button
+              type='button'
+              className={cn(BTN_SM, BTN_OUTLINE)}
+              onClick={() => {
+                setIsNew(false);
+                setEditing(p);
+              }}>
+              Edit
+            </button>
+            <button
+              type='button'
+              aria-label={`Delete ${p.name}`}
+              className={ICON_BTN}
+              onClick={() => write(customs.filter((x) => x.id !== p.id))}>
+              <Trash2Icon className='size-3.5' />
+            </button>
+          </PrefRow>
+        ))}
+        {customs.length === 0 && !editing && (
+          <div className={cn(PRF_ROW, 'border-b-0')}>
+            <div className={PR_SUB}>No custom presets yet.</div>
+          </div>
+        )}
+
+        {editing ? (
+          <div className={cn(PRF_ROW, 'flex-col items-stretch gap-2.5 border-b-0')}>
+            <div className='flex items-center gap-3'>
+              <input
+                aria-label='Preset name'
+                placeholder='Name — also the /name'
+                className={cn(INPUT, 'w-48')}
+                value={editing.name}
+                onChange={(e) =>
+                  setEditing({ ...editing, name: e.target.value })
+                }
+              />
+              <Seg
+                ariaLabel='Preset kind'
+                options={KINDS}
+                value={editing.kind}
+                onChange={(kind) => setEditing({ ...editing, kind })}
+              />
+            </div>
+            <textarea
+              aria-label='Preset text'
+              placeholder={
+                editing.kind === 'instruct'
+                  ? 'Instruction appended to the send — e.g. Answer like a skeptical reviewer.'
+                  : 'Template text — {input} is the typed message, {lang} your main language.'
+              }
+              className={cn(INPUT, 'min-h-24 resize-y leading-relaxed')}
+              value={editing.text}
+              onChange={(e) => setEditing({ ...editing, text: e.target.value })}
+            />
+            <div className='flex justify-end gap-2'>
+              <button
+                type='button'
+                className={cn(BTN_SM, BTN_OUTLINE)}
+                onClick={() => setEditing(null)}>
+                Cancel
+              </button>
+              <button
+                type='button'
+                className={cn(BTN_SM, BTN_PRIMARY)}
+                disabled={!editing.name.trim() || !editing.text.trim()}
+                onClick={save}>
+                {isNew ? 'Add preset' : 'Save'}
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className={cn(PRF_ROW, 'border-b-0')}>
+            <div>
+              <div className={PR_LABEL}>New preset</div>
+              <div className={PR_SUB}>
+                Name it something short — it becomes the <code>/name</code>{' '}
+                shorthand too.
+              </div>
+            </div>
+            <span className='inline-flex flex-none items-center gap-2'>
+              <button
+                type='button'
+                className={cn(BTN_SM, BTN_OUTLINE)}
+                onClick={startNew}>
+                New preset
+              </button>
+            </span>
+          </div>
+        )}
+      </div>
+    </>
+  );
+};

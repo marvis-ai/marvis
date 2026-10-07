@@ -14,7 +14,7 @@ export const SiteFooter = () => (
         />
         <span className='wordmark'>Marvis</span>
       </span>
-      <span>© 2026 Marvis AI LLC · MIT license</span>
+      <span>© 2026 Marvis AI LLC · Apache-2.0 license</span>
       <span className='meta'>Built with ❤️</span>
     </div>
   </footer>

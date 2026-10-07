@@ -46,7 +46,7 @@ export const Hero = () => (
         <Badge
           variant='outline'
           className='tag'>
-          Free &amp; Open Source · MIT
+          Free &amp; Open Source · Apache-2.0
         </Badge>
         <Badge
           variant='outline'

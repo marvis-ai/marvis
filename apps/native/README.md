@@ -324,4 +324,4 @@ consistent:
 
 ## License
 
-MIT — same as the Marvis monorepo (see the root `package.json`).
+Apache-2.0 — same as the Marvis monorepo (see the root `package.json`).

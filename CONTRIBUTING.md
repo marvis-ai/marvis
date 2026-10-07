@@ -63,7 +63,7 @@ cd apps/native/src-tauri && cargo test
 ## License
 
 By contributing, you agree that your contributions are licensed under the
-[MIT License](LICENSE).
+[Apache License 2.0](LICENSE).
 
 [issues]: https://github.com/marvis-ai/marvis/issues
 [discussions]: https://github.com/marvis-ai/marvis/discussions

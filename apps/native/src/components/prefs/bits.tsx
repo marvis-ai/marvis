@@ -61,7 +61,7 @@ export const Seg = <T extends string>({
   </span>
 );
 
-/** Muted pill — metadata labels (config.toml, marvis://…, MIT). */
+/** Muted pill — metadata labels (config.toml, marvis://…, Apache-2.0). */
 export const Tag = ({ children }: { children: ReactNode }) => (
   <span className='inline-flex items-center rounded-full border border-border px-2.25 py-0.75 font-mono text-[11.5px] text-muted-foreground'>
     {children}

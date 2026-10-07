@@ -112,6 +112,9 @@ export const EV_BAR_START_LISTEN = 'bar:start-listen';
  * shared menu's History item. The webview pins the history section and
  * opens the card. */
 export const EV_BAR_SHOW_HISTORY = 'bar:show-history';
+/** Emitted to the `bar` window only — a `preset.*` menu pick
+ * (lib.rs `menu_dispatch`); payload is the full `Preset`. */
+export const EV_PRESET_PICK = 'bar:preset-pick';
 /** Emitted to the bar when a frame exists but screen permission was
  * revoked mid-session (ask.rs) — it flips back to its permission card. */
 export const EV_CAPTURE_PERMISSION_NEEDED = 'capture:permission-needed'; // { permission: 'screen' }

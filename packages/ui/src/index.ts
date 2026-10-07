@@ -71,6 +71,7 @@ export {
   TimerIcon,
   Trash2Icon,
   VideoIcon,
+  WandSparklesIcon,
   XIcon,
   type LucideIcon,
 } from "lucide-react"

@@ -129,6 +129,23 @@ export interface RecordingPrefs {
   summary_prompt: string;
 }
 
+export type PresetKind = 'instruct' | 'template';
+
+/** `presets_list` row — built-ins (`b:` ids) then `prompts.custom`
+ *  (`u:` ids). `instruct` appends `text` to a send's system prompt;
+ *  `template` expands `{input}`/`{lang}` into the composer. */
+export interface Preset {
+  id: string;
+  name: string;
+  kind: PresetKind;
+  text: string;
+}
+
+/** `[prompts]` section — user presets only. */
+export interface PromptPrefs {
+  custom: Preset[];
+}
+
 /** `config_get` / `config_set` return / `config:changed` payload. */
 export interface Config {
   app: AppPrefs;
@@ -139,6 +156,7 @@ export interface Config {
   window: WindowPrefs;
   compat: CompatPrefs;
   vision: VisionPrefs;
+  prompts: PromptPrefs;
 }
 
 /** `session_list` row (storage.rs `Session`; `kind` is the `type` column). */
@@ -168,6 +186,8 @@ export interface Message {
   model: string | null;
   tokens_in: number | null;
   tokens_out: number | null;
+  /** The armed `instruct` preset id — user rows only. */
+  preset: string | null;
   ts: number;
 }
 
@@ -245,9 +265,14 @@ export const providerSetEnabled = (provider: string, enabled: boolean) =>
  *  `withScreen` (the bar's Cmd/Ctrl+Enter) is the explicit attach flag —
  *  a screen read runs even when the text shows no intent. `listenId`
  *  binds the send to a listen doc — its own ask session (one chat per
- *  doc), its summary+transcript as the meeting context. */
-export const askSend = (text: string, withScreen = false, listenId?: number) =>
-  invoke<void>('ask_send', { text, withScreen, listenId });
+ *  doc), its summary+transcript as the meeting context. `presetId` arms
+ *  an `instruct` preset for this send only. */
+export const askSend = (
+  text: string,
+  withScreen = false,
+  listenId?: number,
+  presetId?: string,
+) => invoke<void>('ask_send', { text, withScreen, listenId, presetId });
 
 /** The bar's camera affordance — a screen-only ask (fixed prompt,
  *  frame required). */
@@ -271,6 +296,17 @@ export interface AskCurrent {
 
 /** The live ask tail — a re-expanded chat resyncs from this. */
 export const askCurrent = () => invoke<AskCurrent>('ask_current');
+
+// ---------------------------------------------------------------------------
+// presets
+// ---------------------------------------------------------------------------
+
+/** The merged preset list — built-ins then customs. */
+export const presetsList = () => invoke<Preset[]>('presets_list');
+
+/** Pop the native preset menu at the cursor — picks arrive as
+ *  `bar:preset-pick` events carrying the full `Preset`. */
+export const presetsMenu = () => invoke<void>('presets_menu');
 
 // ---------------------------------------------------------------------------
 // listen

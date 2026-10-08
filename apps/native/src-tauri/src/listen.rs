@@ -444,6 +444,7 @@ pub struct ListenStatus {
     pub state: String,
     pub provider: Option<String>,
     pub session_id: Option<i64>,
+    pub audio_file: Option<String>,
     pub turns: usize,
     pub mic: bool,
     pub error: Option<ListenError>,
@@ -507,6 +508,7 @@ impl ListenService {
                 state: "idle".into(),
                 provider: None,
                 session_id: None,
+                audio_file: None,
                 turns: 0,
                 mic: false,
                 error: None,
@@ -550,6 +552,7 @@ impl ListenService {
                 state: "error".into(),
                 provider: Some(provider_name),
                 session_id: None,
+                audio_file: None,
                 turns: 0,
                 mic: false,
                 error: Some(ListenError {
@@ -593,6 +596,7 @@ impl ListenService {
                 log::warn!("listen: session_set_audio_file failed: {error}");
             }
         }
+        let audio_file = db.session_audio_file(session_id).ok().flatten();
         let cancel = Arc::new(AtomicBool::new(false));
         let paused = Arc::new(AtomicBool::new(false));
         let assembler = Arc::new(Mutex::new(TurnAssembler::new()));
@@ -800,6 +804,7 @@ impl ListenService {
                 state: "error".into(),
                 provider: Some(provider_name),
                 session_id: None,
+                audio_file: None,
                 turns: 0,
                 mic: false,
                 error: Some(ListenError {
@@ -829,6 +834,7 @@ impl ListenService {
         status.state = "listening".into();
         status.provider = Some(provider_name);
         status.session_id = Some(session_id);
+        status.audio_file = audio_file;
         status.turns = existing.len();
         status.mic = mic_started;
         status.error = None;
@@ -871,6 +877,7 @@ impl ListenService {
                     state: "idle".into(),
                     provider: None,
                     session_id: None,
+                    audio_file: None,
                     turns: 0,
                     mic: false,
                     error: None,
@@ -904,6 +911,7 @@ impl ListenService {
                 state: "idle".into(),
                 provider: None,
                 session_id: None,
+                audio_file: None,
                 turns: 0,
                 mic: false,
                 error: None,
@@ -928,6 +936,7 @@ impl ListenService {
             state: "idle".into(),
             provider: None,
             session_id: None,
+            audio_file: None,
             turns: 0,
             mic: false,
             error: None,
@@ -1234,6 +1243,7 @@ mod tests {
             state: "listening".into(),
             provider: Some("whisper".into()),
             session_id: Some(42),
+            audio_file: None,
             turns: 3,
             mic: true,
             error: None,
@@ -1250,6 +1260,7 @@ mod tests {
                 .cloned()
                 .collect::<Vec<_>>(),
             vec![
+                "audio_file",
                 "error",
                 "mic",
                 "paused_secs",
@@ -1696,6 +1707,7 @@ mod tests {
             state: "error".into(),
             provider: Some("deepgram".into()),
             session_id: None,
+            audio_file: None,
             turns: 0,
             mic: false,
             error: Some(ListenError {

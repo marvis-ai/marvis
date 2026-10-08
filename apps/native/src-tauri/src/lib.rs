@@ -1352,6 +1352,7 @@ fn emit_listen_state(app: &AppHandle, state: &listen::ListenStatus) {
             "state": state.state,
             "provider": state.provider,
             "session_id": state.session_id,
+            "audio_file": state.audio_file,
             "mic": state.mic,
             "error": state.error,
             "started_at": state.started_at,
@@ -2535,6 +2536,47 @@ fn session_resume(state: State<'_, AppState>, id: i64) -> Result<bool, String> {
         .map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+async fn save_audio_file(
+    app: AppHandle,
+    session_id: i64,
+    suggested_name: String,
+) -> Result<Option<String>, String> {
+    let state = app.state::<AppState>();
+    if *state.gate.lock() != Gate::Main {
+        log::warn!("save_audio_file dropped while gate != Main");
+        return Ok(None);
+    }
+    let source = state
+        .db
+        .session_audio_file(session_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "No audio recording for this session".to_string())?;
+    let source = std::path::PathBuf::from(source);
+    let audios = crate::paths::audios_dir();
+    let source = source.canonicalize().map_err(|e| e.to_string())?;
+    let audios = audios.canonicalize().map_err(|e| e.to_string())?;
+    if !source.starts_with(&audios) {
+        return Err("Audio recording is outside the Marvis audio directory".into());
+    }
+    if std::fs::metadata(&source).map_err(|e| e.to_string())?.len() <= 44 {
+        return Err("This session has no recorded audio".into());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let Some(path) = rfd::FileDialog::new()
+            .set_file_name(sanitize_suggested_name(&suggested_name))
+            .add_filter("WAV audio", &["wav"])
+            .save_file()
+        else {
+            return Ok(None);
+        };
+        std::fs::copy(&source, &path).map_err(|e| e.to_string())?;
+        Ok(Some(path.to_string_lossy().into_owned()))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// Document egress (export): a native save dialog + write. Deliberately
 /// dumb — the webview builds the document; this owns the two things a
 /// webview can't do without an fs capability. `None` = user cancel
@@ -3043,6 +3085,7 @@ pub fn run() {
             session_delete,
             session_end_active,
             session_resume,
+            save_audio_file,
             save_text_file,
             config_get,
             config_set,
@@ -3151,6 +3194,21 @@ mod tests {
             body.contains("spawn_blocking"),
             "save_text_file's dialog must run off the async executor"
         );
+    }
+
+    #[test]
+    fn audio_export_command_is_registered_and_guarded() {
+        let source = include_str!("lib.rs");
+        assert!(source.contains(concat!("save", "_audio_file,")));
+        let body = source
+            .split("async fn save_audio_file(")
+            .nth(1)
+            .and_then(|rest| rest.split("\n/// ").next())
+            .expect("save_audio_file body not found");
+        assert!(body.contains("*state.gate.lock() != Gate::Main"));
+        assert!(body.contains("spawn_blocking"));
+        assert!(body.contains("audio_file"));
+        assert!(!body.contains("source_path"));
     }
 
     #[test]
@@ -3445,6 +3503,7 @@ mod tests {
             state: "idle".into(),
             provider: None,
             session_id: None,
+            audio_file: None,
             turns: 0,
             mic: false,
             error: None,
@@ -3457,6 +3516,7 @@ mod tests {
             state: "listening".into(),
             provider: None,
             session_id: None,
+            audio_file: None,
             turns: 0,
             mic: false,
             error: None,
@@ -3471,6 +3531,7 @@ mod tests {
             state: "paused".into(),
             provider: None,
             session_id: None,
+            audio_file: None,
             turns: 0,
             mic: false,
             error: None,

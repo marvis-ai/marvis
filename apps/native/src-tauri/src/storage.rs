@@ -410,6 +410,21 @@ impl Db {
         Ok(())
     }
 
+    /// The retained recording path for a session, or `None` when the session
+    /// does not exist or has no recording.
+    pub fn session_audio_file(&self, id: i64) -> anyhow::Result<Option<String>> {
+        Ok(self
+            .conn
+            .lock()
+            .query_row(
+                "SELECT audio_file FROM sessions WHERE id = ?1",
+                [id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .flatten())
+    }
+
     /// Record the STT engine label at listen start — the finished doc's
     /// header reads it back via `session_list`; pre-column rows show none.
     pub fn session_set_stt(&self, id: i64, stt: &str) -> anyhow::Result<()> {
@@ -943,6 +958,25 @@ mod tests {
         // Messages are scoped to their session.
         let other = db.session_get_or_create_active("listen").unwrap();
         assert!(db.messages_for(other).unwrap().is_empty());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn session_audio_file_reads_recording_path() {
+        let dir = tmp_dir();
+        let db = Db::at(dir.join("marvis.db")).unwrap();
+        let sid = db.session_get_or_create_active("listen").unwrap();
+        let wav = dir.join("recording_test.wav");
+        std::fs::write(&wav, b"RIFF/WAVE test").unwrap();
+
+        db.session_set_audio_file(sid, wav.to_str().unwrap())
+            .unwrap();
+        assert_eq!(
+            db.session_audio_file(sid).unwrap(),
+            Some(wav.to_string_lossy().into_owned())
+        );
+        assert_eq!(db.session_audio_file(i64::MAX).unwrap(), None);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

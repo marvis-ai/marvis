@@ -322,8 +322,9 @@ impl Db {
     }
 
     /// Reopen `id` when it is a `kind` session: every OTHER open `kind`
-    /// session ends and the target's `ended_at` clears, atomically. Returns
-    /// false (no mutation) when `id` isn't a `kind` session.
+    /// session ends and the target's `ended_at` clears, atomically. Reopening
+    /// does not bump activity; a subsequent message owns that timestamp.
+    /// Returns false (no mutation) when `id` isn't a `kind` session.
     pub fn session_reopen(&self, id: i64, kind: &str) -> anyhow::Result<bool> {
         let mut conn = self.conn.lock();
         let tx = conn.transaction()?;
@@ -342,10 +343,7 @@ impl Db {
             "UPDATE sessions SET ended_at = ?1 WHERE type = ?2 AND ended_at IS NULL AND id != ?3",
             params![now(), kind, id],
         )?;
-        tx.execute(
-            "UPDATE sessions SET ended_at = NULL, last_active_at = ?1 WHERE id = ?2",
-            params![now(), id],
-        )?;
+        tx.execute("UPDATE sessions SET ended_at = NULL WHERE id = ?1", [id])?;
         tx.commit()?;
         Ok(true)
     }
@@ -1439,6 +1437,14 @@ mod tests {
             db.session_end(a).unwrap();
             db.session_get_or_create_active("ask").unwrap()
         };
+        {
+            let conn = db.conn.lock();
+            conn.execute(
+                "UPDATE sessions SET last_active_at = 100 WHERE id = ?1",
+                [a],
+            )
+            .unwrap();
+        }
         // Reopening a listen id is rejected and ends nothing.
         let l = db.session_get_or_create_active("listen").unwrap();
         assert!(!db.session_reopen(l, "ask").unwrap());
@@ -1447,6 +1453,13 @@ mod tests {
         assert!(db.session_reopen(a, "ask").unwrap());
         assert_eq!(db.session_active_id("ask").unwrap(), Some(a));
         assert_eq!(db.session_active_id("listen").unwrap(), Some(l));
+        let reopened = db
+            .session_list()
+            .unwrap()
+            .into_iter()
+            .find(|session| session.id == a)
+            .unwrap();
+        assert_eq!(reopened.last_active_at, 100);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

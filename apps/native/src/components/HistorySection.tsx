@@ -122,7 +122,8 @@ export const HistorySection = ({
             />
           ) : (
             sessions.map((s) => {
-              const liveRow = s.ended_at === null;
+              const sessionOpen = s.ended_at === null;
+              const liveRow = s.kind === 'listen' && sessionOpen;
               const disabled = s.kind === 'ask' && askBusy;
               return (
                 <div
@@ -152,7 +153,7 @@ export const HistorySection = ({
                     )}>
                     {relTime(s.last_active_at)}
                   </span>
-                  {!liveRow && (
+                  {!sessionOpen && (
                     <ConfirmButton
                       aria-label='Delete session'
                       onConfirm={() => removeRow(s)}

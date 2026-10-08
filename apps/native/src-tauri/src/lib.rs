@@ -1906,17 +1906,21 @@ fn presets_list(state: State<'_, AppState>) -> Vec<presets::Preset> {
 /// caret's x in bar-viewport px, resolved against the window's outer
 /// position; the pointer, then the bar's center, are the fallbacks)
 /// and announced as `palette:open { query }` — `query` seeds the
-/// palette's filter when the open rides a typed `/token`. `focused`
-/// selects the interaction model: the wand/right-click open key-focus
-/// it (own nav, click-away dismiss); a `/`-typed open surfaces it
-/// unfocused so the composer keeps the `/token` (`palette:query`
-/// streams the filter, `palette:key` forwards nav keys).
-/// Gate-guarded like `ask_send` — a crafted invoke during onboarding
-/// must not pop chrome over the wizard.
+/// palette's filter when the open rides a typed `/token`. `anchor_y`
+/// is the composer row's top edge in bar-viewport px — a card-mode
+/// open pops the palette above it (the row is the card's bottom
+/// footer; the pill edge only coincides with it growing up).
+/// `focused` selects the interaction model: the wand/right-click open
+/// key-focus it (own nav, click-away dismiss); a `/`-typed open
+/// surfaces it unfocused so the composer keeps the `/token`
+/// (`palette:query` streams the filter, `palette:key` forwards nav
+/// keys). Gate-guarded like `ask_send` — a crafted invoke during
+/// onboarding must not pop chrome over the wizard.
 #[tauri::command]
 fn presets_palette_open(
     app: AppHandle,
     anchor_x: Option<f64>,
+    anchor_y: Option<f64>,
     query: Option<String>,
     focused: Option<bool>,
 ) -> Result<(), String> {
@@ -1925,10 +1929,13 @@ fn presets_palette_open(
         log::warn!("presets_palette_open dropped while gate != Main");
         return Ok(());
     }
-    state
-        .pool
-        .lock()
-        .show_palette(&app, anchor_x, query, focused.unwrap_or(true));
+    state.pool.lock().show_palette(
+        &app,
+        anchor_x,
+        anchor_y,
+        query,
+        focused.unwrap_or(true),
+    );
     Ok(())
 }
 

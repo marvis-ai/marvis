@@ -391,6 +391,14 @@ const Bar = () => {
         return;
       }
       if (e.key === 'Escape') {
+        // An open palette owns Esc — dismisses it first, never the
+        // bar. The composer's keydown already forwards it (and stops
+        // bubbling); this covers Esc landing while focus sits
+        // elsewhere in the bar.
+        if (paletteOpenRef.current) {
+          void presetsPaletteKey('Escape').catch(() => {});
+          return;
+        }
         if (cardOpen) {
           void askClose().catch(() => {});
           return;
@@ -455,8 +463,14 @@ const Bar = () => {
     if (gate !== 'main' || !inputRenderedRef.current) return;
     setPalette(true);
     const el = inputRef.current;
+    // The card's composer is a bottom-anchored footer, so its row top
+    // is the palette's pop-above edge (viewport px — Rust adds the
+    // window's screen position, same as the caret x). Collapsed opens
+    // send it too; the pill's side pick ignores it.
+    const anchorY = el?.closest('form')?.getBoundingClientRect().top;
     void presetsPaletteOpen(
       el ? caretViewportX(el) : undefined,
+      anchorY,
       slashQuery(textRef.current) ?? undefined,
       focused,
     ).catch(() => setPalette(false));
@@ -839,7 +853,7 @@ const Bar = () => {
               type='button'
               aria-label={`Remove ${armedPreset.name} preset`}
               onClick={disarmPreset}
-              className='-mr-0.5 rounded-full p-0.25 text-accent-text/70 transition-colors duration-(--motion-fast) hover:text-accent-text focus-visible:outline-2 focus-visible:outline-accent'>
+              className='-mr-0.5 rounded-full p-px text-accent-text/70 transition-colors duration-(--motion-fast) hover:text-accent-text focus-visible:outline-2 focus-visible:outline-accent'>
               <XIcon className='size-3' />
             </button>
           </span>

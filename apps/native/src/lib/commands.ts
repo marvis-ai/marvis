@@ -313,16 +313,20 @@ export const presetsList = () => invoke<Preset[]>('presets_list');
 
 /** Open the preset palette — the small glass overlay left-aligned to
  *  `anchorX` (the composer caret's x in viewport px; omitted →
- *  pointer/center fallback). `query` seeds the filter (a `/token`'s
- *  name part); `focused` picks the mode — wand/right-click pass true
- *  (key-focused menu), a `/`-typed open passes false so the composer
- *  keeps typing (the filter then streams over `palette:query` and nav
- *  keys forward over `palette:key`). */
+ *  pointer/center fallback) and, while a card is up, popped above
+ *  `anchorY` (the composer row's top edge in viewport px — the row is
+ *  the card's bottom footer, nowhere near the pill edge when the card
+ *  grows down). `query` seeds the filter (a `/token`'s name part);
+ *  `focused` picks the mode — wand/right-click pass true (key-focused
+ *  menu), a `/`-typed open passes false so the composer keeps typing
+ *  (the filter then streams over `palette:query` and nav keys forward
+ *  over `palette:key`). */
 export const presetsPaletteOpen = (
   anchorX?: number,
+  anchorY?: number,
   query?: string,
   focused?: boolean,
-) => invoke<void>('presets_palette_open', { anchorX, query, focused });
+) => invoke<void>('presets_palette_open', { anchorX, anchorY, query, focused });
 
 /** A palette row pick — the backend closes the palette, refocuses the
  *  bar, and emits the chosen preset as `bar:preset-pick`. */

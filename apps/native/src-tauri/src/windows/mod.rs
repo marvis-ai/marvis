@@ -173,9 +173,13 @@ pub struct WindowPool {
     /// hugs the list (auto-fit up to `PALETTE_MAX_H`). Reused across
     /// opens so a reopened palette doesn't flicker through the default.
     palette_h: f64,
-    /// The caret screen-x the open was anchored to — a height reflow
+    /// The anchor the last open resolved — `(caret screen-x, composer
+    /// row's screen-top)`. The y edge only exists when a card-mode open
+    /// sent one: the composer is the card's bottom-anchored footer, so
+    /// the palette pops above it — `bar_rect`'s edge is the card's TOP
+    /// when it grows down, nowhere near the input. A height reflow
     /// re-anchors to the same spot.
-    palette_anchor: Option<f64>,
+    palette_anchor: Option<(f64, Option<f64>)>,
     /// Whether the unified card (chat or listen mode) is open.
     chat_open: bool,
     /// Last reported card CONTENT height — window = `BAR_H + this`.
@@ -224,6 +228,7 @@ impl WindowPool {
             BAR_H,
             BAR_H / 2.0,
             accent_glass_tint(accent),
+            false,
         )?;
         {
             // Persist the resting place on every move — user drags via
@@ -266,15 +271,24 @@ impl WindowPool {
                         state.pool.lock().enforce_bar_bounds();
                     }
                     // An unfocused (`/`-typed) palette belongs to the
-                    // composer — the bar losing focus (another app, a
-                    // palette click that made it key) retires it so it
-                    // can't float orphaned over other windows. The
-                    // guard skips palettes that hold real focus.
+                    // composer — the bar losing focus (another app)
+                    // retires it so it can't float orphaned over other
+                    // windows. A palette CLICK also resigns the bar's
+                    // key status — the resign posts before the
+                    // palette's own `Focused(true)`, so checking here
+                    // would see `palette_focused` still false and kill
+                    // the palette mid-click. Deferring one main-queue
+                    // turn lets the promotion land first: a real blur
+                    // still hides it, a click-through doesn't.
                     tauri::WindowEvent::Focused(false) => {
-                        let Some(state) = app_resized.try_state::<crate::AppState>() else {
-                            return;
-                        };
-                        state.pool.lock().hide_palette_unfocused(&app_resized);
+                        let app = app_resized.clone();
+                        let app2 = app_resized.clone();
+                        let _ = app.run_on_main_thread(move || {
+                            let Some(state) = app2.try_state::<crate::AppState>() else {
+                                return;
+                            };
+                            state.pool.lock().hide_palette_unfocused(&app2);
+                        });
                     }
                     _ => {}
                 }
@@ -291,6 +305,7 @@ impl WindowPool {
             ALERT_H,
             14.0,
             None,
+            false,
         )?);
         pool.position_bar_at_startup();
         if show_bar {
@@ -461,7 +476,15 @@ impl WindowPool {
     pub fn show_picker(&mut self, app: &AppHandle) -> bool {
         if self.picker.is_none() {
             let tint = accent_glass_tint(&app.state::<crate::AppState>().accent());
-            match build_window(app, PICKER_LABEL, PICKER_W, PICKER_H, PICKER_RADIUS, tint) {
+            match build_window(
+                app,
+                PICKER_LABEL,
+                PICKER_W,
+                PICKER_H,
+                PICKER_RADIUS,
+                tint,
+                false,
+            ) {
                 Ok(win) => self.picker = Some(win),
                 Err(e) => {
                     log::warn!("windows: picker build failed: {e}");
@@ -502,6 +525,7 @@ impl WindowPool {
         &mut self,
         app: &AppHandle,
         anchor_x: Option<f64>,
+        anchor_y: Option<f64>,
         query: Option<String>,
         focused: bool,
     ) -> bool {
@@ -514,6 +538,10 @@ impl WindowPool {
                 PALETTE_H,
                 PALETTE_RADIUS,
                 tint,
+                // The `/` open keeps this window non-key — without
+                // first-mouse, macOS eats the activating click and the
+                // row under the cursor never sees it.
+                true,
             ) {
                 Ok(win) => win,
                 Err(e) => {
@@ -531,8 +559,10 @@ impl WindowPool {
                     };
                     match event {
                         // A click on the unfocused palette makes it key
-                        // (tao accepts first mouse) — promote it so the
-                        // click-away below still dismisses, menu-style.
+                        // (`accept_first_mouse` delivers the click
+                        // through, and the activation promotes it) so
+                        // the click-away below still dismisses,
+                        // menu-style.
                         tauri::WindowEvent::Focused(true) => {
                             state.pool.lock().palette_focused = true;
                         }
@@ -555,7 +585,6 @@ impl WindowPool {
         // by the window's screen position — `outer_position` tracks
         // the expanded card, `bar_rect` only the pill), then the
         // pointer, then the bar's center.
-        let work = self.bar_work_area();
         let anchor_x = anchor_x
             .zip(self.bar.as_ref())
             .and_then(|(ax, bar)| {
@@ -571,8 +600,16 @@ impl WindowPool {
                 })
             })
             .unwrap_or_else(|| self.bar_rect.center_x());
-        self.palette_anchor = Some(anchor_x);
-        let r = layout::palette_rect(self.bar_rect, anchor_x, PALETTE_W, self.palette_h, work);
+        // The composer row's top edge resolves the same way — viewport
+        // px + `outer_position` (the live window, card included). Card
+        // mode pops the palette above it; the pill ignores it.
+        let anchor_y = anchor_y.zip(self.bar.as_ref()).and_then(|(ay, bar)| {
+            let scale = bar.scale_factor().ok()?;
+            let pos: LogicalPosition<f64> = bar.outer_position().ok()?.to_logical(scale);
+            Some(pos.y + ay)
+        });
+        self.palette_anchor = Some((anchor_x, anchor_y));
+        let r = self.palette_placement(anchor_x, anchor_y);
         set_rect(&win, r);
         self.palette_focused = focused;
         if focused {
@@ -636,10 +673,32 @@ impl WindowPool {
         );
     }
 
+    /// The palette's rect for an open or a height reflow. While a card
+    /// is up the composer is its bottom-anchored footer — the palette
+    /// pops above the row's top edge (`anchor_top`, a screen y) instead
+    /// of picking a pill side, which in grow-down would park it on the
+    /// card's top header, nowhere near the input. Collapsed, or a
+    /// missing edge, keeps `palette_rect`'s pill-side pick.
+    fn palette_placement(&self, anchor_x: f64, anchor_top: Option<f64>) -> Rect {
+        let work = self.bar_work_area();
+        if let (true, Some(top)) = (self.chat_open, anchor_top) {
+            return clamp_to_work_area(
+                Rect {
+                    x: anchor_x,
+                    y: top - self.palette_h - layout::PANEL_PAD,
+                    w: PALETTE_W,
+                    h: self.palette_h,
+                },
+                work,
+            );
+        }
+        layout::palette_rect(self.bar_rect, anchor_x, PALETTE_W, self.palette_h, work)
+    }
+
     /// The view's content-height report — the palette hugs its list:
     /// clamp to `[MIN, MAX]` (past MAX the list scrolls), then
-    /// re-anchor through `palette_rect` so a shrink keeps the same
-    /// bar-side gap. Position only while visible — a hidden window
+    /// re-anchor through `palette_placement` so a shrink keeps the same
+    /// composer-side gap. Position only while visible — a hidden window
     /// just stores the height for its next show.
     pub fn set_palette_height(&mut self, height: f64) {
         self.palette_h = height
@@ -651,16 +710,10 @@ impl WindowPool {
         if !win.is_visible().unwrap_or(false) {
             return;
         }
-        let anchor = self
+        let (anchor_x, anchor_top) = self
             .palette_anchor
-            .unwrap_or_else(|| self.bar_rect.center_x());
-        let r = layout::palette_rect(
-            self.bar_rect,
-            anchor,
-            PALETTE_W,
-            self.palette_h,
-            self.bar_work_area(),
-        );
+            .unwrap_or((self.bar_rect.center_x(), None));
+        let r = self.palette_placement(anchor_x, anchor_top);
         set_rect(&win, r);
     }
 
@@ -1150,10 +1203,12 @@ fn build_window(
     h: f64,
     corner_radius: f64,
     tint_color: Option<String>,
+    accept_first_mouse: bool,
 ) -> anyhow::Result<WebviewWindow> {
     let url = WebviewUrl::App(format!("index.html?view={label}").into());
     let win = WebviewWindowBuilder::new(app, label, url)
         .inner_size(w, h)
+        .accept_first_mouse(accept_first_mouse)
         // Pin user-resize to the built size: Tahoe edge-drags borderless
         // windows even with `resizable(false)`, and min == max drops the
         // affordance/cursor. Programmatic `set_size` is not limited, so

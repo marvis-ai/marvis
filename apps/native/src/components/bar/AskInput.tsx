@@ -110,7 +110,11 @@ export const AskInput = ({
               'End',
             ].includes(e.key)
           ) {
+            // The palette owns this key set — forward it AND consume
+            // the event: preventDefault alone still bubbles to the
+            // window keydown, where Esc would collapse the bar.
             e.preventDefault();
+            e.stopPropagation();
             onPaletteKey(e.key);
             return;
           }

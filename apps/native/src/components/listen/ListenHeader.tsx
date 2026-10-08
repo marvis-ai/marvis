@@ -72,7 +72,7 @@ export const ListenHeader = ({
         </span>
       )}
       {audioReady && (
-        <div className='flex items-center gap-0.5 rounded-lg border border-border/70 px-0.5'>
+        <div className={cn(CHIP, 'gap-0.5 px-0.5')}>
           <button
             type='button'
             className={ICON_BTN}

@@ -167,6 +167,14 @@ pub fn audios_dir() -> PathBuf {
     root().join("audios")
 }
 
+/// `~/.marvis/attachments` — managed Ask composer images (normalized
+/// JPEGs with generated names). Path only; callers create the
+/// directory when they need it.
+#[allow(dead_code)] // wired by the Ask attachment pipeline
+pub fn attachments_dir() -> PathBuf {
+    root().join("attachments")
+}
+
 /// `~/.marvis/portal_restore_token` — the XDG screencast portal's
 /// `PersistMode::ExplicitlyRevoked` token, letting later captures skip
 /// the consent dialog. Linux only; not a credential, but it lives under
@@ -188,6 +196,10 @@ mod tests {
         assert_eq!(config_file(), root.join("config.toml"));
         assert_eq!(db_file(), root.join("marvis.db"));
         assert_eq!(audios_dir(), root.join("audios"));
+        let attachments = root.join("attachments");
+        let existed = attachments.exists();
+        assert_eq!(attachments_dir(), attachments);
+        assert_eq!(attachments.exists(), existed);
         // models_dir() must not create the directory eagerly.
         let existed = root.join("models").exists();
         assert_eq!(models_dir(), root.join("models"));

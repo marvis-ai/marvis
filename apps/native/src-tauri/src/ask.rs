@@ -112,7 +112,9 @@ const MAX_ATTACHMENTS: usize = 4;
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AskAttachmentInput {
+    #[allow(dead_code)] // read when the pipeline persists the send
     pub name: String,
+    #[allow(dead_code)] // read when the pipeline persists the send
     pub jpeg_base64: String,
 }
 

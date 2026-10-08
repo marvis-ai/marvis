@@ -100,6 +100,22 @@ const TITLE_TIMEOUT: Duration = Duration::from_secs(30);
 /// along with each ask (spec: last 20, text-only).
 const HISTORY_TAIL: usize = 20;
 
+/// Composer images per send — matches the webview cap in
+/// `image-attachments.ts`; a crafted invoke beyond it is rejected
+/// before the user row persists.
+const MAX_ATTACHMENTS: usize = 4;
+
+/// One normalized image attached to an `ask_send` invoke — `name` is
+/// the original filename, display metadata only (never a storage
+/// path); `jpeg_base64` is the webview-normalized JPEG payload with no
+/// `data:` prefix.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AskAttachmentInput {
+    pub name: String,
+    pub jpeg_base64: String,
+}
+
 /// Lifecycle of one ask run. Mirrors the `ask:state` event so Rust-side
 /// status reads see exactly what the webview sees.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -166,6 +182,10 @@ pub(crate) struct SendOpts<'a> {
     /// preset text's `{lang}` placeholder; `None` resolves it to the
     /// configured main language.
     pub preset_lang: Option<String>,
+    /// The composer's pending images — normalized JPEG base64 payloads;
+    /// empty on screen-only sends and retries (a retried turn re-reads
+    /// its persisted row's attachments instead).
+    pub attachments: Vec<AskAttachmentInput>,
 }
 
 /// One ask at a time; the Task-14 `AppState` share.
@@ -228,7 +248,9 @@ impl AskService {
     /// read regardless of the text's intent heuristic. `listen_id`
     /// binds the send to a listen doc: the question lands in that doc's
     /// own ask session (reopened or minted — one chat per doc) and its
-    /// summary+transcript becomes the meeting context. A send while
+    /// summary+transcript becomes the meeting context. `attachments`
+    /// are the composer's normalized JPEGs — decoded and persisted
+    /// before the first provider call. A send while
     /// `Loading`/`Streaming` is ignored (warn-logged) rather than
     /// cancel-then-send — the in-flight stream keeps running.
     ///
@@ -245,6 +267,7 @@ impl AskService {
         listen_id: Option<i64>,
         preset: Option<String>,
         preset_lang: Option<String>,
+        attachments: Vec<AskAttachmentInput>,
     ) {
         self.kick(
             app,
@@ -255,6 +278,7 @@ impl AskService {
                 listen_id,
                 preset,
                 preset_lang,
+                attachments,
                 ..SendOpts::default()
             },
         );
@@ -334,6 +358,7 @@ impl AskService {
             listen_id,
             preset,
             preset_lang,
+            attachments,
         } = opts;
         let gen = {
             let mut state = self.state.lock();
@@ -480,6 +505,7 @@ impl AskService {
                     language: &language,
                     instruction: instruction.as_deref(),
                     preset_id: preset_id.as_deref(),
+                    attachments,
                 },
             )
             .await;
@@ -554,6 +580,10 @@ pub(crate) struct ChainOpts<'a> {
     /// The armed preset id — `None` when it didn't resolve; persisted
     /// on the user row so `retry` re-resolves it.
     pub preset_id: Option<&'a str>,
+    /// The composer's normalized images for this send — decoded,
+    /// written, and row-linked before the first provider call; empty
+    /// on regenerates (their attachments re-load from disk).
+    pub attachments: Vec<AskAttachmentInput>,
 }
 
 /// The testable core: persist → walk the failover chain → persist,
@@ -617,7 +647,19 @@ pub(crate) async fn send_chain(
         language,
         instruction,
         preset_id,
+        attachments,
     } = opts;
+    // Contract guard: a crafted invoke past the composer cap is an
+    // attachment error — no row persists, no provider is called.
+    if attachments.len() > MAX_ATTACHMENTS {
+        let message = format!("At most {MAX_ATTACHMENTS} images can be attached per send");
+        emit(EV_ERROR, json!({ "message": message }));
+        emit(EV_STATE, json!({"state": "idle"}));
+        return Err(LlmError::Http {
+            status: 0,
+            message,
+        });
+    }
     // A send that arrived with the card closed is a new conversation:
     // end the still-open ask session so get_or_create mints a fresh row.
     // A linked send resolves its own session below instead.
@@ -2060,6 +2102,52 @@ mod tests {
         );
         assert_eq!(ask_messages(&db).len(), 1); // user row only
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// More than four attachments is rejected at the chain's edge —
+    /// before the user row persists and before any provider is called.
+    #[tokio::test]
+    async fn send_chain_rejects_more_than_four_attachments() {
+        let dir = tmp_dir();
+        let db = Db::at(dir.join("marvis.db")).unwrap();
+        let provider = MockProvider::new(vec![Behavior::Tokens(vec!["ok".into()])]);
+        let calls = provider.calls();
+        let (events, emit) = recorder();
+        let reader = screen_read::ScreenReader::new();
+        let ring = Mutex::new(RingBuffer::new(4, 1 << 20));
+        let input = input(&reader, &ring);
+        let cancel = CancellationToken::new();
+        let attachments = (0..5)
+            .map(|i| AskAttachmentInput {
+                name: format!("p{i}.jpg"),
+                jpeg_base64: "AA==".to_string(),
+            })
+            .collect();
+
+        let err = send_chain(
+            vec![candidate("openai", provider)],
+            None,
+            &db,
+            &emit,
+            &input,
+            &cancel,
+            ChainOpts {
+                text: "q",
+                language: "en",
+                attachments,
+                ..ChainOpts::default()
+            },
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(calls.lock().len(), 0);
+        assert!(err.to_string().contains("4 images"));
+        let got = events.lock().clone();
+        assert_eq!(got.last().unwrap(), &ev(EV_STATE, json!({"state": "idle"})));
+        assert!(got.iter().any(|(n, p)| n == EV_ERROR
+            && p["message"].as_str().is_some_and(|m| m.contains("4 images"))));
+        assert_eq!(ask_messages(&db).len(), 0);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -172,12 +172,30 @@ export interface Session {
   last_active_at: number;
 }
 
+/** A managed image attached to a `messages` row (storage.rs
+ *  `MessageAttachment`) — `path` points under `~/.marvis/attachments`
+ *  and renders via `convertFileSrc`; `name` is the original filename
+ *  (alt text). Empty on text-only turns and rows written before
+ *  attachments existed. */
+export interface MessageAttachment {
+  id: number;
+  message_id: number;
+  name: string;
+  path: string;
+  mime: string;
+  bytes: number;
+  /** Order within the message — the provider image-part order. */
+  position: number;
+}
+
 /** `session_get` row (storage.rs `Message`). */
 export interface Message {
   id: number;
   session_id: number;
   role: string;
   content: string;
+  /** Attached images — user rows only. */
+  attachments: MessageAttachment[];
   /** Answering-provider metadata — assistant rows only; `null` on rows
    * written before the columns existed and on user rows. */
   provider: string | null;
@@ -316,6 +334,9 @@ export interface AskCurrent {
   /** Last `ask:error` payload or `null` — re-delivers a pre-flight
    * error that fired before this webview's `listen()` was up. */
   error: { message: string; needs_setup?: boolean } | null;
+  /** The in-flight user turn's persisted attachments — mirrors the
+   * `loading` event's `attachments` key for resync. */
+  attachments: MessageAttachment[];
 }
 
 /** The live ask tail — a re-expanded chat resyncs from this. */

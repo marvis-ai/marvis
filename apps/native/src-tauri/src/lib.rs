@@ -697,7 +697,7 @@ fn deeplink_dispatch(app: &AppHandle) -> impl Fn(deeplink::Action) + Send + Sync
                 }
                 state
                     .ask
-                    .send(&app, &state.deps(), &text, false, None, None, None);
+                    .send(&app, &state.deps(), &text, false, None, None, None, Vec::new());
             } else {
                 // Not ready yet — if the bar is visible (onboarding done,
                 // permission pending) surface its gate card instead of
@@ -1269,7 +1269,8 @@ async fn model_list_available(app: AppHandle, provider: String) -> Vec<String> {
 /// (everything not carrying `{input}`) appends to the system prompt
 /// for this send. `presetLang` (optional) is the `{lang}` param
 /// badge's edited value — `None` resolves `{lang}` to the configured
-/// main language.
+/// main language. `attachments` (optional) carries the composer's
+/// normalized JPEGs (`{ name, jpegBase64 }`).
 #[tauri::command]
 fn ask_send(
     app: AppHandle,
@@ -1278,6 +1279,7 @@ fn ask_send(
     listen_id: Option<i64>,
     preset_id: Option<String>,
     preset_lang: Option<String>,
+    attachments: Option<Vec<ask::AskAttachmentInput>>,
 ) {
     let state = app.state::<AppState>();
     // Crafted-invoke guard: the shipped UI gates sends behind `Main`,
@@ -1295,6 +1297,7 @@ fn ask_send(
         listen_id,
         preset_id,
         preset_lang,
+        attachments.unwrap_or_default(),
     );
 }
 
@@ -3863,5 +3866,23 @@ mod tests {
             .insert("compatible".into(), "qwen2.5-vl".into());
         assert_eq!(vision_candidate(&cfg, &ks).unwrap().model, "qwen2.5-vl");
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// `ask_send`'s attachment input is part of the command contract:
+    /// the command takes the webview's normalized JPEGs, the input
+    /// struct lives in ask.rs, and its serde shape accepts the
+    /// camelCase `jpegBase64` key the bridge sends.
+    #[test]
+    fn ask_attachment_contract_is_registered() {
+        let source = include_str!("lib.rs");
+        let ask = include_str!("ask.rs");
+        assert!(source.contains("attachments: Option<Vec<ask::AskAttachmentInput>>"));
+        assert!(ask.contains(concat!("pub struct AskAttachment", "Input")));
+        let parsed: crate::ask::AskAttachmentInput = serde_json::from_value(
+            json!({"name": "a.png", "jpegBase64": "AA=="}),
+        )
+        .expect("jpegBase64 must deserialize");
+        assert_eq!(parsed.name, "a.png");
+        assert_eq!(parsed.jpeg_base64, "AA==");
     }
 }

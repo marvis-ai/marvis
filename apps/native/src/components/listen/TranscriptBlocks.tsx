@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { CheckIcon, CopyIcon } from '@marvis/ui';
 import { ICON_BTN, NUM, cn } from '@/lib/classes';
 import {
+  audioOffset,
   blockCopyText,
   elapsedLabel,
   timeLabel,
@@ -52,8 +53,8 @@ export const TranscriptBlocks = ({
       {blocks.map((block) => {
         const blockId = `${block.key}-${block.ts}`;
         const stamp =
-          startedAt != null
-            ? elapsedLabel(block.ts - startedAt)
+          block.audioStartMs != null || startedAt != null
+            ? elapsedLabel(audioOffset(block, startedAt))
             : timeLabel(block.ts);
         const timestamp = (
           <span

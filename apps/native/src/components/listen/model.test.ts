@@ -15,6 +15,7 @@ import {
 const turn = (ts: number, over: Partial<Turn> = {}): Turn => ({
   speaker: 'them',
   speaker_idx: 0,
+  audio_start_ms: null,
   text: `t${ts}`,
   ts,
   session_id: 1,
@@ -283,4 +284,17 @@ test('exportFileName supports a WAV extension', () => {
   expect(exportFileName('Weekly Standup', 1_700_000_000, 'wav')).toMatch(
     /^marvis-weekly-standup-\d{8}-\d{4}\.wav$/,
   );
+});
+
+test('capture positions drive seeking and highlights despite persistence delay and pauses', () => {
+  const blocks = buildBlocks([
+    turn(200, { audio_start_ms: 1250, speaker: 'me' }),
+    turn(400, { audio_start_ms: 3000 }),
+  ]);
+  expect(audioOffset(blocks[0]!, 100)).toBe(1.25);
+  expect(audioOffset(blocks[1]!, 100)).toBe(3);
+  expect(activeBlockAt(blocks, 100, 1)).toBeNull();
+  expect(activeBlockAt(blocks, 100, 1.25)).toBe('me:0-200');
+  expect(activeBlockAt(blocks, 100, 3)).toBe('them:0-400');
+  expect(activeBlockAt([...blocks].reverse(), null, 3)).toBe('them:0-400');
 });

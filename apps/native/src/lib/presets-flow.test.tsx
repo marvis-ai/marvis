@@ -29,6 +29,7 @@ const writes: {
   result: ReturnType<typeof deferred<Config>>;
 }[] = [];
 mock.module('@tauri-apps/api/core', () => ({
+  convertFileSrc: (path: string) => path,
   invoke: (command: string, args: { key: string; value: Preset[] }) => {
     if (command === 'presets_list') return fetchList();
     if (command === 'config_set' && args.key === 'prompts.custom') {

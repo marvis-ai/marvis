@@ -190,6 +190,8 @@ export interface Message {
 }
 
 export interface Transcript {
+  /** Start in the retained recording; null for older turns. */
+  audio_start_ms: number | null;
   id: number;
   session_id: number;
   speaker: 'me' | 'them';

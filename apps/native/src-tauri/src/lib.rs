@@ -2570,11 +2570,28 @@ async fn save_audio_file(
         else {
             return Ok(None);
         };
-        std::fs::copy(&source, &path).map_err(|e| e.to_string())?;
+        copy_audio_export(&source, &path)?;
         Ok(Some(path.to_string_lossy().into_owned()))
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+fn copy_audio_export(
+    source: &std::path::Path,
+    destination: &std::path::Path,
+) -> Result<(), String> {
+    match destination.canonicalize() {
+        Ok(existing) if existing == source => {
+            return Err("Choose a different destination from the original recording".into());
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => return Err("Could not check the audio export destination".into()),
+    }
+    std::fs::copy(source, destination)
+        .map_err(|_| "Could not export audio recording".to_string())?;
+    Ok(())
 }
 
 /// Document egress (export): a native save dialog + write. Deliberately
@@ -3123,6 +3140,31 @@ mod tests {
             std::process::id(),
             N.fetch_add(1, Ordering::Relaxed)
         ))
+    }
+
+    #[test]
+    fn audio_export_preserves_original_and_copies_to_other_destinations() {
+        let dir = tmp_dir();
+        std::fs::create_dir_all(&dir).unwrap();
+        let source = dir.join("recording.wav");
+        let contents = b"original recording contents";
+        std::fs::write(&source, contents).unwrap();
+        let source = source.canonicalize().unwrap();
+        assert!(copy_audio_export(&source, &source).is_err());
+        #[cfg(unix)]
+        {
+            let alias = dir.join("alias.wav");
+            std::os::unix::fs::symlink(&source, &alias).unwrap();
+            assert!(copy_audio_export(&source, &alias).is_err());
+        }
+        assert_eq!(std::fs::read(&source).unwrap(), contents);
+        let destination = dir.join("export.wav");
+        copy_audio_export(&source, &destination).unwrap();
+        assert_eq!(std::fs::read(&destination).unwrap(), contents);
+        std::fs::write(&destination, b"old export").unwrap();
+        copy_audio_export(&source, &destination).unwrap();
+        assert_eq!(std::fs::read(&destination).unwrap(), contents);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

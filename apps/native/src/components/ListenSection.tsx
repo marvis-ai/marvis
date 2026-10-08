@@ -146,6 +146,7 @@ export const ListenSection = ({
           const persisted: Turn[] = rows.map((row) => ({
             speaker: row.speaker,
             speaker_idx: row.speaker_idx,
+            audio_start_ms: row.audio_start_ms,
             text: row.content,
             ts: row.ts,
             session_id: row.session_id,
@@ -184,6 +185,7 @@ export const ListenSection = ({
           rows.map((r) => ({
             speaker: r.speaker,
             speaker_idx: r.speaker_idx,
+            audio_start_ms: r.audio_start_ms,
             text: r.content,
             ts: r.ts,
             session_id: r.session_id,

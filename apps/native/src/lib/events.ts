@@ -63,6 +63,8 @@ export interface ListenStatePayload {
   paused_since: number | null;
 }
 export interface ListenTurnPayload {
+  /** Start in the retained recording; null for older turns. */
+  audio_start_ms: number | null;
   speaker: 'me' | 'them';
   /** Diarized voice cluster within `speaker`'s channel — null when
    * diarization is off or the turn was unlabelable. */

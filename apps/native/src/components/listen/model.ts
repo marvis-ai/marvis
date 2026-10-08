@@ -78,6 +78,7 @@ export interface TurnBlock {
   name: string;
   color: string;
   ts: number;
+  audioStartMs: number | null;
   finals: Turn[];
   interim: Turn | null;
 }
@@ -120,6 +121,7 @@ export const buildBlocks = (turns: Turn[]): TurnBlock[] => {
         name: speakerName(turn),
         color: speakerColor(turn),
         ts: turn.ts,
+        audioStartMs: turn.audio_start_ms,
         finals: [],
         interim: null,
       };
@@ -146,20 +148,27 @@ export const elapsedLabel = (secs: number) => {
 };
 
 export const audioOffset = (block: TurnBlock, startedAt: number | null) =>
-  Math.max(0, block.ts - (startedAt ?? block.ts));
+  // Legacy turns have no capture position; retain their approximate timestamp.
+  Math.max(0, block.audioStartMs != null
+    ? block.audioStartMs / 1000
+    : block.ts - (startedAt ?? block.ts));
 
 export const activeBlockAt = (
   blocks: TurnBlock[],
   startedAt: number | null,
   seconds: number,
 ) => {
-  if (startedAt == null || seconds < 0) return null;
-  const timestamp = startedAt + seconds;
-  const index = blocks.findIndex((block, i) => {
-    const next = blocks[i + 1];
-    return block.ts <= timestamp && (!next || timestamp < next.ts);
-  });
-  return index < 0 ? null : `${blocks[index]!.key}-${blocks[index]!.ts}`;
+  if (!Number.isFinite(seconds) || seconds < 0) return null;
+  // Different providers/channels may finish decoding out of capture order.
+  let active: TurnBlock | null = null;
+  for (const block of blocks) {
+    if (block.audioStartMs == null && startedAt == null) continue;
+    const offset = audioOffset(block, startedAt);
+    if (offset <= seconds && (!active || offset >= audioOffset(active, startedAt))) {
+      active = block;
+    }
+  }
+  return active ? `${active.key}-${active.ts}` : null;
 };
 
 /** Adaptive stamp — today `14:32`, yesterday `Yesterday · 14:32`, older

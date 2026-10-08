@@ -31,6 +31,8 @@ pub enum Finality {
 /// `None` when speaker diarization is off or the segment was unlabelable.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TranscriptEvent {
+    /// Start in the provider's PCM stream, before decoding/transport latency.
+    pub audio_start_ms: Option<u64>,
     pub channel: SpeakerChannel,
     pub text: String,
     pub finality: Finality,
@@ -160,6 +162,7 @@ mod tests {
     #[test]
     fn transcript_events_have_explicit_finality() {
         let event = TranscriptEvent {
+            audio_start_ms: None,
             channel: SpeakerChannel::Me,
             text: "hello".to_string(),
             finality: Finality::Final,

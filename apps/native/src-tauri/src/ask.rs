@@ -2533,7 +2533,7 @@ mod tests {
         let db = Db::at(dir.join("marvis.db")).unwrap();
         // The viewed doc: ended, with a transcript + summary.
         let doc = db.session_get_or_create_active("listen").unwrap();
-        db.transcript_add(doc, "them", "deploys freeze on Friday", None)
+        db.transcript_add(doc, "them", "deploys freeze on Friday", None, None)
             .unwrap();
         db.summary_upsert(
             doc,
@@ -2631,7 +2631,7 @@ mod tests {
         let dir = tmp_dir();
         let db = Db::at(dir.join("marvis.db")).unwrap();
         let doc = db.session_get_or_create_active("listen").unwrap();
-        db.transcript_add(doc, "me", "ship it Monday", None)
+        db.transcript_add(doc, "me", "ship it Monday", None, None)
             .unwrap();
         db.session_end(doc).unwrap();
         let ask_sid = db.ask_session_for_listen(doc).unwrap();
@@ -2679,10 +2679,10 @@ mod tests {
         let dir = tmp_dir();
         let db = Db::at(dir.join("marvis.db")).unwrap();
         let doc = db.session_get_or_create_active("listen").unwrap();
-        db.transcript_add(doc, "them", "the earliest decision", None)
+        db.transcript_add(doc, "them", "the earliest decision", None, None)
             .unwrap();
         for i in 0..(HISTORY_TAIL + 5) {
-            db.transcript_add(doc, "them", &format!("filler turn {i}"), None)
+            db.transcript_add(doc, "them", &format!("filler turn {i}"), None, None)
                 .unwrap();
         }
         db.session_end(doc).unwrap();

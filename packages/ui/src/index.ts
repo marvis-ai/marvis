@@ -59,6 +59,7 @@ export {
   MoonIcon,
   PanelTopIcon,
   PauseIcon,
+  PencilIcon,
   PlayIcon,
   RewindIcon,
   RotateCcwClockIcon,

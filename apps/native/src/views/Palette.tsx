@@ -44,23 +44,42 @@ const Palette = () => {
   const [sel, setSel] = useState(0);
   const listRef = useRef<HTMLDivElement>(null);
   const surfaceRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
   /** Latest-refs for the key handler — `palette:key` and the window
    *  listener share `handleKey`, and event callbacks registered once
    *  must not go stale. */
   const filteredRef = useRef<Preset[]>([]);
   const selRef = useRef(0);
 
-  // Auto-fit: the surface is `h-fit`, so its height IS the natural
-  // content height — report it (plus the stage's padding) and Rust
-  // sizes the window to it. Past the cap the list scrolls, so the
-  // observer also fires on filter/list changes.
+  // Auto-fit: report the natural content height and Rust sizes the
+  // window to it. The surface is `h-fit` BUT `max-h-full` caps it at
+  // the window when content overflows — capped boxes then never
+  // resize again, so measuring THEM would ratchet the window stuck
+  // small with a scrolling list. `list.scrollHeight` always reports
+  // the full content height (it's the scroller), and the `flow-root`
+  // wrapper inside the scroll port keeps a resizable box for the
+  // observer while capped. Report = list content + surface chrome
+  // (header + borders) + the stage's padding — measured, not
+  // hardcoded, because a native material strips `.glass-stage`'s
+  // `p-1.5` to 0 (a phantom +12 left bare glass below the surface).
   useEffect(() => {
     const el = surfaceRef.current;
-    if (!el) return;
-    const report = () =>
-      void presetsPaletteHeight(el.offsetHeight + 12).catch(() => {});
+    const content = contentRef.current;
+    if (!el || !content) return;
+    const report = () => {
+      const stage = getComputedStyle(el.parentElement as HTMLElement);
+      const padY =
+        parseFloat(stage.paddingTop) + parseFloat(stage.paddingBottom) || 0;
+      const list = listRef.current;
+      if (!list) return;
+      const chrome = el.offsetHeight - list.offsetHeight;
+      void presetsPaletteHeight(list.scrollHeight + chrome + padY).catch(
+        () => {},
+      );
+    };
     const ro = new ResizeObserver(report);
     ro.observe(el);
+    ro.observe(content);
     report();
     return () => ro.disconnect();
   }, []);
@@ -169,32 +188,38 @@ const Palette = () => {
         <div
           ref={listRef}
           className='min-h-0 flex-1 overflow-y-auto px-1.5 pb-1'>
-          {filtered.map((p, i) => (
-            <button
-              key={p.id}
-              type='button'
-              data-sel={i === idx || undefined}
-              onMouseEnter={() => setSel(i)}
-              onClick={() => void presetsPaletteSelect(p.id).catch(() => {})}
-              title={p.text}
-              className={`flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[12.5px] transition-colors duration-(--motion-fast) ease-(--ease) ${
-                i === idx ? 'bg-fg-soft text-foreground' : 'text-foreground/90'
-              }`}>
-              <span className='min-w-0 flex-1 truncate font-medium'>
-                {p.name}
-              </span>
-              <span className='flex-none font-mono text-[10.5px] text-muted-foreground'>
-                /{presetToken(p.name)}
-              </span>
-            </button>
-          ))}
-          {filtered.length === 0 && (
-            <p className='py-8 text-center text-[11.5px] text-muted-foreground'>
-              {presets.length === 0
-                ? 'No presets yet.'
-                : `No match for “${q}”.`}
-            </p>
-          )}
+          <div
+            ref={contentRef}
+            className='flow-root'>
+            {filtered.map((p, i) => (
+              <button
+                key={p.id}
+                type='button'
+                data-sel={i === idx || undefined}
+                onMouseEnter={() => setSel(i)}
+                onClick={() => void presetsPaletteSelect(p.id).catch(() => {})}
+                title={p.text}
+                className={`flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[12.5px] transition-colors duration-(--motion-fast) ease-(--ease) ${
+                  i === idx
+                    ? 'bg-fg-soft text-foreground'
+                    : 'text-foreground/90'
+                }`}>
+                <span className='min-w-0 flex-1 truncate font-medium'>
+                  {p.name}
+                </span>
+                <span className='flex-none font-mono text-[10.5px] text-muted-foreground'>
+                  /{presetToken(p.name)}
+                </span>
+              </button>
+            ))}
+            {filtered.length === 0 && (
+              <p className='py-8 text-center text-[11.5px] text-muted-foreground'>
+                {presets.length === 0
+                  ? 'No presets yet.'
+                  : `No match for “${q}”.`}
+              </p>
+            )}
+          </div>
         </div>
       </div>
     </div>

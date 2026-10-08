@@ -109,17 +109,21 @@ const PICKER_H: f64 = 560.0;
 const PICKER_RADIUS: f64 = 16.0;
 /// The preset palette (`?view=palette`) — the wand's small Marvis-glass
 /// overlay anchored above/below the bar at the pointer, sized for the
-/// merged preset list (scrolls past ~8 rows) and the future skills
+/// merged preset list (scrolls past ~6 rows) and the future skills
 /// surface. Lazy like `picker`; a focus loss hides it, menu-style.
 pub const PALETTE_LABEL: &str = "palette";
 const PALETTE_W: f64 = 300.0;
 /// Height is content-driven — the view reports its natural height
 /// (`presets_palette_height`), clamped to these bounds; the list
-/// scrolls past `PALETTE_MAX_H`.
-const PALETTE_H: f64 = 320.0;
-const PALETTE_MIN_H: f64 = 96.0;
-const PALETTE_MAX_H: f64 = 320.0;
-const PALETTE_RADIUS: f64 = 14.0;
+/// scrolls past `PALETTE_MAX_H` (~6 rows ≈ 224 — the default shows
+/// six, a 7th row peeks over the cap as the scroll affordance).
+const PALETTE_H: f64 = 228.0;
+/// Floor for the content-height clamp — kept just under a single
+/// row's natural height (~68: header + row + list padding); a taller
+/// floor leaves bare glass below the list.
+const PALETTE_MIN_H: f64 = 64.0;
+const PALETTE_MAX_H: f64 = 228.0;
+const PALETTE_RADIUS: f64 = 18.0;
 /// Slide-in distance above the target rect when the alert toast appears.
 const SHOW_OFFSET_Y: f64 = 10.0;
 /// Fallback work area if every monitor query fails.

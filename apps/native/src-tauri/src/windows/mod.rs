@@ -108,9 +108,9 @@ const PICKER_W: f64 = 760.0;
 const PICKER_H: f64 = 560.0;
 const PICKER_RADIUS: f64 = 16.0;
 /// The preset palette (`?view=palette`) — the wand's small Marvis-glass
-/// overlay anchored to the bar's inward side, sized for the merged
-/// preset list (scrolls past ~8 rows) and the future skills surface.
-/// Lazy like `picker`; a focus loss hides it, menu-style.
+/// overlay anchored above/below the bar at the pointer, sized for the
+/// merged preset list (scrolls past ~8 rows) and the future skills
+/// surface. Lazy like `picker`; a focus loss hides it, menu-style.
 pub const PALETTE_LABEL: &str = "palette";
 const PALETTE_W: f64 = 300.0;
 const PALETTE_H: f64 = 320.0;
@@ -446,12 +446,13 @@ impl WindowPool {
         }
     }
 
-    /// Show (lazily building) the preset palette on the bar's inward
-    /// side — the edge opposite `bar_edge` — then announce
-    /// `palette:open` (the view refetches `presets_list` on it, same
-    /// race cover as `picker:open`). Focused so its key nav works
-    /// immediately; `Focused(false)` hides it — click-away, or the bar
-    /// reclaiming focus after a pick, is the menu's dismiss.
+    /// Show (lazily building) the preset palette below/above the bar —
+    /// `palette_rect` picks the side with more room and centers on the
+    /// pointer's x — then announce `palette:open` (the view refetches
+    /// `presets_list` on it, same race cover as `picker:open`).
+    /// Focused so its key nav works immediately; `Focused(false)`
+    /// hides it — click-away, or the bar reclaiming focus after a
+    /// pick, is the menu's dismiss.
     pub fn show_palette(&mut self, app: &AppHandle) -> bool {
         if self.palette.is_none() {
             let tint = accent_glass_tint(&app.state::<crate::AppState>().accent());
@@ -487,13 +488,19 @@ impl WindowPool {
         let Some(win) = self.palette.clone() else {
             return false;
         };
-        let r = layout::palette_rect(
-            self.bar_rect,
-            self.bar_edge(),
-            PALETTE_W,
-            PALETTE_H,
-            self.bar_work_area(),
-        );
+        // The pointer's x anchors the palette — a `/`-typed open (no
+        // click position) falls back to the bar's center.
+        let work = self.bar_work_area();
+        let cursor_x = self
+            .bar
+            .as_ref()
+            .and_then(|bar| {
+                let scale = bar.scale_factor().ok()?;
+                let pos: LogicalPosition<f64> = bar.cursor_position().ok()?.to_logical(scale);
+                Some(pos.x)
+            })
+            .unwrap_or_else(|| self.bar_rect.center_x());
+        let r = layout::palette_rect(self.bar_rect, cursor_x, PALETTE_W, PALETTE_H, work);
         set_rect(&win, r);
         let _ = win.show();
         let _ = win.set_focus();

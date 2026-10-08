@@ -112,39 +112,22 @@ pub fn snap_edge(bar: Rect, dir: Dir, work: Rect) -> (f64, f64) {
     }
 }
 
-/// The preset palette's rect: `w`×`h`, `PANEL_PAD` off the bar on its
-/// INWARD side — the edge opposite the nearest dock (`edge`), so it
-/// drops like the card would toward free space. When a card is open,
-/// `bar` is still the canonical pill (the card's anchored edge = the
-/// composer row), so the palette lands just past it as an overlay.
-/// Then clamped inside `work` — a bar floating off an edge keeps the
-/// palette on-screen rather than honoring the side blindly.
-pub fn palette_rect(bar: Rect, edge: Dir, w: f64, h: f64, work: Rect) -> Rect {
-    let r = match edge {
-        Dir::Up => Rect {
-            x: bar.center_x() - w / 2.0,
-            y: bar.bottom() + PANEL_PAD,
-            w,
-            h,
+/// The preset palette's rect: `w`×`h`, `PANEL_PAD` off the bar —
+/// below when the bar's lower side has more room (`expand_dir_for`'s
+/// rule, the same side the card would grow toward), above otherwise —
+/// and horizontally centered on the pointer (`cursor_x`, logical) so
+/// the wand's click lands in the menu. Then clamped inside `work` —
+/// a click near an edge keeps the palette on-screen.
+pub fn palette_rect(bar: Rect, cursor_x: f64, w: f64, h: f64, work: Rect) -> Rect {
+    let r = Rect {
+        x: cursor_x - w / 2.0,
+        y: if expand_dir_for(bar, work) == Dir::Down {
+            bar.bottom() + PANEL_PAD
+        } else {
+            bar.y - h - PANEL_PAD
         },
-        Dir::Down => Rect {
-            x: bar.center_x() - w / 2.0,
-            y: bar.y - h - PANEL_PAD,
-            w,
-            h,
-        },
-        Dir::Left => Rect {
-            x: bar.right() + PANEL_PAD,
-            y: bar.center_y() - h / 2.0,
-            w,
-            h,
-        },
-        Dir::Right => Rect {
-            x: bar.x - w - PANEL_PAD,
-            y: bar.center_y() - h / 2.0,
-            w,
-            h,
-        },
+        w,
+        h,
     };
     clamp_to_work_area(r, work)
 }
@@ -193,57 +176,56 @@ mod tests {
     }
 
     #[test]
-    fn palette_opens_inward_from_the_docked_edge() {
+    fn palette_drops_below_or_above_by_free_space() {
         let (w, h) = (300.0, 320.0);
-        // Top-docked bar → palette drops below it; bottom-docked → above.
+        // A bar near the top has more room below → the palette drops;
+        // a bar near the bottom → it pops above.
         let top_bar = Rect {
             x: 100.0,
             y: WORK.y + 12.0,
             ..PILL
         };
-        let top = palette_rect(top_bar, Dir::Up, w, h, WORK);
+        let top = palette_rect(top_bar, 500.0, w, h, WORK);
         assert_eq!(top.y, top_bar.bottom() + PANEL_PAD);
-        assert_eq!(top.x, top_bar.center_x() - w / 2.0);
         let bot_bar = Rect {
             x: 100.0,
             y: WORK.bottom() - PILL.h - 12.0,
             ..PILL
         };
-        let bottom = palette_rect(bot_bar, Dir::Down, w, h, WORK);
+        let bottom = palette_rect(bot_bar, 500.0, w, h, WORK);
         assert_eq!(bottom.y, bot_bar.y - h - PANEL_PAD);
-        // Side docks (the 59×130 rail) extend inward horizontally.
-        let rail = Rect {
-            x: WORK.x + 12.0,
-            y: 400.0,
-            w: 59.0,
-            h: 130.0,
+    }
+
+    #[test]
+    fn palette_centers_on_the_cursor_and_clamps() {
+        let (w, h) = (300.0, 320.0);
+        let bar = Rect {
+            x: 100.0,
+            y: WORK.y + 12.0,
+            ..PILL
         };
-        let left = palette_rect(rail, Dir::Left, w, h, WORK);
-        assert_eq!(left.x, rail.right() + PANEL_PAD);
-        assert_eq!(left.y, rail.center_y() - h / 2.0);
-        let right = palette_rect(
-            Rect {
-                x: WORK.right() - rail.w - 12.0,
-                ..rail
-            },
-            Dir::Right,
-            w,
-            h,
-            WORK,
-        );
-        assert_eq!(right.x, WORK.right() - rail.w - 12.0 - w - PANEL_PAD);
+        // Mid-screen pointer → palette centers on it.
+        let r = palette_rect(bar, 700.0, w, h, WORK);
+        assert_eq!(r.x, 700.0 - w / 2.0);
+        // A pointer near the right edge would overflow — clamped back.
+        let edge = palette_rect(bar, WORK.right() - 10.0, w, h, WORK);
+        assert_eq!(edge.x, WORK.right() - w);
+        // …and past the left edge too.
+        let edge = palette_rect(bar, WORK.x + 10.0, w, h, WORK);
+        assert_eq!(edge.x, WORK.x);
     }
 
     #[test]
     fn palette_clamps_inside_the_work_area() {
         let (w, h) = (300.0, 320.0);
-        // A bar hugging the right edge asks for a palette past it —
-        // the clamp pulls it back fully on-screen.
+        // A bar hugging the bottom edge has no room above — the clamp
+        // keeps the palette fully on-screen anyway.
         let edge_bar = Rect {
-            x: WORK.right() - 64.0,
+            x: 100.0,
+            y: WORK.bottom() - PILL.h,
             ..PILL
         };
-        let r = palette_rect(edge_bar, Dir::Up, w, h, WORK);
+        let r = palette_rect(edge_bar, 500.0, w, h, WORK);
         assert!(r.x >= WORK.x && r.right() <= WORK.right());
         assert!(r.y >= WORK.y && r.bottom() <= WORK.bottom());
     }

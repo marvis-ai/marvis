@@ -645,10 +645,10 @@ const EV_BAR_SHOW_HISTORY: &str = "bar:show-history";
 /// Emitted to the `bar` window only — a preset palette pick
 /// (`presets_palette_select`); payload is the full `Preset`.
 const EV_PRESET_PICK: &str = "bar:preset-pick";
-/// Emitted to the `bar` window only — the palette closed by key
-/// (`presets_palette_close`); payload `{ query }` reconciles the
-/// composer's `/token` (`Some` writes `/query` back, `null` drops it).
-const EV_PALETTE_CLOSED: &str = "bar:palette-closed";
+/// Emitted to the `bar` window on every palette hide (`windows`'s
+/// `hide_palette`) — the composer stops forwarding `/`-mode keys.
+/// Emitted from `windows/mod.rs`; `pub(crate)` keeps one const.
+pub(crate) const EV_PALETTE_CLOSED: &str = "bar:palette-closed";
 
 /// Map [`hotkey::Action`]s onto pool calls / bar events. Owns an
 /// `AppHandle` and re-resolves `AppState` per press, so the same
@@ -1906,7 +1906,11 @@ fn presets_list(state: State<'_, AppState>) -> Vec<presets::Preset> {
 /// caret's x in bar-viewport px, resolved against the window's outer
 /// position; the pointer, then the bar's center, are the fallbacks)
 /// and announced as `palette:open { query }` — `query` seeds the
-/// palette's filter when the open rides a typed `/token`.
+/// palette's filter when the open rides a typed `/token`. `focused`
+/// selects the interaction model: the wand/right-click open key-focus
+/// it (own nav, click-away dismiss); a `/`-typed open surfaces it
+/// unfocused so the composer keeps the `/token` (`palette:query`
+/// streams the filter, `palette:key` forwards nav keys).
 /// Gate-guarded like `ask_send` — a crafted invoke during onboarding
 /// must not pop chrome over the wizard.
 #[tauri::command]
@@ -1914,13 +1918,17 @@ fn presets_palette_open(
     app: AppHandle,
     anchor_x: Option<f64>,
     query: Option<String>,
+    focused: Option<bool>,
 ) -> Result<(), String> {
     let state = app.state::<AppState>();
     if *state.gate.lock() != Gate::Main {
         log::warn!("presets_palette_open dropped while gate != Main");
         return Ok(());
     }
-    state.pool.lock().show_palette(&app, anchor_x, query);
+    state
+        .pool
+        .lock()
+        .show_palette(&app, anchor_x, query, focused.unwrap_or(true));
     Ok(())
 }
 
@@ -1936,8 +1944,8 @@ fn presets_palette_select(app: AppHandle, id: String) -> Result<(), String> {
     }
     let preset = presets::find(&id, &state.config.lock().prompts.custom);
     let bar = {
-        let pool = state.pool.lock();
-        pool.hide_palette();
+        let mut pool = state.pool.lock();
+        pool.hide_palette(&app);
         pool.bar().cloned()
     };
     if let Some(bar) = bar {
@@ -1949,29 +1957,49 @@ fn presets_palette_select(app: AppHandle, id: String) -> Result<(), String> {
     Ok(())
 }
 
-/// Palette dismissed by its own keys (Esc, Backspace on an empty
-/// filter — click-away blur hides itself in `show_palette`'s event
-/// handler). Hides it, hands focus back to the bar, then announces
-/// `bar:palette-closed { query }` so the composer reconciles its
-/// `/token`: `Some(query)` writes `/query` back (typing continued in
-/// the palette's filter); `None` drops the token (the filter's
-/// Backspace-at-empty means "untype the `/`").
+/// Palette dismissed by key — Esc in either focus mode, or a
+/// forwarded Esc (click-away blur and the bar's own blur hide it
+/// without this call). Hides + refocuses the bar; the composer's
+/// `/token` text needs no reconciliation — it never left the field.
+/// `hide_palette` announces `bar:palette-closed` for the bar's
+/// key-forwarding gate.
 #[tauri::command]
-fn presets_palette_close(app: AppHandle, query: Option<String>) -> Result<(), String> {
+fn presets_palette_close(app: AppHandle) -> Result<(), String> {
     let state = app.state::<AppState>();
     let bar = {
-        let pool = state.pool.lock();
-        pool.hide_palette();
+        let mut pool = state.pool.lock();
+        pool.hide_palette(&app);
         pool.bar().cloned()
     };
     if let Some(bar) = bar {
         let _ = bar.set_focus();
     }
-    let _ = app.emit_to(
-        windows::BAR_LABEL,
-        EV_PALETTE_CLOSED,
-        serde_json::json!({ "query": query }),
-    );
+    Ok(())
+}
+
+/// A composer key forwarded to the open palette (`palette:key`) —
+/// the `/`-typed palette is unfocused, so the bar pipes `↑↓`, `Enter`,
+/// `Tab`, `Esc`, `Home`, `End` through here for the view to run.
+/// Emits to the palette window only; harmless when it's hidden.
+#[tauri::command]
+fn presets_palette_key(app: AppHandle, key: String) -> Result<(), String> {
+    app.state::<AppState>()
+        .pool
+        .lock()
+        .palette_key(&app, &key);
+    Ok(())
+}
+
+/// The composer's `/token` pushed as the palette's filter
+/// (`palette:query`) on every composer edit while an unfocused
+/// palette is up — the field that once lived in the palette now lives
+/// in the composer.
+#[tauri::command]
+fn presets_palette_query(app: AppHandle, query: String) -> Result<(), String> {
+    app.state::<AppState>()
+        .pool
+        .lock()
+        .palette_query(&app, &query);
     Ok(())
 }
 
@@ -2904,6 +2932,8 @@ pub fn run() {
             presets_palette_open,
             presets_palette_select,
             presets_palette_close,
+            presets_palette_key,
+            presets_palette_query,
             open_devtools,
             permissions_status,
             permissions_request_screen,
@@ -2984,12 +3014,14 @@ mod tests {
         assert!(source.contains("session_resume,"));
     }
 
-    /// The preset surface: `presets_list` plus the three palette
-    /// commands registered, and the pick event constant declared — all
-    /// asserted against the registration source itself. `concat!`
-    /// keeps each literal out of this file's text (same trick as the
-    /// `concat!("listen_", "stub")` negative assert above) so the
-    /// asserts can't self-satisfy.
+    /// The preset surface: `presets_list` plus the palette commands
+    /// registered (open/select/close plus the `/`-session plumbing —
+    /// key forward, query push, visibility probe), and the pick/closed
+    /// event constants declared — all asserted against the
+    /// registration source itself. `concat!` keeps each literal out
+    /// of this file's text (same trick as the `concat!("listen_",
+    /// "stub")` negative assert above) so the asserts can't
+    /// self-satisfy.
     #[test]
     fn preset_commands_and_dispatch_are_in_the_contract() {
         let source = include_str!("lib.rs");
@@ -2997,7 +3029,10 @@ mod tests {
         assert!(source.contains(concat!("presets", "_palette_open,")));
         assert!(source.contains(concat!("presets", "_palette_select,")));
         assert!(source.contains(concat!("presets", "_palette_close,")));
+        assert!(source.contains(concat!("presets", "_palette_key,")));
+        assert!(source.contains(concat!("presets", "_palette_query,")));
         assert!(source.contains(concat!("EV_", "PRESET_PICK")));
+        assert!(source.contains(concat!("EV_", "PALETTE_CLOSED")));
     }
 
     /// The punctuation auto-install chain: a completed sherpa download

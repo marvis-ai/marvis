@@ -313,21 +313,35 @@ export const presetsList = () => invoke<Preset[]>('presets_list');
 
 /** Open the preset palette — the small glass overlay left-aligned to
  *  `anchorX` (the composer caret's x in viewport px; omitted →
- *  pointer/center fallback). `query` seeds the palette's filter — a
- *  typed `/token` carries its name part so the list pre-filters. */
-export const presetsPaletteOpen = (anchorX?: number, query?: string) =>
-  invoke<void>('presets_palette_open', { anchorX, query });
+ *  pointer/center fallback). `query` seeds the filter (a `/token`'s
+ *  name part); `focused` picks the mode — wand/right-click pass true
+ *  (key-focused menu), a `/`-typed open passes false so the composer
+ *  keeps typing (the filter then streams over `palette:query` and nav
+ *  keys forward over `palette:key`). */
+export const presetsPaletteOpen = (
+  anchorX?: number,
+  query?: string,
+  focused?: boolean,
+) => invoke<void>('presets_palette_open', { anchorX, query, focused });
 
 /** A palette row pick — the backend closes the palette, refocuses the
  *  bar, and emits the chosen preset as `bar:preset-pick`. */
 export const presetsPaletteSelect = (id: string) =>
   invoke<void>('presets_palette_select', { id });
 
-/** The palette's own-key dismiss (Esc → `query` writes `/query` back
- *  into the composer; `null` drops the `/token` — the filter's
- *  Backspace-at-empty). Click-away blur hides without this command. */
-export const presetsPaletteClose = (query?: string | null) =>
-  invoke<void>('presets_palette_close', { query });
+/** The palette's keyed dismiss (Esc — click-away blur and the bar's
+ *  own blur hide it without this call). */
+export const presetsPaletteClose = () => invoke<void>('presets_palette_close');
+
+/** Forward a composer key to the unfocused palette — `/`-mode nav
+ *  (`ArrowUp`, `ArrowDown`, `Enter`, `Tab`, `Escape`, `Home`, `End`)
+ *  rides `palette:key`. */
+export const presetsPaletteKey = (key: string) =>
+  invoke<void>('presets_palette_key', { key });
+
+/** Push the composer's `/token` as the palette's live filter query. */
+export const presetsPaletteQuery = (query: string) =>
+  invoke<void>('presets_palette_query', { query });
 
 // ---------------------------------------------------------------------------
 // listen

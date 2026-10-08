@@ -60,7 +60,10 @@ import {
   listenStart,
   listenStatus,
   presetsList,
+  presetsPaletteClose,
+  presetsPaletteKey,
   presetsPaletteOpen,
+  presetsPaletteQuery,
   raise,
   windowFocusBar,
   windowSetBarExpanded,
@@ -155,6 +158,16 @@ const Bar = () => {
   const [armedPreset, setArmedPresetState] = useState<Preset | null>(null);
   const [langParam, setLangParamState] = useState<string | null>(null);
   const [editingLang, setEditingLang] = useState(false);
+  /** Whether the preset palette is up — set on our opens, cleared by
+   *  `bar:palette-closed` (every hide emits it). While true the
+   *  composer's `/token` is its live filter (`palette:query`) and its
+   *  nav keys forward over `palette:key`. */
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const paletteOpenRef = useRef(false);
+  const setPalette = (v: boolean) => {
+    paletteOpenRef.current = v;
+    setPaletteOpen(v);
+  };
   /** Live mirrors for `sendAsk`/`onDisarm` — `dictation.submit` can
    *  defer the send behind a settling stop, so render-time state
    *  would read stale there (same shape as `textRef`). */
@@ -413,7 +426,7 @@ const Bar = () => {
         // `/` wakes straight into the preset palette — the field
         // mounts on this render, so the caret anchor waits a frame.
         if (e.key === '/') {
-          requestAnimationFrame(() => openPalette());
+          requestAnimationFrame(() => openPalette(false));
         }
       }
     };
@@ -424,19 +437,33 @@ const Bar = () => {
   const collapse = () => {
     setOpen(false);
     inputRef.current?.blur();
+    // The field unmounts under an open palette — its `/token` is gone.
+    if (paletteOpenRef.current) {
+      void presetsPaletteClose().catch(() => {});
+    }
   };
 
   /** Open the preset palette — left-aligned to the input caret (the
    *  Rust side turns the viewport x into a screen anchor; a missing
-   *  field falls back to the pointer/bar center). A composer already
-   *  holding `/token` seeds the palette's filter with its name part. */
-  const openPalette = () => {
+   *  field falls back to the pointer/bar center). `focused`: wand and
+   *  right-click opens take key focus; a `/`-typed open leaves the
+   *  composer key so the `/token` keeps filtering live (`query` seeds
+   *  it from the field's current token). */
+  const openPalette = (focused: boolean) => {
+    // The Rust side gate-checks too, but an off-Main invoke would drop
+    // the open — and a stuck `paletteOpen` swallows composer keys.
+    if (gate !== 'main' || !inputRenderedRef.current) return;
+    setPalette(true);
     const el = inputRef.current;
     void presetsPaletteOpen(
       el ? caretViewportX(el) : undefined,
       slashQuery(textRef.current) ?? undefined,
-    ).catch(() => {});
+      focused,
+    ).catch(() => setPalette(false));
   };
+  /** Palette hid itself (pick, Esc, blur, bar blur) — stop key
+   *  forwarding and query pushes. */
+  useTauriEvent(EV_PALETTE_CLOSED, () => setPalette(false));
 
   /** Place the caret at the end of the field after a programmatic
    *  setText — the DOM value lands on render, so selection waits a
@@ -453,14 +480,20 @@ const Bar = () => {
   /** Palette pick (`bar:preset-pick`) — every preset arms as a badge
    *  (+ its `{lang}` param badge when the text has one); expansion
    *  waits for send. A `/token` sitting in the field is the palette's
-   *  trigger text — the badge replaces it. Paused while dictation
-   *  owns the field. */
+   *  trigger text — the badge replaces it, and a `/name args`+Enter
+   *  sends straight through (the pick is the run — coding-agent
+   *  parity); a bare `/name` just arms for editing. Paused while
+   *  dictation owns the field. */
   const applyPreset = (p: Preset) => {
     dictation.discard();
     armPreset(p);
     if (textRef.current.startsWith('/')) {
-      setText(stripSlashToken(textRef.current));
+      const rest = stripSlashToken(textRef.current);
+      setText(rest);
       focusFieldEnd();
+      if (rest.trim()) {
+        submitAsk();
+      }
       return;
     }
     inputRef.current?.focus();
@@ -478,37 +511,36 @@ const Bar = () => {
   /** Slash shorthand: an exact `/name` token followed by a space
    *  applies on the spot (end-of-text tokens wait for send — a prefix
    *  name can't swallow a longer one mid-typing). A `/` arriving at
-   *  caret-0 pops the palette instead — its filter field owns the
-   *  query from there, coding-agent slash-menu style. */
+   *  caret-0 pops the palette UNFOCUSED — this field keeps focus and
+   *  the token streams over `palette:query` as its live filter,
+   *  coding-agent slash-menu style; leaving the `/` prefix closes it. */
   const onFieldChange = (e: ChangeEvent<HTMLTextAreaElement>) => {
     dictation.handleChange(e);
     if (dictation.state === 'listening') return;
-    if (e.target.value.startsWith('/') && !text.startsWith('/')) {
-      openPalette();
+    const v = e.target.value;
+    if (v.startsWith('/') && !text.startsWith('/')) {
+      openPalette(false);
       return;
     }
-    const hit = resolveSlash(e.target.value, presets, false);
+    if (paletteOpenRef.current) {
+      const s = slashToken(v);
+      if (!s) {
+        // The `/` was deleted (or the caret context left it) — the
+        // menu's reason to exist is gone.
+        void presetsPaletteClose().catch(() => {});
+      } else {
+        void presetsPaletteQuery(s.token).catch(() => {});
+      }
+    }
+    const hit = resolveSlash(v, presets, false);
     if (!hit) return;
     dictation.discard();
     armPreset(hit.preset);
     setText(hit.rest);
-  };
-
-  /** Palette's keyed close (`bar:palette-closed`) — reconcile the
-   *  composer's `/token`: a `query` string writes `/query` back (the
-   *  filter's text kept on Esc), `null` drops the token (Backspace on
-   *  the empty filter untypes the `/`). */
-  useTauriEvent<{ query: string | null }>(EV_PALETTE_CLOSED, ({ query }) => {
-    if (dictation.state === 'listening' || !inputRenderedRef.current) {
-      return;
+    if (paletteOpenRef.current) {
+      void presetsPaletteClose().catch(() => {});
     }
-    const t = textRef.current;
-    const s = slashToken(t);
-    if (!s) return;
-    const next = query === null ? stripSlashToken(t) : `/${query}${s.rest}`;
-    setText(next);
-    focusFieldEnd();
-  });
+  };
 
   /** Send a question — the field's text by default, or an explicit one
    *  (`question`, e.g. a summary follow-up chip — the field's draft is
@@ -525,7 +557,7 @@ const Bar = () => {
       const raw = textRef.current;
       // Bare `/` opens the preset palette instead of sending a slash.
       if (raw.trim() === '/') {
-        openPalette();
+        openPalette(false);
         return;
       }
       const hit = resolveSlash(raw, presets, true);
@@ -860,6 +892,8 @@ const Bar = () => {
           value={text}
           cardOpen={cardOpen}
           visible={showInputRow}
+          paletteOpen={paletteOpen}
+          onPaletteKey={(key) => void presetsPaletteKey(key).catch(() => {})}
           onChange={onFieldChange}
           onSelect={dictation.handleSelect}
           onFocus={() => gate === 'main' && setOpen(true)}
@@ -877,7 +911,7 @@ const Bar = () => {
           <BarButton
             label='Prompt presets'
             disabled={gate !== 'main'}
-            onPress={openPalette}>
+            onPress={() => openPalette(true)}>
             <WandSparklesIcon className='size-5' />
           </BarButton>
         )}
@@ -997,7 +1031,7 @@ const Bar = () => {
         // without one (idle capsule, history card, gate/error rows)
         // get the shared menu — a pick needs a field to land in.
         if (inputRendered) {
-          openPalette();
+          openPalette(true);
         } else {
           void barContextMenu().catch(() => {});
         }

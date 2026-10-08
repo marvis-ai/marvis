@@ -154,6 +154,12 @@ pub struct WindowPool {
     /// The preset palette (`?view=palette`) — lazy like `picker`;
     /// blur-dismissed, so it never needs gate cleanup either.
     palette: Option<WebviewWindow>,
+    /// Whether the palette holds (or opened with) key focus — the wand
+    /// opens it focused; a `/`-typed open leaves the composer key and
+    /// only a real user click promotes it. `Focused(false)` dismisses
+    /// menu-style only while this is set — an unfocused palette must
+    /// not hide itself from the show()/refocus ping-pong it isn't in.
+    palette_focused: bool,
     /// Whether the unified card (chat or listen mode) is open.
     chat_open: bool,
     /// Last reported card CONTENT height — window = `BAR_H + this`.
@@ -187,6 +193,7 @@ impl WindowPool {
             prefs_mode: String::new(),
             picker: None,
             palette: None,
+            palette_focused: false,
             chat_open: false,
             chat_height: CHAT_DEFAULT_H,
             expand_dir: Dir::Down,
@@ -239,6 +246,17 @@ impl WindowPool {
                             return;
                         };
                         state.pool.lock().enforce_bar_bounds();
+                    }
+                    // An unfocused (`/`-typed) palette belongs to the
+                    // composer — the bar losing focus (another app, a
+                    // palette click that made it key) retires it so it
+                    // can't float orphaned over other windows. The
+                    // guard skips palettes that hold real focus.
+                    tauri::WindowEvent::Focused(false) => {
+                        let Some(state) = app_resized.try_state::<crate::AppState>() else {
+                            return;
+                        };
+                        state.pool.lock().hide_palette_unfocused(&app_resized);
                     }
                     _ => {}
                 }
@@ -296,6 +314,7 @@ impl WindowPool {
             prefs_mode: String::new(),
             picker: None,
             palette: None,
+            palette_focused: false,
             chat_open: false,
             chat_height: CHAT_DEFAULT_H,
             expand_dir: Dir::Down,
@@ -452,14 +471,19 @@ impl WindowPool {
     /// falls back to the pointer, then the bar's center) — then
     /// announce `palette:open` with the `/` query seed (the view
     /// refetches `presets_list` on it, same race cover as
-    /// `picker:open`). Focused so its filter field and key nav work
-    /// immediately; `Focused(false)` hides it — click-away, or the
-    /// bar reclaiming focus after a pick, is the menu's dismiss.
+    /// `picker:open`). `focused` picks the interaction model: wand
+    /// and right-click opens take key focus (own key nav, click-away
+    /// blur hides); a `/`-typed open orders front UNFOCUSED so the
+    /// composer keeps typing — its `/token` streams in as
+    /// `palette:query` and its keys arrive forwarded as `palette:key`.
+    /// `palette_focused` records which — `Focused(false)` is the
+    /// menu's dismiss only then.
     pub fn show_palette(
         &mut self,
         app: &AppHandle,
         anchor_x: Option<f64>,
         query: Option<String>,
+        focused: bool,
     ) -> bool {
         if self.palette.is_none() {
             let tint = accent_glass_tint(&app.state::<crate::AppState>().accent());
@@ -485,8 +509,20 @@ impl WindowPool {
                     let Some(state) = app2.try_state::<crate::AppState>() else {
                         return;
                     };
-                    if matches!(event, tauri::WindowEvent::Focused(false)) {
-                        state.pool.lock().hide_palette();
+                    match event {
+                        // A click on the unfocused palette makes it key
+                        // (tao accepts first mouse) — promote it so the
+                        // click-away below still dismisses, menu-style.
+                        tauri::WindowEvent::Focused(true) => {
+                            state.pool.lock().palette_focused = true;
+                        }
+                        tauri::WindowEvent::Focused(false) => {
+                            let mut pool = state.pool.lock();
+                            if pool.palette_focused {
+                                pool.hide_palette(&app2);
+                            }
+                        }
+                        _ => {}
                     }
                 });
             }
@@ -517,8 +553,18 @@ impl WindowPool {
             .unwrap_or_else(|| self.bar_rect.center_x());
         let r = layout::palette_rect(self.bar_rect, anchor_x, PALETTE_W, PALETTE_H, work);
         set_rect(&win, r);
-        let _ = win.show();
-        let _ = win.set_focus();
+        self.palette_focused = focused;
+        if focused {
+            let _ = win.show();
+            let _ = win.set_focus();
+        } else {
+            // A `/`-typed open leaves the composer key — order the
+            // palette front WITHOUT making key (macOS `orderFront:`;
+            // `show()` would steal focus). Elsewhere `show()` is the
+            // only primitive — if it does activate, `Focused(true)`
+            // promotes the palette into focused-mode anyway.
+            order_front_unfocused(&win);
+        }
         let _ = app.emit_to(
             PALETTE_LABEL,
             "palette:open",
@@ -527,10 +573,46 @@ impl WindowPool {
         true
     }
 
-    pub fn hide_palette(&self) {
+    /// Hide the palette and reset its focus mode — announces
+    /// `bar:palette-closed` on every hide (pick, Esc, blur, the bar
+    /// leaving focus) so the composer stops forwarding keys.
+    pub fn hide_palette(&mut self, app: &AppHandle) {
+        self.palette_focused = false;
         if let Some(win) = &self.palette {
             let _ = win.hide();
         }
+        let _ = app.emit_to(BAR_LABEL, crate::EV_PALETTE_CLOSED, ());
+    }
+
+    /// The bar's own blur dismisses an UNFOCUSED palette — a
+    /// `/`-opened overlay must not outlive the composer it filters.
+    /// A focused palette owns its blur path instead (it took key
+    /// status deliberately), so a wand-opened palette survives this.
+    pub fn hide_palette_unfocused(&mut self, app: &AppHandle) {
+        if !self.palette_focused && self.palette.is_some() {
+            self.hide_palette(app);
+        }
+    }
+
+    /// Forward a composer key to the open palette — the `/`-typed
+    /// session keeps the bar focused, so `↑↓`/`Enter`/`Esc`/`Tab`/
+    /// `Home`/`End` arrive here and ride `palette:key`.
+    pub fn palette_key(&self, app: &AppHandle, key: &str) {
+        let _ = app.emit_to(
+            PALETTE_LABEL,
+            "palette:key",
+            serde_json::json!({ "key": key }),
+        );
+    }
+
+    /// Push the composer's `/token` as the palette's filter query —
+    /// called on every composer edit while an unfocused palette is up.
+    pub fn palette_query(&self, app: &AppHandle, query: &str) {
+        let _ = app.emit_to(
+            PALETTE_LABEL,
+            "palette:query",
+            serde_json::json!({ "query": query }),
+        );
     }
 
     /// The window's animated destination: the derived card rect while
@@ -978,6 +1060,33 @@ impl WindowPool {
 fn accent_glass_tint(accent: &str) -> Option<String> {
     let accent = accent.trim();
     (accent.len() == 7 && accent.starts_with('#')).then(|| format!("{accent}15"))
+}
+
+/// Order `win` front WITHOUT taking key status — `show()` calls
+/// `makeKeyAndOrderFront` on macOS, which would steal the composer's
+/// focus mid-`/` typing. `orderFront:` surfaces the palette within the
+/// app's window level, unfocused. Other platforms fall back to
+/// `show()` — if it activates, the palette degrades to focused-mode
+/// (its own keydown + click-away still work).
+#[cfg(target_os = "macos")]
+fn order_front_unfocused(win: &WebviewWindow) {
+    use objc2_app_kit::NSWindow;
+    match win.ns_window() {
+        // SAFETY: tauri hands us the live NSWindow for `win`.
+        Ok(ptr) => unsafe {
+            let ns_win = &*(ptr as *const NSWindow);
+            ns_win.orderFront(None);
+        },
+        Err(e) => {
+            log::warn!("windows: palette orderFront failed ({e}) — falling back to show");
+            let _ = win.show();
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn order_front_unfocused(win: &WebviewWindow) {
+    let _ = win.show();
 }
 
 /// Build a hidden overlay for `index.html?view={label}`, sized in logical

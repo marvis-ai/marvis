@@ -29,12 +29,16 @@ const METRICS = 'text-[14px] leading-5';
  *  the dictation tracker. `onDisarm` fires on Backspace/Delete at a
  *  collapsed caret-0 — the armed preset badges' remove gesture; it
  *  returns whether it disarmed (a `true` swallows the key so forward
- *  Delete can't eat the first character too). */
+ *  Delete can't eat the first character too). While `paletteOpen`,
+ *  the nav/pick/dismiss keys forward to the unfocused preset palette
+ *  via `onPaletteKey` (its `/` session leaves this field focused). */
 export const AskInput = ({
   ref,
   value,
   cardOpen,
   visible,
+  paletteOpen,
+  onPaletteKey,
   onChange,
   onSelect,
   onFocus,
@@ -48,6 +52,9 @@ export const AskInput = ({
   /** The icon-row ⇄ input-row swap — hidden collapses to `max-w-0` so
    *  the capsule's controls take the width. */
   visible: boolean;
+  /** The preset palette is up — nav/pick/dismiss keys are its. */
+  paletteOpen: boolean;
+  onPaletteKey: (key: string) => void;
   onChange: (e: ChangeEvent<HTMLTextAreaElement>) => void;
   onSelect: (e: SyntheticEvent<HTMLTextAreaElement>) => void;
   onFocus: () => void;
@@ -89,18 +96,30 @@ export const AskInput = ({
         value={value}
         rows={1}
         onKeyDown={(e) => {
+          const composing = e.nativeEvent.isComposing || e.keyCode === 229;
           if (
-            e.key === 'Enter' &&
-            !e.shiftKey &&
-            !e.nativeEvent.isComposing &&
-            e.keyCode !== 229
+            paletteOpen &&
+            !composing &&
+            [
+              'ArrowUp',
+              'ArrowDown',
+              'Enter',
+              'Tab',
+              'Escape',
+              'Home',
+              'End',
+            ].includes(e.key)
           ) {
+            e.preventDefault();
+            onPaletteKey(e.key);
+            return;
+          }
+          if (e.key === 'Enter' && !e.shiftKey && !composing) {
             e.preventDefault();
             onSubmit(e.metaKey || e.ctrlKey);
           } else if (
             (e.key === 'Backspace' || e.key === 'Delete') &&
-            !e.nativeEvent.isComposing &&
-            e.keyCode !== 229 &&
+            !composing &&
             e.currentTarget.selectionStart === 0 &&
             e.currentTarget.selectionEnd === 0 &&
             onDisarm()

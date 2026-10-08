@@ -4,12 +4,13 @@
  * caret, above/below the bar by free space (the wand's pick surface,
  * and the list a future skills section joins). One flat preset list —
  * `is_template` is invisible here; a pick arms its badge in the
- * composer either way. The header field owns the `/` query the whole
- * time the palette is open (a typed `/` opens it focused): typing
- * filters, ↑/↓ + Enter/Tab navigate and pick, Backspace on an empty
- * filter untypes the `/`, Esc writes `/query` back into the composer
- * — both close paths ride `presets_palette_close` →
- * `bar:palette-closed`. Click-away blur is the menu-style dismiss.
+ * composer either way.
+ *
+ * Two focus modes: the wand/right-click open takes key focus (this
+ * window's keydown drives nav, click-away blur dismisses); a
+ * `/`-typed open stays UNFOCUSED — the composer keeps the `/token`,
+ * which streams in as `palette:query` (the filter lives in the input,
+ * not here) while `palette:key` carries forwarded ↑↓/Enter/Tab/Esc.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { WandSparklesIcon } from '@marvis/ui';
@@ -20,16 +21,17 @@ import {
   presetsPaletteSelect,
   type Preset,
 } from '@/lib/commands';
-import { EV_PALETTE_OPEN, useTauriEvent } from '@/lib/events';
+import {
+  EV_PALETTE_KEY,
+  EV_PALETTE_OPEN,
+  EV_PALETTE_QUERY,
+  useTauriEvent,
+} from '@/lib/events';
 import { presetToken } from '@/lib/presets';
 
 /** Filter predicate — case-insensitive substring on the display name
- *  OR its `/token` slug (`translate` hits `Translate`, `reply-nicely`
- *  hits `Reply nicely`). A leading `/` in the field is stripped —
- *  the composer keeps the trigger, the field holds only the query. */
-const normalize = (q: string): string =>
-  q.trim().replace(/^\/+/, '').toLowerCase();
-
+ *  OR its `/token` slug (`trans` hits `Translate`, `reply-nicely`
+ *  hits `Reply nicely`). */
 const matches = (p: Preset, q: string): boolean =>
   p.name.toLowerCase().includes(q) || presetToken(p.name).includes(q);
 
@@ -38,7 +40,11 @@ const Palette = () => {
   const [query, setQuery] = useState('');
   const [sel, setSel] = useState(0);
   const listRef = useRef<HTMLDivElement>(null);
-  const fieldRef = useRef<HTMLInputElement>(null);
+  /** Latest-refs for the key handler — `palette:key` and the window
+   *  listener share `handleKey`, and event callbacks registered once
+   *  must not go stale. */
+  const filteredRef = useRef<Preset[]>([]);
+  const selRef = useRef(0);
 
   const refresh = useCallback((seed?: string | null) => {
     setSel(0);
@@ -46,9 +52,6 @@ const Palette = () => {
     void presetsList()
       .then(setPresets)
       .catch(() => {});
-    // autoFocus covers only the window's first mount — a reopened
-    // palette (hidden, not rebuilt) re-focuses the field explicitly.
-    requestAnimationFrame(() => fieldRef.current?.focus());
   }, []);
 
   // Mount covers the first open (the emit can race this webview's
@@ -58,56 +61,63 @@ const Palette = () => {
   useTauriEvent<{ query: string | null }>(EV_PALETTE_OPEN, ({ query }) =>
     refresh(query),
   );
+  useTauriEvent<{ query: string }>(EV_PALETTE_QUERY, ({ query }) => {
+    setQuery(query);
+    setSel(0);
+  });
 
-  const filtered =
-    normalize(query) === ''
-      ? presets
-      : presets.filter((p) => matches(p, normalize(query)));
+  const q = query.trim().toLowerCase();
+  const filtered = q === '' ? presets : presets.filter((p) => matches(p, q));
+  const idx = filtered.length === 0 ? 0 : Math.min(sel, filtered.length - 1);
+  filteredRef.current = filtered;
+  selRef.current = idx;
 
-  // The palette owns focus while open — one window listener is the
-  // whole keyboard contract (the filter field's keys bubble here).
+  /** One keyboard contract for both modes — focused-mode keys arrive
+   *  on the window listener, `/`-mode keys arrive forwarded on
+   *  `palette:key`. */
+  const handleKey = useCallback((key: string) => {
+    const list = filteredRef.current;
+    if (key === 'Escape') {
+      void presetsPaletteClose().catch(() => {});
+    } else if (key === 'ArrowDown' || key === 'ArrowUp') {
+      setSel((s) =>
+        list.length === 0
+          ? 0
+          : (s + (key === 'ArrowDown' ? 1 : -1) + list.length) % list.length,
+      );
+    } else if (key === 'Home' || key === 'End') {
+      setSel(key === 'Home' ? 0 : Math.max(0, list.length - 1));
+    } else if (key === 'Enter' || key === 'Tab') {
+      const p = list[selRef.current];
+      if (p) void presetsPaletteSelect(p.id).catch(() => {});
+    }
+  }, []);
+
+  useTauriEvent<{ key: string }>(EV_PALETTE_KEY, ({ key }) => handleKey(key));
+
+  // Focused-mode keys — the unfocused `/` session never focuses this
+  // window, so nothing double-fires.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      // An in-flight IME composition owns its keys — Enter commits the
-      // marked text, Backspace edits it, Esc cancels it; none of those
-      // may reach the menu (same 229 signal as the composer).
       if (e.isComposing || e.keyCode === 229) return;
-      if (e.key === 'Escape') {
+      if (
+        [
+          'Escape',
+          'ArrowDown',
+          'ArrowUp',
+          'Home',
+          'End',
+          'Enter',
+          'Tab',
+        ].includes(e.key)
+      ) {
         e.preventDefault();
-        // Esc keeps the typed filter — the composer gets `/query`
-        // back so typing resumes where the menu left off.
-        void presetsPaletteClose(normalize(query)).catch(() => {});
-      } else if (e.key === 'Backspace' && normalize(query) === '') {
-        e.preventDefault();
-        // Backspace on an empty filter untypes the `/` trigger —
-        // `null` drops the composer's whole `/token`.
-        void presetsPaletteClose(null).catch(() => {});
-      } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-        e.preventDefault();
-        setSel((s) =>
-          filtered.length === 0
-            ? 0
-            : (s + (e.key === 'ArrowDown' ? 1 : -1) + filtered.length) %
-              filtered.length,
-        );
-      } else if (e.key === 'Home' || e.key === 'End') {
-        e.preventDefault();
-        setSel(e.key === 'Home' ? 0 : Math.max(0, filtered.length - 1));
-      } else if (e.key === 'Enter' || e.key === 'Tab') {
-        e.preventDefault();
-        const p = filtered[Math.min(sel, filtered.length - 1)];
-        if (p) {
-          void presetsPaletteSelect(p.id).catch(() => {});
-        } else if (e.key === 'Enter') {
-          // Nothing to pick — dismiss and hand `/query` back so the
-          // composer can send it as literal text.
-          void presetsPaletteClose(normalize(query)).catch(() => {});
-        }
+        handleKey(e.key);
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [filtered, sel, query]);
+  }, [handleKey]);
 
   // Keep the selected row visible during key nav.
   useEffect(() => {
@@ -115,8 +125,6 @@ const Palette = () => {
       ?.querySelector('[data-sel="true"]')
       ?.scrollIntoView({ block: 'nearest' });
   }, [sel, filtered.length]);
-
-  const idx = filtered.length === 0 ? 0 : Math.min(sel, filtered.length - 1);
 
   return (
     <div
@@ -128,20 +136,14 @@ const Palette = () => {
         }
       }}>
       <div className='glass-surface flex h-full flex-col rounded-2xl border border-border bg-[color-mix(in_oklch,var(--surface)_94%,transparent)] shadow-[0_24px_60px_-20px_color-mix(in_oklch,var(--fg)_40%,transparent)] backdrop-blur-xl'>
-        <header className='flex items-center gap-1.5 px-3 pt-2.5 pb-1.5'>
-          <WandSparklesIcon className='size-3.5 flex-none text-muted-foreground' />
-          <input
-            ref={fieldRef}
-            autoFocus
-            value={query}
-            onChange={(e) => {
-              setQuery(e.target.value);
-              setSel(0);
-            }}
-            placeholder='Filter presets…'
-            aria-label='Filter presets'
-            className='min-w-0 flex-1 bg-transparent text-[12px] font-medium text-foreground caret-accent outline-none placeholder:font-normal placeholder:text-muted-foreground'
-          />
+        <header className='flex items-center gap-1.5 px-3 pt-2.5 pb-1.5 text-[11px] font-semibold tracking-wide text-muted-foreground uppercase'>
+          <WandSparklesIcon className='size-3.5' />
+          Presets
+          {q !== '' && (
+            <span className='ml-auto font-mono text-[10.5px] font-normal normal-case tracking-normal'>
+              /{q}
+            </span>
+          )}
         </header>
         <div
           ref={listRef}
@@ -169,7 +171,7 @@ const Palette = () => {
             <p className='py-8 text-center text-[11.5px] text-muted-foreground'>
               {presets.length === 0
                 ? 'No presets yet.'
-                : `No match for “${normalize(query)}”.`}
+                : `No match for “${q}”.`}
             </p>
           )}
         </div>

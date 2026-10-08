@@ -52,7 +52,7 @@ Listen.
 | Item | Status | Notes |
 | --- | --- | --- |
 | Session history polish | planned | Named in the v0.1.0 notes |
-| Prompt presets | planned | Named in the v0.1.0 notes; becomes the seed of skill bundles (Phase 3) |
+| Prompt presets | shipped | Built-in catalog + custom presets in `config.toml`, glass palette picker + `/name` shorthand, per-send `{input}`/`{lang}` badges — spec: `docs/superpowers/specs/2026-10-07-prompt-presets-design.md`; becomes the seed of skill bundles (Phase 3) |
 | Ollama model management | planned | Named in the v0.1.0 notes — pull/remove models from settings |
 | Gemini search-grounding toggle | planned | Named in the v0.1.0 notes; first grounded-answer path |
 | Summary + transcript export (markdown / clipboard) | planned | Data already sits in `marvis.db`; there's no egress path at all |

@@ -82,6 +82,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: apps/native/src-tauri
+          cache-targets: false
 
       - name: Test
         working-directory: apps/native/src-tauri

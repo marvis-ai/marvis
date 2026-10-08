@@ -27,7 +27,9 @@ const Palette = () => {
 
   const refresh = useCallback(() => {
     setSel(0);
-    void presetsList().then(setPresets).catch(() => {});
+    void presetsList()
+      .then(setPresets)
+      .catch(() => {});
   }, []);
 
   // Mount covers the first open (the emit can race this webview's
@@ -55,7 +57,7 @@ const Palette = () => {
         setSel(e.key === 'Home' ? 0 : Math.max(0, presets.length - 1));
       } else if (e.key === 'Enter') {
         e.preventDefault();
-        const p = presets[sel];
+        const p = presets[Math.min(sel, presets.length - 1)];
         if (p) void presetsPaletteSelect(p.id).catch(() => {});
       }
     };
@@ -86,7 +88,9 @@ const Palette = () => {
           <WandSparklesIcon className='size-3.5' />
           Presets
         </header>
-        <div ref={listRef} className='min-h-0 flex-1 overflow-y-auto px-1.5 pb-1'>
+        <div
+          ref={listRef}
+          className='min-h-0 flex-1 overflow-y-auto px-1.5 pb-1'>
           {presets.map((p, i) => (
             <button
               key={p.id}
@@ -96,9 +100,7 @@ const Palette = () => {
               onClick={() => void presetsPaletteSelect(p.id).catch(() => {})}
               title={p.text}
               className={`flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[12.5px] transition-colors duration-(--motion-fast) ease-(--ease) ${
-                i === idx
-                  ? 'bg-fg-soft text-foreground'
-                  : 'text-foreground/90'
+                i === idx ? 'bg-fg-soft text-foreground' : 'text-foreground/90'
               }`}>
               <span className='min-w-0 flex-1 truncate font-medium'>
                 {p.name}

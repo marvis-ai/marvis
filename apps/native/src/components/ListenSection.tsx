@@ -27,6 +27,8 @@ import {
 } from '@/lib/events';
 import { BTN_OUTLINE, BTN_SM, cn } from '@/lib/classes';
 import {
+  activeBlockAt,
+  audioOffset,
   buildBlocks,
   elapsedLabel,
   exportFileName,
@@ -35,13 +37,23 @@ import {
   transcriptMarkdown,
   type ListenViewing,
   type Turn,
+  type TurnBlock,
 } from '@/components/listen/model';
 import { ListenHeader } from '@/components/listen/ListenHeader';
+import { SessionPlayer } from '@/components/listen/SessionPlayer';
 import { SpeakerFilter } from '@/components/listen/SpeakerFilter';
 import { SummaryStrip } from '@/components/listen/SummaryStrip';
 import { TranscriptBlocks } from '@/components/listen/TranscriptBlocks';
 import { EmptyState } from '@/components/shared/EmptyState';
 import { ErrorBanner } from '@/components/shared/ErrorBanner';
+
+type ListenStatusWithAudio = ListenStatus & {
+  /** Task 4 adds this field to the shared command wrapper. */
+  audio_file?: string | null;
+};
+type ListenStateWithAudio = ListenStatePayload & {
+  audio_file?: string | null;
+};
 
 /** The structured meeting document — header (title, badge, timer,
  *  controls), speaker filter, timestamped transcript blocks, and the
@@ -70,10 +82,11 @@ export const ListenSection = ({
   const viewingRef = useRef(viewing);
   viewingRef.current = viewing;
 
-  const [status, setStatus] = useState<ListenStatus>({
+  const [status, setStatus] = useState<ListenStatusWithAudio>({
     state: 'idle',
     provider: null,
     session_id: null,
+    audio_file: null,
     turns: 0,
     mic: false,
     error: null,
@@ -90,6 +103,12 @@ export const ListenSection = ({
   const [copiedAll, setCopiedAll] = useState(false);
   const [exported, setExported] = useState(false);
   const [filterKey, setFilterKey] = useState<string | null>(null);
+  const audioRef = useRef<HTMLAudioElement>(null);
+  const [audioReady, setAudioReady] = useState(false);
+  const [audioDuration, setAudioDuration] = useState(0);
+  const [audioTime, setAudioTime] = useState(0);
+  const [activeBlock, setActiveBlock] = useState<string | null>(null);
+  const [audioUnavailable, setAudioUnavailable] = useState(false);
 
   const applyConfig = (config: Config) => {
     setProvider(config.models.stt_provider || null);
@@ -195,7 +214,7 @@ export const ListenSection = ({
     setFilterKey(null);
   }, [viewing?.id, status.session_id]);
 
-  useTauriEvent<ListenStatePayload>(EV_LISTEN_STATE, (next) => {
+  useTauriEvent<ListenStateWithAudio>(EV_LISTEN_STATE, (next) => {
     if (viewingRef.current) return;
     if (next.state === 'listening' && next.session_id !== sessionRef.current) {
       sessionRef.current = next.session_id;
@@ -204,7 +223,15 @@ export const ListenSection = ({
       setError(null);
     }
     setError(next.error);
-    setStatus((previous) => ({ ...previous, ...next }));
+    setStatus((previous) => ({
+      ...previous,
+      ...next,
+      audio_file: Object.prototype.hasOwnProperty.call(next, 'audio_file')
+        ? (next.audio_file ?? null)
+        : next.session_id !== previous.session_id
+          ? null
+          : (previous.audio_file ?? null),
+    }));
   });
   useTauriEvent<Turn>(EV_LISTEN_TURN, (turn) => {
     if (viewingRef.current) return;
@@ -263,11 +290,32 @@ export const ListenSection = ({
             : (viewing.endedAt ?? now) - startedAt,
         );
 
-  // Read the ids BEFORE `listenStop` — the command clears the session
+  const audioFile = live ? (status.audio_file ?? null) : viewing.audioFile;
+  const audioEnded = live ? status.state === 'idle' : viewing.endedAt !== null;
+
+  // Playback belongs to the viewed document. Stop and clear it before a
+  // document switch, and again on unmount in case the child is still mounted.
+  useEffect(() => {
+    const audio = audioRef.current;
+    audio?.pause();
+    if (audio) audio.currentTime = 0;
+    setAudioReady(false);
+    setAudioDuration(0);
+    setAudioTime(0);
+    setActiveBlock(null);
+    setAudioUnavailable(false);
+    return () => {
+      audio?.pause();
+      if (audio) audio.currentTime = 0;
+    };
+  }, [audioEnded, audioFile, viewing?.id]);
+
+  // Read the ids and audio path BEFORE `listenStop` — the command clears the session
   // snapshot; the card then stays open on the finished document.
   const stop = () => {
     const id = status.session_id;
     const started = status.started_at;
+    const recording = status.audio_file ?? null;
     // The doc swap waits on the invoke settling (finally, not then) —
     // even a failed stop leaves the session dead backend-side, so the
     // finished document is still the right surface.
@@ -279,7 +327,7 @@ export const ListenSection = ({
             id,
             startedAt: started,
             endedAt: Date.now() / 1000,
-            audioFile: null,
+            audioFile: recording,
             stt: engine,
           });
         }
@@ -306,6 +354,61 @@ export const ListenSection = ({
   const shown = filterKey
     ? blocks.filter((block) => block.key === filterKey)
     : blocks;
+
+  const handleAudioTime = (seconds: number) => {
+    if (!Number.isFinite(seconds)) {
+      setAudioTime(0);
+      setActiveBlock(null);
+      return;
+    }
+    setAudioTime(seconds);
+    setActiveBlock(
+      audioRef.current?.ended
+        ? null
+        : activeBlockAt(blocks, startedAt, seconds),
+    );
+  };
+
+  const handleAudioSeek = (seconds: number) => {
+    setAudioTime(seconds);
+    setActiveBlock(activeBlockAt(blocks, startedAt, seconds));
+  };
+
+  const handleAudioReady = (duration: number) => {
+    const valid = Number.isFinite(duration) && duration > 0;
+    setAudioDuration(valid ? duration : 0);
+    setAudioReady(valid);
+    setAudioUnavailable(!valid);
+    if (!valid) {
+      setAudioTime(0);
+      setActiveBlock(null);
+    }
+  };
+
+  const handleAudioError = () => {
+    setAudioReady(false);
+    setAudioDuration(0);
+    setAudioTime(0);
+    setActiveBlock(null);
+    setAudioUnavailable(true);
+  };
+
+  const seekBlock = (block: TurnBlock) => {
+    const audio = audioRef.current;
+    if (!audio || startedAt == null) return;
+    const seconds = audioOffset(block, startedAt);
+    audio.currentTime = seconds;
+    setAudioTime(seconds);
+    setActiveBlock(activeBlockAt(blocks, startedAt, seconds));
+    void audio.play().catch(() => {});
+  };
+
+  const canSeekAudio =
+    audioFile !== null &&
+    audioEnded &&
+    !audioUnavailable &&
+    audioReady &&
+    audioDuration > 0;
 
   const copyAll = () => {
     void navigator.clipboard
@@ -386,6 +489,22 @@ export const ListenSection = ({
         onStop={stop}
         onStartNew={live ? undefined : onStartNew}
       />
+      {audioFile && audioEnded && !audioUnavailable && startedAt != null && (
+        <SessionPlayer
+          audioFile={audioFile}
+          audioRef={audioRef}
+          blocks={blocks}
+          startedAt={startedAt}
+          activeBlock={activeBlock}
+          audioReady={audioReady}
+          duration={audioDuration}
+          currentTime={audioTime}
+          onTime={handleAudioTime}
+          onSeek={handleAudioSeek}
+          onReady={handleAudioReady}
+          onError={handleAudioError}
+        />
+      )}
       {live && error && (
         <ErrorBanner
           message={error.message}
@@ -421,6 +540,8 @@ export const ListenSection = ({
             <TranscriptBlocks
               blocks={shown}
               startedAt={startedAt}
+              activeBlock={activeBlock}
+              onSeekBlock={canSeekAudio ? seekBlock : undefined}
             />
             {turns.length === 0 && !summary && (!error || !live) && (
               <EmptyState

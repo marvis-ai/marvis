@@ -139,6 +139,7 @@ async fn run_worker(
     stop: Arc<AtomicBool>,
 ) {
     let mut reconnects = 0;
+    let mut consumed_samples = 0u64;
     while !stop.load(Ordering::Acquire) {
         match run_session(
             &key,
@@ -146,6 +147,7 @@ async fn run_worker(
             channel,
             &endpoint,
             &mut receiver,
+            &mut consumed_samples,
             &callback,
             &stop,
         )
@@ -191,6 +193,7 @@ async fn run_session(
     channel: SpeakerChannel,
     endpoint: &str,
     receiver: &mut mpsc::UnboundedReceiver<PcmChunk>,
+    consumed_samples: &mut u64,
     callback: &(dyn Fn(TranscriptEvent) + Send + Sync),
     stop: &AtomicBool,
 ) -> Result<(), SessionFailure> {
@@ -210,6 +213,7 @@ async fn run_session(
     let (mut socket, _) = tokio_tungstenite::connect_async(request)
         .await
         .map_err(classify_connect_error)?;
+    let stream_start_ms = *consumed_samples * 1000 / 16_000;
     let started = Instant::now();
     let mut idle = tokio::time::interval(KEEPALIVE);
     idle.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -221,18 +225,20 @@ async fn run_session(
         }
         tokio::select! {
             chunk = receiver.recv() => match chunk {
-                Some(chunk) => socket
-                    .send(Message::Binary(pcm_bytes(&chunk).into()))
-                    .await
-                    .map_err(|_| SessionFailure::Transport)?,
+                Some(chunk) => {
+                    *consumed_samples += chunk.samples.len() as u64;
+                    socket.send(Message::Binary(pcm_bytes(&chunk).into()))
+                        .await.map_err(|_| SessionFailure::Transport)?;
+                },
                 None => return Ok(()),
             },
             message = socket.next() => match message {
                 Some(Ok(Message::Text(text))) => {
-                    if let Some((transcript, finality)) = parse_transcript(text.as_ref())
+                    if let Some((transcript, finality, audio_start_ms)) = parse_transcript(text.as_ref())
                         .map_err(|error| SessionFailure::Terminal(error.to_string()))?
                     {
                         callback(TranscriptEvent {
+                            audio_start_ms: audio_start_ms.map(|ms| stream_start_ms + ms),
                             channel,
                             text: transcript,
                             finality,
@@ -271,6 +277,8 @@ struct DeepgramResponse {
     #[serde(default)]
     is_final: bool,
     #[serde(default)]
+    start: Option<f64>,
+    #[serde(default)]
     channel: Option<ChannelResult>,
     #[serde(default)]
     error: Option<serde_json::Value>,
@@ -300,7 +308,7 @@ fn encode_query_component(value: &str) -> String {
 }
 
 /// Parse one Deepgram result without exposing provider errors or credentials.
-fn parse_transcript(payload: &str) -> anyhow::Result<Option<(String, Finality)>> {
+fn parse_transcript(payload: &str) -> anyhow::Result<Option<(String, Finality, Option<u64>)>> {
     let response: DeepgramResponse = serde_json::from_str(payload)
         .map_err(|_| anyhow::anyhow!("malformed Deepgram response"))?;
     if response.error.is_some()
@@ -324,7 +332,11 @@ fn parse_transcript(payload: &str) -> anyhow::Result<Option<(String, Finality)>>
         } else {
             Finality::Interim
         };
-        (text, finality)
+        let start_ms = response
+            .start
+            .filter(|s| s.is_finite() && *s >= 0.0)
+            .map(|s| (s * 1000.0) as u64);
+        (text, finality, start_ms)
     }))
 }
 
@@ -348,7 +360,7 @@ mod tests {
         let event = parse_transcript(&payload(" hello ", false))
             .unwrap()
             .unwrap();
-        assert_eq!(event, ("hello".to_string(), Finality::Interim));
+        assert_eq!(event, ("hello".to_string(), Finality::Interim, None));
         assert!(!format!("{event:?}").contains(KEY));
     }
 
@@ -356,8 +368,15 @@ mod tests {
     fn parses_final_result() {
         assert_eq!(
             parse_transcript(&payload("done", true)).unwrap(),
-            Some(("done".into(), Finality::Final))
+            Some(("done".into(), Finality::Final, None))
         );
+    }
+
+    #[test]
+    fn preserves_provider_capture_start() {
+        let payload =
+            r#"{"start":1.25,"is_final":true,"channel":{"alternatives":[{"transcript":"hello"}]}}"#;
+        assert_eq!(parse_transcript(payload).unwrap().unwrap().2, Some(1250));
     }
 
     #[test]
@@ -391,7 +410,7 @@ mod tests {
             let (stream, _) = listener.accept().await.unwrap();
             let mut socket = accept_async(stream).await.unwrap();
             socket
-                .send(Message::Text(payload("hello", true).into()))
+                .send(Message::Text(payload("hello", true).replacen("{", "{\"start\":0.25,", 1).into()))
                 .await
                 .unwrap();
             socket.send(Message::Close(None)).await.unwrap();
@@ -407,6 +426,7 @@ mod tests {
             SpeakerChannel::Them,
             &endpoint,
             &mut receiver,
+            &mut 32_000,
             &|event| events_for_callback.lock().unwrap().push(event),
             &stop,
         )
@@ -418,6 +438,7 @@ mod tests {
             assert_eq!(events.len(), 1);
             assert_eq!(events[0].channel, SpeakerChannel::Them);
             assert_eq!(events[0].text, "hello");
+            assert_eq!(events[0].audio_start_ms, Some(2250));
             assert_eq!(events[0].finality, Finality::Final);
             assert!(!format!("{events:?}").contains(KEY));
         }

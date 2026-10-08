@@ -27,6 +27,7 @@ const SUMMARY_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClosedTurn {
+    pub audio_start_ms: Option<u64>,
     pub speaker: SpeakerChannel,
     /// Diarized voice cluster within `speaker`'s channel — `None` when
     /// diarization is off or the segment was unlabelable.
@@ -37,6 +38,7 @@ pub struct ClosedTurn {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ListenTurn {
+    pub audio_start_ms: Option<u64>,
     #[serde(serialize_with = "serialize_speaker")]
     pub speaker: SpeakerChannel,
     pub speaker_idx: Option<u32>,
@@ -49,6 +51,7 @@ pub struct ListenTurn {
 
 #[derive(Debug, Clone, Default)]
 struct Pending {
+    audio_start_ms: Option<u64>,
     committed: String,
     provisional: Option<String>,
     last_final: Option<Instant>,
@@ -96,6 +99,7 @@ impl TurnAssembler {
             out.extend(self.close(event.channel));
         }
         let pending = self.pending_mut(event.channel);
+        pending.audio_start_ms = pending.audio_start_ms.or(event.audio_start_ms);
         match event.finality {
             Finality::Interim => pending.provisional = Some(text),
             Finality::Final => {
@@ -133,8 +137,12 @@ impl TurnAssembler {
         (!text.trim().is_empty()).then(|| text.trim().to_string())
     }
 
-    /// The open turn's established speaker label — what the interim
-    /// `ListenTurn` should carry rather than the latest event's label.
+    /// Preserve the open turn's capture origin while its text evolves.
+    pub fn interim_audio_start_ms(&self, channel: SpeakerChannel) -> Option<u64> {
+        self.pending(channel).audio_start_ms
+    }
+
+    /// The open turn's established speaker label.
     pub fn interim_label(&self, channel: SpeakerChannel) -> Option<u32> {
         self.pending(channel).speaker_idx
     }
@@ -164,11 +172,13 @@ impl TurnAssembler {
         }
         pending.last_final = None;
         let speaker_idx = pending.speaker_idx.take();
+        let audio_start_ms = pending.audio_start_ms.take();
         if text.trim().is_empty() {
             return Vec::new();
         }
         self.closed += 1;
         vec![ClosedTurn {
+            audio_start_ms,
             speaker: channel,
             speaker_idx,
             text: text.trim().to_string(),
@@ -179,7 +189,11 @@ impl TurnAssembler {
     /// matching final upstream, and a stale provisional would still
     /// land in the next `close()`.
     pub fn drop_provisional(&mut self, channel: SpeakerChannel) {
-        self.pending_mut(channel).provisional = None;
+        let pending = self.pending_mut(channel);
+        pending.provisional = None;
+        if pending.committed.is_empty() {
+            pending.audio_start_ms = None;
+        }
     }
     fn pending(&self, channel: SpeakerChannel) -> &Pending {
         match channel {
@@ -390,6 +404,13 @@ pub struct ListenSummary {
     pub topic: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct ListenSummaryEvent {
+    pub session_id: i64,
+    #[serde(flatten)]
+    pub summary: ListenSummary,
+}
+
 pub fn parse_summary(raw: &str) -> anyhow::Result<ListenSummary> {
     let value: serde_json::Value = serde_json::from_str(raw.trim())?;
     let object = value
@@ -444,6 +465,7 @@ pub struct ListenStatus {
     pub state: String,
     pub provider: Option<String>,
     pub session_id: Option<i64>,
+    pub audio_file: Option<String>,
     pub turns: usize,
     pub mic: bool,
     pub error: Option<ListenError>,
@@ -466,7 +488,7 @@ impl ListenStatus {
 #[serde(tag = "kind", content = "payload")]
 pub enum ListenEvent {
     Turn(ListenTurn),
-    Summary(ListenSummary),
+    Summary(ListenSummaryEvent),
     Error { message: String, needs_setup: bool },
 }
 
@@ -507,6 +529,7 @@ impl ListenService {
                 state: "idle".into(),
                 provider: None,
                 session_id: None,
+                audio_file: None,
                 turns: 0,
                 mic: false,
                 error: None,
@@ -550,6 +573,7 @@ impl ListenService {
                 state: "error".into(),
                 provider: Some(provider_name),
                 session_id: None,
+                audio_file: None,
                 turns: 0,
                 mic: false,
                 error: Some(ListenError {
@@ -593,6 +617,15 @@ impl ListenService {
                 log::warn!("listen: session_set_audio_file failed: {error}");
             }
         }
+        let audio_file = match db.session_audio_file(session_id) {
+            Ok(path) => path,
+            Err(error) => {
+                log::warn!(
+                    "listen: session_audio_file failed for session {session_id}: {error}"
+                );
+                None
+            }
+        };
         let cancel = Arc::new(AtomicBool::new(false));
         let paused = Arc::new(AtomicBool::new(false));
         let assembler = Arc::new(Mutex::new(TurnAssembler::new()));
@@ -635,7 +668,15 @@ impl ListenService {
                 let callback_gate = echo_gate.clone();
                 let callback_context = context.clone();
                 if let Err(error) = stt.start(
-                    Box::new(move |event| {
+                    Box::new(move |mut event| {
+                        event.audio_start_ms = event.audio_start_ms.and_then(|ms| {
+                            callback_context
+                                .recorder
+                                .lock()
+                                .as_ref()
+                                .and_then(|r| r.channel_start_ms(channel_idx(event.channel)))
+                                .map(|start| start + ms)
+                        });
                         // `them` finals seed the echo reference (interims
                         // would inflate it with text that may never land);
                         // a `me` event that re-transcribes one is speaker
@@ -668,43 +709,49 @@ impl ListenService {
                             // Clear it and re-emit the interim so a live
                             // "You" bubble sheds the echo tail.
                             if event.finality == Finality::Final {
-                                let (interim, label) = {
+                                let (interim, label, audio_start_ms) = {
                                     let mut assembler = callback_assembler.lock();
                                     assembler.drop_provisional(SpeakerChannel::Me);
                                     (
                                         assembler.interim(SpeakerChannel::Me),
                                         assembler.interim_label(SpeakerChannel::Me),
+                                        assembler.interim_audio_start_ms(SpeakerChannel::Me),
                                     )
                                 };
                                 if let Some(text) = interim {
-                                    (callback_context.emit)(ListenEvent::Turn(
-                                        ListenTurn {
-                                            speaker: SpeakerChannel::Me,
-                                            speaker_idx: label,
-                                            text,
-                                            ts: now_unix(),
-                                            session_id: callback_context.session_id,
-                                            finality: false,
-                                        },
-                                    ));
+                                    (callback_context.emit)(ListenEvent::Turn(ListenTurn {
+                                        audio_start_ms,
+                                        speaker: SpeakerChannel::Me,
+                                        speaker_idx: label,
+                                        text,
+                                        ts: now_unix(),
+                                        session_id: callback_context.session_id,
+                                        finality: false,
+                                    }));
                                 }
                             }
                             return;
                         }
                         let channel = event.channel;
                         let speaker_idx = event.speaker_idx;
-                        let (turns, interim, interim_label) = {
+                        let (turns, interim, interim_label, audio_start_ms) = {
                             let mut assembler = callback_assembler.lock();
                             let turns = assembler.push(event);
                             let interim = assembler.interim(channel);
                             let label = assembler.interim_label(channel).or(speaker_idx);
-                            (turns, interim, label)
+                            (
+                                turns,
+                                interim,
+                                label,
+                                assembler.interim_audio_start_ms(channel),
+                            )
                         };
                         for turn in turns {
                             persist_turn(&callback_context, turn);
                         }
                         if let Some(text) = interim {
                             (callback_context.emit)(ListenEvent::Turn(ListenTurn {
+                                audio_start_ms,
                                 speaker: channel,
                                 speaker_idx: interim_label,
                                 text,
@@ -800,6 +847,7 @@ impl ListenService {
                 state: "error".into(),
                 provider: Some(provider_name),
                 session_id: None,
+                audio_file: None,
                 turns: 0,
                 mic: false,
                 error: Some(ListenError {
@@ -829,6 +877,7 @@ impl ListenService {
         status.state = "listening".into();
         status.provider = Some(provider_name);
         status.session_id = Some(session_id);
+        status.audio_file = audio_file;
         status.turns = existing.len();
         status.mic = mic_started;
         status.error = None;
@@ -871,6 +920,7 @@ impl ListenService {
                     state: "idle".into(),
                     provider: None,
                     session_id: None,
+                    audio_file: None,
                     turns: 0,
                     mic: false,
                     error: None,
@@ -904,6 +954,7 @@ impl ListenService {
                 state: "idle".into(),
                 provider: None,
                 session_id: None,
+                audio_file: None,
                 turns: 0,
                 mic: false,
                 error: None,
@@ -920,14 +971,22 @@ impl ListenService {
         for turn in running.assembler.lock().flush() {
             persist_turn(&running.context, turn);
         }
-        for worker in running.context.summary_workers.lock().drain(..) {
-            let _ = worker.join();
-        }
+        // Summary generation can be waiting on a provider for up to
+        // SUMMARY_TIMEOUT. Detach it after capture finalization so Stop
+        // returns promptly; its session-tagged event can finish the viewed
+        // document when the result arrives.
+        let _detached_summaries = running
+            .context
+            .summary_workers
+            .lock()
+            .drain(..)
+            .collect::<Vec<_>>();
         let _ = running.context.db.session_end(running.session_id);
         *self.state.lock() = ListenStatus {
             state: "idle".into(),
             provider: None,
             session_id: None,
+            audio_file: None,
             turns: 0,
             mic: false,
             error: None,
@@ -1000,6 +1059,7 @@ fn persist_turn(context: &Arc<SessionContext>, turn: ClosedTurn) {
         speaker_name(turn.speaker),
         &turn.text,
         turn.speaker_idx,
+        turn.audio_start_ms,
     );
     if let Err(error) = &inserted {
         log::warn!("listen transcript persistence failed: {error}");
@@ -1013,6 +1073,7 @@ fn persist_turn(context: &Arc<SessionContext>, turn: ClosedTurn) {
             context.status.lock().turns += 1;
         }
         (context.emit)(ListenEvent::Turn(ListenTurn {
+            audio_start_ms: turn.audio_start_ms,
             speaker: turn.speaker,
             speaker_idx: turn.speaker_idx,
             text: turn.text,
@@ -1026,6 +1087,7 @@ fn persist_turn(context: &Arc<SessionContext>, turn: ClosedTurn) {
         context.status.lock().turns += 1;
     }
     (context.emit)(ListenEvent::Turn(ListenTurn {
+        audio_start_ms: turn.audio_start_ms,
         speaker: turn.speaker,
         speaker_idx: turn.speaker_idx,
         text: turn.text,
@@ -1062,7 +1124,10 @@ fn persist_turn(context: &Arc<SessionContext>, turn: ClosedTurn) {
                             .and_then(Result::ok)
                     });
                 if let Some(summary) = result {
-                    (summary_context.emit)(ListenEvent::Summary(summary));
+                    (summary_context.emit)(ListenEvent::Summary(ListenSummaryEvent {
+                        session_id: summary_context.session_id,
+                        summary,
+                    }));
                 }
             }));
     }
@@ -1175,8 +1240,31 @@ mod tests {
     use crate::llm::ContentPart;
     use crate::prompts::DEFAULT_SUMMARY_INSTRUCTION;
 
+    #[test]
+    fn turn_retains_capture_start_through_delayed_finals_and_flush() {
+        let mut assembler = TurnAssembler::new();
+        let start = Instant::now();
+        let mut interim = event(SpeakerChannel::Me, "hello", Finality::Interim);
+        interim.audio_start_ms = Some(1250);
+        assembler.push_at(interim, start);
+        let mut final_event = event(SpeakerChannel::Me, "hello world", Finality::Final);
+        final_event.audio_start_ms = Some(1250);
+        assembler.push_at(final_event, start + Duration::from_secs(60));
+        assert_eq!(
+            assembler.interim_audio_start_ms(SpeakerChannel::Me),
+            Some(1250)
+        );
+        let turns = assembler.flush_at(start + Duration::from_secs(62));
+        assert_eq!(turns[0].audio_start_ms, Some(1250));
+        let mut resumed = event(SpeakerChannel::Me, "resumed", Finality::Final);
+        resumed.audio_start_ms = Some(3000);
+        assembler.push_at(resumed, start + Duration::from_secs(120));
+        assert_eq!(assembler.flush()[0].audio_start_ms, Some(3000));
+    }
+
     fn event(channel: SpeakerChannel, text: &str, finality: Finality) -> TranscriptEvent {
         TranscriptEvent {
+            audio_start_ms: None,
             channel,
             text: text.into(),
             finality,
@@ -1186,6 +1274,7 @@ mod tests {
 
     fn diarized(channel: SpeakerChannel, text: &str, speaker_idx: u32) -> TranscriptEvent {
         TranscriptEvent {
+            audio_start_ms: None,
             channel,
             text: text.into(),
             finality: Finality::Final,
@@ -1234,6 +1323,7 @@ mod tests {
             state: "listening".into(),
             provider: Some("whisper".into()),
             session_id: Some(42),
+            audio_file: None,
             turns: 3,
             mic: true,
             error: None,
@@ -1250,6 +1340,7 @@ mod tests {
                 .cloned()
                 .collect::<Vec<_>>(),
             vec![
+                "audio_file",
                 "error",
                 "mic",
                 "paused_secs",
@@ -1262,6 +1353,22 @@ mod tests {
             ]
         );
         assert_eq!(payload["session_id"], 42);
+    }
+
+    #[test]
+    fn summary_events_include_their_session_id() {
+        let payload = serde_json::to_value(ListenEvent::Summary(ListenSummaryEvent {
+            session_id: 42,
+            summary: ListenSummary {
+                tldr: "short summary".into(),
+                bullets: vec!["one bullet".into()],
+                follow_ups: Vec::new(),
+                topic: Some("topic".into()),
+            },
+        }))
+        .unwrap();
+        assert_eq!(payload["payload"]["session_id"], 42);
+        assert_eq!(payload["payload"]["tldr"], "short summary");
     }
 
     #[test]
@@ -1464,7 +1571,7 @@ mod tests {
         let db = Db::at(dir.join("marvis.db")).unwrap();
         let sid = db.session_get_or_create_active("listen").unwrap();
         for i in 0..25 {
-            db.transcript_add(sid, "them", &format!("turn {i}"), None)
+            db.transcript_add(sid, "them", &format!("turn {i}"), None, None)
                 .unwrap();
         }
         let history = summary_transcript(&db, sid).unwrap();
@@ -1579,7 +1686,7 @@ mod tests {
             std::env::temp_dir().join(format!("marvis-listen-stale-test-{}", std::process::id()));
         let db = Arc::new(crate::storage::Db::at(root.join("marvis.db")).unwrap());
         let stale = db.session_get_or_create_active("listen").unwrap();
-        db.transcript_add(stale, "them", "stale turn", None)
+        db.transcript_add(stale, "them", "stale turn", None, None)
             .unwrap();
 
         // An unknown provider clears the setup gate and fails later in
@@ -1696,6 +1803,7 @@ mod tests {
             state: "error".into(),
             provider: Some("deepgram".into()),
             session_id: None,
+            audio_file: None,
             turns: 0,
             mic: false,
             error: Some(ListenError {

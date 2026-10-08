@@ -7,6 +7,9 @@ import {
   listenResume,
   listenStatus,
   listenStop,
+  raise,
+  saveAudioFile,
+  saveTextFile,
   transcriptsFor,
   summaryLatest,
   type Config,
@@ -21,18 +24,25 @@ import {
   useTauriEvent,
   type ListenErrorPayload,
   type ListenStatePayload,
+  type ListenSummaryEventPayload,
   type ListenSummaryPayload,
 } from '@/lib/events';
 import { BTN_OUTLINE, BTN_SM, cn } from '@/lib/classes';
 import {
+  activeBlockAt,
+  audioOffset,
   buildBlocks,
   elapsedLabel,
+  exportFileName,
   sessionDateLabel,
   transcriptCopyText,
+  transcriptMarkdown,
   type ListenViewing,
   type Turn,
+  type TurnBlock,
 } from '@/components/listen/model';
 import { ListenHeader } from '@/components/listen/ListenHeader';
+import { SessionPlayer } from '@/components/listen/SessionPlayer';
 import { SpeakerFilter } from '@/components/listen/SpeakerFilter';
 import { SummaryStrip } from '@/components/listen/SummaryStrip';
 import { TranscriptBlocks } from '@/components/listen/TranscriptBlocks';
@@ -48,14 +58,11 @@ import { ErrorBanner } from '@/components/shared/ErrorBanner';
 export const ListenSection = ({
   viewing,
   onSessionEnded,
-  onStartNew,
   onBack,
   onFollowUp,
 }: {
   viewing: ListenViewing | null;
   onSessionEnded: (v: ListenViewing) => void;
-  /** 'Start new' on a viewed doc — Bar owns the fresh-session route. */
-  onStartNew: () => void;
   onBack: () => void;
   /** A summary follow-up chip — sends itself to this doc's chat. */
   onFollowUp: (question: string) => void;
@@ -70,6 +77,7 @@ export const ListenSection = ({
     state: 'idle',
     provider: null,
     session_id: null,
+    audio_file: null,
     turns: 0,
     mic: false,
     error: null,
@@ -84,7 +92,14 @@ export const ListenSection = ({
   const [provider, setProvider] = useState<string | null>(null);
   const [model, setModel] = useState<string | null>(null);
   const [copiedAll, setCopiedAll] = useState(false);
+  const [exported, setExported] = useState(false);
   const [filterKey, setFilterKey] = useState<string | null>(null);
+  const audioRef = useRef<HTMLAudioElement>(null);
+  const [audioReady, setAudioReady] = useState(false);
+  const [audioDuration, setAudioDuration] = useState(0);
+  const [audioPlaying, setAudioPlaying] = useState(false);
+  const [activeBlock, setActiveBlock] = useState<string | null>(null);
+  const [audioUnavailable, setAudioUnavailable] = useState(false);
 
   const applyConfig = (config: Config) => {
     setProvider(config.models.stt_provider || null);
@@ -131,6 +146,7 @@ export const ListenSection = ({
           const persisted: Turn[] = rows.map((row) => ({
             speaker: row.speaker,
             speaker_idx: row.speaker_idx,
+            audio_start_ms: row.audio_start_ms,
             text: row.content,
             ts: row.ts,
             session_id: row.session_id,
@@ -169,6 +185,7 @@ export const ListenSection = ({
           rows.map((r) => ({
             speaker: r.speaker,
             speaker_idx: r.speaker_idx,
+            audio_start_ms: r.audio_start_ms,
             text: r.content,
             ts: r.ts,
             session_id: r.session_id,
@@ -199,7 +216,15 @@ export const ListenSection = ({
       setError(null);
     }
     setError(next.error);
-    setStatus((previous) => ({ ...previous, ...next }));
+    setStatus((previous) => ({
+      ...previous,
+      ...next,
+      audio_file: Object.prototype.hasOwnProperty.call(next, 'audio_file')
+        ? (next.audio_file ?? null)
+        : next.session_id !== previous.session_id
+          ? null
+          : (previous.audio_file ?? null),
+    }));
   });
   useTauriEvent<Turn>(EV_LISTEN_TURN, (turn) => {
     if (viewingRef.current) return;
@@ -216,8 +241,15 @@ export const ListenSection = ({
         : [...withoutInterim, { ...turn, interim: true }];
     });
   });
-  useTauriEvent<ListenSummaryPayload>(EV_LISTEN_SUMMARY, (next) => {
-    if (viewingRef.current) return;
+  useTauriEvent<ListenSummaryEventPayload>(EV_LISTEN_SUMMARY, (next) => {
+    const viewing = viewingRef.current;
+    if (
+      viewing
+        ? viewing.id !== next.session_id
+        : sessionRef.current !== next.session_id
+    ) {
+      return;
+    }
     setSummary(next);
     setError(null);
   });
@@ -258,11 +290,32 @@ export const ListenSection = ({
             : (viewing.endedAt ?? now) - startedAt,
         );
 
-  // Read the ids BEFORE `listenStop` — the command clears the session
+  const audioFile = live ? (status.audio_file ?? null) : viewing.audioFile;
+  const audioEnded = live ? status.state === 'idle' : viewing.endedAt !== null;
+
+  // Playback belongs to the viewed document. Stop and clear it before a
+  // document switch, and again on unmount in case the child is still mounted.
+  useEffect(() => {
+    const audio = audioRef.current;
+    audio?.pause();
+    if (audio) audio.currentTime = 0;
+    setAudioReady(false);
+    setAudioDuration(0);
+    setAudioPlaying(false);
+    setActiveBlock(null);
+    setAudioUnavailable(false);
+    return () => {
+      audio?.pause();
+      if (audio) audio.currentTime = 0;
+    };
+  }, [audioEnded, audioFile, viewing?.id]);
+
+  // Read the ids and audio path BEFORE `listenStop` — the command clears the session
   // snapshot; the card then stays open on the finished document.
   const stop = () => {
     const id = status.session_id;
     const started = status.started_at;
+    const recording = status.audio_file ?? null;
     // The doc swap waits on the invoke settling (finally, not then) —
     // even a failed stop leaves the session dead backend-side, so the
     // finished document is still the right surface.
@@ -274,6 +327,7 @@ export const ListenSection = ({
             id,
             startedAt: started,
             endedAt: Date.now() / 1000,
+            audioFile: recording,
             stt: engine,
           });
         }
@@ -301,6 +355,76 @@ export const ListenSection = ({
     ? blocks.filter((block) => block.key === filterKey)
     : blocks;
 
+  const handleAudioTime = (seconds: number) => {
+    if (!Number.isFinite(seconds)) {
+      setActiveBlock(null);
+      return;
+    }
+    setActiveBlock(
+      audioRef.current?.ended
+        ? null
+        : activeBlockAt(blocks, startedAt, seconds),
+    );
+  };
+
+  const handleAudioSeek = (seconds: number) => {
+    setActiveBlock(activeBlockAt(blocks, startedAt, seconds));
+  };
+
+  const handleAudioReady = (duration: number) => {
+    const valid = Number.isFinite(duration) && duration > 0;
+    setAudioDuration(valid ? duration : 0);
+    setAudioReady(valid);
+    setAudioUnavailable(!valid);
+    if (!valid) setActiveBlock(null);
+  };
+
+  const handleAudioError = () => {
+    setAudioReady(false);
+    setAudioDuration(0);
+    setAudioPlaying(false);
+    setActiveBlock(null);
+    setAudioUnavailable(true);
+  };
+
+  const seekBlock = (block: TurnBlock) => {
+    const audio = audioRef.current;
+    if (!audio || startedAt == null) return;
+    const seconds = audioOffset(block, startedAt);
+    audio.currentTime = seconds;
+    setActiveBlock(activeBlockAt(blocks, startedAt, seconds));
+    void audio.play().catch(() => setActiveBlock(null));
+  };
+
+  const toggleAudio = () => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    if (audio.paused) {
+      void audio.play().catch(() => setAudioPlaying(false));
+    } else {
+      audio.pause();
+    }
+  };
+
+  const skipAudio = (seconds: number) => {
+    const audio = audioRef.current;
+    if (!audio || audioDuration <= 0) return;
+    const next = Math.min(
+      Math.max(audio.currentTime + seconds, 0),
+      audioDuration,
+    );
+    audio.currentTime = next;
+    handleAudioSeek(next);
+  };
+
+  const canSeekAudio =
+    audioFile !== null &&
+    audioEnded &&
+    !audioUnavailable &&
+    audioReady &&
+    audioDuration > 0;
+  const canSaveAudio = Boolean(audioFile && audioEnded && audioReady);
+
   const copyAll = () => {
     void navigator.clipboard
       .writeText(transcriptCopyText(blocks, startedAt, summary))
@@ -309,6 +433,59 @@ export const ListenSection = ({
         window.setTimeout(() => setCopiedAll(false), 1500);
       })
       .catch(() => {});
+  };
+
+  /** The export document — markdown off the same blocks the copy path
+   *  uses; the speaker filter never narrows export scope. */
+  const markdownDoc = () =>
+    transcriptMarkdown(
+      blocks,
+      {
+        title: summary?.topic,
+        startedAt,
+        stt: live ? engine : (viewing?.stt ?? null),
+      },
+      summary,
+    );
+
+  const copyMarkdown = () => {
+    void navigator.clipboard
+      .writeText(markdownDoc())
+      .then(() => {
+        setExported(true);
+        window.setTimeout(() => setExported(false), 1500);
+      })
+      .catch(() => {});
+  };
+
+  const saveMarkdown = () => {
+    void saveTextFile(exportFileName(summary?.topic, startedAt), markdownDoc())
+      .then((path) => {
+        if (path !== null) {
+          setExported(true);
+          window.setTimeout(() => setExported(false), 1500);
+        }
+      })
+      .catch((e) => raise(typeof e === 'string' ? e : 'Export failed'));
+  };
+
+  const saveAudio = () => {
+    if (!audioFile || !audioReady || !audioEnded) return;
+    const sessionId = live ? status.session_id : viewing.id;
+    if (sessionId == null) return;
+    void saveAudioFile(
+      sessionId,
+      exportFileName(summary?.topic, startedAt, 'wav'),
+    )
+      .then((path) => {
+        if (path !== null) {
+          setExported(true);
+          window.setTimeout(() => setExported(false), 1500);
+        }
+      })
+      .catch((error) =>
+        raise(typeof error === 'string' ? error : 'Audio export failed'),
+      );
   };
 
   const title = summary?.topic ?? 'Listen';
@@ -337,15 +514,27 @@ export const ListenSection = ({
         subtitle={subtitle}
         listening={live && listening}
         paused={live && paused}
-        // The state pill is live-only — a viewed doc (from History or
-        // the just-stopped transition) carries no badge; its duration
-        // sits on the SpeakerFilter row.
+        // The state pill and recording controls are live-only. Viewed docs
+        // carry the ended-session audio controls in this header.
         hasSession={live && status.session_id != null}
+        audioReady={canSeekAudio}
+        audioPlaying={audioPlaying}
+        onAudioSkip={skipAudio}
+        onAudioToggle={toggleAudio}
         onPause={() => void listenPause().catch(() => {})}
         onResume={() => void listenResume().catch(() => {})}
         onStop={stop}
-        onStartNew={live ? undefined : onStartNew}
       />
+      {audioFile && audioEnded && !audioUnavailable && startedAt != null && (
+        <SessionPlayer
+          audioFile={audioFile}
+          audioRef={audioRef}
+          onTime={handleAudioTime}
+          onReady={handleAudioReady}
+          onError={handleAudioError}
+          onPlayingChange={setAudioPlaying}
+        />
+      )}
       {live && error && (
         <ErrorBanner
           message={error.message}
@@ -363,8 +552,13 @@ export const ListenSection = ({
         count={shown.length}
         elapsed={startedAt == null ? null : elapsedLabel(elapsed)}
         copied={copiedAll}
+        exported={exported}
         onPick={setFilterKey}
         onCopy={copyAll}
+        onCopyMarkdown={copyMarkdown}
+        onSaveMarkdown={saveMarkdown}
+        onSaveAudio={saveAudio}
+        canSaveAudio={canSaveAudio}
       />
       <div className='relative min-h-0 flex-1'>
         <div
@@ -378,6 +572,8 @@ export const ListenSection = ({
             <TranscriptBlocks
               blocks={shown}
               startedAt={startedAt}
+              activeBlock={activeBlock}
+              onSeekBlock={canSeekAudio ? seekBlock : undefined}
             />
             {turns.length === 0 && !summary && (!error || !live) && (
               <EmptyState

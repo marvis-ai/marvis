@@ -414,8 +414,20 @@ fn drain_segments(
             break;
         };
         let samples = segment.samples().to_vec();
+        let audio_start_ms = segment.start().max(0) as u64 * 1000 / 16_000;
         vad.pop();
-        if !emit_segment(&samples, decode, channel, tracker, callback, error_callback) {
+        let timed_callback = |mut event: TranscriptEvent| {
+            event.audio_start_ms = Some(audio_start_ms);
+            callback(event);
+        };
+        if !emit_segment(
+            &samples,
+            decode,
+            channel,
+            tracker,
+            &timed_callback,
+            error_callback,
+        ) {
             return false;
         }
     }
@@ -438,6 +450,7 @@ fn emit_segment(
             if !text.is_empty() {
                 let speaker_idx = tracker.as_mut().and_then(|t| t.assign(samples));
                 callback(TranscriptEvent {
+                    audio_start_ms: None,
                     channel,
                     text: text.to_string(),
                     finality: Finality::Final,

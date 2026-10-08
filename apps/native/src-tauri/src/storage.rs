@@ -71,6 +71,7 @@ const SCHEMA: &str = "
         session_id  INTEGER NOT NULL,
         speaker     TEXT NOT NULL,
         speaker_idx INTEGER,
+        audio_start_ms INTEGER,
         content     TEXT NOT NULL,
         ts          INTEGER NOT NULL,
         FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
@@ -154,6 +155,7 @@ pub struct Transcript {
     /// Diarized voice cluster within `speaker`'s channel — `NULL` when the
     /// session ran without diarization or the turn was unlabelable.
     pub speaker_idx: Option<i64>,
+    pub audio_start_ms: Option<i64>,
     pub content: String,
     pub ts: i64,
 }
@@ -322,8 +324,9 @@ impl Db {
     }
 
     /// Reopen `id` when it is a `kind` session: every OTHER open `kind`
-    /// session ends and the target's `ended_at` clears, atomically. Returns
-    /// false (no mutation) when `id` isn't a `kind` session.
+    /// session ends and the target's `ended_at` clears, atomically. Reopening
+    /// does not bump activity; a subsequent message owns that timestamp.
+    /// Returns false (no mutation) when `id` isn't a `kind` session.
     pub fn session_reopen(&self, id: i64, kind: &str) -> anyhow::Result<bool> {
         let mut conn = self.conn.lock();
         let tx = conn.transaction()?;
@@ -342,10 +345,7 @@ impl Db {
             "UPDATE sessions SET ended_at = ?1 WHERE type = ?2 AND ended_at IS NULL AND id != ?3",
             params![now(), kind, id],
         )?;
-        tx.execute(
-            "UPDATE sessions SET ended_at = NULL, last_active_at = ?1 WHERE id = ?2",
-            params![now(), id],
-        )?;
+        tx.execute("UPDATE sessions SET ended_at = NULL WHERE id = ?1", [id])?;
         tx.commit()?;
         Ok(true)
     }
@@ -408,6 +408,21 @@ impl Db {
             params![path, id],
         )?;
         Ok(())
+    }
+
+    /// The retained recording path for a session, or `None` when the session
+    /// does not exist or has no recording.
+    pub fn session_audio_file(&self, id: i64) -> anyhow::Result<Option<String>> {
+        Ok(self
+            .conn
+            .lock()
+            .query_row(
+                "SELECT audio_file FROM sessions WHERE id = ?1",
+                [id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .flatten())
     }
 
     /// Record the STT engine label at listen start — the finished doc's
@@ -555,13 +570,14 @@ impl Db {
         speaker: &str,
         content: &str,
         speaker_idx: Option<u32>,
+        audio_start_ms: Option<u64>,
     ) -> anyhow::Result<i64> {
         let conn = self.conn.lock();
         let ts = now();
         conn.execute(
-            "INSERT INTO transcripts (session_id, speaker, speaker_idx, content, ts)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![session_id, speaker, speaker_idx.map(i64::from), content, ts],
+            "INSERT INTO transcripts (session_id, speaker, speaker_idx, content, ts, audio_start_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![session_id, speaker, speaker_idx.map(i64::from), content, ts, audio_start_ms.map(i64::try_from).transpose()?],
         )?;
         conn.execute(
             "UPDATE sessions SET last_active_at = ?1 WHERE id = ?2",
@@ -578,7 +594,7 @@ impl Db {
     ) -> anyhow::Result<Vec<Transcript>> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
-            "SELECT id, session_id, speaker, speaker_idx, content, ts FROM transcripts
+            "SELECT id, session_id, speaker, speaker_idx, content, ts, audio_start_ms FROM transcripts
              WHERE session_id = ?1 ORDER BY ts ASC, id ASC LIMIT ?2",
         )?;
         let rows = stmt.query_map(
@@ -591,6 +607,7 @@ impl Db {
                     speaker_idx: row.get(3)?,
                     content: row.get(4)?,
                     ts: row.get(5)?,
+                    audio_start_ms: row.get(6)?,
                 })
             },
         )?;
@@ -609,7 +626,7 @@ impl Db {
         }
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
-            "SELECT id, session_id, speaker, speaker_idx, content, ts FROM transcripts
+            "SELECT id, session_id, speaker, speaker_idx, content, ts, audio_start_ms FROM transcripts
              WHERE session_id = ?1 ORDER BY ts DESC, id DESC LIMIT ?2",
         )?;
         let rows = stmt.query_map(params![session_id, limit as i64], |row| {
@@ -620,6 +637,7 @@ impl Db {
                 speaker_idx: row.get(3)?,
                 content: row.get(4)?,
                 ts: row.get(5)?,
+                audio_start_ms: row.get(6)?,
             })
         })?;
         let mut rows = rows.collect::<rusqlite::Result<Vec<_>>>()?;
@@ -766,6 +784,9 @@ fn migrate(conn: &Connection) -> anyhow::Result<()> {
         // column was never populated.
         if has("audio_file") {
             conn.execute_batch("ALTER TABLE transcripts DROP COLUMN audio_file")?;
+        }
+        if !has("audio_start_ms") {
+            conn.execute_batch("ALTER TABLE transcripts ADD COLUMN audio_start_ms INTEGER")?;
         }
         if !has("speaker_idx") {
             conn.execute_batch("ALTER TABLE transcripts ADD COLUMN speaker_idx INTEGER")?;
@@ -948,6 +969,25 @@ mod tests {
     }
 
     #[test]
+    fn session_audio_file_reads_recording_path() {
+        let dir = tmp_dir();
+        let db = Db::at(dir.join("marvis.db")).unwrap();
+        let sid = db.session_get_or_create_active("listen").unwrap();
+        let wav = dir.join("recording_test.wav");
+        std::fs::write(&wav, b"RIFF/WAVE test").unwrap();
+
+        db.session_set_audio_file(sid, wav.to_str().unwrap())
+            .unwrap();
+        assert_eq!(
+            db.session_audio_file(sid).unwrap(),
+            Some(wav.to_string_lossy().into_owned())
+        );
+        assert_eq!(db.session_audio_file(i64::MAX).unwrap(), None);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn session_delete_cascades_messages() {
         // foreign_keys is a per-connection pragma — if it weren't applied,
         // this test would leave orphan rows instead of cascading.
@@ -978,9 +1018,11 @@ mod tests {
         let db = Db::at(dir.join("marvis.db")).unwrap();
         let sid = db.session_get_or_create_active("listen").unwrap();
 
-        db.transcript_add(sid, "me", "hello", None).unwrap();
-        db.transcript_add(sid, "them", "hi there", None).unwrap();
-        db.transcript_add(sid, "me", "follow-up", None).unwrap();
+        db.transcript_add(sid, "me", "hello", None, None).unwrap();
+        db.transcript_add(sid, "them", "hi there", None, Some(1250))
+            .unwrap();
+        db.transcript_add(sid, "me", "follow-up", None, None)
+            .unwrap();
 
         let transcripts = db.transcripts_for(sid, None).unwrap();
         assert_eq!(transcripts.len(), 3);
@@ -988,6 +1030,11 @@ mod tests {
         assert_eq!(transcripts[0].content, "hello");
         assert_eq!(transcripts[1].speaker, "them");
         assert_eq!(transcripts[1].content, "hi there");
+        assert_eq!(transcripts[1].audio_start_ms, Some(1250));
+        assert_eq!(
+            db.transcripts_tail(sid, 3).unwrap()[1].audio_start_ms,
+            Some(1250)
+        );
         assert_eq!(transcripts[2].content, "follow-up");
         assert!(transcripts[0].id < transcripts[1].id && transcripts[1].id < transcripts[2].id);
         assert!(transcripts.iter().all(|transcript| transcript.ts > 0));
@@ -1006,7 +1053,7 @@ mod tests {
         let db = Db::at(dir.join("marvis.db")).unwrap();
         let sid = db.session_get_or_create_active("listen").unwrap();
         for id in 0..25 {
-            db.transcript_add(sid, "me", &format!("turn-{id}"), None)
+            db.transcript_add(sid, "me", &format!("turn-{id}"), None, None)
                 .unwrap();
         }
 
@@ -1070,7 +1117,7 @@ mod tests {
         let dir = tmp_dir();
         let db = Db::at(dir.join("marvis.db")).unwrap();
         let sid = db.session_get_or_create_active("listen").unwrap();
-        db.transcript_add(sid, "me", "hello", None).unwrap();
+        db.transcript_add(sid, "me", "hello", None, None).unwrap();
         db.summary_upsert(sid, "Summary", &[], &[], None).unwrap();
 
         db.session_delete(sid).unwrap();
@@ -1264,7 +1311,9 @@ mod tests {
         let transcripts = db.transcripts_for(1, None).unwrap();
         assert_eq!(transcripts.len(), 1);
         assert_eq!(transcripts[0].content, "old turn");
-        db.transcript_add(1, "them", "new turn", Some(1)).unwrap();
+        assert_eq!(transcripts[0].audio_start_ms, None);
+        db.transcript_add(1, "them", "new turn", Some(1), None)
+            .unwrap();
         let transcripts = db.transcripts_for(1, None).unwrap();
         assert_eq!(transcripts[1].speaker_idx, Some(1));
         let _ = std::fs::remove_dir_all(&dir);
@@ -1405,6 +1454,14 @@ mod tests {
             db.session_end(a).unwrap();
             db.session_get_or_create_active("ask").unwrap()
         };
+        {
+            let conn = db.conn.lock();
+            conn.execute(
+                "UPDATE sessions SET last_active_at = 100 WHERE id = ?1",
+                [a],
+            )
+            .unwrap();
+        }
         // Reopening a listen id is rejected and ends nothing.
         let l = db.session_get_or_create_active("listen").unwrap();
         assert!(!db.session_reopen(l, "ask").unwrap());
@@ -1413,6 +1470,13 @@ mod tests {
         assert!(db.session_reopen(a, "ask").unwrap());
         assert_eq!(db.session_active_id("ask").unwrap(), Some(a));
         assert_eq!(db.session_active_id("listen").unwrap(), Some(l));
+        let reopened = db
+            .session_list()
+            .unwrap()
+            .into_iter()
+            .find(|session| session.id == a)
+            .unwrap();
+        assert_eq!(reopened.last_active_at, 100);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

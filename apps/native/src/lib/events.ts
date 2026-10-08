@@ -55,6 +55,7 @@ export interface ListenStatePayload {
   state: 'idle' | 'listening' | 'paused' | 'error';
   provider: string | null;
   session_id: number | null;
+  audio_file: string | null;
   mic: boolean;
   error: ListenErrorPayload | null;
   started_at: number | null;
@@ -62,6 +63,8 @@ export interface ListenStatePayload {
   paused_since: number | null;
 }
 export interface ListenTurnPayload {
+  /** Start in the retained recording; null for older turns. */
+  audio_start_ms: number | null;
   speaker: 'me' | 'them';
   /** Diarized voice cluster within `speaker`'s channel — null when
    * diarization is off or the turn was unlabelable. */
@@ -76,6 +79,10 @@ export interface ListenSummaryPayload {
   bullets: string[];
   follow_ups: string[];
   topic: string | null;
+}
+/** Summary event metadata lets a late background result target its session. */
+export interface ListenSummaryEventPayload extends ListenSummaryPayload {
+  session_id: number;
 }
 export interface ListenErrorPayload {
   message: string;

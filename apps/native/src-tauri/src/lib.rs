@@ -1352,6 +1352,7 @@ fn emit_listen_state(app: &AppHandle, state: &listen::ListenStatus) {
             "state": state.state,
             "provider": state.provider,
             "session_id": state.session_id,
+            "audio_file": state.audio_file,
             "mic": state.mic,
             "error": state.error,
             "started_at": state.started_at,
@@ -2535,6 +2536,111 @@ fn session_resume(state: State<'_, AppState>, id: i64) -> Result<bool, String> {
         .map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+async fn save_audio_file(
+    app: AppHandle,
+    session_id: i64,
+    suggested_name: String,
+) -> Result<Option<String>, String> {
+    let state = app.state::<AppState>();
+    if *state.gate.lock() != Gate::Main {
+        log::warn!("save_audio_file dropped while gate != Main");
+        return Ok(None);
+    }
+    let source = state
+        .db
+        .session_audio_file(session_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "No audio recording for this session".to_string())?;
+    let source = std::path::PathBuf::from(source);
+    let audios = crate::paths::audios_dir();
+    let source = source.canonicalize().map_err(|e| e.to_string())?;
+    let audios = audios.canonicalize().map_err(|e| e.to_string())?;
+    if !source.starts_with(&audios) {
+        return Err("Audio recording is outside the Marvis audio directory".into());
+    }
+    if std::fs::metadata(&source).map_err(|e| e.to_string())?.len() <= 44 {
+        return Err("This session has no recorded audio".into());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let Some(path) = rfd::FileDialog::new()
+            .set_file_name(sanitize_suggested_name(&suggested_name))
+            .add_filter("WAV audio", &["wav"])
+            .save_file()
+        else {
+            return Ok(None);
+        };
+        copy_audio_export(&source, &path)?;
+        Ok(Some(path.to_string_lossy().into_owned()))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+fn copy_audio_export(
+    source: &std::path::Path,
+    destination: &std::path::Path,
+) -> Result<(), String> {
+    match destination.canonicalize() {
+        Ok(existing) if existing == source => {
+            return Err("Choose a different destination from the original recording".into());
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => return Err("Could not check the audio export destination".into()),
+    }
+    std::fs::copy(source, destination)
+        .map_err(|_| "Could not export audio recording".to_string())?;
+    Ok(())
+}
+
+/// Document egress (export): a native save dialog + write. Deliberately
+/// dumb — the webview builds the document; this owns the two things a
+/// webview can't do without an fs capability. `None` = user cancel
+/// (also the gate-drop result: a crafted invoke gets the same nothing).
+#[tauri::command]
+async fn save_text_file(
+    app: AppHandle,
+    suggested_name: String,
+    contents: String,
+) -> Result<Option<String>, String> {
+    let state = app.state::<AppState>();
+    if *state.gate.lock() != Gate::Main {
+        log::warn!("save_text_file dropped while gate != Main");
+        return Ok(None);
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let Some(path) = rfd::FileDialog::new()
+            .set_file_name(sanitize_suggested_name(&suggested_name))
+            .add_filter("Markdown", &["md"])
+            .save_file()
+        else {
+            return Ok(None);
+        };
+        std::fs::write(&path, contents).map_err(|e| e.to_string())?;
+        Ok(Some(path.to_string_lossy().into_owned()))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// The dialog's suggested name: path separators and control chars can't
+/// smuggle a directory choice past the picker; the cap keeps the dialog
+/// field sane. Never a path — just a filename.
+fn sanitize_suggested_name(name: &str) -> String {
+    let clean: String = name
+        .chars()
+        .filter(|c| !matches!(c, '/' | '\\') && !c.is_control())
+        .take(80)
+        .collect();
+    let clean = clean.trim();
+    if clean.is_empty() {
+        "marvis-export.md".to_string()
+    } else {
+        clean.to_string()
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Commands — config / app
 // ---------------------------------------------------------------------------
@@ -2996,6 +3102,8 @@ pub fn run() {
             session_delete,
             session_end_active,
             session_resume,
+            save_audio_file,
+            save_text_file,
             config_get,
             config_set,
             surface_material,
@@ -3032,6 +3140,31 @@ mod tests {
             std::process::id(),
             N.fetch_add(1, Ordering::Relaxed)
         ))
+    }
+
+    #[test]
+    fn audio_export_preserves_original_and_copies_to_other_destinations() {
+        let dir = tmp_dir();
+        std::fs::create_dir_all(&dir).unwrap();
+        let source = dir.join("recording.wav");
+        let contents = b"original recording contents";
+        std::fs::write(&source, contents).unwrap();
+        let source = source.canonicalize().unwrap();
+        assert!(copy_audio_export(&source, &source).is_err());
+        #[cfg(unix)]
+        {
+            let alias = dir.join("alias.wav");
+            std::os::unix::fs::symlink(&source, &alias).unwrap();
+            assert!(copy_audio_export(&source, &alias).is_err());
+        }
+        assert_eq!(std::fs::read(&source).unwrap(), contents);
+        let destination = dir.join("export.wav");
+        copy_audio_export(&source, &destination).unwrap();
+        assert_eq!(std::fs::read(&destination).unwrap(), contents);
+        std::fs::write(&destination, b"old export").unwrap();
+        copy_audio_export(&source, &destination).unwrap();
+        assert_eq!(std::fs::read(&destination).unwrap(), contents);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -3079,6 +3212,55 @@ mod tests {
         assert!(source.contains(concat!("EV_", "PALETTE_QUERY")));
         assert!(source.contains(concat!("EV_", "PALETTE_KEY")));
         assert!(source.contains(concat!("EV_", "PALETTE_CLOSED")));
+    }
+
+    /// The export surface: `save_text_file` is registered in
+    /// `generate_handler!`, gate-guarded like the palette commands, and
+    /// runs its blocking dialog off the async executor. `concat!` keeps
+    /// the literal out of this file's text so the assert can't
+    /// self-satisfy.
+    #[test]
+    fn export_command_is_registered_and_gate_guarded() {
+        let source = include_str!("lib.rs");
+        assert!(source.contains(concat!("save", "_text_file,")));
+        let body = source
+            .split("async fn save_text_file(")
+            .nth(1)
+            .and_then(|rest| rest.split("\n/// ").next())
+            .expect("save_text_file body not found");
+        assert!(
+            body.contains("*state.gate.lock() != Gate::Main"),
+            "save_text_file must check Gate::Main"
+        );
+        assert!(
+            body.contains("spawn_blocking"),
+            "save_text_file's dialog must run off the async executor"
+        );
+    }
+
+    #[test]
+    fn audio_export_command_is_registered_and_guarded() {
+        let source = include_str!("lib.rs");
+        assert!(source.contains(concat!("save", "_audio_file,")));
+        let body = source
+            .split("async fn save_audio_file(")
+            .nth(1)
+            .and_then(|rest| rest.split("\n/// ").next())
+            .expect("save_audio_file body not found");
+        assert!(body.contains("*state.gate.lock() != Gate::Main"));
+        assert!(body.contains("spawn_blocking"));
+        assert!(body.contains("audio_file"));
+        assert!(!body.contains("source_path"));
+    }
+
+    #[test]
+    fn suggested_name_sanitizes_separators_controls_and_caps() {
+        assert_eq!(sanitize_suggested_name("a/b\\c.md"), "abc.md");
+        assert_eq!(sanitize_suggested_name("n\u{0}ame.md"), "name.md");
+        assert_eq!(sanitize_suggested_name("   "), "marvis-export.md");
+        assert_eq!(sanitize_suggested_name(""), "marvis-export.md");
+        assert_eq!(sanitize_suggested_name(&"x".repeat(200)).len(), 80);
+        assert_eq!(sanitize_suggested_name("notes.md"), "notes.md");
     }
 
     /// The punctuation auto-install chain: a completed sherpa download
@@ -3363,6 +3545,7 @@ mod tests {
             state: "idle".into(),
             provider: None,
             session_id: None,
+            audio_file: None,
             turns: 0,
             mic: false,
             error: None,
@@ -3375,6 +3558,7 @@ mod tests {
             state: "listening".into(),
             provider: None,
             session_id: None,
+            audio_file: None,
             turns: 0,
             mic: false,
             error: None,
@@ -3389,6 +3573,7 @@ mod tests {
             state: "paused".into(),
             provider: None,
             session_id: None,
+            audio_file: None,
             turns: 0,
             mic: false,
             error: None,

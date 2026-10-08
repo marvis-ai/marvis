@@ -190,6 +190,8 @@ export interface Message {
 }
 
 export interface Transcript {
+  /** Start in the retained recording; null for older turns. */
+  audio_start_ms: number | null;
   id: number;
   session_id: number;
   speaker: 'me' | 'them';
@@ -368,6 +370,7 @@ export interface ListenStatus {
   state: 'idle' | 'listening' | 'paused' | 'error';
   provider: string | null;
   session_id: number | null;
+  audio_file: string | null;
   turns: number;
   mic: boolean;
   error: ListenErrorPayload | null;
@@ -682,6 +685,15 @@ export const sessionEndActive = (kind: string) =>
 /** Resume a past chat session — ends the open one, reopens `id`. */
 export const sessionResume = (id: number) =>
   invoke<boolean>('session_resume', { id });
+
+/** Document export: native save dialog + write, `null` on cancel. The
+ *  name is only a suggestion — the picker owns the final path. */
+export const saveTextFile = (suggestedName: string, contents: string) =>
+  invoke<string | null>('save_text_file', { suggestedName, contents });
+
+/** Session WAV export: native save dialog + byte-for-byte copy. */
+export const saveAudioFile = (sessionId: number, suggestedName: string) =>
+  invoke<string | null>('save_audio_file', { sessionId, suggestedName });
 
 // ---------------------------------------------------------------------------
 // config / app

@@ -25,6 +25,7 @@ pub struct SessionRecorder {
     /// first chunk arrives (a channel that joins later must not land at
     /// the file's beginning).
     cursors: [Option<u64>; CHANNELS],
+    starts: [Option<u64>; CHANNELS],
 }
 
 impl SessionRecorder {
@@ -43,7 +44,12 @@ impl SessionRecorder {
             file,
             data_samples: 0,
             cursors: [None; CHANNELS],
+            starts: [None; CHANNELS],
         })
+    }
+
+    pub fn channel_start_ms(&self, channel: usize) -> Option<u64> {
+        self.starts[channel].map(|samples| samples * 1000 / u64::from(SAMPLE_RATE))
     }
 
     /// Mix `samples` into the shared timeline at `channel`'s cursor.
@@ -55,6 +61,7 @@ impl SessionRecorder {
             Some(cursor) => cursor,
             None => {
                 self.cursors[channel] = Some(self.data_samples);
+                self.starts[channel] = Some(self.data_samples);
                 self.data_samples
             }
         };
@@ -158,6 +165,19 @@ mod tests {
             vec![1000, 1000, 1000, 1000, 600, 600, 600, 600, 50, 50]
         );
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn channel_origin_tracks_pcm_not_elapsed_wall_time() {
+        let path = tmp_path();
+        let mut recorder = SessionRecorder::create(&path).unwrap();
+        assert_eq!(recorder.channel_start_ms(1), None);
+        recorder.push(0, &[1; 16_000]).unwrap();
+        recorder.push(1, &[1; 8_000]).unwrap();
+        recorder.push(0, &[1; 16_000]).unwrap();
+        assert_eq!(recorder.channel_start_ms(0), Some(0));
+        assert_eq!(recorder.channel_start_ms(1), Some(1000));
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

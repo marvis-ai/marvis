@@ -224,6 +224,7 @@ fn run_chunks(
         .flatten();
     let mut buffer = Vec::with_capacity(WINDOW_SAMPLES);
     let mut consecutive_failures = 0;
+    let mut consumed_samples = 0u64;
     while !stop.load(Ordering::Acquire) {
         let chunk = match receiver.recv_timeout(Duration::from_millis(100)) {
             Ok(chunk) => chunk,
@@ -233,6 +234,8 @@ fn run_chunks(
         buffer.extend(chunk.samples);
         while buffer.len() >= WINDOW_SAMPLES {
             let window: Vec<i16> = buffer.drain(..WINDOW_SAMPLES).collect();
+            let audio_start_ms = consumed_samples * 1000 / 16_000;
+            consumed_samples += WINDOW_SAMPLES as u64;
             if rms(&window) < SILENCE_RMS || stop.load(Ordering::Acquire) {
                 continue;
             }
@@ -249,6 +252,7 @@ fn run_chunks(
                     let f32_samples: Vec<f32> =
                         window.iter().map(|s| f32::from(*s) / 32_768.0).collect();
                     callback(TranscriptEvent {
+                        audio_start_ms: Some(audio_start_ms),
                         channel,
                         text,
                         finality: Finality::Final,

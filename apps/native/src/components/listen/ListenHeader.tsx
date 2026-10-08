@@ -1,10 +1,16 @@
-import { PauseIcon, PlayIcon, SquareIcon } from '@marvis/ui';
-import { BTN_OUTLINE, BTN_SM, CHIP, ICON_BTN, cn } from '@/lib/classes';
-import { CardHeader } from '../shared/CardHeader';
+import {
+  FastForwardIcon,
+  PauseIcon,
+  PlayIcon,
+  RewindIcon,
+  SquareIcon,
+} from '@marvis/ui';
+import { CHIP, ICON_BTN, cn } from '@/lib/classes';
+import { CardHeader } from '@/components/shared/CardHeader';
 
 /** Document header: title/subtitle on the left; the live state pill
  *  (LISTENING/PAUSED) and pause/resume/stop controls on the right —
- *  live-only, so a viewed doc instead carries a 'Start new' action.
+ *  live-only, while viewed docs carry ended-session audio controls.
  *  Elapsed time and copy moved down to the SpeakerFilter row, shared
  *  by live and viewed docs alike. */
 export const ListenHeader = ({
@@ -13,10 +19,13 @@ export const ListenHeader = ({
   listening,
   paused,
   hasSession,
+  audioReady,
+  audioPlaying,
+  onAudioSkip,
+  onAudioToggle,
   onPause,
   onResume,
   onStop,
-  onStartNew,
   onBack,
 }: {
   title: string;
@@ -27,11 +36,14 @@ export const ListenHeader = ({
    *  badge, which is derived here so it can't disagree with the
    *  controls. */
   hasSession: boolean;
+  /** Ended-session audio controls — absent for live docs. */
+  audioReady: boolean;
+  audioPlaying: boolean;
+  onAudioSkip: (seconds: number) => void;
+  onAudioToggle: () => void;
   onPause: () => void;
   onResume: () => void;
   onStop: () => void;
-  /** Present only on a viewed doc — mints a fresh session. */
-  onStartNew?: () => void;
   onBack: () => void;
 }) => {
   const badge = paused
@@ -58,6 +70,38 @@ export const ListenHeader = ({
           )}
           {badge}
         </span>
+      )}
+      {audioReady && (
+        <div className={cn(CHIP, 'gap-0.5 px-0.5')}>
+          <button
+            type='button'
+            className={ICON_BTN}
+            title='Back 15 seconds'
+            aria-label='Back 15 seconds'
+            onClick={() => onAudioSkip(-15)}>
+            <RewindIcon className='size-3.25' />
+          </button>
+          <button
+            type='button'
+            className={cn(ICON_BTN, 'text-foreground')}
+            title={audioPlaying ? 'Pause audio' : 'Play audio'}
+            aria-label={audioPlaying ? 'Pause audio' : 'Play audio'}
+            onClick={onAudioToggle}>
+            {audioPlaying ? (
+              <PauseIcon className='size-3.5' />
+            ) : (
+              <PlayIcon className='size-3.5' />
+            )}
+          </button>
+          <button
+            type='button'
+            className={ICON_BTN}
+            title='Forward 15 seconds'
+            aria-label='Forward 15 seconds'
+            onClick={() => onAudioSkip(15)}>
+            <FastForwardIcon className='size-3.25' />
+          </button>
+        </div>
       )}
       {listening && (
         <button
@@ -87,14 +131,6 @@ export const ListenHeader = ({
           aria-label='Stop recording'
           onClick={onStop}>
           <SquareIcon className='size-3.5' />
-        </button>
-      )}
-      {onStartNew && (
-        <button
-          type='button'
-          className={cn(BTN_SM, BTN_OUTLINE)}
-          onClick={onStartNew}>
-          Start new
         </button>
       )}
     </CardHeader>

@@ -758,10 +758,9 @@ const Bar = () => {
     next(false);
   };
 
-  /** Always mints a fresh session — 'Start new' on a viewed doc is
-   *  reachable while another session is live, and `listen_start`
-   *  stops it server-side anyway. Live dictation owns the mic, so it
-   *  is stopped first rather than left to reject the start. */
+  /** Always mints a fresh session. `listen_start` stops an existing
+   *  session server-side, while live dictation owns the mic and is stopped
+   *  first rather than left to reject the start. */
   const startNewListen = () => {
     withSpeechLock(() => beginListen());
   };
@@ -1105,7 +1104,6 @@ const Bar = () => {
         {section === 'listen' && (
           <ListenSection
             viewing={listenViewing}
-            onStartNew={startNewListen}
             onFollowUp={(q) => {
               // A summary chip asks the doc's own chat — `sendAsk`
               // resolves this session's `listenId` while the section

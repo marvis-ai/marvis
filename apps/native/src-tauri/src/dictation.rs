@@ -556,6 +556,7 @@ mod tests {
 
     fn event(channel: SpeakerChannel, text: &str, finality: Finality) -> TranscriptEvent {
         TranscriptEvent {
+            audio_start_ms: None,
             channel,
             text: text.into(),
             finality,

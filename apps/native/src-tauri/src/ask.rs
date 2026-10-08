@@ -53,6 +53,7 @@
 //! `tauri::async_runtime::spawn` so the invoking command handler returns
 //! immediately instead of blocking on an LLM stream.
 
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -68,7 +69,7 @@ use crate::keystore::Keystore;
 use crate::llm::{ChatMessage, ContentPart, LlmError, Provider, Role, StreamReply, TokenUsage};
 use crate::prompts::{live_system_prompt_with, live_user_prompt};
 use crate::screen_read;
-use crate::storage::{Db, MessageMeta, Transcript};
+use crate::storage::{Db, MessageAttachment, MessageMeta, NewAttachment, Transcript};
 use crate::windows::{WindowPool, BAR_LABEL};
 use crate::ProviderCandidate;
 
@@ -105,6 +106,11 @@ const HISTORY_TAIL: usize = 20;
 /// before the user row persists.
 const MAX_ATTACHMENTS: usize = 4;
 
+/// Decoded-payload bound — the webview's 20 MiB source limit can only
+/// shrink under JPEG re-encode at 2048px, so this is a generous
+/// malformed-input ceiling, not a real budget.
+const MAX_ATTACHMENT_BYTES: usize = 24 * 1024 * 1024;
+
 /// One normalized image attached to an `ask_send` invoke — `name` is
 /// the original filename, display metadata only (never a storage
 /// path); `jpeg_base64` is the webview-normalized JPEG payload with no
@@ -112,9 +118,7 @@ const MAX_ATTACHMENTS: usize = 4;
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AskAttachmentInput {
-    #[allow(dead_code)] // read when the pipeline persists the send
     pub name: String,
-    #[allow(dead_code)] // read when the pipeline persists the send
     pub jpeg_base64: String,
 }
 
@@ -508,6 +512,7 @@ impl AskService {
                     instruction: instruction.as_deref(),
                     preset_id: preset_id.as_deref(),
                     attachments,
+                    attachments_root: None,
                 },
             )
             .await;
@@ -586,6 +591,10 @@ pub(crate) struct ChainOpts<'a> {
     /// written, and row-linked before the first provider call; empty
     /// on regenerates (their attachments re-load from disk).
     pub attachments: Vec<AskAttachmentInput>,
+    /// Managed-file root — `None` resolves to
+    /// `paths::attachments_dir()`; tests pass a tmp dir so runs never
+    /// touch the real `~/.marvis`.
+    pub attachments_root: Option<&'a Path>,
 }
 
 /// The testable core: persist → walk the failover chain → persist,
@@ -650,18 +659,26 @@ pub(crate) async fn send_chain(
         instruction,
         preset_id,
         attachments,
+        attachments_root,
     } = opts;
     // Contract guard: a crafted invoke past the composer cap is an
     // attachment error — no row persists, no provider is called.
     if attachments.len() > MAX_ATTACHMENTS {
         let message = format!("At most {MAX_ATTACHMENTS} images can be attached per send");
-        emit(EV_ERROR, json!({ "message": message }));
-        emit(EV_STATE, json!({"state": "idle"}));
-        return Err(LlmError::Http {
-            status: 0,
-            message,
-        });
+        return Err(attachment_error(emit, message));
     }
+    // Decode and sniff before ANY persistence — a malformed payload
+    // must not leave a user row that claims images it doesn't have.
+    let mut pending = Vec::with_capacity(attachments.len());
+    for input in &attachments {
+        match decode_attachment(input) {
+            Ok(p) => pending.push(p),
+            Err(message) => return Err(attachment_error(emit, message)),
+        }
+    }
+    let attachments_root: PathBuf = attachments_root
+        .map(Path::to_path_buf)
+        .unwrap_or_else(crate::paths::attachments_dir);
     // A send that arrived with the card closed is a new conversation:
     // end the still-open ask session so get_or_create mints a fresh row.
     // A linked send resolves its own session below instead.
@@ -706,13 +723,43 @@ pub(crate) async fn send_chain(
     let listen_id =
         listen_id.or_else(|| session_id.and_then(|sid| db.session_listen_id(sid).ok().flatten()));
     let listen_history = load_listen_context(db, listen_id);
+    let mut user_images: Vec<Vec<u8>> = Vec::new();
+    // The run's user-turn attachments — the `loading` payload advertises
+    // them so the card/resync renders the persisted message correctly.
+    let mut run_attachments: Vec<MessageAttachment> = Vec::new();
     if !re_asked {
-        persist_user_message(db, session_id, text, preset_id);
+        let message_id = persist_user_message(db, session_id, text, preset_id);
+        if !pending.is_empty() {
+            // Attachments need the user row to link to — a storage
+            // hiccup that ate the row is a hard failure for an
+            // attachment-bearing send, not a degrade to text.
+            let Some(mid) = message_id else {
+                return Err(attachment_error(
+                    emit,
+                    "Attachments couldn't be saved — the message wasn't recorded".into(),
+                ));
+            };
+            match persist_attachments(db, &attachments_root, mid, pending).await {
+                Ok((images, meta)) => {
+                    user_images = images;
+                    run_attachments = meta;
+                }
+                Err(message) => {
+                    // The row claims images it never got — remove it so
+                    // history never silently loses the attachments.
+                    if let Err(e) = db.message_delete(mid) {
+                        log::warn!("ask: attachment-failure row cleanup failed: {e}");
+                    }
+                    return Err(attachment_error(emit, message));
+                }
+            }
+        }
     }
-    emit(
-        EV_STATE,
-        json!({"state": "loading", "question": text, "preset": preset_id}),
-    );
+    let mut loading = json!({"state": "loading", "question": text, "preset": preset_id});
+    if !run_attachments.is_empty() {
+        loading["attachments"] = json!(run_attachments);
+    }
+    emit(EV_STATE, loading.clone());
 
     // The screen-material truth table (spec §Ask flow): cached context /
     // ring frame / inline one-shot describe / raw frame / none. A failed
@@ -749,10 +796,7 @@ pub(crate) async fn send_chain(
         // A failover hand-off re-announces `loading` so the card drops
         // the failed attempt's partial chunks before the next stream.
         if i > 0 {
-            emit(
-                EV_STATE,
-                json!({"state": "loading", "question": text, "preset": preset_id}),
-            );
+            emit(EV_STATE, loading.clone());
         }
         match stream_candidate(
             &*cand.provider,
@@ -760,7 +804,7 @@ pub(crate) async fn send_chain(
             &history,
             &listen_history,
             text,
-            &[],
+            &user_images,
             frame.as_ref(),
             screen.as_deref(),
             cancel,
@@ -819,6 +863,125 @@ pub(crate) async fn send_chain(
     emit(EV_ERROR, json!({"message": e.to_string()}));
     emit(EV_STATE, json!({"state": "idle"}));
     Err(e)
+}
+
+/// A decoded composer image — `name` is display metadata only; `jpeg`
+/// is the validated payload written to a managed file.
+struct PendingImage {
+    name: String,
+    jpeg: Vec<u8>,
+}
+
+/// Decode and sniff one `jpegBase64` input. The webview already
+/// normalized it to JPEG — anything that isn't valid base64 or JPEG
+/// magic is a malformed (or crafted) invoke and must fail the send
+/// rather than reach a provider half-specified.
+fn decode_attachment(input: &AskAttachmentInput) -> Result<PendingImage, String> {
+    use base64::Engine;
+    if input.jpeg_base64.len() > MAX_ATTACHMENT_BYTES * 4 / 3 + 8 {
+        return Err(format!("Attachment \"{}\" is too large", input.name));
+    }
+    let jpeg = base64::engine::general_purpose::STANDARD
+        .decode(input.jpeg_base64.trim())
+        .map_err(|_| format!("Attachment \"{}\" isn't valid base64", input.name))?;
+    if jpeg.len() > MAX_ATTACHMENT_BYTES {
+        return Err(format!("Attachment \"{}\" is too large", input.name));
+    }
+    if !jpeg.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        return Err(format!("Attachment \"{}\" isn't a JPEG image", input.name));
+    }
+    Ok(PendingImage {
+        name: input.name.clone(),
+        jpeg,
+    })
+}
+
+/// Generated storage name — never the user's filename (no traversal,
+/// no collisions): nanos plus a process counter, `att-*.jpg`.
+fn attachment_filename() -> String {
+    static N: AtomicU64 = AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    format!("att-{nanos}-{}.jpg", N.fetch_add(1, Ordering::Relaxed))
+}
+
+/// Write every pending image under `root` with generated names. A
+/// partial failure unlinks what it wrote — callers see all-or-nothing.
+fn write_attachment_files(root: &Path, jpegs: &[Vec<u8>]) -> std::io::Result<Vec<PathBuf>> {
+    std::fs::create_dir_all(root)?;
+    let mut paths = Vec::with_capacity(jpegs.len());
+    for jpeg in jpegs {
+        let path = root.join(attachment_filename());
+        if let Err(e) = std::fs::write(&path, jpeg) {
+            for written in &paths {
+                let _ = std::fs::remove_file(written);
+            }
+            return Err(e);
+        }
+        paths.push(path);
+    }
+    Ok(paths)
+}
+
+/// Persist `pending` under `root`, link its rows to `message_id`, and
+/// hand back (request bytes, metadata) — the provider turn reads the
+/// same JPEGs the message row carries. Any failure unlinks the files
+/// it wrote; the caller drops the user row on `Err`.
+async fn persist_attachments(
+    db: &Db,
+    root: &Path,
+    message_id: i64,
+    pending: Vec<PendingImage>,
+) -> Result<(Vec<Vec<u8>>, Vec<MessageAttachment>), String> {
+    let names: Vec<String> = pending.iter().map(|p| p.name.clone()).collect();
+    let jpegs: Vec<Vec<u8>> = pending.into_iter().map(|p| p.jpeg).collect();
+    let user_images = jpegs.clone();
+    let root_owned = root.to_path_buf();
+    // Blocking fs off the async executor (same rule as the one-shot shot).
+    let paths = tokio::task::spawn_blocking(move || {
+        write_attachment_files(&root_owned, &jpegs)
+    })
+    .await
+    .map_err(|e| e.to_string())
+    .and_then(|r| r.map_err(|e| format!("Couldn't save an attachment: {e}")))?;
+    let rows: Vec<NewAttachment> = names
+        .iter()
+        .zip(&paths)
+        .zip(&user_images)
+        .enumerate()
+        .map(|(i, ((name, path), jpeg))| NewAttachment {
+            name: name.clone(),
+            path: path.to_string_lossy().into_owned(),
+            mime: "image/jpeg".to_string(),
+            bytes: jpeg.len() as i64,
+            position: i as i64,
+        })
+        .collect();
+    match db.attachments_add(message_id, &rows) {
+        Ok(meta) => Ok((user_images, meta)),
+        Err(e) => {
+            for path in &paths {
+                let _ = std::fs::remove_file(path);
+            }
+            Err(format!("Couldn't record an attachment: {e}"))
+        }
+    }
+}
+
+/// The `resolve_screen` Err arm's shape for pre-chain attachment
+/// failures: `ask:error` + `idle`, then the status-0 sentinel.
+fn attachment_error(
+    emit: &(dyn Fn(&str, serde_json::Value) + Send + Sync),
+    message: String,
+) -> LlmError {
+    emit(EV_ERROR, json!({ "message": message }));
+    emit(EV_STATE, json!({"state": "idle"}));
+    LlmError::Http {
+        status: 0,
+        message,
+    }
 }
 
 /// What the ask chain attaches: the truth table's three outcomes.
@@ -1246,20 +1409,29 @@ fn regenerate_tail(db: &Db, session_id: Option<i64>) -> Option<Vec<ChatMessage>>
     Some(rows_to_history(&rows[..cut]))
 }
 
-/// The new user row, next to its session. `preset` records the armed
-/// instruct preset (presets.rs id) so `retry` re-resolves the same
-/// steering. `None` session (lookup failed) skips the write — the
-/// stream must not die on a storage hiccup.
-fn persist_user_message(db: &Db, session_id: Option<i64>, text: &str, preset: Option<&str>) {
-    let Some(sid) = session_id else {
-        return;
-    };
+/// The new user row, next to its session; returns its id for the
+/// attachment link-up. `preset` records the armed instruct preset
+/// (presets.rs id) so `retry` re-resolves the same steering. `None`
+/// session (lookup failed) or a failed insert yields `None` — the
+/// stream must not die on a storage hiccup (attachment sends DO die:
+/// their images need the row to link to).
+fn persist_user_message(
+    db: &Db,
+    session_id: Option<i64>,
+    text: &str,
+    preset: Option<&str>,
+) -> Option<i64> {
+    let sid = session_id?;
     let meta = MessageMeta {
         preset: preset.map(str::to_string),
         ..MessageMeta::default()
     };
-    if let Err(e) = db.message_add_meta(sid, "user", text, &meta) {
-        log::warn!("ask: failed to persist user message: {e}");
+    match db.message_add_meta(sid, "user", text, &meta) {
+        Ok(id) => Some(id),
+        Err(e) => {
+            log::warn!("ask: failed to persist user message: {e}");
+            None
+        }
     }
 }
 
@@ -2150,6 +2322,242 @@ mod tests {
         );
         assert_eq!(ask_messages(&db).len(), 1); // user row only
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A minimal JPEG header+footer — enough for the payload sniff.
+    fn jpeg_b64() -> String {
+        use base64::Engine;
+        base64::engine::general_purpose::STANDARD.encode([0xFF, 0xD8, 0xFF, 0xD9])
+    }
+
+    /// Attachments decode to managed files, link metadata to the user
+    /// row, reach the provider as image parts, and ride the `loading`
+    /// payload for the resync/UI path.
+    #[tokio::test]
+    async fn send_chain_persists_and_sends_attachments() {
+        let dir = tmp_dir();
+        let db = Db::at(dir.join("marvis.db")).unwrap();
+        let att_root = dir.join("attachments");
+        let provider = MockProvider::new(vec![Behavior::Tokens(vec!["ok".into()])]);
+        let calls = provider.calls();
+        let (events, emit) = recorder();
+        let reader = screen_read::ScreenReader::new();
+        let ring = Mutex::new(RingBuffer::new(4, 1 << 20));
+        let input = input(&reader, &ring);
+        let cancel = CancellationToken::new();
+
+        send_chain(
+            vec![candidate("openai", provider)],
+            None,
+            &db,
+            &emit,
+            &input,
+            &cancel,
+            ChainOpts {
+                text: "what are these?",
+                language: "en",
+                attachments: vec![
+                    AskAttachmentInput {
+                        name: "first.png".into(),
+                        jpeg_base64: jpeg_b64(),
+                    },
+                    AskAttachmentInput {
+                        name: "second.png".into(),
+                        jpeg_base64: jpeg_b64(),
+                    },
+                ],
+                attachments_root: Some(&att_root),
+                ..ChainOpts::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        // The provider's user turn: text + both image parts.
+        let calls = calls.lock();
+        let user = &calls[0][1];
+        assert_eq!(
+            user.content
+                .iter()
+                .filter(|p| matches!(p, ContentPart::ImageJpeg(_)))
+                .count(),
+            2
+        );
+        drop(calls);
+
+        // The user row carries ordered metadata pointing at real files.
+        let msgs = ask_messages(&db);
+        let atts = &msgs[0].attachments;
+        assert_eq!(atts.len(), 2);
+        assert_eq!(atts[0].name, "first.png");
+        assert_eq!(atts[1].name, "second.png");
+        assert_eq!(atts[0].position, 0);
+        assert_eq!(atts[1].position, 1);
+        for att in atts {
+            assert!(PathBuf::from(&att.path).starts_with(&att_root));
+            assert_eq!(std::fs::read(&att.path).unwrap(), vec![0xFF, 0xD8, 0xFF, 0xD9]);
+        }
+        // The loading payload advertises them for UI/resync.
+        assert!(events.lock().iter().any(|(n, p)| {
+            n == EV_STATE
+                && p["attachments"]
+                    .as_array()
+                    .is_some_and(|a| a.len() == 2)
+        }));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A malformed payload is an attachment error — emitted, and no
+    /// user row or provider call survives it.
+    #[tokio::test]
+    async fn send_chain_rejects_malformed_attachment() {
+        let dir = tmp_dir();
+        let db = Db::at(dir.join("marvis.db")).unwrap();
+        let att_root = dir.join("attachments");
+        let provider = MockProvider::new(vec![Behavior::Tokens(vec!["ok".into()])]);
+        let calls = provider.calls();
+        let (events, emit) = recorder();
+        let reader = screen_read::ScreenReader::new();
+        let ring = Mutex::new(RingBuffer::new(4, 1 << 20));
+        let input = input(&reader, &ring);
+        let cancel = CancellationToken::new();
+
+        for bad in ["not-base64!!!".to_string(), {
+            use base64::Engine;
+            base64::engine::general_purpose::STANDARD.encode(b"PNG bytes")
+        }] {
+            let err = send_chain(
+                vec![candidate("openai", MockProvider::new(vec![
+                    Behavior::Tokens(vec!["ok".into()]),
+                ]))],
+                None,
+                &db,
+                &emit,
+                &input,
+                &cancel,
+                ChainOpts {
+                    text: "q",
+                    language: "en",
+                    attachments: vec![AskAttachmentInput {
+                        name: "bad.bin".into(),
+                        jpeg_base64: bad,
+                    }],
+                    attachments_root: Some(&att_root),
+                    ..ChainOpts::default()
+                },
+            )
+            .await
+            .unwrap_err();
+            assert!(err.to_string().contains("bad.bin"), "{err}");
+        }
+        assert_eq!(calls.lock().len(), 0);
+        assert!(events.lock().iter().all(|(n, _)| n != EV_CHUNK));
+        assert!(events
+            .lock()
+            .iter()
+            .filter(|(n, _)| n == EV_ERROR)
+            .count()
+            == 2);
+        assert_eq!(ask_messages(&db).len(), 0);
+        assert!(!att_root.exists() || std::fs::read_dir(&att_root).unwrap().count() == 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A multimodal rejection with user attachments fails over — the
+    /// next candidate sees the SAME images (never a text-only retry).
+    #[tokio::test]
+    async fn send_chain_multimodal_failover_keeps_user_images() {
+        let dir = tmp_dir();
+        let db = Db::at(dir.join("marvis.db")).unwrap();
+        let att_root = dir.join("attachments");
+        let first = MockProvider::new(vec![Behavior::Fail(LlmError::MultimodalUnsupported)]);
+        let second = MockProvider::new(vec![Behavior::Tokens(vec!["ok".into()])]);
+        let first_calls = first.calls();
+        let second_calls = second.calls();
+        let (_events, emit) = recorder();
+        let reader = screen_read::ScreenReader::new();
+        let ring = Mutex::new(RingBuffer::new(4, 1 << 20));
+        let input = input(&reader, &ring);
+        let cancel = CancellationToken::new();
+
+        let full = send_chain(
+            vec![candidate("openai", first), candidate("gemini", second)],
+            None,
+            &db,
+            &emit,
+            &input,
+            &cancel,
+            ChainOpts {
+                text: "q",
+                language: "en",
+                attachments: vec![AskAttachmentInput {
+                    name: "p.jpg".into(),
+                    jpeg_base64: jpeg_b64(),
+                }],
+                attachments_root: Some(&att_root),
+                ..ChainOpts::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(full, "ok");
+
+        // Exactly one call on the first provider — no dropped-image
+        // retry — and the failover candidate got the image too.
+        assert_eq!(first_calls.lock().len(), 1);
+        let second = second_calls.lock();
+        assert!(has_image(&second[0][1]));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Every candidate rejecting image input surfaces as the
+    /// multimodal error — the user row and its attachments persist so
+    /// `ask_retry` can replay them.
+    #[tokio::test]
+    async fn send_chain_all_providers_rejecting_images_errors() {
+        let dir = tmp_dir();
+        let db = Db::at(dir.join("marvis.db")).unwrap();
+        let att_root = dir.join("attachments");
+        let first = MockProvider::new(vec![Behavior::Fail(LlmError::MultimodalUnsupported)]);
+        let second = MockProvider::new(vec![Behavior::Fail(LlmError::MultimodalUnsupported)]);
+        let (events, emit) = recorder();
+        let reader = screen_read::ScreenReader::new();
+        let ring = Mutex::new(RingBuffer::new(4, 1 << 20));
+        let input = input(&reader, &ring);
+        let cancel = CancellationToken::new();
+
+        let err = send_chain(
+            vec![candidate("openai", first), candidate("gemini", second)],
+            None,
+            &db,
+            &emit,
+            &input,
+            &cancel,
+            ChainOpts {
+                text: "q",
+                language: "en",
+                attachments: vec![AskAttachmentInput {
+                    name: "p.jpg".into(),
+                    jpeg_base64: jpeg_b64(),
+                }],
+                attachments_root: Some(&att_root),
+                ..ChainOpts::default()
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, LlmError::MultimodalUnsupported));
+        assert!(events
+            .lock()
+            .iter()
+            .any(|(n, p)| n == EV_ERROR
+                && p["message"].as_str().unwrap().contains("image")));
+        // User row + attachment survived — retry can resend them.
+        let msgs = ask_messages(&db);
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].attachments.len(), 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -5,12 +5,12 @@ import {
   RewindIcon,
   SquareIcon,
 } from '@marvis/ui';
-import { BTN_OUTLINE, BTN_SM, CHIP, ICON_BTN, cn } from '@/lib/classes';
+import { CHIP, ICON_BTN, cn } from '@/lib/classes';
 import { CardHeader } from '@/components/shared/CardHeader';
 
 /** Document header: title/subtitle on the left; the live state pill
  *  (LISTENING/PAUSED) and pause/resume/stop controls on the right —
- *  live-only, so a viewed doc instead carries a 'Start new' action.
+ *  live-only, while viewed docs carry ended-session audio controls.
  *  Elapsed time and copy moved down to the SpeakerFilter row, shared
  *  by live and viewed docs alike. */
 export const ListenHeader = ({
@@ -26,7 +26,6 @@ export const ListenHeader = ({
   onPause,
   onResume,
   onStop,
-  onStartNew,
   onBack,
 }: {
   title: string;
@@ -45,8 +44,6 @@ export const ListenHeader = ({
   onPause: () => void;
   onResume: () => void;
   onStop: () => void;
-  /** Present only on a viewed doc — mints a fresh session. */
-  onStartNew?: () => void;
   onBack: () => void;
 }) => {
   const badge = paused
@@ -134,14 +131,6 @@ export const ListenHeader = ({
           aria-label='Stop recording'
           onClick={onStop}>
           <SquareIcon className='size-3.5' />
-        </button>
-      )}
-      {onStartNew && (
-        <button
-          type='button'
-          className={cn(BTN_SM, BTN_OUTLINE)}
-          onClick={onStartNew}>
-          Start new
         </button>
       )}
     </CardHeader>

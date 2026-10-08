@@ -57,14 +57,11 @@ import { ErrorBanner } from '@/components/shared/ErrorBanner';
 export const ListenSection = ({
   viewing,
   onSessionEnded,
-  onStartNew,
   onBack,
   onFollowUp,
 }: {
   viewing: ListenViewing | null;
   onSessionEnded: (v: ListenViewing) => void;
-  /** 'Start new' on a viewed doc — Bar owns the fresh-session route. */
-  onStartNew: () => void;
   onBack: () => void;
   /** A summary follow-up chip — sends itself to this doc's chat. */
   onFollowUp: (question: string) => void;
@@ -517,7 +514,6 @@ export const ListenSection = ({
         onPause={() => void listenPause().catch(() => {})}
         onResume={() => void listenResume().catch(() => {})}
         onStop={stop}
-        onStartNew={live ? undefined : onStartNew}
       />
       {audioFile && audioEnded && !audioUnavailable && startedAt != null && (
         <SessionPlayer

@@ -1,19 +1,14 @@
 /**
- * Prompts — the Ask preset list. Built-ins ship with the app
+ * Presets — the Ask preset list. Built-ins ship with the app
  * (read-only); custom presets persist as `prompts.custom` and apply
- * per-send from the composer's wand menu or `/name` shorthand.
- * `instruct` presets steer the reply (system-prompt append);
- * `template` presets expand into the composer — `{input}` is the typed
- * text, `{lang}` the main language.
+ * per-send from the composer's wand palette or `/name` shorthand.
+ * There's no category to pick: `{input}` in the text expands into the
+ * sent message and `{lang}` becomes an editable language badge;
+ * without `{input}` the text steers the reply silently.
  */
 import { useEffect, useState } from 'react';
 import { Trash2Icon } from '@marvis/ui';
-import {
-  configSet,
-  presetsList,
-  type Preset,
-  type PresetKind,
-} from '@/lib/commands';
+import { configSet, presetsList, type Preset } from '@/lib/commands';
 import {
   BTN_OUTLINE,
   BTN_PRIMARY,
@@ -28,20 +23,15 @@ import {
   SUB,
   cn,
 } from '@/lib/classes';
-import { PrefRow, Seg, Tag } from './bits';
+import { PrefRow } from './bits';
 import type { PrefsData } from './types';
-
-const KINDS: { id: PresetKind; label: string }[] = [
-  { id: 'instruct', label: 'Instruction' },
-  { id: 'template', label: 'Template' },
-];
 
 const INPUT =
   'w-full rounded-lg border border-border bg-input-well px-2.5 py-1.5 text-[12.5px] text-foreground outline-none transition-[border-color,box-shadow] duration-(--motion-fast) ease-(--ease) focus:border-accent focus:shadow-(--focus-ring)';
 
 const mintId = () => `u:${Math.random().toString(36).slice(2, 10)}`;
 
-export const PromptsTab = ({ data }: { data: PrefsData }) => {
+export const PresetsTab = ({ data }: { data: PrefsData }) => {
   const customs = data.config?.prompts.custom ?? [];
   const [presets, setPresets] = useState<Preset[]>([]);
   useEffect(() => {
@@ -60,7 +50,7 @@ export const PromptsTab = ({ data }: { data: PrefsData }) => {
   const startNew = () => {
     setIsNew(true);
     setSaveError('');
-    setEditing({ id: mintId(), name: '', kind: 'instruct', text: '' });
+    setEditing({ id: mintId(), name: '', text: '' });
   };
   const save = () => {
     if (!editing) return;
@@ -86,22 +76,16 @@ export const PromptsTab = ({ data }: { data: PrefsData }) => {
 
   return (
     <>
-      <h2 className={H2}>Prompts</h2>
+      <h2 className={H2}>Presets</h2>
       <p className={SUB}>
         Presets apply to one Ask send — pick them from the composer's
-        wand menu, or type <code>/</code> + a name (like{' '}
-        <code>/summarize</code>). Instructions steer the reply;
-        templates expand into your message.
+        wand palette, or type <code>/</code> + a name (like{' '}
+        <code>/summarize</code>).
       </p>
 
       <div className={PRF_ROWS}>
         {builtins.map((p) => (
-          <PrefRow
-            key={p.id}
-            label={p.name}
-            sub={p.text}>
-            <Tag>{p.kind === 'instruct' ? 'Instruction' : 'Template'}</Tag>
-          </PrefRow>
+          <PrefRow key={p.id} label={p.name} sub={p.text} />
         ))}
       </div>
 
@@ -140,42 +124,33 @@ export const PromptsTab = ({ data }: { data: PrefsData }) => {
 
         {editing ? (
           <div className={cn(PRF_ROW, 'flex-col items-stretch gap-2.5 border-b-0')}>
-            <div className='flex items-center gap-3'>
-              <input
-                aria-label='Preset name'
-                maxLength={24}
-                placeholder='Name — also the /name'
-                className={cn(INPUT, 'w-48')}
-                value={editing.name}
-                onChange={(e) =>
-                  setEditing({ ...editing, name: e.target.value })
-                }
-              />
-              <Seg
-                ariaLabel='Preset kind'
-                options={KINDS}
-                value={editing.kind}
-                onChange={(kind) => setEditing({ ...editing, kind })}
-              />
-            </div>
+            <input
+              aria-label='Preset name'
+              maxLength={24}
+              placeholder='Name — also the /name'
+              className={cn(INPUT, 'w-48')}
+              value={editing.name}
+              onChange={(e) =>
+                setEditing({ ...editing, name: e.target.value })
+              }
+            />
             <textarea
               aria-label='Preset text'
               maxLength={2000}
-              placeholder={
-                editing.kind === 'instruct'
-                  ? 'Instruction appended to the send — e.g. Answer like a skeptical reviewer.'
-                  : 'Template text — {input} is the typed message, {lang} your main language.'
-              }
+              placeholder='Prompt text — e.g. Answer like a skeptical reviewer.'
               className={cn(INPUT, 'min-h-24 resize-y leading-relaxed')}
               value={editing.text}
               onChange={(e) => setEditing({ ...editing, text: e.target.value })}
             />
-            {editing.kind === 'template' && (
-              <div className={PR_SUB}>
-                <code>{'{input}'}</code> expands to the typed message,{' '}
-                <code>{'{lang}'}</code> to your main language.
-              </div>
-            )}
+            <div className={PR_SUB}>
+              <code>{'{input}'}</code> expands to the typed message,{' '}
+              <code>{'{lang}'}</code> to your main language (an editable
+              badge when the preset is armed). Include{' '}
+              <code>{'{input}'}</code> and the preset expands into your
+              message; leave it out and the text steers the reply
+              silently. Other <code>{'{…}'}</code> placeholders aren't
+              expanded.
+            </div>
             {saveError && <p className={PROV_ERR}>{saveError}</p>}
             <div className='flex justify-end gap-2'>
               <button

@@ -642,8 +642,8 @@ const EV_BAR_TOGGLE_INPUT: &str = "bar:toggle-input";
 /// dispatch only emits.
 const EV_BAR_START_LISTEN: &str = "bar:start-listen";
 const EV_BAR_SHOW_HISTORY: &str = "bar:show-history";
-/// Emitted to the `bar` window only — a `preset.*` menu pick
-/// (menu_dispatch); payload is the full `Preset`.
+/// Emitted to the `bar` window only — a preset palette pick
+/// (`presets_palette_select`); payload is the full `Preset`.
 const EV_PRESET_PICK: &str = "bar:preset-pick";
 
 /// Map [`hotkey::Action`]s onto pool calls / bar events. Owns an
@@ -685,7 +685,7 @@ fn deeplink_dispatch(app: &AppHandle) -> impl Fn(deeplink::Action) + Send + Sync
                 }
                 state
                     .ask
-                    .send(&app, &state.deps(), &text, false, None, None);
+                    .send(&app, &state.deps(), &text, false, None, None, None);
             } else {
                 // Not ready yet — if the bar is visible (onboarding done,
                 // permission pending) surface its gate card instead of
@@ -728,13 +728,6 @@ fn menu_dispatch() -> impl Fn(&AppHandle, tauri::menu::MenuEvent) + Send + Sync 
         // matched, so an edge can't drift from its `Dir`.
         if let Some(dir) = menus::pos_edge_dir(id) {
             snap_edge_and_refresh(app, dir);
-            return;
-        }
-        if let Some(pid) = menus::preset_item_id(id) {
-            let custom = app.state::<AppState>().config.lock().prompts.custom.clone();
-            if let Some(p) = presets::find(pid, &custom) {
-                let _ = app.emit_to(windows::BAR_LABEL, EV_PRESET_PICK, p);
-            }
             return;
         }
         match id {
@@ -1259,9 +1252,12 @@ async fn model_list_available(app: AppHandle, provider: String) -> Vec<String> {
 /// (optional) is the explicit attach flag — a screen read runs even when
 /// the text shows no intent. `listenId` (optional) binds the send to a
 /// listen doc — its own ask session, its summary+transcript as context.
-/// `presetId` (optional) arms an `instruct` preset — its text appends
-/// to the system prompt for this send and rides the user row so
-/// `ask_retry` re-applies it.
+/// `presetId` (optional) arms a preset — a resolvable id persists on
+/// the user row so `ask_retry` re-applies it; its instruction text
+/// (everything not carrying `{input}`) appends to the system prompt
+/// for this send. `presetLang` (optional) is the `{lang}` param
+/// badge's edited value — `None` resolves `{lang}` to the configured
+/// main language.
 #[tauri::command]
 fn ask_send(
     app: AppHandle,
@@ -1269,6 +1265,7 @@ fn ask_send(
     with_screen: Option<bool>,
     listen_id: Option<i64>,
     preset_id: Option<String>,
+    preset_lang: Option<String>,
 ) {
     let state = app.state::<AppState>();
     // Crafted-invoke guard: the shipped UI gates sends behind `Main`,
@@ -1285,6 +1282,7 @@ fn ask_send(
         with_screen.unwrap_or(false),
         listen_id,
         preset_id,
+        preset_lang,
     );
 }
 
@@ -1891,29 +1889,61 @@ fn bar_context_menu(app: AppHandle) -> Result<(), String> {
 }
 
 /// The merged preset list — built-ins first, then `prompts.custom`.
-/// The bar's picker/chip matcher and the prefs tab read it; `ask_send`
-/// resolves ids against the same order server-side.
+/// The palette view, the bar's chip matcher, and the prefs tab read
+/// it; `ask_send` resolves ids against the same order server-side.
 #[tauri::command]
 fn presets_list(state: State<'_, AppState>) -> Vec<presets::Preset> {
     presets::all(&state.config.lock().prompts.custom)
 }
 
-/// The composer wand's popup (and the input-row right-click): the
-/// preset menu pops at the cursor, built fresh so customs always show.
-/// Gate-guarded like `ask_send` — a crafted invoke during onboarding
-/// must not pop chrome over the wizard.
+/// The composer wand's popup (and the input-row right-click, the bare
+/// `/` send): the preset palette — a small overlay anchored to the
+/// bar's inward edge, lazily built by the pool and announced as
+/// `palette:open`. Gate-guarded like `ask_send` — a crafted invoke
+/// during onboarding must not pop chrome over the wizard.
 #[tauri::command]
-fn presets_menu(app: AppHandle) -> Result<(), String> {
+fn presets_palette_open(app: AppHandle) -> Result<(), String> {
     let state = app.state::<AppState>();
     if *state.gate.lock() != Gate::Main {
-        log::warn!("presets_menu dropped while gate != Main");
+        log::warn!("presets_palette_open dropped while gate != Main");
         return Ok(());
     }
-    let menu = menus::build_preset_menu(&app).map_err(|e| e.to_string())?;
-    let bar = app
-        .get_webview_window(windows::BAR_LABEL)
-        .ok_or("bar window missing")?;
-    bar.popup_menu(&menu).map_err(|e| e.to_string())
+    state.pool.lock().show_palette(&app);
+    Ok(())
+}
+
+/// A palette row pick: hide the palette, hand focus back to the bar,
+/// then emit the preset as `bar:preset-pick` — the same event the
+/// composer's apply path consumes for the `/` shorthand.
+#[tauri::command]
+fn presets_palette_select(app: AppHandle, id: String) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    if *state.gate.lock() != Gate::Main {
+        log::warn!("presets_palette_select dropped while gate != Main");
+        return Ok(());
+    }
+    let preset = presets::find(&id, &state.config.lock().prompts.custom);
+    let bar = {
+        let pool = state.pool.lock();
+        pool.hide_palette();
+        pool.bar().cloned()
+    };
+    if let Some(bar) = bar {
+        let _ = bar.set_focus();
+    }
+    if let Some(p) = preset {
+        let _ = app.emit_to(windows::BAR_LABEL, EV_PRESET_PICK, p);
+    }
+    Ok(())
+}
+
+/// Palette dismissed (its Esc, or click-away blur — the view calls
+/// this only for Esc; blur hides itself in `show_palette`'s event
+/// handler). The bar keeps focus it never lost, so nothing to restore.
+#[tauri::command]
+fn presets_palette_close(app: AppHandle) -> Result<(), String> {
+    app.state::<AppState>().pool.lock().hide_palette();
+    Ok(())
 }
 
 /// Dev-only inspector for webviews without the shared menu (prefs,
@@ -2429,7 +2459,7 @@ fn config_get(state: State<'_, AppState>) -> Config {
 /// so the new rate applies now), `recording.read_interval_secs` (u64
 /// ≥1 — minimum seconds between ambient screen reads; applies on the
 /// next capture start), `recording.summary_prompt` (string), and
-/// `prompts.custom` (array of `{id, name, kind, text}` presets —
+/// `prompts.custom` (array of `{id, name, text}` presets —
 /// replaces the whole custom list; rejected rows fail the write).
 /// Provider order/switches/models have
 /// their own commands (`providers_reorder`,
@@ -2842,7 +2872,9 @@ pub fn run() {
             window_set_bar_expanded,
             bar_context_menu,
             presets_list,
-            presets_menu,
+            presets_palette_open,
+            presets_palette_select,
+            presets_palette_close,
             open_devtools,
             permissions_status,
             permissions_request_screen,
@@ -2923,9 +2955,9 @@ mod tests {
         assert!(source.contains("session_resume,"));
     }
 
-    /// The preset surface: both commands registered, the `preset.*`
-    /// dispatch arm present, and the pick event constant declared —
-    /// all asserted against the registration source itself. `concat!`
+    /// The preset surface: `presets_list` plus the three palette
+    /// commands registered, and the pick event constant declared — all
+    /// asserted against the registration source itself. `concat!`
     /// keeps each literal out of this file's text (same trick as the
     /// `concat!("listen_", "stub")` negative assert above) so the
     /// asserts can't self-satisfy.
@@ -2933,8 +2965,9 @@ mod tests {
     fn preset_commands_and_dispatch_are_in_the_contract() {
         let source = include_str!("lib.rs");
         assert!(source.contains(concat!("presets", "_list,")));
-        assert!(source.contains(concat!("presets", "_menu,")));
-        assert!(source.contains(concat!("preset", "_item_id")));
+        assert!(source.contains(concat!("presets", "_palette_open,")));
+        assert!(source.contains(concat!("presets", "_palette_select,")));
+        assert!(source.contains(concat!("presets", "_palette_close,")));
         assert!(source.contains(concat!("EV_", "PRESET_PICK")));
     }
 

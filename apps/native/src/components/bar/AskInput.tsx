@@ -26,7 +26,10 @@ const METRICS = 'text-[14px] leading-5';
  *  never submits — WKWebView dispatches `compositionend` before that
  *  keydown, so `isComposing` is already false and `keyCode === 229` is
  *  the reliable signal (WebKit bug 165004). `onChange`/`onSelect` feed
- *  the dictation tracker. */
+ *  the dictation tracker. `onDisarm` fires on Backspace/Delete at a
+ *  collapsed caret-0 — the armed preset badges' remove gesture; it
+ *  returns whether it disarmed (a `true` swallows the key so forward
+ *  Delete can't eat the first character too). */
 export const AskInput = ({
   ref,
   value,
@@ -36,6 +39,7 @@ export const AskInput = ({
   onSelect,
   onFocus,
   onSubmit,
+  onDisarm,
 }: {
   ref: RefObject<HTMLTextAreaElement | null>;
   value: string;
@@ -48,6 +52,7 @@ export const AskInput = ({
   onSelect: (e: SyntheticEvent<HTMLTextAreaElement>) => void;
   onFocus: () => void;
   onSubmit: (withScreen: boolean) => void;
+  onDisarm: () => boolean;
 }) => {
   const overlayRef = useRef<HTMLDivElement>(null);
   /* `color: transparent` would hide the CJK marked-text preview too,
@@ -92,6 +97,15 @@ export const AskInput = ({
           ) {
             e.preventDefault();
             onSubmit(e.metaKey || e.ctrlKey);
+          } else if (
+            (e.key === 'Backspace' || e.key === 'Delete') &&
+            !e.nativeEvent.isComposing &&
+            e.keyCode !== 229 &&
+            e.currentTarget.selectionStart === 0 &&
+            e.currentTarget.selectionEnd === 0 &&
+            onDisarm()
+          ) {
+            e.preventDefault();
           }
         }}
         onChange={onChange}

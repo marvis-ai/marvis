@@ -60,7 +60,7 @@ import {
   listenStart,
   listenStatus,
   presetsList,
-  presetsMenu,
+  presetsPaletteOpen,
   raise,
   windowFocusBar,
   windowSetBarExpanded,
@@ -93,7 +93,13 @@ import { HistorySection } from '@/components/HistorySection';
 import { ListenSection } from '@/components/ListenSection';
 import type { ListenViewing } from '@/components/listen/model';
 import { PANEL } from '@/lib/classes';
-import { expandTemplate, langName, resolveSlash } from '@/lib/presets';
+import {
+  expandTemplate,
+  hasLangParam,
+  isTemplate,
+  langName,
+  resolveSlash,
+} from '@/lib/presets';
 
 const LaunchIntro = lazy(() =>
   import('@/components/LaunchIntro').then((m) => ({
@@ -136,18 +142,42 @@ const Bar = () => {
   const [listenViewing, setListenViewing] = useState<ListenViewing | null>(
     null,
   );
-  /** The merged preset list (built-ins + customs) behind the wand
-   *  menu and the `/name` shorthand; `armed` is the per-send instruct
-   *  preset chip. `mainLang` feeds `{lang}` template expansion. */
+  /** The merged preset list (built-ins + customs) behind the palette
+   *  and the `/name` shorthand; `armed` is the per-send preset badge,
+   *  `langParam` its editable `{lang}` value (null when the armed text
+   *  has no `{lang}`). `mainLang` seeds the badge's default. */
   const [presets, setPresets] = useState<Preset[]>([]);
   const [armedPreset, setArmedPresetState] = useState<Preset | null>(null);
-  /** Live mirror of `armedPreset` for `sendAsk` — `dictation.submit`
-   *  can defer the send behind a settling stop, so the render-time
-   *  state would read stale there (same shape as `textRef`). */
+  const [langParam, setLangParamState] = useState<string | null>(null);
+  const [editingLang, setEditingLang] = useState(false);
+  /** Live mirrors for `sendAsk`/`onDisarm` — `dictation.submit` can
+   *  defer the send behind a settling stop, so render-time state
+   *  would read stale there (same shape as `textRef`). */
   const armedPresetRef = useRef<Preset | null>(null);
+  const langParamRef = useRef<string | null>(null);
+  /** The pre-edit `{lang}` value — the mini field's Esc reverts to it. */
+  const langRevert = useRef<string | null>(null);
   const setArmedPreset = (p: Preset | null) => {
     armedPresetRef.current = p;
     setArmedPresetState(p);
+  };
+  const setLangParam = (v: string | null) => {
+    langParamRef.current = v;
+    setLangParamState(v);
+  };
+  /** Arm a preset: its badge plus — when the text carries `{lang}` —
+   *  a second, editable language badge seeded from the main language. */
+  const armPreset = (p: Preset) => {
+    setArmedPreset(p);
+    setLangParam(hasLangParam(p) ? langName(mainLang) : null);
+    setEditingLang(false);
+  };
+  /** Full disarm — the badge group goes together (✕, Esc, a caret-0
+   *  Backspace/Delete, or a fired send). */
+  const disarmPreset = () => {
+    setArmedPreset(null);
+    setLangParam(null);
+    setEditingLang(false);
   };
   const [mainLang, setMainLang] = useState('en');
 
@@ -349,9 +379,9 @@ const Bar = () => {
         }
         // Esc discards the field — a pending stop's returned draft must
         // not land in the cleared text, and a live anchor stops without
-        // applying. The armed preset chip disarms with the field.
+        // applying. The armed preset badges disarm with the field.
         dictation.discard();
-        setArmedPreset(null);
+        disarmPreset();
         setText('');
         setOpen(false);
         inputRef.current?.blur();
@@ -386,24 +416,16 @@ const Bar = () => {
     inputRef.current?.blur();
   };
 
-  /** Menu pick (`bar:preset-pick`) — templates expand the composer's
-   *  text into `{input}` for editing; instructions arm the chip.
-   *  Paused while dictation owns the field (the tracker would splice
-   *  its final draft over the rewrite). */
+  /** Palette pick (`bar:preset-pick`) — every preset arms as a badge
+   *  (+ its `{lang}` param badge when the text has one); expansion
+   *  waits for send. Paused while dictation owns the field. */
   const applyPreset = (p: Preset) => {
     dictation.discard();
-    if (p.kind === 'template') {
-      // A leftover `/` (the send-time menu shortcut leaves it in the
-      // field) isn't an argument — expand against empty input.
-      const input = textRef.current.trim() === '/' ? '' : textRef.current;
-      setText(expandTemplate(p.text, input, langName(mainLang)));
-    } else {
-      setArmedPreset(p);
-    }
+    armPreset(p);
     inputRef.current?.focus();
   };
   useTauriEvent<Preset>(EV_PRESET_PICK, (p) => {
-    // The native menu outlives the webview's render — a pick landing
+    // The palette outlives the webview's render — a pick landing
     // after the composer unmounted (history card, gate/error rows)
     // must no-op rather than mutate a hidden field.
     if (dictation.state === 'listening' || !inputRenderedRef.current) {
@@ -421,18 +443,8 @@ const Bar = () => {
     const hit = resolveSlash(e.target.value, presets, false);
     if (!hit) return;
     dictation.discard();
-    if (hit.preset.kind === 'template') {
-      setText(
-        expandTemplate(
-          hit.preset.text,
-          hit.rest.trimStart(),
-          langName(mainLang),
-        ),
-      );
-    } else {
-      setArmedPreset(hit.preset);
-      setText(hit.rest);
-    }
+    armPreset(hit.preset);
+    setText(hit.rest);
   };
 
   /** Send a question — the field's text by default, or an explicit one
@@ -444,42 +456,54 @@ const Bar = () => {
    *  from the listen card binds to that doc's own chat — the viewed
    *  session's id, else the live session's. */
   const sendAsk = async (withScreen = false, question?: string) => {
-    let presetId = armedPresetRef.current?.id;
+    let preset = armedPresetRef.current;
+    let slashInput: string | undefined;
     if (question === undefined) {
       const raw = textRef.current;
-      // Bare `/` opens the preset menu instead of sending a slash.
+      // Bare `/` opens the preset palette instead of sending a slash.
       if (raw.trim() === '/') {
-        void presetsMenu().catch(() => {});
+        void presetsPaletteOpen().catch(() => {});
         return;
       }
       const hit = resolveSlash(raw, presets, true);
       if (hit) {
         const rest = hit.rest.trim();
         dictation.discard();
-        if (hit.preset.kind === 'template') {
-          // The expansion waits in the composer for editing — nothing
-          // sends until the user submits it.
-          setText(expandTemplate(hit.preset.text, rest, langName(mainLang)));
-          return;
-        }
-        setText(rest);
-        presetId = hit.preset.id;
         if (!rest) {
-          // Armed — the request is still to come. A send that fires
-          // skips the arm entirely (the one-shot clear below owns it).
-          setArmedPreset(hit.preset);
+          // `/name` alone arms the badge — the request is still to
+          // come; the send below only runs once there's text.
+          armPreset(hit.preset);
+          setText('');
+          inputRef.current?.focus();
           return;
         }
+        preset = hit.preset;
+        slashInput = rest;
+        setText('');
       }
     }
-    const t = (question ?? textRef.current).trim();
-    if (!t) {
+    const t0 = (slashInput ?? question ?? textRef.current).trim();
+    if (!t0) {
       return;
     }
+    // An armed `{input}` preset expands around the typed text — the
+    // bubble shows the resolved request (WYSIWYG at send, not pick).
+    const t =
+      preset && isTemplate(preset)
+        ? expandTemplate(
+            preset.text,
+            t0,
+            langParamRef.current ?? langName(mainLang),
+          ).trim()
+        : t0;
     if (question === undefined) {
       setText('');
     }
-    setArmedPreset(null); // one-shot: the chip clears when a send fires
+    const presetLang =
+      preset && hasLangParam(preset)
+        ? (langParamRef.current ?? undefined)
+        : undefined;
+    disarmPreset(); // one-shot: the badges clear when a send fires
     let listenId = section === 'listen' ? listenViewing?.id : undefined;
     if (section === 'listen' && listenId === undefined) {
       listenId =
@@ -487,7 +511,7 @@ const Bar = () => {
           .then((s) => s.session_id)
           .catch(() => null)) ?? undefined;
     }
-    void askSend(t, withScreen, listenId, presetId).catch(() =>
+    void askSend(t, withScreen, listenId, preset?.id, presetLang).catch(() =>
       raise('Send failed'),
     );
   };
@@ -709,18 +733,63 @@ const Bar = () => {
             disabled={gate !== 'main'}
           />
         )}
-        {/* The armed instruct preset — a one-shot chip: ✕ disarms,
-            Esc shares the field discard, a fired send clears it. */}
+        {/* The armed preset's badges — the name in accent, then its
+            editable `{lang}` param in neutral when the text carries
+            one. One-shot: ✕/Esc/caret-0 Backspace-Delete disarms, a
+            fired send clears them. */}
         {showInputRow && armedPreset && (
           <span className='flex flex-none items-center gap-1 self-center rounded-full bg-accent-soft px-2 py-0.75 text-[11.5px] font-medium text-accent-text'>
             {armedPreset.name}
             <button
               type='button'
               aria-label={`Remove ${armedPreset.name} preset`}
-              onClick={() => setArmedPreset(null)}
+              onClick={disarmPreset}
               className='-mr-0.5 rounded-full p-0.25 text-accent-text/70 transition-colors duration-(--motion-fast) hover:text-accent-text focus-visible:outline-2 focus-visible:outline-accent'>
               <XIcon className='size-3' />
             </button>
+          </span>
+        )}
+        {showInputRow && armedPreset && langParam !== null && (
+          <span className='flex flex-none items-center self-center'>
+            {editingLang ? (
+              <input
+                autoFocus
+                size={Math.max(4, langParam.length + 1)}
+                value={langParam}
+                aria-label='Preset language'
+                onChange={(e) => setLangParam(e.target.value)}
+                onBlur={() => {
+                  setEditingLang(false);
+                }}
+                onKeyDown={(e) => {
+                  e.stopPropagation();
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    setEditingLang(false);
+                    inputRef.current?.focus();
+                  } else if (e.key === 'Escape') {
+                    e.preventDefault();
+                    if (langRevert.current !== null) {
+                      setLangParam(langRevert.current);
+                    }
+                    setEditingLang(false);
+                    inputRef.current?.focus();
+                  }
+                }}
+                className='rounded-full bg-fg-soft px-2 py-0.75 text-[11.5px] font-medium text-foreground outline-none focus:shadow-(--focus-ring)'
+              />
+            ) : (
+              <button
+                type='button'
+                title='Language for {lang} — click to change'
+                onClick={() => {
+                  langRevert.current = langParam;
+                  setEditingLang(true);
+                }}
+                className='rounded-full bg-fg-soft px-2 py-0.75 text-[11.5px] font-medium text-foreground transition-colors duration-(--motion-fast) hover:bg-[color-mix(in_oklch,var(--fg)_14%,transparent)] focus-visible:outline-2 focus-visible:outline-accent'>
+                {langParam}
+              </button>
+            )}
           </span>
         )}
         <AskInput
@@ -732,14 +801,20 @@ const Bar = () => {
           onSelect={dictation.handleSelect}
           onFocus={() => gate === 'main' && setOpen(true)}
           onSubmit={submitAsk}
+          onDisarm={() => {
+            if (!armedPresetRef.current) return false;
+            dictation.discard();
+            disarmPreset();
+            return true;
+          }}
         />
-        {/* Preset picker — a native popup (the pill's fixed 64px can't
-            host a webview menu); picks arrive as bar:preset-pick. */}
+        {/* Preset palette — the styled glass overlay beside the bar;
+            picks arrive as bar:preset-pick. */}
         {showInputRow && (
           <BarButton
             label='Prompt presets'
             disabled={gate !== 'main'}
-            onPress={() => void presetsMenu().catch(() => {})}>
+            onPress={() => void presetsPaletteOpen().catch(() => {})}>
             <WandSparklesIcon className='size-5' />
           </BarButton>
         )}
@@ -855,11 +930,11 @@ const Bar = () => {
       onContextMenu={(e) => {
         e.preventDefault();
         if (gate !== 'main') return;
-        // The composer's right-click is the preset picker; surfaces
+        // The composer's right-click is the preset palette; surfaces
         // without one (idle capsule, history card, gate/error rows)
         // get the shared menu — a pick needs a field to land in.
         if (inputRendered) {
-          void presetsMenu().catch(() => {});
+          void presetsPaletteOpen().catch(() => {});
         } else {
           void barContextMenu().catch(() => {});
         }

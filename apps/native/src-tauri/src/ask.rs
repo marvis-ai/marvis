@@ -156,9 +156,16 @@ pub(crate) struct SendOpts<'a> {
     pub screen_required: bool,
     pub regenerate: bool,
     pub listen_id: Option<i64>,
-    /// The armed `instruct` preset id — resolved against the catalog +
-    /// `prompts.custom` in `kick`; `None` for a plain send.
+    /// The armed preset id — resolved against the catalog +
+    /// `prompts.custom` in `kick`; `None` for a plain send. A resolvable
+    /// id persists on the user row either way (the `· name` provenance
+    /// covers expanding presets too); only a non-`{input}` preset
+    /// contributes instruction text.
     pub preset: Option<String>,
+    /// The `{lang}` param badge's per-send value — substitutes the
+    /// preset text's `{lang}` placeholder; `None` resolves it to the
+    /// configured main language.
+    pub preset_lang: Option<String>,
 }
 
 /// One ask at a time; the Task-14 `AppState` share.
@@ -228,6 +235,7 @@ impl AskService {
     /// Returns after synchronous pre-flight; the stream itself runs on a
     /// `tauri::async_runtime::spawn` task so the calling command handler
     /// never blocks on the LLM.
+    #[allow(clippy::too_many_arguments)]
     pub fn send(
         self: &Arc<Self>,
         app: &AppHandle,
@@ -236,6 +244,7 @@ impl AskService {
         with_screen: bool,
         listen_id: Option<i64>,
         preset: Option<String>,
+        preset_lang: Option<String>,
     ) {
         self.kick(
             app,
@@ -245,6 +254,7 @@ impl AskService {
                 with_screen,
                 listen_id,
                 preset,
+                preset_lang,
                 ..SendOpts::default()
             },
         );
@@ -323,6 +333,7 @@ impl AskService {
             regenerate,
             listen_id,
             preset,
+            preset_lang,
         } = opts;
         let gen = {
             let mut state = self.state.lock();
@@ -352,23 +363,36 @@ impl AskService {
         // The failover chain: `providers.order` minus disabled/unusable.
         // An empty chain is the "no usable provider" error — nothing to
         // fall back TO, so the card links straight to settings. The
-        // screen reader (`[vision]`) and the armed preset's instruct
-        // text resolve under the same lock.
-        let (candidates, vision, language, instruction) = {
+        // screen reader (`[vision]`), the armed preset's resolution, and
+        // its `{lang}` substitution all read under the same lock.
+        let (candidates, vision, language, instruction, preset_hit) = {
             let cfg = deps.config.lock();
             let ks = deps.keystore.lock();
-            let instruction = preset.as_deref().and_then(|id| {
-                let found = crate::presets::resolve_instruct(id, &cfg.prompts.custom);
-                if found.is_none() {
-                    log::warn!("ask: preset {id} missing or not instruct — sending without");
+            let resolved = preset.as_deref().and_then(|id| {
+                let p = crate::presets::resolve(id, &cfg.prompts.custom);
+                if p.is_none() {
+                    log::warn!("ask: preset {id} unresolved — sending without");
                 }
-                found.map(|p| p.text)
+                p
             });
+            // `{lang}` — the param badge's edited value when the send
+            // carried one, else the configured main language.
+            let lang_arg = preset_lang.clone().unwrap_or_else(|| {
+                crate::prompts::language_name(&cfg.app.main_language).to_string()
+            });
+            // An expanding preset (`{input}` in its text) contributes no
+            // instruction — the webview already folded it into `text`;
+            // the id persists below purely as provenance.
+            let instruction = resolved
+                .as_ref()
+                .filter(|p| !crate::presets::is_template(p))
+                .map(|p| p.text.replace("{lang}", &lang_arg));
             (
                 crate::provider_candidates(&cfg, &ks),
                 crate::vision_candidate(&cfg, &ks),
                 cfg.app.main_language.clone(),
                 instruction,
+                resolved.is_some(),
             )
         };
         if candidates.is_empty() {
@@ -401,9 +425,9 @@ impl AskService {
         let capture_running = deps.capture_running;
         // `None` when the id didn't resolve — a stale/deleted preset
         // must not persist `preset = "u:dead"` on the user row or claim
-        // steering it never applied in the `loading` emits (the send
+        // provenance it never had in the `loading` emits (the send
         // itself still proceeds per the warn above).
-        let preset_id = preset.filter(|_| instruction.is_some());
+        let preset_id = preset.filter(|_| preset_hit);
         tauri::async_runtime::spawn(async move {
             // Outgoing events also fold into Rust-side state — but only
             // while this run is the current generation; a cancelled

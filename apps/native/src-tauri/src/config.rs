@@ -1140,7 +1140,6 @@ mod tests {
         cfg.prompts.custom = vec![crate::presets::Preset {
             id: "u:test".into(),
             name: "Test".into(),
-            kind: crate::presets::PresetKind::Instruct,
             text: "Be terse.".into(),
         }];
         cfg.save_to(&path).unwrap();
@@ -1149,6 +1148,8 @@ mod tests {
         assert_eq!(loaded.prompts.custom[0].id, "u:test");
 
         // A hand-edited file keeps valid rows and drops malformed ones.
+        // (The stale `kind` keys double as a compatibility check — the
+        // older schema's field is ignored on load, not an error.)
         std::fs::write(
             &path,
             "[[prompts.custom]]\n\
@@ -1169,14 +1170,13 @@ mod tests {
     fn prompts_custom_write_validates() {
         let mut prompts = PromptPrefs::default();
         let good = serde_json::json!([{
-            "id": "u:a1", "name": "A", "kind": "template", "text": "do {input}"
+            "id": "u:a1", "name": "A", "text": "do {input}"
         }]);
         assert!(apply_prompts_config(&mut prompts, "prompts.custom", &good).unwrap());
-        assert_eq!(prompts.custom[0].kind, crate::presets::PresetKind::Template);
+        assert_eq!(prompts.custom[0].text, "do {input}");
         assert!(!apply_prompts_config(&mut prompts, "other.key", &serde_json::json!([])).unwrap());
 
-        let bad =
-            serde_json::json!([{ "id": "u:a1", "name": "", "kind": "instruct", "text": "x" }]);
+        let bad = serde_json::json!([{ "id": "u:a1", "name": "", "text": "x" }]);
         assert!(apply_prompts_config(&mut prompts, "prompts.custom", &bad).is_err());
     }
 }

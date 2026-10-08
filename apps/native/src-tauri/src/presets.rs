@@ -1,74 +1,67 @@
 //! presets.rs — named per-send prompt presets (ROADMAP Phase 1 → the
 //! seed of Phase 3 skill bundles). Built-ins ship in the catalog below
 //! (`b:` ids); user presets persist as `[[prompts.custom]]` in
-//! `config.toml` (`u:` ids). `instruct` presets append their text to a
-//! send's system prompt; `template` presets expand `{input}`/`{lang}`
-//! in the composer and never reach `ask_send` armed.
+//! `config.toml` (`u:` ids). There is no preset "kind": a text that
+//! contains `{input}` expands into the sent message (the composer shows
+//! the armed preset + its `{lang}` param as badges); any other text is
+//! a silent instruction appended to that send's system prompt.
 
 use serde::{Deserialize, Serialize};
-
-/// `instruct` presets append `text` to the ask's system prompt for
-/// that send only; `template` presets are composer-side text
-/// expansions (`{input}`/`{lang}`) — they never ride `ask_send`.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum PresetKind {
-    #[default]
-    Instruct,
-    Template,
-}
 
 /// One preset — built-in (`b:` id) or user-defined (`u:` id).
 /// `#[serde(default)]` keeps a hand-edited `[[prompts.custom]]` row
 /// with a missing field from failing the whole `Config` load —
-/// `validate`/`normalize` then drop the malformed row.
+/// `validate`/`normalize` then drop the malformed row. A stale `kind`
+/// key from an older schema deserializes harmlessly (unknown fields
+/// are ignored).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Preset {
     pub id: String,
     pub name: String,
-    pub kind: PresetKind,
     pub text: String,
 }
 
-/// The shipped catalog — `(id, name, kind, text)` rows. `{input}` =
-/// the composer's text at pick time; `{lang}` = the configured main
-/// language's English name (both expand webview-side).
-const BUILTIN_ROWS: &[(&str, &str, PresetKind, &str)] = &[
+/// `{input}` in the text is the whole contract: with it, the preset
+/// expands into the composer's message (`{lang}` → the configured main
+/// language, editable per-send); without it, the text is an
+/// instruction appended to the send's system prompt.
+pub fn is_template(p: &Preset) -> bool {
+    p.text.contains("{input}")
+}
+
+/// The shipped catalog — `(id, name, text)` rows. `{input}` = the
+/// composer's text at send time; `{lang}` = the configured main
+/// language's English name.
+const BUILTIN_ROWS: &[(&str, &str, &str)] = &[
     (
         "b:concise",
         "Concise",
-        PresetKind::Instruct,
         "Answer briefly — a short paragraph or a tight list.",
     ),
     (
         "b:explain",
         "Explain",
-        PresetKind::Instruct,
         "Explain for a newcomer — define terms, avoid jargon.",
     ),
     (
         "b:advocate",
         "Devil's advocate",
-        PresetKind::Instruct,
         "Challenge this: strongest counterarguments first, then a verdict.",
     ),
     (
         "b:translate",
         "Translate",
-        PresetKind::Template,
         "Translate the following into {lang}:\n\n{input}",
     ),
     (
         "b:reply",
         "Reply",
-        PresetKind::Template,
         "Draft a reply to this message — match its tone:\n\n{input}",
     ),
     (
         "b:summarize",
         "Summarize",
-        PresetKind::Template,
         "Summarize the following in 3–5 bullets:\n\n{input}",
     ),
 ];
@@ -77,16 +70,15 @@ const BUILTIN_ROWS: &[(&str, &str, PresetKind, &str)] = &[
 pub fn builtins() -> Vec<Preset> {
     BUILTIN_ROWS
         .iter()
-        .map(|(id, name, kind, text)| Preset {
+        .map(|(id, name, text)| Preset {
             id: id.to_string(),
             name: name.to_string(),
-            kind: *kind,
             text: text.to_string(),
         })
         .collect()
 }
 
-/// Built-ins then customs — the merged order the picker menu, the
+/// Built-ins then customs — the merged order the palette, the
 /// `/`-shorthand matcher, and `ask_send`'s id resolution all share.
 pub fn all(custom: &[Preset]) -> Vec<Preset> {
     builtins()
@@ -95,16 +87,18 @@ pub fn all(custom: &[Preset]) -> Vec<Preset> {
         .collect()
 }
 
-/// First preset with `id` — any kind. `preset.*` menu dispatch uses
-/// this; the ask path wants `resolve_instruct` instead.
+/// First preset with `id` — palette selects and `ask_send`'s preset
+/// resolution both use this (the ask path then checks `is_template` to
+/// decide between instruction text and pure provenance).
 pub fn find(id: &str, custom: &[Preset]) -> Option<Preset> {
     all(custom).into_iter().find(|p| p.id == id)
 }
 
-/// `ask_send` resolution: instruct presets only — a template id sent
-/// armed is a crafted-invoke edge (expansion lives in the composer).
-pub fn resolve_instruct(id: &str, custom: &[Preset]) -> Option<Preset> {
-    find(id, custom).filter(|p| p.kind == PresetKind::Instruct)
+/// `ask_send` resolution — alias of `find` kept for readability at the
+/// send site: any resolvable id persists on the row for provenance;
+/// only a non-template contributes `instruction` text.
+pub fn resolve(id: &str, custom: &[Preset]) -> Option<Preset> {
+    find(id, custom)
 }
 
 /// One preset's shape — trimmed fields checked by the caller first
@@ -169,17 +163,16 @@ pub fn validate_custom(list: Vec<Preset>) -> Result<Vec<Preset>, String> {
 mod tests {
     use super::*;
 
-    fn custom(id: &str, name: &str, kind: PresetKind) -> Preset {
+    fn custom(id: &str, name: &str) -> Preset {
         Preset {
             id: id.to_string(),
             name: name.to_string(),
-            kind,
             text: "preset text".to_string(),
         }
     }
 
     #[test]
-    fn builtins_have_unique_ids_and_valid_rows() {
+    fn builtins_have_unique_ids_valid_rows_and_both_behaviors() {
         let list = builtins();
         assert!(list.len() >= 5);
         let ids: std::collections::HashSet<_> = list.iter().map(|p| &p.id).collect();
@@ -188,23 +181,37 @@ mod tests {
             assert!(p.id.starts_with("b:"));
             assert!(!p.name.is_empty() && !p.text.is_empty());
         }
-        assert!(list.iter().any(|p| p.kind == PresetKind::Instruct));
-        assert!(list.iter().any(|p| p.kind == PresetKind::Template));
+        // The catalog keeps both behaviors reachable: plain instructions
+        // (no `{input}`) and expanding presets (contain `{input}`).
+        assert!(list.iter().any(|p| is_template(p)));
+        assert!(list.iter().any(|p| !is_template(p)));
+    }
+
+    #[test]
+    fn is_template_is_purely_the_input_placeholder() {
+        let template = custom("u:t", "T");
+        let mut template = template;
+        template.text = "Summarize:\n\n{input}".to_string();
+        assert!(is_template(&template));
+        let mut instruct = custom("u:i", "I");
+        instruct.text = "Answer in {lang}.".to_string();
+        assert!(!is_template(&instruct)); // `{lang}` alone stays an instruction
+        assert!(!is_template(&custom("u:p", "P")));
     }
 
     #[test]
     fn find_searches_builtins_then_customs() {
-        let customs = vec![custom("u:1", "Mine", PresetKind::Instruct)];
+        let customs = vec![custom("u:1", "Mine")];
         assert_eq!(find("b:concise", &customs).unwrap().name, "Concise");
         assert_eq!(find("u:1", &customs).unwrap().name, "Mine");
         assert!(find("nope", &customs).is_none());
     }
 
     #[test]
-    fn resolve_instruct_skips_templates_and_unknowns() {
-        assert!(resolve_instruct("b:concise", &[]).is_some());
-        assert!(resolve_instruct("b:translate", &[]).is_none());
-        assert!(resolve_instruct("b:missing", &[]).is_none());
+    fn resolve_hits_any_resolvable_id() {
+        assert!(resolve("b:concise", &[]).is_some());
+        assert!(resolve("b:translate", &[]).is_some());
+        assert!(resolve("b:missing", &[]).is_none());
     }
 
     #[test]
@@ -212,35 +219,28 @@ mod tests {
         let ok = validate_custom(vec![Preset {
             id: " u:a1 ".into(),
             name: "  Named ".into(),
-            kind: PresetKind::Template,
             text: " body ".into(),
         }])
         .unwrap();
         assert_eq!(ok[0].id, "u:a1");
         assert_eq!(ok[0].name, "Named");
 
-        assert!(validate_custom(vec![custom("", "x", PresetKind::Instruct)]).is_err());
-        assert!(validate_custom(vec![custom("b:concise", "x", PresetKind::Instruct)]).is_err());
-        assert!(validate_custom(vec![
-            custom("u:1", "a", PresetKind::Instruct),
-            custom("u:1", "b", PresetKind::Instruct),
-        ])
-        .is_err());
-        let mut empty_text = custom("u:2", "x", PresetKind::Instruct);
+        assert!(validate_custom(vec![custom("", "x")]).is_err());
+        assert!(validate_custom(vec![custom("b:concise", "x")]).is_err());
+        assert!(validate_custom(vec![custom("u:1", "a"), custom("u:1", "b"),]).is_err());
+        let mut empty_text = custom("u:2", "x");
         empty_text.text = "  ".into();
         assert!(validate_custom(vec![empty_text]).is_err());
 
         // Limits: name ≤24 chars, text ≤2000 chars, and a custom id
         // must be a webview-minted `u:` string — `b:` is the catalog's
         // namespace even when the id isn't a shipped built-in.
-        assert!(
-            validate_custom(vec![custom("u:3", &"n".repeat(25), PresetKind::Instruct)]).is_err()
-        );
-        let mut long_text = custom("u:4", "x", PresetKind::Instruct);
+        assert!(validate_custom(vec![custom("u:3", &"n".repeat(25))]).is_err());
+        let mut long_text = custom("u:4", "x");
         long_text.text = "t".repeat(2001);
         assert!(validate_custom(vec![long_text]).is_err());
-        assert!(validate_custom(vec![custom("b:zzz", "x", PresetKind::Instruct)]).is_err());
+        assert!(validate_custom(vec![custom("b:zzz", "x")]).is_err());
         // The bare `u:` prefix with no suffix names nothing.
-        assert!(validate_custom(vec![custom("u:", "x", PresetKind::Instruct)]).is_err());
+        assert!(validate_custom(vec![custom("u:", "x")]).is_err());
     }
 }

@@ -1,10 +1,20 @@
 /**
- * Composer preset helpers — the `/name` shorthand's token matcher and
- * the `template` kind's `{input}`/`{lang}` expansion. Mirrors
- * `src-tauri/src/presets.rs` (catalog order is the same list the
- * backend serves via `presets_list`).
+ * Composer preset helpers — the `/name` shorthand's token matcher, the
+ * `{input}`/`{lang}` expansion for armed presets, and the derived
+ * "template" read (`{input}` in the text expands into the message).
+ * Mirrors `src-tauri/src/presets.rs` (catalog order is the same list
+ * the backend serves via `presets_list`).
  */
 import type { Preset } from './commands';
+
+/** `{input}` in the text is the whole contract — with it, the preset
+ *  expands into the sent message at send time; without it, the text is
+ *  a silent system-prompt instruction. Mirrors `presets::is_template`. */
+export const isTemplate = (p: Preset): boolean => p.text.includes('{input}');
+
+/** Whether the preset takes a `{lang}` param — the armed composer
+ *  shows its editable language badge for these. */
+export const hasLangParam = (p: Preset): boolean => p.text.includes('{lang}');
 
 /** The caret-0 `/token`: `text` starts with `/`; the token is the
  *  `[a-z0-9-]` run after it — the `i` flag admits A–Z too, so `token`

@@ -107,6 +107,14 @@ pub const PICKER_LABEL: &str = "picker";
 const PICKER_W: f64 = 760.0;
 const PICKER_H: f64 = 560.0;
 const PICKER_RADIUS: f64 = 16.0;
+/// The preset palette (`?view=palette`) — the wand's small Marvis-glass
+/// overlay anchored to the bar's inward side, sized for the merged
+/// preset list (scrolls past ~8 rows) and the future skills surface.
+/// Lazy like `picker`; a focus loss hides it, menu-style.
+pub const PALETTE_LABEL: &str = "palette";
+const PALETTE_W: f64 = 300.0;
+const PALETTE_H: f64 = 320.0;
+const PALETTE_RADIUS: f64 = 14.0;
 /// Slide-in distance above the target rect when the alert toast appears.
 const SHOW_OFFSET_Y: f64 = 10.0;
 /// Fallback work area if every monitor query fails.
@@ -143,6 +151,9 @@ pub struct WindowPool {
     /// The share-picker panel (`?view=picker`) — built lazily on first
     /// `show_picker`, then re-shown; it never joins the gate lifecycle.
     picker: Option<WebviewWindow>,
+    /// The preset palette (`?view=palette`) — lazy like `picker`;
+    /// blur-dismissed, so it never needs gate cleanup either.
+    palette: Option<WebviewWindow>,
     /// Whether the unified card (chat or listen mode) is open.
     chat_open: bool,
     /// Last reported card CONTENT height — window = `BAR_H + this`.
@@ -175,6 +186,7 @@ impl WindowPool {
             prefs: None,
             prefs_mode: String::new(),
             picker: None,
+            palette: None,
             chat_open: false,
             chat_height: CHAT_DEFAULT_H,
             expand_dir: Dir::Down,
@@ -283,6 +295,7 @@ impl WindowPool {
             prefs: None,
             prefs_mode: String::new(),
             picker: None,
+            palette: None,
             chat_open: false,
             chat_height: CHAT_DEFAULT_H,
             expand_dir: Dir::Down,
@@ -429,6 +442,67 @@ impl WindowPool {
 
     pub fn hide_picker(&self) {
         if let Some(win) = &self.picker {
+            let _ = win.hide();
+        }
+    }
+
+    /// Show (lazily building) the preset palette on the bar's inward
+    /// side — the edge opposite `bar_edge` — then announce
+    /// `palette:open` (the view refetches `presets_list` on it, same
+    /// race cover as `picker:open`). Focused so its key nav works
+    /// immediately; `Focused(false)` hides it — click-away, or the bar
+    /// reclaiming focus after a pick, is the menu's dismiss.
+    pub fn show_palette(&mut self, app: &AppHandle) -> bool {
+        if self.palette.is_none() {
+            let tint = accent_glass_tint(&app.state::<crate::AppState>().accent());
+            let win = match build_window(
+                app,
+                PALETTE_LABEL,
+                PALETTE_W,
+                PALETTE_H,
+                PALETTE_RADIUS,
+                tint,
+            ) {
+                Ok(win) => win,
+                Err(e) => {
+                    log::warn!("windows: palette build failed: {e}");
+                    return false;
+                }
+            };
+            {
+                let app2 = app.clone();
+                win.on_window_event(move |event| {
+                    // `try_state` like the bar's `Resized` arm — the
+                    // handler outlives any gate/state teardown.
+                    let Some(state) = app2.try_state::<crate::AppState>() else {
+                        return;
+                    };
+                    if matches!(event, tauri::WindowEvent::Focused(false)) {
+                        state.pool.lock().hide_palette();
+                    }
+                });
+            }
+            self.palette = Some(win);
+        }
+        let Some(win) = self.palette.clone() else {
+            return false;
+        };
+        let r = layout::palette_rect(
+            self.bar_rect,
+            self.bar_edge(),
+            PALETTE_W,
+            PALETTE_H,
+            self.bar_work_area(),
+        );
+        set_rect(&win, r);
+        let _ = win.show();
+        let _ = win.set_focus();
+        let _ = app.emit_to(PALETTE_LABEL, "palette:open", ());
+        true
+    }
+
+    pub fn hide_palette(&self) {
+        if let Some(win) = &self.palette {
             let _ = win.hide();
         }
     }

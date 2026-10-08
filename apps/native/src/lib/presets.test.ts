@@ -2,6 +2,8 @@ import { describe, expect, test } from 'bun:test';
 import type { Preset } from './commands';
 import {
   expandTemplate,
+  hasLangParam,
+  isTemplate,
   langName,
   matchPreset,
   presetToken,
@@ -9,17 +11,16 @@ import {
   slashToken,
 } from './presets';
 
-const P = (id: string, name: string, kind: Preset['kind']): Preset => ({
+const P = (id: string, name: string, text = ''): Preset => ({
   id,
   name,
-  kind,
-  text: '',
+  text,
 });
 
 const presets = [
-  P('b:sum', 'Sum', 'instruct'),
-  P('b:summarize', 'Summarize', 'instruct'),
-  P('u:xx', 'Reply', 'template'),
+  P('b:sum', 'Sum'),
+  P('b:summarize', 'Summarize'),
+  P('u:xx', 'Reply'),
 ];
 
 describe('slashToken', () => {
@@ -59,19 +60,13 @@ describe('matchPreset', () => {
   test('a spaced/punctuated name matches its slugged form', () => {
     // Customs have no memorable id suffix — the slug is their only
     // typeable shorthand.
-    const custom = [
-      P('u:a1', 'Reply nicely', 'template'),
-      P('u:a2', "Devil's advocate", 'instruct'),
-    ];
+    const custom = [P('u:a1', 'Reply nicely'), P('u:a2', "Devil's advocate")];
     expect(matchPreset('reply-nicely', custom)?.id).toBe('u:a1');
     expect(matchPreset('devil-s-advocate', custom)?.id).toBe('u:a2');
   });
 
   test('a slug collision resolves first-in-list', () => {
-    const dups = [
-      P('u:a1', 'Reply nicely', 'template'),
-      P('u:a2', 'Reply, nicely!', 'template'),
-    ];
+    const dups = [P('u:a1', 'Reply nicely'), P('u:a2', 'Reply, nicely!')];
     expect(matchPreset('reply-nicely', dups)?.id).toBe('u:a1');
   });
 });
@@ -96,7 +91,7 @@ describe('resolveSlash', () => {
   });
 
   test('a custom name resolves via its slug', () => {
-    const custom = [P('u:a1', 'Reply nicely', 'template')];
+    const custom = [P('u:a1', 'Reply nicely')];
     expect(resolveSlash('/reply-nicely ', custom, false)?.preset.id).toBe(
       'u:a1',
     );
@@ -108,6 +103,20 @@ describe('resolveSlash', () => {
     expect(resolveSlash('/summarize ', presets, false)?.preset.id).toBe(
       'b:summarize',
     );
+  });
+});
+
+describe('isTemplate / hasLangParam', () => {
+  test('{input} alone decides expansion — mirrors presets::is_template', () => {
+    expect(isTemplate(P('u:t', 'T', 'Summarize:\n\n{input}'))).toBe(true);
+    // `{lang}` alone stays a silent instruction.
+    expect(isTemplate(P('u:l', 'L', 'Answer in {lang}'))).toBe(false);
+    expect(isTemplate(P('u:p', 'P', 'Be terse.'))).toBe(false);
+  });
+
+  test('{lang} flags the editable param badge', () => {
+    expect(hasLangParam(P('u:t', 'T', 'into {lang}:\n\n{input}'))).toBe(true);
+    expect(hasLangParam(P('u:p', 'P', 'Be terse.'))).toBe(false);
   });
 });
 

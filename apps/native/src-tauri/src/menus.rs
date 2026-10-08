@@ -2,11 +2,9 @@
 //! idle-state right-click popup, plus the item builders the app
 //! menubar (menubar.rs) reuses.
 //!
-//! Items live under the `menu.*` id namespace — except the preset
-//! picker's `preset.<id>` rows ([`build_preset_menu`], matched inside
-//! `menu_dispatch` before the `menu.*` arms). Everything dispatches
-//! through the single global `on_menu_event` listener registered in
-//! lib.rs (`menu_dispatch`). Menu events broadcast to EVERY registered
+//! Items live under the `menu.*` id namespace, dispatched through the
+//! single global `on_menu_event` listener registered in lib.rs
+//! (`menu_dispatch`). Menu events broadcast to EVERY registered
 //! listener (global + per-window), so the prefix match is what keeps
 //! dispatch single-fire.
 //!
@@ -51,57 +49,6 @@ pub const MENU_SUPPORT: &str = "menu.support";
 #[cfg(debug_assertions)]
 pub const MENU_DEVTOOLS: &str = "menu.devtools";
 pub const MENU_QUIT: &str = "menu.quit";
-
-/// `preset.<id>` — one item per preset; dispatch emits the picked
-/// preset to the bar as `bar:preset-pick`. Kept OUTSIDE the `menu.*`
-/// namespace so the shared dispatcher's prefix rules stay untouched.
-pub const PRESET_ITEM_PREFIX: &str = "preset.";
-const MENU_PRESET_TEMPLATES: &str = "menu.presets.templates";
-const MENU_PRESET_INSTRUCT: &str = "menu.presets.instruct";
-
-/// The preset id a `preset.*` menu event names, else `None`.
-pub fn preset_item_id(item_id: &str) -> Option<&str> {
-    item_id.strip_prefix(PRESET_ITEM_PREFIX)
-}
-
-/// The wand button's popup (and the input-row right-click): two
-/// submenus — Templates, then Instructions — built fresh so custom
-/// presets always show; customs follow built-ins within each kind.
-pub fn build_preset_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
-    let custom = app.state::<AppState>().config.lock().prompts.custom.clone();
-    let presets = crate::presets::all(&custom);
-    let mut subs: Vec<Submenu<Wry>> = Vec::new();
-    for (menu_id, label, kind) in [
-        (
-            MENU_PRESET_TEMPLATES,
-            "Templates",
-            crate::presets::PresetKind::Template,
-        ),
-        (
-            MENU_PRESET_INSTRUCT,
-            "Instructions",
-            crate::presets::PresetKind::Instruct,
-        ),
-    ] {
-        let mut items: Vec<MenuItem<Wry>> = Vec::new();
-        for p in presets.iter().filter(|p| p.kind == kind) {
-            items.push(MenuItem::with_id(
-                app,
-                format!("{PRESET_ITEM_PREFIX}{}", p.id),
-                p.name.as_str(),
-                true,
-                None::<&str>,
-            )?);
-        }
-        let sub = Submenu::with_id(app, menu_id, label, true)?;
-        let refs: Vec<&dyn IsMenuItem<Wry>> =
-            items.iter().map(|i| i as &dyn IsMenuItem<Wry>).collect();
-        sub.append_items(&refs)?;
-        subs.push(sub);
-    }
-    let refs: Vec<&dyn IsMenuItem<Wry>> = subs.iter().map(|s| s as &dyn IsMenuItem<Wry>).collect();
-    Menu::with_items(app, &refs)
-}
 
 /// Build the shared menu against live state. The pill rect is refreshed
 /// from the live window first — a just-finished drag must check the
@@ -242,16 +189,4 @@ pub(crate) fn position_submenu(app: &AppHandle, edge: Dir) -> tauri::Result<Subm
         position.append_items(&items)?;
     }
     Ok(position)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn preset_item_id_strips_the_prefix() {
-        assert_eq!(preset_item_id("preset.b:concise"), Some("b:concise"));
-        assert_eq!(preset_item_id("menu.ask"), None);
-        assert_eq!(preset_item_id("preset."), Some(""));
-    }
 }

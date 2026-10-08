@@ -129,15 +129,13 @@ export interface RecordingPrefs {
   summary_prompt: string;
 }
 
-export type PresetKind = 'instruct' | 'template';
-
 /** `presets_list` row — built-ins (`b:` ids) then `prompts.custom`
- *  (`u:` ids). `instruct` appends `text` to a send's system prompt;
- *  `template` expands `{input}`/`{lang}` into the composer. */
+ *  (`u:` ids). No kind field: a `text` containing `{input}` expands
+ *  into the sent message (with `{lang}` → the param badge's language);
+ *  anything else appends silently to that send's system prompt. */
 export interface Preset {
   id: string;
   name: string;
-  kind: PresetKind;
   text: string;
 }
 
@@ -265,14 +263,23 @@ export const providerSetEnabled = (provider: string, enabled: boolean) =>
  *  `withScreen` (the bar's Cmd/Ctrl+Enter) is the explicit attach flag —
  *  a screen read runs even when the text shows no intent. `listenId`
  *  binds the send to a listen doc — its own ask session (one chat per
- *  doc), its summary+transcript as the meeting context. `presetId` arms
- *  an `instruct` preset for this send only. */
+ *  doc), its summary+transcript as the meeting context. `presetId`
+ *  arms a preset for this send only; `presetLang` is the `{lang}`
+ *  badge's edited value (`undefined` → the configured main language). */
 export const askSend = (
   text: string,
   withScreen = false,
   listenId?: number,
   presetId?: string,
-) => invoke<void>('ask_send', { text, withScreen, listenId, presetId });
+  presetLang?: string,
+) =>
+  invoke<void>('ask_send', {
+    text,
+    withScreen,
+    listenId,
+    presetId,
+    presetLang,
+  });
 
 /** The bar's camera affordance — a screen-only ask (fixed prompt,
  *  frame required). */
@@ -304,9 +311,17 @@ export const askCurrent = () => invoke<AskCurrent>('ask_current');
 /** The merged preset list — built-ins then customs. */
 export const presetsList = () => invoke<Preset[]>('presets_list');
 
-/** Pop the native preset menu at the cursor — picks arrive as
- *  `bar:preset-pick` events carrying the full `Preset`. */
-export const presetsMenu = () => invoke<void>('presets_menu');
+/** Open the preset palette — the small glass overlay anchored beside
+ *  the bar (the wand's popup; `?view=palette` window). */
+export const presetsPaletteOpen = () => invoke<void>('presets_palette_open');
+
+/** A palette row pick — the backend closes the palette, refocuses the
+ *  bar, and emits the chosen preset as `bar:preset-pick`. */
+export const presetsPaletteSelect = (id: string) =>
+  invoke<void>('presets_palette_select', { id });
+
+/** Dismiss the palette (its Esc — a click-away blur hides itself). */
+export const presetsPaletteClose = () => invoke<void>('presets_palette_close');
 
 // ---------------------------------------------------------------------------
 // listen
@@ -653,7 +668,7 @@ export const configGet = () => invoke<Config>('config_get');
  * `recording.auto_screenshots` (bool), `recording.fps` (`8|4|2`),
  * `recording.read_interval_secs` (number ≥1 — applies on next
  * capture start), `recording.summary_prompt` (string),
- * `prompts.custom` (array of `{id, name, kind, text}` presets —
+ * `prompts.custom` (array of `{id, name, text}` presets —
  * replaces the whole list). Provider
  * order/switches/models go through `providersReorder`/
  * `providerSetEnabled`/`modelSetSelected`. Every successful write

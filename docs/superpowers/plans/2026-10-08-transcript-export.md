@@ -200,11 +200,19 @@ git commit -m "Export: save_text_file — native save dialog + write, Gate::Main
 - [ ] **Step 1: Write the failing tests**
 
 Append to `apps/native/src/components/listen/model.test.ts` — change
-the model import to
-`import { buildBlocks, exportFileName, timeLabel, transcriptMarkdown, type Turn } from './model';`,
-add `import { format } from 'date-fns';` and
-`import type { ListenSummaryPayload } from '@/lib/events';`, reuse the
-file's existing `turn()` fixture, then:
+the model import to the following, add `import { format } from
+'date-fns';` and `import type { ListenSummaryPayload } from
+'@/lib/events';`, reuse the file's existing `turn()` fixture, then:
+
+```ts
+import {
+  buildBlocks,
+  exportFileName,
+  timeLabel,
+  transcriptMarkdown,
+  type Turn,
+} from './model';
+```
 
 ```ts
 describe('transcriptMarkdown', () => {
@@ -405,7 +413,7 @@ git commit -m "Export: transcriptMarkdown + exportFileName builders in the liste
 
 ---
 
-### Task 3: Export menu — ui icon, command wrapper, SpeakerFilter, ListenSection
+### Task 3: Export menu — icon, wrapper, SpeakerFilter, ListenSection
 
 **Files:**
 

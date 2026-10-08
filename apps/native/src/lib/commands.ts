@@ -683,6 +683,11 @@ export const sessionEndActive = (kind: string) =>
 export const sessionResume = (id: number) =>
   invoke<boolean>('session_resume', { id });
 
+/** Document export: native save dialog + write, `null` on cancel. The
+ *  name is only a suggestion — the picker owns the final path. */
+export const saveTextFile = (suggestedName: string, contents: string) =>
+  invoke<string | null>('save_text_file', { suggestedName, contents });
+
 // ---------------------------------------------------------------------------
 // config / app
 // ---------------------------------------------------------------------------

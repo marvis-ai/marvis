@@ -62,6 +62,7 @@ export {
   RotateCcwClockIcon,
   RotateCcwIcon,
   SettingsIcon,
+  ShareIcon,
   ShieldIcon,
   ShieldAlertIcon,
   ShieldCheckIcon,

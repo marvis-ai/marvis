@@ -7,6 +7,8 @@ import {
   listenResume,
   listenStatus,
   listenStop,
+  raise,
+  saveTextFile,
   transcriptsFor,
   summaryLatest,
   type Config,
@@ -27,8 +29,10 @@ import { BTN_OUTLINE, BTN_SM, cn } from '@/lib/classes';
 import {
   buildBlocks,
   elapsedLabel,
+  exportFileName,
   sessionDateLabel,
   transcriptCopyText,
+  transcriptMarkdown,
   type ListenViewing,
   type Turn,
 } from '@/components/listen/model';
@@ -84,6 +88,7 @@ export const ListenSection = ({
   const [provider, setProvider] = useState<string | null>(null);
   const [model, setModel] = useState<string | null>(null);
   const [copiedAll, setCopiedAll] = useState(false);
+  const [exported, setExported] = useState(false);
   const [filterKey, setFilterKey] = useState<string | null>(null);
 
   const applyConfig = (config: Config) => {
@@ -311,6 +316,40 @@ export const ListenSection = ({
       .catch(() => {});
   };
 
+  /** The export document — markdown off the same blocks the copy path
+   *  uses; the speaker filter never narrows export scope. */
+  const markdownDoc = () =>
+    transcriptMarkdown(
+      blocks,
+      {
+        title: summary?.topic,
+        startedAt,
+        stt: live ? engine : (viewing?.stt ?? null),
+      },
+      summary,
+    );
+
+  const copyMarkdown = () => {
+    void navigator.clipboard
+      .writeText(markdownDoc())
+      .then(() => {
+        setExported(true);
+        window.setTimeout(() => setExported(false), 1500);
+      })
+      .catch(() => {});
+  };
+
+  const saveMarkdown = () => {
+    void saveTextFile(exportFileName(summary?.topic, startedAt), markdownDoc())
+      .then((path) => {
+        if (path !== null) {
+          setExported(true);
+          window.setTimeout(() => setExported(false), 1500);
+        }
+      })
+      .catch((e) => raise(typeof e === 'string' ? e : 'Export failed'));
+  };
+
   const title = summary?.topic ?? 'Listen';
   const subtitle = live
     ? `${status.mic ? 'mic + system audio' : 'system audio only'} · ${engine}`
@@ -363,8 +402,11 @@ export const ListenSection = ({
         count={shown.length}
         elapsed={startedAt == null ? null : elapsedLabel(elapsed)}
         copied={copiedAll}
+        exported={exported}
         onPick={setFilterKey}
         onCopy={copyAll}
+        onCopyMarkdown={copyMarkdown}
+        onSaveMarkdown={saveMarkdown}
       />
       <div className='relative min-h-0 flex-1'>
         <div

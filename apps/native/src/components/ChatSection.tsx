@@ -15,6 +15,7 @@
  * total window height via `window_adjust_height`.
  */
 import { Suspense, lazy, useEffect, useRef, useState } from 'react';
+import { convertFileSrc } from '@tauri-apps/api/core';
 import { CheckIcon, CopyIcon, MessageSquareTextIcon } from '@marvis/ui';
 import {
   askCurrent,
@@ -23,6 +24,7 @@ import {
   sessionGet,
   sessionList,
   type Message,
+  type MessageAttachment,
 } from '@/lib/commands';
 import {
   EV_ASK_CHUNK,
@@ -61,6 +63,9 @@ interface AskStatePayload {
   /** Present on `send_chain`'s `loading` — the armed preset id
    *  (ask.rs); absent on `pre_spawn_error`'s `loading` emit. */
   preset?: string | null;
+  /** Present on `loading` when the user turn carries images — the
+   *  persisted `message_attachments` metadata (ask.rs). */
+  attachments?: MessageAttachment[];
 }
 
 /** Meta fields surface in the ⋯ menu, not inline; absent while the
@@ -74,6 +79,9 @@ interface ChatMsg extends ChatMsgMeta {
   /** The armed `instruct` preset id — user rows only; the meta row
    *  renders it as `· {name}` (falls back to the raw id). */
   preset?: string | null;
+  /** Attached images — user rows only; persisted rows carry metadata,
+   *  live `loading` rows get it from the payload. */
+  attachments?: MessageAttachment[];
 }
 
 /** Distance from the bottom that still counts as pinned for autoscroll. */
@@ -88,6 +96,7 @@ const applyLoading = (
   prev: ChatMsg[],
   q: string,
   preset?: string | null,
+  attachments?: MessageAttachment[],
 ): ChatMsg[] => {
   const last = prev[prev.length - 1];
   if (
@@ -104,7 +113,7 @@ const applyLoading = (
   }
   return [
     ...prev,
-    { role: 'user', content: q, ts: nowSecs(), preset },
+    { role: 'user', content: q, ts: nowSecs(), preset, attachments },
     { role: 'assistant', content: '' },
   ];
 };
@@ -145,6 +154,7 @@ const rowsToMsgs = (rows: Message[]): ChatMsg[] =>
       content: r.content,
       ts: r.ts,
       preset: r.preset,
+      attachments: r.attachments,
       provider: r.provider,
       model: r.model,
       tokensIn: r.tokens_in,
@@ -198,7 +208,10 @@ export const ChatSection = ({ onBack }: { onBack: () => void }) => {
         const cur = await askCurrent();
         if (!cancelled && cur.state !== 'idle') {
           setMsgs((prev) =>
-            setTail(applyLoading(prev, cur.question), cur.response),
+            setTail(
+              applyLoading(prev, cur.question, null, cur.attachments),
+              cur.response,
+            ),
           );
           setPhase(cur.state);
         }
@@ -251,7 +264,12 @@ export const ChatSection = ({ onBack }: { onBack: () => void }) => {
         const buffered = chunkBufRef.current ?? '';
         chunkBufRef.current = null;
         setMsgs((prev) => {
-          const next = applyLoading(base ?? prev, p.question ?? '', p.preset);
+          const next = applyLoading(
+            base ?? prev,
+            p.question ?? '',
+            p.preset,
+            p.attachments,
+          );
           return buffered ? appendTail(next, buffered) : next;
         });
       })();
@@ -372,6 +390,18 @@ export const ChatSection = ({ onBack }: { onBack: () => void }) => {
               <div
                 key={i}
                 className='group/row flex flex-col items-end gap-1'>
+                {m.attachments != null && m.attachments.length > 0 && (
+                  <div className='flex max-w-[85%] flex-wrap justify-end gap-1.5'>
+                    {m.attachments.map((a) => (
+                      <img
+                        key={a.id}
+                        src={convertFileSrc(a.path)}
+                        alt={a.name}
+                        className='h-16 w-auto max-w-40 rounded-xl border border-border/60 object-cover'
+                      />
+                    ))}
+                  </div>
+                )}
                 <p
                   className={cn(
                     'max-w-[85%] rounded-2xl rounded-br-sm bg-accent/10 px-4 py-2',

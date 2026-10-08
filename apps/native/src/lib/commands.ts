@@ -343,6 +343,11 @@ export const presetsPaletteKey = (key: string) =>
 export const presetsPaletteQuery = (query: string) =>
   invoke<void>('presets_palette_query', { query });
 
+/** The palette view's content-height report — the window hugs the
+ *  list (auto-fit, capped + scrolling server-side). */
+export const presetsPaletteHeight = (height: number) =>
+  invoke<void>('presets_palette_height', { height });
+
 // ---------------------------------------------------------------------------
 // listen
 // ---------------------------------------------------------------------------

@@ -113,7 +113,12 @@ const PICKER_RADIUS: f64 = 16.0;
 /// surface. Lazy like `picker`; a focus loss hides it, menu-style.
 pub const PALETTE_LABEL: &str = "palette";
 const PALETTE_W: f64 = 300.0;
+/// Height is content-driven — the view reports its natural height
+/// (`presets_palette_height`), clamped to these bounds; the list
+/// scrolls past `PALETTE_MAX_H`.
 const PALETTE_H: f64 = 320.0;
+const PALETTE_MIN_H: f64 = 96.0;
+const PALETTE_MAX_H: f64 = 320.0;
 const PALETTE_RADIUS: f64 = 14.0;
 /// Slide-in distance above the target rect when the alert toast appears.
 const SHOW_OFFSET_Y: f64 = 10.0;
@@ -160,6 +165,13 @@ pub struct WindowPool {
     /// menu-style only while this is set — an unfocused palette must
     /// not hide itself from the show()/refocus ping-pong it isn't in.
     palette_focused: bool,
+    /// Content height last reported by the palette view — the window
+    /// hugs the list (auto-fit up to `PALETTE_MAX_H`). Reused across
+    /// opens so a reopened palette doesn't flicker through the default.
+    palette_h: f64,
+    /// The caret screen-x the open was anchored to — a height reflow
+    /// re-anchors to the same spot.
+    palette_anchor: Option<f64>,
     /// Whether the unified card (chat or listen mode) is open.
     chat_open: bool,
     /// Last reported card CONTENT height — window = `BAR_H + this`.
@@ -194,6 +206,8 @@ impl WindowPool {
             picker: None,
             palette: None,
             palette_focused: false,
+            palette_h: PALETTE_H,
+            palette_anchor: None,
             chat_open: false,
             chat_height: CHAT_DEFAULT_H,
             expand_dir: Dir::Down,
@@ -315,6 +329,8 @@ impl WindowPool {
             picker: None,
             palette: None,
             palette_focused: false,
+            palette_h: PALETTE_H,
+            palette_anchor: None,
             chat_open: false,
             chat_height: CHAT_DEFAULT_H,
             expand_dir: Dir::Down,
@@ -551,7 +567,8 @@ impl WindowPool {
                 })
             })
             .unwrap_or_else(|| self.bar_rect.center_x());
-        let r = layout::palette_rect(self.bar_rect, anchor_x, PALETTE_W, PALETTE_H, work);
+        self.palette_anchor = Some(anchor_x);
+        let r = layout::palette_rect(self.bar_rect, anchor_x, PALETTE_W, self.palette_h, work);
         set_rect(&win, r);
         self.palette_focused = focused;
         if focused {
@@ -613,6 +630,34 @@ impl WindowPool {
             "palette:query",
             serde_json::json!({ "query": query }),
         );
+    }
+
+    /// The view's content-height report — the palette hugs its list:
+    /// clamp to `[MIN, MAX]` (past MAX the list scrolls), then
+    /// re-anchor through `palette_rect` so a shrink keeps the same
+    /// bar-side gap. Position only while visible — a hidden window
+    /// just stores the height for its next show.
+    pub fn set_palette_height(&mut self, height: f64) {
+        self.palette_h = height
+            .clamp(PALETTE_MIN_H, PALETTE_MAX_H)
+            .min(self.bar_work_area().h);
+        let Some(win) = self.palette.clone() else {
+            return;
+        };
+        if !win.is_visible().unwrap_or(false) {
+            return;
+        }
+        let anchor = self
+            .palette_anchor
+            .unwrap_or_else(|| self.bar_rect.center_x());
+        let r = layout::palette_rect(
+            self.bar_rect,
+            anchor,
+            PALETTE_W,
+            self.palette_h,
+            self.bar_work_area(),
+        );
+        set_rect(&win, r);
     }
 
     /// The window's animated destination: the derived card rect while

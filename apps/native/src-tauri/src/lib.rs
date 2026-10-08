@@ -2003,6 +2003,19 @@ fn presets_palette_query(app: AppHandle, query: String) -> Result<(), String> {
     Ok(())
 }
 
+/// The palette view's content-height report — the window hugs its
+/// list: clamped to `[PALETTE_MIN_H, PALETTE_MAX_H]` (past max the
+/// list scrolls) and re-anchored to the open-time caret x, so a
+/// filter-shrink keeps the same gap off the bar.
+#[tauri::command]
+fn presets_palette_height(app: AppHandle, height: f64) -> Result<(), String> {
+    app.state::<AppState>()
+        .pool
+        .lock()
+        .set_palette_height(height);
+    Ok(())
+}
+
 /// Dev-only inspector for webviews without the shared menu (prefs,
 /// alert): opens the CALLING window's devtools — their right-click
 /// invokes this under `import.meta.env.DEV`. No-op in release, where
@@ -2934,6 +2947,7 @@ pub fn run() {
             presets_palette_close,
             presets_palette_key,
             presets_palette_query,
+            presets_palette_height,
             open_devtools,
             permissions_status,
             permissions_request_screen,
@@ -3031,6 +3045,7 @@ mod tests {
         assert!(source.contains(concat!("presets", "_palette_close,")));
         assert!(source.contains(concat!("presets", "_palette_key,")));
         assert!(source.contains(concat!("presets", "_palette_query,")));
+        assert!(source.contains(concat!("presets", "_palette_height,")));
         assert!(source.contains(concat!("EV_", "PRESET_PICK")));
         assert!(source.contains(concat!("EV_", "PALETTE_CLOSED")));
     }

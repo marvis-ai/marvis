@@ -1,10 +1,12 @@
 /**
- * `?view=palette` — the preset palette: a 300×320 borderless glass
+ * `?view=palette` — the preset palette: a 300px-wide borderless glass
  * overlay `windows/mod.rs` anchors left-aligned to the composer
  * caret, above/below the bar by free space (the wand's pick surface,
  * and the list a future skills section joins). One flat preset list —
  * `is_template` is invisible here; a pick arms its badge in the
- * composer either way.
+ * composer either way. Height auto-fits: this view reports its
+ * natural content height (`presets_palette_height`) and the window
+ * hugs it, capped at `PALETTE_MAX_H` where the list scrolls.
  *
  * Two focus modes: the wand/right-click open takes key focus (this
  * window's keydown drives nav, click-away blur dismisses); a
@@ -18,6 +20,7 @@ import {
   openDevTools,
   presetsList,
   presetsPaletteClose,
+  presetsPaletteHeight,
   presetsPaletteSelect,
   type Preset,
 } from '@/lib/commands';
@@ -40,11 +43,27 @@ const Palette = () => {
   const [query, setQuery] = useState('');
   const [sel, setSel] = useState(0);
   const listRef = useRef<HTMLDivElement>(null);
+  const surfaceRef = useRef<HTMLDivElement>(null);
   /** Latest-refs for the key handler — `palette:key` and the window
    *  listener share `handleKey`, and event callbacks registered once
    *  must not go stale. */
   const filteredRef = useRef<Preset[]>([]);
   const selRef = useRef(0);
+
+  // Auto-fit: the surface is `h-fit`, so its height IS the natural
+  // content height — report it (plus the stage's padding) and Rust
+  // sizes the window to it. Past the cap the list scrolls, so the
+  // observer also fires on filter/list changes.
+  useEffect(() => {
+    const el = surfaceRef.current;
+    if (!el) return;
+    const report = () =>
+      void presetsPaletteHeight(el.offsetHeight + 12).catch(() => {});
+    const ro = new ResizeObserver(report);
+    ro.observe(el);
+    report();
+    return () => ro.disconnect();
+  }, []);
 
   const refresh = useCallback((seed?: string | null) => {
     setSel(0);
@@ -135,7 +154,9 @@ const Palette = () => {
           void openDevTools().catch(() => {});
         }
       }}>
-      <div className='glass-surface flex h-full flex-col rounded-2xl border border-border bg-[color-mix(in_oklch,var(--surface)_94%,transparent)] shadow-[0_24px_60px_-20px_color-mix(in_oklch,var(--fg)_40%,transparent)] backdrop-blur-xl'>
+      <div
+        ref={surfaceRef}
+        className='glass-surface flex h-fit max-h-full flex-col rounded-2xl border border-border bg-[color-mix(in_oklch,var(--surface)_94%,transparent)] shadow-[0_24px_60px_-20px_color-mix(in_oklch,var(--fg)_40%,transparent)] backdrop-blur-xl'>
         <header className='flex items-center gap-1.5 px-3 pt-2.5 pb-1.5 text-[11px] font-semibold tracking-wide text-muted-foreground uppercase'>
           <WandSparklesIcon className='size-3.5' />
           Presets
@@ -175,10 +196,6 @@ const Palette = () => {
             </p>
           )}
         </div>
-        <footer className='flex items-center justify-between border-t border-border px-3 py-1.5 text-[10.5px] text-muted-foreground'>
-          <span>↑↓ choose · ↵ pick · esc close</span>
-          <span>{filtered.length}</span>
-        </footer>
       </div>
     </div>
   );

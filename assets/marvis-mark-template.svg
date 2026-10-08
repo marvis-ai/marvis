@@ -1,9 +1,17 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="10 6 28 36" role="img" aria-label="Marvis mark (monochrome)">
-  <!-- Template variant of marvis-mark.svg for the macOS menu bar: the mark's
-       inner elements as a flat silhouette (alpha is what AppKit renders when
-       `iconAsTemplate` is set; colour is ignored). -->
-  <path fill="#000" fill-rule="evenodd"
-        d="M31.5 17.5a7.5 7.5 0 1 1-15 0 7.5 7.5 0 1 1 15 0ZM26.9 17.5a2.9 2.9 0 1 1-5.8 0 2.9 2.9 0 1 1 5.8 0Z"/>
-  <rect x="14" y="30" width="20" height="2.6" rx="1.3" fill="#000"/>
-  <rect x="17.5" y="34.8" width="13" height="2.6" rx="1.3" fill="#000"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" role="img" aria-label="Marvis mark (monochrome, inverted)">
+  <!-- Template variant of marvis-mark.svg for the macOS menu bar, inverted:
+       the dark rounded tile is opaque and the mark is knocked OUT of it
+       (alpha is what AppKit renders when `iconAsTemplate` is set; colour is
+       ignored — a light glyph painted over the tile would rasterize as a
+       solid square, so the glyph must be a hole, not a fill). -->
+  <defs>
+    <mask id="mark-cutout">
+      <rect x="3" y="3" width="42" height="42" fill="#fff"/>
+      <path fill="#000" fill-rule="evenodd"
+            d="M31.5 17.5a7.5 7.5 0 1 1-15 0 7.5 7.5 0 1 1 15 0ZM26.9 17.5a2.9 2.9 0 1 1-5.8 0 2.9 2.9 0 1 1 5.8 0Z"/>
+      <rect x="14" y="30" width="20" height="2.6" rx="1.3" fill="#000"/>
+      <rect x="17.5" y="34.8" width="13" height="2.6" rx="1.3" fill="#000"/>
+    </mask>
+  </defs>
+  <rect x="3" y="3" width="42" height="42" rx="10" fill="#31302e" mask="url(#mark-cutout)"/>
 </svg>

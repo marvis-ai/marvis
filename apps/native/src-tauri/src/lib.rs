@@ -645,6 +645,14 @@ const EV_BAR_SHOW_HISTORY: &str = "bar:show-history";
 /// Emitted to the `bar` window only — a preset palette pick
 /// (`presets_palette_select`); payload is the full `Preset`.
 const EV_PRESET_PICK: &str = "bar:preset-pick";
+/// Rust→palette events emitted from `windows/mod.rs` (`pub(crate)`
+/// keeps one const per name): `show_palette` announces the open
+/// (`{ query }` seeds the filter), `palette_query` pushes the
+/// composer's live `/token`, `palette_key` forwards nav keys while
+/// the bar keeps focus.
+pub(crate) const EV_PALETTE_OPEN: &str = "palette:open";
+pub(crate) const EV_PALETTE_QUERY: &str = "palette:query";
+pub(crate) const EV_PALETTE_KEY: &str = "palette:key";
 /// Emitted to the `bar` window on every palette hide (`windows`'s
 /// `hide_palette`) — the composer stops forwarding `/`-mode keys.
 /// Emitted from `windows/mod.rs`; `pub(crate)` keeps one const.
@@ -1969,10 +1977,15 @@ fn presets_palette_select(app: AppHandle, id: String) -> Result<(), String> {
 /// without this call). Hides + refocuses the bar; the composer's
 /// `/token` text needs no reconciliation — it never left the field.
 /// `hide_palette` announces `bar:palette-closed` for the bar's
-/// key-forwarding gate.
+/// key-forwarding gate. Gate-guarded like `open` — a crafted invoke
+/// during onboarding must not refocus the (hidden) bar.
 #[tauri::command]
 fn presets_palette_close(app: AppHandle) -> Result<(), String> {
     let state = app.state::<AppState>();
+    if *state.gate.lock() != Gate::Main {
+        log::warn!("presets_palette_close dropped while gate != Main");
+        return Ok(());
+    }
     let bar = {
         let mut pool = state.pool.lock();
         pool.hide_palette(&app);
@@ -1988,38 +2001,46 @@ fn presets_palette_close(app: AppHandle) -> Result<(), String> {
 /// the `/`-typed palette is unfocused, so the bar pipes `↑↓`, `Enter`,
 /// `Tab`, `Esc`, `Home`, `End` through here for the view to run.
 /// Emits to the palette window only; harmless when it's hidden.
+/// Gate-guarded like `open`.
 #[tauri::command]
 fn presets_palette_key(app: AppHandle, key: String) -> Result<(), String> {
-    app.state::<AppState>()
-        .pool
-        .lock()
-        .palette_key(&app, &key);
+    let state = app.state::<AppState>();
+    if *state.gate.lock() != Gate::Main {
+        log::warn!("presets_palette_key dropped while gate != Main");
+        return Ok(());
+    }
+    state.pool.lock().palette_key(&app, &key);
     Ok(())
 }
 
 /// The composer's `/token` pushed as the palette's filter
 /// (`palette:query`) on every composer edit while an unfocused
 /// palette is up — the field that once lived in the palette now lives
-/// in the composer.
+/// in the composer. Gate-guarded like `open`.
 #[tauri::command]
 fn presets_palette_query(app: AppHandle, query: String) -> Result<(), String> {
-    app.state::<AppState>()
-        .pool
-        .lock()
-        .palette_query(&app, &query);
+    let state = app.state::<AppState>();
+    if *state.gate.lock() != Gate::Main {
+        log::warn!("presets_palette_query dropped while gate != Main");
+        return Ok(());
+    }
+    state.pool.lock().palette_query(&app, &query);
     Ok(())
 }
 
 /// The palette view's content-height report — the window hugs its
 /// list: clamped to `[PALETTE_MIN_H, PALETTE_MAX_H]` (past max the
 /// list scrolls) and re-anchored to the open-time caret x, so a
-/// filter-shrink keeps the same gap off the bar.
+/// filter-shrink keeps the same gap off the bar. Gate-guarded like
+/// `open`.
 #[tauri::command]
 fn presets_palette_height(app: AppHandle, height: f64) -> Result<(), String> {
-    app.state::<AppState>()
-        .pool
-        .lock()
-        .set_palette_height(height);
+    let state = app.state::<AppState>();
+    if *state.gate.lock() != Gate::Main {
+        log::warn!("presets_palette_height dropped while gate != Main");
+        return Ok(());
+    }
+    state.pool.lock().set_palette_height(height);
     Ok(())
 }
 
@@ -3037,7 +3058,7 @@ mod tests {
 
     /// The preset surface: `presets_list` plus the palette commands
     /// registered (open/select/close plus the `/`-session plumbing —
-    /// key forward, query push, visibility probe), and the pick/closed
+    /// key forward, query push, visibility probe), and the palette
     /// event constants declared — all asserted against the
     /// registration source itself. `concat!` keeps each literal out
     /// of this file's text (same trick as the `concat!("listen_",
@@ -3054,6 +3075,9 @@ mod tests {
         assert!(source.contains(concat!("presets", "_palette_query,")));
         assert!(source.contains(concat!("presets", "_palette_height,")));
         assert!(source.contains(concat!("EV_", "PRESET_PICK")));
+        assert!(source.contains(concat!("EV_", "PALETTE_OPEN")));
+        assert!(source.contains(concat!("EV_", "PALETTE_QUERY")));
+        assert!(source.contains(concat!("EV_", "PALETTE_KEY")));
         assert!(source.contains(concat!("EV_", "PALETTE_CLOSED")));
     }
 

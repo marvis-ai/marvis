@@ -59,7 +59,6 @@ import {
   configGet,
   listenStart,
   listenStatus,
-  presetsList,
   presetsPaletteClose,
   presetsPaletteKey,
   presetsPaletteOpen,
@@ -86,6 +85,7 @@ import { useBarActivity } from '@/hooks/useBarActivity';
 import { useCardGeometry } from '@/hooks/useCardGeometry';
 import { useDictation } from '@/hooks/useDictation';
 import { useGate } from '@/hooks/useGate';
+import { usePresets } from '@/hooks/usePresets';
 import { AskInput } from '@/components/bar/AskInput';
 import { BarButton } from '@/components/bar/BarButton';
 import { BootErrorRow } from '@/components/bar/BootErrorRow';
@@ -151,10 +151,12 @@ const Bar = () => {
     null,
   );
   /** The merged preset list (built-ins + customs) behind the palette
-   *  and the `/name` shorthand; `armed` is the per-send preset badge,
-   *  `langParam` its editable `{lang}` value (null when the armed text
-   *  has no `{lang}`). `mainLang` seeds the badge's default. */
-  const [presets, setPresets] = useState<Preset[]>([]);
+   *  and the `/name` shorthand — `usePresets` fetches on mount and
+   *  refetches on `config:changed`. `armed` is the per-send preset
+   *  badge, `langParam` its editable `{lang}` value (null when the
+   *  armed text has no `{lang}`). `mainLang` seeds the badge's
+   *  default. */
+  const presets = usePresets();
   const [armedPreset, setArmedPresetState] = useState<Preset | null>(null);
   const [langParam, setLangParamState] = useState<string | null>(null);
   const [editingLang, setEditingLang] = useState(false);
@@ -334,16 +336,10 @@ const Bar = () => {
         setMainLang(cfg.app.main_language);
       })
       .catch(() => {});
-    void presetsList()
-      .then(setPresets)
-      .catch(() => {});
   }, []);
   useTauriEvent<Config>(EV_CONFIG_CHANGED, (cfg) => {
     setBarLocked(cfg.window.bar_locked ?? false);
     setMainLang(cfg.app.main_language);
-    void presetsList()
-      .then(setPresets)
-      .catch(() => {});
   });
 
   // Every card open starts unpinned with no viewed session.
@@ -620,9 +616,12 @@ const Bar = () => {
           .then((s) => s.session_id)
           .catch(() => null)) ?? undefined;
     }
-    void askSend(t, withScreen, listenId, preset?.id, presetLang).catch(() =>
-      raise('Send failed'),
-    );
+    void askSend(t, {
+      withScreen,
+      listenId,
+      presetId: preset?.id,
+      presetLang,
+    }).catch(() => raise('Send failed'));
   };
 
   // Submit = ask (a follow-up while the card is open). The backend

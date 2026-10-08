@@ -116,6 +116,20 @@ const LANG_NAMES = new Map<string, string>([
 export const langName = (code: string): string =>
   LANG_NAMES.get(code.trim()) ?? 'English';
 
+/** The palette's whole keyboard contract — the set the composer
+ *  forwards (`AskInput`) while a `/`-session is up AND the palette
+ *  window itself listens for when it holds key focus. One shared list
+ *  so the two focus modes can't drift. */
+export const PALETTE_KEYS: readonly string[] = [
+  'Escape',
+  'ArrowDown',
+  'ArrowUp',
+  'Home',
+  'End',
+  'Enter',
+  'Tab',
+];
+
 /** `{lang}`/`{input}` substitution. `{input}` absent → `input`
  *  appended after the template; empty input clears the placeholder so
  *  the caret lands where the argument goes. */

@@ -19,20 +19,16 @@ import { CheckIcon, CopyIcon, MessageSquareTextIcon } from '@marvis/ui';
 import {
   askCurrent,
   askRetry,
-  presetsList,
   sessionEndActive,
   sessionGet,
   sessionList,
-  type Config,
   type Message,
-  type Preset,
 } from '@/lib/commands';
 import {
   EV_ASK_CHUNK,
   EV_ASK_DONE,
   EV_ASK_ERROR,
   EV_ASK_STATE,
-  EV_CONFIG_CHANGED,
   useTauriEvent,
 } from '@/lib/events';
 import {
@@ -50,6 +46,7 @@ import { EmptyState } from '@/components/shared/EmptyState';
 import { ErrorBanner } from '@/components/shared/ErrorBanner';
 import { ChatMsgMenu, type ChatMsgMeta } from '@/components/ChatMsgMenu';
 import { RichText } from '@/components/shared/RichText';
+import { usePresets } from '@/hooks/usePresets';
 
 const Markdown = lazy(() =>
   import('@/components/Markdown').then((m) => ({ default: m.Markdown })),
@@ -223,20 +220,10 @@ export const ChatSection = ({ onBack }: { onBack: () => void }) => {
     };
   }, []);
 
-  // The `· {name}` suffix resolves a user row's preset id against this
-  // list — refetched on `config:changed` (a custom may be
-  // added/renamed/removed); an unknown id falls back to rendering raw.
-  const [presets, setPresets] = useState<Preset[]>([]);
-  useEffect(() => {
-    void presetsList()
-      .then(setPresets)
-      .catch(() => {});
-  }, []);
-  useTauriEvent<Config>(EV_CONFIG_CHANGED, () => {
-    void presetsList()
-      .then(setPresets)
-      .catch(() => {});
-  });
+  // The `· {name}` suffix resolves a user row's preset id against the
+  // merged list (`usePresets` refetches on `config:changed` — a custom
+  // may be added/renamed/removed); an unknown id renders raw.
+  const presets = usePresets();
 
   useTauriEvent<AskStatePayload>(EV_ASK_STATE, (p) => {
     if (p.state === 'loading') {

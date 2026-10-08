@@ -66,6 +66,18 @@ pub enum Dir {
     Down,
 }
 
+/// The anchor a palette open resolved — `x` is the caret's screen-x.
+/// `top` exists only on card-mode opens: the composer is the card's
+/// bottom-anchored footer, so the palette pops above the row's
+/// screen-top (`bar_rect`'s edge is the card's TOP when it grows
+/// down, nowhere near the input). A height reflow re-anchors to the
+/// same spot.
+#[derive(Debug, Clone, Copy)]
+struct PaletteAnchor {
+    x: f64,
+    top: Option<f64>,
+}
+
 /// The bar window's two widths: the capsule IS the window under liquid
 /// glass, so idle rests at BAR_IDLE_W (the four capsule controls) and
 /// any expanded content — input row, gate cards — uses BAR_W. Height
@@ -173,13 +185,9 @@ pub struct WindowPool {
     /// hugs the list (auto-fit up to `PALETTE_MAX_H`). Reused across
     /// opens so a reopened palette doesn't flicker through the default.
     palette_h: f64,
-    /// The anchor the last open resolved — `(caret screen-x, composer
-    /// row's screen-top)`. The y edge only exists when a card-mode open
-    /// sent one: the composer is the card's bottom-anchored footer, so
-    /// the palette pops above it — `bar_rect`'s edge is the card's TOP
-    /// when it grows down, nowhere near the input. A height reflow
-    /// re-anchors to the same spot.
-    palette_anchor: Option<(f64, Option<f64>)>,
+    /// The anchor the last open resolved — reused by a height reflow
+    /// to keep the same composer-side gap.
+    palette_anchor: Option<PaletteAnchor>,
     /// Whether the unified card (chat or listen mode) is open.
     chat_open: bool,
     /// Last reported card CONTENT height — window = `BAR_H + this`.
@@ -287,7 +295,14 @@ impl WindowPool {
                             let Some(state) = app2.try_state::<crate::AppState>() else {
                                 return;
                             };
-                            state.pool.lock().hide_palette_unfocused(&app2);
+                            // `try_lock`, never park: a command holding
+                            // `pool` can itself be waiting on this main
+                            // thread (window ops) — blocking here is the
+                            // ABBA deadlock AGENTS.md §14 names. A lost
+                            // race just skips one blur-dismiss.
+                            if let Some(mut pool) = state.pool.try_lock() {
+                                pool.hide_palette_unfocused(&app2);
+                            };
                         });
                     }
                     _ => {}
@@ -562,14 +577,20 @@ impl WindowPool {
                         // (`accept_first_mouse` delivers the click
                         // through, and the activation promotes it) so
                         // the click-away below still dismisses,
-                        // menu-style.
+                        // menu-style. `try_lock` — `on_window_event`
+                        // runs on the main thread, where a `pool`
+                        // holder may be parked on window ops; dropping
+                        // on contention beats deadlocking.
                         tauri::WindowEvent::Focused(true) => {
-                            state.pool.lock().palette_focused = true;
+                            if let Some(mut pool) = state.pool.try_lock() {
+                                pool.palette_focused = true;
+                            }
                         }
                         tauri::WindowEvent::Focused(false) => {
-                            let mut pool = state.pool.lock();
-                            if pool.palette_focused {
-                                pool.hide_palette(&app2);
+                            if let Some(mut pool) = state.pool.try_lock() {
+                                if pool.palette_focused {
+                                    pool.hide_palette(&app2);
+                                }
                             }
                         }
                         _ => {}
@@ -608,7 +629,10 @@ impl WindowPool {
             let pos: LogicalPosition<f64> = bar.outer_position().ok()?.to_logical(scale);
             Some(pos.y + ay)
         });
-        self.palette_anchor = Some((anchor_x, anchor_y));
+        self.palette_anchor = Some(PaletteAnchor {
+            x: anchor_x,
+            top: anchor_y,
+        });
         let r = self.palette_placement(anchor_x, anchor_y);
         set_rect(&win, r);
         self.palette_focused = focused;
@@ -625,7 +649,7 @@ impl WindowPool {
         }
         let _ = app.emit_to(
             PALETTE_LABEL,
-            "palette:open",
+            crate::EV_PALETTE_OPEN,
             serde_json::json!({ "query": query }),
         );
         true
@@ -658,7 +682,7 @@ impl WindowPool {
     pub fn palette_key(&self, app: &AppHandle, key: &str) {
         let _ = app.emit_to(
             PALETTE_LABEL,
-            "palette:key",
+            crate::EV_PALETTE_KEY,
             serde_json::json!({ "key": key }),
         );
     }
@@ -668,7 +692,7 @@ impl WindowPool {
     pub fn palette_query(&self, app: &AppHandle, query: &str) {
         let _ = app.emit_to(
             PALETTE_LABEL,
-            "palette:query",
+            crate::EV_PALETTE_QUERY,
             serde_json::json!({ "query": query }),
         );
     }
@@ -710,10 +734,11 @@ impl WindowPool {
         if !win.is_visible().unwrap_or(false) {
             return;
         }
-        let (anchor_x, anchor_top) = self
-            .palette_anchor
-            .unwrap_or((self.bar_rect.center_x(), None));
-        let r = self.palette_placement(anchor_x, anchor_top);
+        let PaletteAnchor { x, top } = self.palette_anchor.unwrap_or(PaletteAnchor {
+            x: self.bar_rect.center_x(),
+            top: None,
+        });
+        let r = self.palette_placement(x, top);
         set_rect(&win, r);
     }
 

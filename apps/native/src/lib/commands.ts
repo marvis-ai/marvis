@@ -259,26 +259,29 @@ export const providerSetEnabled = (provider: string, enabled: boolean) =>
 // ask
 // ---------------------------------------------------------------------------
 
-/** Fire-and-forget: returns after pre-flight; tokens stream as `ask:*`.
- *  `withScreen` (the bar's Cmd/Ctrl+Enter) is the explicit attach flag —
- *  a screen read runs even when the text shows no intent. `listenId`
- *  binds the send to a listen doc — its own ask session (one chat per
- *  doc), its summary+transcript as the meeting context. `presetId`
- *  arms a preset for this send only; `presetLang` is the `{lang}`
- *  badge's edited value (`undefined` → the configured main language). */
-export const askSend = (
-  text: string,
-  withScreen = false,
-  listenId?: number,
-  presetId?: string,
-  presetLang?: string,
-) =>
+/** `ask_send` options — every field optional; see `askSend`. */
+export interface AskSendOpts {
+  /** The bar's Cmd/Ctrl+Enter — the explicit attach flag; a screen read
+   *  runs even when the text shows no intent. */
+  withScreen?: boolean;
+  /** Bind the send to a listen doc — its own ask session (one chat per
+   *  doc), its summary+transcript as the meeting context. */
+  listenId?: number;
+  /** Arm a preset for this send only. */
+  presetId?: string;
+  /** The `{lang}` badge's edited value (`undefined` → the configured
+   *  main language). */
+  presetLang?: string;
+}
+
+/** Fire-and-forget: returns after pre-flight; tokens stream as `ask:*`. */
+export const askSend = (text: string, opts: AskSendOpts = {}) =>
   invoke<void>('ask_send', {
     text,
-    withScreen,
-    listenId,
-    presetId,
-    presetLang,
+    withScreen: opts.withScreen ?? false,
+    listenId: opts.listenId,
+    presetId: opts.presetId,
+    presetLang: opts.presetLang,
   });
 
 /** The bar's camera affordance — a screen-only ask (fixed prompt,

@@ -6,9 +6,10 @@
  * sent message and `{lang}` becomes an editable language badge;
  * without `{input}` the text steers the reply silently.
  */
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { Trash2Icon } from '@marvis/ui';
-import { configSet, presetsList, type Preset } from '@/lib/commands';
+import { configSet, type Preset } from '@/lib/commands';
+import { usePresets } from '@/hooks/usePresets';
 import {
   BTN_OUTLINE,
   BTN_PRIMARY,
@@ -33,11 +34,7 @@ const mintId = () => `u:${Math.random().toString(36).slice(2, 10)}`;
 
 export const PresetsTab = ({ data }: { data: PrefsData }) => {
   const customs = data.config?.prompts.custom ?? [];
-  const [presets, setPresets] = useState<Preset[]>([]);
-  useEffect(() => {
-    void presetsList().then(setPresets).catch(() => {});
-  }, []);
-  const builtins = presets.filter((p) => p.id.startsWith('b:'));
+  const builtins = usePresets().filter((p) => p.id.startsWith('b:'));
 
   const [editing, setEditing] = useState<Preset | null>(null);
   const [isNew, setIsNew] = useState(false);
@@ -78,21 +75,27 @@ export const PresetsTab = ({ data }: { data: PrefsData }) => {
     <>
       <h2 className={H2}>Presets</h2>
       <p className={SUB}>
-        Presets apply to one Ask send — pick them from the composer's
-        wand palette, or type <code>/</code> + a name (like{' '}
-        <code>/summarize</code>).
+        Presets apply to one Ask send — pick them from the composer's wand
+        palette, or type <code>/</code> + a name (like <code>/summarize</code>).
       </p>
 
       <div className={PRF_ROWS}>
         {builtins.map((p) => (
-          <PrefRow key={p.id} label={p.name} sub={p.text} />
+          <PrefRow
+            key={p.id}
+            label={p.name}
+            sub={p.text}
+          />
         ))}
       </div>
 
       <h3 className='mt-6 mb-2 text-[13px] font-[550]'>Your presets</h3>
       <div className={PRF_ROWS}>
         {customs.map((p) => (
-          <PrefRow key={p.id} label={p.name} sub={p.text}>
+          <PrefRow
+            key={p.id}
+            label={p.name}
+            sub={p.text}>
             <button
               type='button'
               className={cn(BTN_SM, BTN_OUTLINE)}
@@ -123,16 +126,18 @@ export const PresetsTab = ({ data }: { data: PrefsData }) => {
         )}
 
         {editing ? (
-          <div className={cn(PRF_ROW, 'flex-col items-stretch gap-2.5 border-b-0')}>
+          <div
+            className={cn(
+              PRF_ROW,
+              'flex-col items-stretch gap-2.5 border-b-0',
+            )}>
             <input
               aria-label='Preset name'
               maxLength={24}
               placeholder='Name — also the /name'
               className={cn(INPUT, 'w-48')}
               value={editing.name}
-              onChange={(e) =>
-                setEditing({ ...editing, name: e.target.value })
-              }
+              onChange={(e) => setEditing({ ...editing, name: e.target.value })}
             />
             <textarea
               aria-label='Preset text'
@@ -144,12 +149,11 @@ export const PresetsTab = ({ data }: { data: PrefsData }) => {
             />
             <div className={PR_SUB}>
               <code>{'{input}'}</code> expands to the typed message,{' '}
-              <code>{'{lang}'}</code> to your main language (an editable
-              badge when the preset is armed). Include{' '}
-              <code>{'{input}'}</code> and the preset expands into your
-              message; leave it out and the text steers the reply
-              silently. Other <code>{'{…}'}</code> placeholders aren't
-              expanded.
+              <code>{'{lang}'}</code> to your main language (an editable badge
+              when the preset is armed). Include <code>{'{input}'}</code> and
+              the preset expands into your message; leave it out and the text
+              steers the reply silently. Other <code>{'{…}'}</code> placeholders
+              aren't expanded.
             </div>
             {saveError && <p className={PROV_ERR}>{saveError}</p>}
             <div className='flex justify-end gap-2'>

@@ -6,6 +6,7 @@ import {
   type SyntheticEvent,
 } from 'react';
 import { cn } from '@/lib/classes';
+import { PALETTE_KEYS } from '@/lib/presets';
 import { RichText } from '@/components/shared/RichText';
 
 /** Typography shared verbatim by the textarea and its highlight
@@ -97,19 +98,7 @@ export const AskInput = ({
         rows={1}
         onKeyDown={(e) => {
           const composing = e.nativeEvent.isComposing || e.keyCode === 229;
-          if (
-            paletteOpen &&
-            !composing &&
-            [
-              'ArrowUp',
-              'ArrowDown',
-              'Enter',
-              'Tab',
-              'Escape',
-              'Home',
-              'End',
-            ].includes(e.key)
-          ) {
+          if (paletteOpen && !composing && PALETTE_KEYS.includes(e.key)) {
             // The palette owns this key set — forward it AND consume
             // the event: preventDefault alone still bubbles to the
             // window keydown, where Esc would collapse the bar.

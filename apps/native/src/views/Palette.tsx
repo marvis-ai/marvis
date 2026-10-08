@@ -30,7 +30,7 @@ import {
   EV_PALETTE_QUERY,
   useTauriEvent,
 } from '@/lib/events';
-import { presetToken } from '@/lib/presets';
+import { PALETTE_KEYS, presetToken } from '@/lib/presets';
 
 /** Filter predicate — case-insensitive substring on the display name
  *  OR its `/token` slug (`trans` hits `Translate`, `reply-nicely`
@@ -138,17 +138,7 @@ const Palette = () => {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.isComposing || e.keyCode === 229) return;
-      if (
-        [
-          'Escape',
-          'ArrowDown',
-          'ArrowUp',
-          'Home',
-          'End',
-          'Enter',
-          'Tab',
-        ].includes(e.key)
-      ) {
+      if (PALETTE_KEYS.includes(e.key)) {
         e.preventDefault();
         handleKey(e.key);
       }

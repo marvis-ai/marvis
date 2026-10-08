@@ -95,7 +95,7 @@ unchanged):
 | `commands.ts` | `saveTextFile(name, contents): Promise<string \| null>` |
 | `listen/model.ts` | `transcriptMarkdown(...)` + `exportFileName(topic, startedAt)` — `marvis-{slug}-YYYYMMDD-HHmm.md`, slug = topic lowercased, non-`[a-z0-9]`→`-`, ≤40 chars, fallback `listen` |
 | `SpeakerFilter.tsx` | New `onCopyMarkdown`/`onSaveMarkdown`/`exported` props; a `ShareIcon` button beside the copy button opening a `ChatMsgMenu`-pattern dropdown (backdrop + absolute menu): **Copy markdown**, **Save .md…** |
-| `ListenSection.tsx` | `exportOpen` state; `copyMarkdown()` = `transcriptMarkdown` → `navigator.clipboard` + the shared check-flash; `exportMd()` = `saveTextFile(exportFileName(...), transcriptMarkdown(...))`, cancel silent, write error → `alertShowSafe` |
+| `ListenSection.tsx` | `exportOpen` state; `copyMarkdown()` = `transcriptMarkdown` → `navigator.clipboard` + the shared check-flash; `exportMd()` = `saveTextFile(exportFileName(...), transcriptMarkdown(...))`, cancel silent, write error → `raise` (the fire-and-forget `alert_show` helper) |
 
 Success feedback: the check-flash icon swap (1.5 s) on the export
 button for both paths — the file dialog + written file is its own

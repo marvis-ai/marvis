@@ -217,8 +217,10 @@ export const transcriptMarkdown = (
   const out: string[] = [`# ${meta.title?.trim() || 'Listen session'}`];
   if (metaLine) out.push('', `_${metaLine}_`);
   if (summary) {
-    out.push('', '## Summary', '', summary.tldr, '');
-    out.push(...summary.bullets.map((b) => `- ${b}`));
+    out.push('', '## Summary', '', summary.tldr);
+    if (summary.bullets.length) {
+      out.push('', ...summary.bullets.map((b) => `- ${b}`));
+    }
     if (summary.follow_ups.length) {
       out.push('', '### Follow-ups', '');
       out.push(...summary.follow_ups.map((f) => `- ${f}`));

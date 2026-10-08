@@ -196,6 +196,16 @@ describe('transcriptMarkdown', () => {
     expect(md).toContain('## Summary');
   });
 
+  test('empty bullets do not leave a double blank line', () => {
+    const md = transcriptMarkdown([], meta, {
+      ...summary,
+      bullets: [],
+      follow_ups: [],
+    });
+    expect(md).toContain('## Summary');
+    expect(md).not.toContain('\n\n\n');
+  });
+
   test('a riding interim is excluded — export is finals only', () => {
     const md = transcriptMarkdown(
       buildBlocks([

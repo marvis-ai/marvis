@@ -390,6 +390,13 @@ pub struct ListenSummary {
     pub topic: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct ListenSummaryEvent {
+    pub session_id: i64,
+    #[serde(flatten)]
+    pub summary: ListenSummary,
+}
+
 pub fn parse_summary(raw: &str) -> anyhow::Result<ListenSummary> {
     let value: serde_json::Value = serde_json::from_str(raw.trim())?;
     let object = value
@@ -467,7 +474,7 @@ impl ListenStatus {
 #[serde(tag = "kind", content = "payload")]
 pub enum ListenEvent {
     Turn(ListenTurn),
-    Summary(ListenSummary),
+    Summary(ListenSummaryEvent),
     Error { message: String, needs_setup: bool },
 }
 
@@ -936,9 +943,16 @@ impl ListenService {
         for turn in running.assembler.lock().flush() {
             persist_turn(&running.context, turn);
         }
-        for worker in running.context.summary_workers.lock().drain(..) {
-            let _ = worker.join();
-        }
+        // Summary generation can be waiting on a provider for up to
+        // SUMMARY_TIMEOUT. Detach it after capture finalization so Stop
+        // returns promptly; its session-tagged event can finish the viewed
+        // document when the result arrives.
+        let _detached_summaries = running
+            .context
+            .summary_workers
+            .lock()
+            .drain(..)
+            .collect::<Vec<_>>();
         let _ = running.context.db.session_end(running.session_id);
         *self.state.lock() = ListenStatus {
             state: "idle".into(),
@@ -1079,7 +1093,10 @@ fn persist_turn(context: &Arc<SessionContext>, turn: ClosedTurn) {
                             .and_then(Result::ok)
                     });
                 if let Some(summary) = result {
-                    (summary_context.emit)(ListenEvent::Summary(summary));
+                    (summary_context.emit)(ListenEvent::Summary(ListenSummaryEvent {
+                        session_id: summary_context.session_id,
+                        summary,
+                    }));
                 }
             }));
     }
@@ -1281,6 +1298,22 @@ mod tests {
             ]
         );
         assert_eq!(payload["session_id"], 42);
+    }
+
+    #[test]
+    fn summary_events_include_their_session_id() {
+        let payload = serde_json::to_value(ListenEvent::Summary(ListenSummaryEvent {
+            session_id: 42,
+            summary: ListenSummary {
+                tldr: "short summary".into(),
+                bullets: vec!["one bullet".into()],
+                follow_ups: Vec::new(),
+                topic: Some("topic".into()),
+            },
+        }))
+        .unwrap();
+        assert_eq!(payload["payload"]["session_id"], 42);
+        assert_eq!(payload["payload"]["tldr"], "short summary");
     }
 
     #[test]

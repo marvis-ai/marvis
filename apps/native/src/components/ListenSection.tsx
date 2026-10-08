@@ -24,6 +24,7 @@ import {
   useTauriEvent,
   type ListenErrorPayload,
   type ListenStatePayload,
+  type ListenSummaryEventPayload,
   type ListenSummaryPayload,
 } from '@/lib/events';
 import { BTN_OUTLINE, BTN_SM, cn } from '@/lib/classes';
@@ -238,8 +239,15 @@ export const ListenSection = ({
         : [...withoutInterim, { ...turn, interim: true }];
     });
   });
-  useTauriEvent<ListenSummaryPayload>(EV_LISTEN_SUMMARY, (next) => {
-    if (viewingRef.current) return;
+  useTauriEvent<ListenSummaryEventPayload>(EV_LISTEN_SUMMARY, (next) => {
+    const viewing = viewingRef.current;
+    if (
+      viewing
+        ? viewing.id !== next.session_id
+        : sessionRef.current !== next.session_id
+    ) {
+      return;
+    }
     setSummary(next);
     setError(null);
   });

@@ -78,6 +78,10 @@ export interface ListenSummaryPayload {
   follow_ups: string[];
   topic: string | null;
 }
+/** Summary event metadata lets a late background result target its session. */
+export interface ListenSummaryEventPayload extends ListenSummaryPayload {
+  session_id: number;
+}
 export interface ListenErrorPayload {
   message: string;
   needs_setup: boolean;

@@ -191,3 +191,72 @@ export const relTime = (ts: number) => {
     return formatDistanceToNowStrict(ts * 1000, { addSuffix: true });
   return format(ts * 1000, isThisYear(ts * 1000) ? 'MMM d' : 'MMM d, yyyy');
 };
+
+/** Markdown document — the export/copy counterpart of
+ *  `transcriptCopyText`: same block model and the same stamp rule
+ *  (elapsed off `startedAt`, wall-clock without), richer shape.
+ *  Sections degrade — a missing summary or an empty transcript drops
+ *  its heading rather than rendering an empty shell. */
+export const transcriptMarkdown = (
+  blocks: TurnBlock[],
+  meta: {
+    title?: string | null;
+    startedAt: number | null;
+    stt?: string | null;
+  },
+  summary: ListenSummaryPayload | null,
+): string => {
+  const metaLine = [
+    meta.startedAt != null
+      ? format(meta.startedAt * 1000, 'MMM d, yyyy · HH:mm')
+      : null,
+    meta.stt,
+  ]
+    .filter(Boolean)
+    .join(' · ');
+  const out: string[] = [`# ${meta.title?.trim() || 'Listen session'}`];
+  if (metaLine) out.push('', `_${metaLine}_`);
+  if (summary) {
+    out.push('', '## Summary', '', summary.tldr, '');
+    out.push(...summary.bullets.map((b) => `- ${b}`));
+    if (summary.follow_ups.length) {
+      out.push('', '### Follow-ups', '');
+      out.push(...summary.follow_ups.map((f) => `- ${f}`));
+    }
+  }
+  const finalBlocks = blocks.filter((b) => b.finals.length > 0);
+  if (finalBlocks.length) {
+    out.push('', '## Transcript', '');
+    for (const b of finalBlocks) {
+      const stamp =
+        meta.startedAt != null
+          ? elapsedLabel(b.ts - meta.startedAt)
+          : timeLabel(b.ts);
+      // Finals only — a riding interim isn't in the exported document.
+      out.push(
+        `- **[${stamp}] ${b.name}:** ${b.finals.map((t) => t.text).join(' ')}`,
+      );
+    }
+  }
+  out.push('');
+  return out.join('\n');
+};
+
+/** `marvis-{slug}-YYYYMMDD-HHmm.md` — slug off the doc title (`listen`
+ *  fallback); the stamp comes from `startedAt`, else now. */
+export const exportFileName = (
+  topic: string | null | undefined,
+  startedAt: number | null,
+): string => {
+  const slug = (topic ?? '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 40)
+    .replace(/-+$/g, '');
+  const stamp = format(
+    (startedAt ?? Date.now() / 1000) * 1000,
+    'yyyyMMdd-HHmm',
+  );
+  return `marvis-${slug || 'listen'}-${stamp}.md`;
+};

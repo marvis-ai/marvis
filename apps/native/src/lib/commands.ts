@@ -261,6 +261,14 @@ export const providerSetEnabled = (provider: string, enabled: boolean) =>
 // ask
 // ---------------------------------------------------------------------------
 
+/** One normalized image heading to `ask_send` — `jpegBase64` is the
+ *  webview-normalized JPEG (no `data:` prefix); `name` is the original
+ *  filename kept as display metadata only. */
+export interface AskImageInput {
+  name: string;
+  jpegBase64: string;
+}
+
 /** `ask_send` options — every field optional; see `askSend`. */
 export interface AskSendOpts {
   /** The bar's Cmd/Ctrl+Enter — the explicit attach flag; a screen read

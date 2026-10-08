@@ -311,17 +311,23 @@ export const askCurrent = () => invoke<AskCurrent>('ask_current');
 /** The merged preset list — built-ins then customs. */
 export const presetsList = () => invoke<Preset[]>('presets_list');
 
-/** Open the preset palette — the small glass overlay anchored beside
- *  the bar (the wand's popup; `?view=palette` window). */
-export const presetsPaletteOpen = () => invoke<void>('presets_palette_open');
+/** Open the preset palette — the small glass overlay left-aligned to
+ *  `anchorX` (the composer caret's x in viewport px; omitted →
+ *  pointer/center fallback). `query` seeds the palette's filter — a
+ *  typed `/token` carries its name part so the list pre-filters. */
+export const presetsPaletteOpen = (anchorX?: number, query?: string) =>
+  invoke<void>('presets_palette_open', { anchorX, query });
 
 /** A palette row pick — the backend closes the palette, refocuses the
  *  bar, and emits the chosen preset as `bar:preset-pick`. */
 export const presetsPaletteSelect = (id: string) =>
   invoke<void>('presets_palette_select', { id });
 
-/** Dismiss the palette (its Esc — a click-away blur hides itself). */
-export const presetsPaletteClose = () => invoke<void>('presets_palette_close');
+/** The palette's own-key dismiss (Esc → `query` writes `/query` back
+ *  into the composer; `null` drops the `/token` — the filter's
+ *  Backspace-at-empty). Click-away blur hides without this command. */
+export const presetsPaletteClose = (query?: string | null) =>
+  invoke<void>('presets_palette_close', { query });
 
 // ---------------------------------------------------------------------------
 // listen

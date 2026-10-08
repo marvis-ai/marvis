@@ -115,12 +115,12 @@ pub fn snap_edge(bar: Rect, dir: Dir, work: Rect) -> (f64, f64) {
 /// The preset palette's rect: `w`×`h`, `PANEL_PAD` off the bar —
 /// below when the bar's lower side has more room (`expand_dir_for`'s
 /// rule, the same side the card would grow toward), above otherwise —
-/// and horizontally centered on the pointer (`cursor_x`, logical) so
-/// the wand's click lands in the menu. Then clamped inside `work` —
-/// a click near an edge keeps the palette on-screen.
-pub fn palette_rect(bar: Rect, cursor_x: f64, w: f64, h: f64, work: Rect) -> Rect {
+/// with its LEFT edge at `anchor_x` (the input caret's logical screen
+/// x), so the menu reads as growing out of the caret. Then clamped
+/// inside `work` — a caret near the right edge keeps it on-screen.
+pub fn palette_rect(bar: Rect, anchor_x: f64, w: f64, h: f64, work: Rect) -> Rect {
     let r = Rect {
-        x: cursor_x - w / 2.0,
+        x: anchor_x,
         y: if expand_dir_for(bar, work) == Dir::Down {
             bar.bottom() + PANEL_PAD
         } else {
@@ -197,21 +197,21 @@ mod tests {
     }
 
     #[test]
-    fn palette_centers_on_the_cursor_and_clamps() {
+    fn palette_left_edge_tracks_the_anchor_and_clamps() {
         let (w, h) = (300.0, 320.0);
         let bar = Rect {
             x: 100.0,
             y: WORK.y + 12.0,
             ..PILL
         };
-        // Mid-screen pointer → palette centers on it.
+        // The caret's screen x is the palette's left edge.
         let r = palette_rect(bar, 700.0, w, h, WORK);
-        assert_eq!(r.x, 700.0 - w / 2.0);
-        // A pointer near the right edge would overflow — clamped back.
+        assert_eq!(r.x, 700.0);
+        // A caret near the right edge would overflow — clamped back.
         let edge = palette_rect(bar, WORK.right() - 10.0, w, h, WORK);
         assert_eq!(edge.x, WORK.right() - w);
-        // …and past the left edge too.
-        let edge = palette_rect(bar, WORK.x + 10.0, w, h, WORK);
+        // …and one left of the work area pins to its edge.
+        let edge = palette_rect(bar, WORK.x - 10.0, w, h, WORK);
         assert_eq!(edge.x, WORK.x);
     }
 

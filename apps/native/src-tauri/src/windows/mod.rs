@@ -447,13 +447,20 @@ impl WindowPool {
     }
 
     /// Show (lazily building) the preset palette below/above the bar —
-    /// `palette_rect` picks the side with more room and centers on the
-    /// pointer's x — then announce `palette:open` (the view refetches
-    /// `presets_list` on it, same race cover as `picker:open`).
-    /// Focused so its key nav works immediately; `Focused(false)`
-    /// hides it — click-away, or the bar reclaiming focus after a
-    /// pick, is the menu's dismiss.
-    pub fn show_palette(&mut self, app: &AppHandle) -> bool {
+    /// `palette_rect` picks the side with more room and left-aligns to
+    /// `anchor_x` (the composer caret's x in BAR-viewport px; null
+    /// falls back to the pointer, then the bar's center) — then
+    /// announce `palette:open` with the `/` query seed (the view
+    /// refetches `presets_list` on it, same race cover as
+    /// `picker:open`). Focused so its filter field and key nav work
+    /// immediately; `Focused(false)` hides it — click-away, or the
+    /// bar reclaiming focus after a pick, is the menu's dismiss.
+    pub fn show_palette(
+        &mut self,
+        app: &AppHandle,
+        anchor_x: Option<f64>,
+        query: Option<String>,
+    ) -> bool {
         if self.palette.is_none() {
             let tint = accent_glass_tint(&app.state::<crate::AppState>().accent());
             let win = match build_window(
@@ -488,23 +495,35 @@ impl WindowPool {
         let Some(win) = self.palette.clone() else {
             return false;
         };
-        // The pointer's x anchors the palette — a `/`-typed open (no
-        // click position) falls back to the bar's center.
+        // Anchor precedence: the caller's caret x (viewport px, offset
+        // by the window's screen position — `outer_position` tracks
+        // the expanded card, `bar_rect` only the pill), then the
+        // pointer, then the bar's center.
         let work = self.bar_work_area();
-        let cursor_x = self
-            .bar
-            .as_ref()
-            .and_then(|bar| {
+        let anchor_x = anchor_x
+            .zip(self.bar.as_ref())
+            .and_then(|(ax, bar)| {
                 let scale = bar.scale_factor().ok()?;
-                let pos: LogicalPosition<f64> = bar.cursor_position().ok()?.to_logical(scale);
-                Some(pos.x)
+                let pos: LogicalPosition<f64> = bar.outer_position().ok()?.to_logical(scale);
+                Some(pos.x + ax)
+            })
+            .or_else(|| {
+                self.bar.as_ref().and_then(|bar| {
+                    let scale = bar.scale_factor().ok()?;
+                    let pos: LogicalPosition<f64> = bar.cursor_position().ok()?.to_logical(scale);
+                    Some(pos.x)
+                })
             })
             .unwrap_or_else(|| self.bar_rect.center_x());
-        let r = layout::palette_rect(self.bar_rect, cursor_x, PALETTE_W, PALETTE_H, work);
+        let r = layout::palette_rect(self.bar_rect, anchor_x, PALETTE_W, PALETTE_H, work);
         set_rect(&win, r);
         let _ = win.show();
         let _ = win.set_focus();
-        let _ = app.emit_to(PALETTE_LABEL, "palette:open", ());
+        let _ = app.emit_to(
+            PALETTE_LABEL,
+            "palette:open",
+            serde_json::json!({ "query": query }),
+        );
         true
     }
 

@@ -645,6 +645,10 @@ const EV_BAR_SHOW_HISTORY: &str = "bar:show-history";
 /// Emitted to the `bar` window only — a preset palette pick
 /// (`presets_palette_select`); payload is the full `Preset`.
 const EV_PRESET_PICK: &str = "bar:preset-pick";
+/// Emitted to the `bar` window only — the palette closed by key
+/// (`presets_palette_close`); payload `{ query }` reconciles the
+/// composer's `/token` (`Some` writes `/query` back, `null` drops it).
+const EV_PALETTE_CLOSED: &str = "bar:palette-closed";
 
 /// Map [`hotkey::Action`]s onto pool calls / bar events. Owns an
 /// `AppHandle` and re-resolves `AppState` per press, so the same
@@ -1897,18 +1901,26 @@ fn presets_list(state: State<'_, AppState>) -> Vec<presets::Preset> {
 }
 
 /// The composer wand's popup (and the input-row right-click, the bare
-/// `/` send): the preset palette — a small overlay anchored to the
-/// bar's inward edge, lazily built by the pool and announced as
-/// `palette:open`. Gate-guarded like `ask_send` — a crafted invoke
-/// during onboarding must not pop chrome over the wizard.
+/// `/` send, a leading `/` keystroke): the preset palette — a small
+/// overlay left-aligned to the composer caret (`anchor_x` is the
+/// caret's x in bar-viewport px, resolved against the window's outer
+/// position; the pointer, then the bar's center, are the fallbacks)
+/// and announced as `palette:open { query }` — `query` seeds the
+/// palette's filter when the open rides a typed `/token`.
+/// Gate-guarded like `ask_send` — a crafted invoke during onboarding
+/// must not pop chrome over the wizard.
 #[tauri::command]
-fn presets_palette_open(app: AppHandle) -> Result<(), String> {
+fn presets_palette_open(
+    app: AppHandle,
+    anchor_x: Option<f64>,
+    query: Option<String>,
+) -> Result<(), String> {
     let state = app.state::<AppState>();
     if *state.gate.lock() != Gate::Main {
         log::warn!("presets_palette_open dropped while gate != Main");
         return Ok(());
     }
-    state.pool.lock().show_palette(&app);
+    state.pool.lock().show_palette(&app, anchor_x, query);
     Ok(())
 }
 
@@ -1937,12 +1949,29 @@ fn presets_palette_select(app: AppHandle, id: String) -> Result<(), String> {
     Ok(())
 }
 
-/// Palette dismissed (its Esc, or click-away blur — the view calls
-/// this only for Esc; blur hides itself in `show_palette`'s event
-/// handler). The bar keeps focus it never lost, so nothing to restore.
+/// Palette dismissed by its own keys (Esc, Backspace on an empty
+/// filter — click-away blur hides itself in `show_palette`'s event
+/// handler). Hides it, hands focus back to the bar, then announces
+/// `bar:palette-closed { query }` so the composer reconciles its
+/// `/token`: `Some(query)` writes `/query` back (typing continued in
+/// the palette's filter); `None` drops the token (the filter's
+/// Backspace-at-empty means "untype the `/`").
 #[tauri::command]
-fn presets_palette_close(app: AppHandle) -> Result<(), String> {
-    app.state::<AppState>().pool.lock().hide_palette();
+fn presets_palette_close(app: AppHandle, query: Option<String>) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let bar = {
+        let pool = state.pool.lock();
+        pool.hide_palette();
+        pool.bar().cloned()
+    };
+    if let Some(bar) = bar {
+        let _ = bar.set_focus();
+    }
+    let _ = app.emit_to(
+        windows::BAR_LABEL,
+        EV_PALETTE_CLOSED,
+        serde_json::json!({ "query": query }),
+    );
     Ok(())
 }
 

@@ -40,6 +40,20 @@ export const presetToken = (name: string): string =>
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '');
 
+/** A `/token`'s name part for the palette's filter seed — `null`
+ *  when `text` isn't slash-prefixed. `/trans hello` → `trans`. */
+export const slashQuery = (text: string): string | null =>
+  slashToken(text)?.token ?? null;
+
+/** Drop a leading `/token` plus ONE following space — the pick path
+ *  consumes the trigger text: `/trans hello` → `hello`, `/` → ``.
+ *  A non-slash text passes through unchanged. */
+export const stripSlashToken = (text: string): string => {
+  const s = slashToken(text);
+  if (!s) return text;
+  return s.rest.startsWith(' ') ? s.rest.slice(1) : s.rest;
+};
+
 /** First preset matching `token` — full id, id suffix (`b:sum` →
  *  `sum`), name, or the name's `presetToken` slug, all
  *  case-insensitive; list order is the catalog's (built-ins then

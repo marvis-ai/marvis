@@ -116,9 +116,17 @@ export const EV_BAR_SHOW_HISTORY = 'bar:show-history';
  * (lib.rs `presets_palette_select`); payload is the full `Preset`. */
 export const EV_PRESET_PICK = 'bar:preset-pick';
 /** Emitted to the `palette` window on every open (windows/mod.rs
- * `show_palette`) — the view refetches `presets_list` and resets its
- * selection; the mount-time fetch covers the first-build race. */
+ * `show_palette`) — payload `{ query: string | null }` seeds the
+ * view's filter (`/token`-triggered opens pass the token's name part);
+ * the view refetches `presets_list` and resets its selection, and the
+ * mount-time fetch covers the first-build race. */
 export const EV_PALETTE_OPEN = 'palette:open';
+/** Emitted to the `bar` window only — the palette closed by key
+ * (lib.rs `presets_palette_close`); payload `{ query: string | null }`
+ * reconciles the composer's `/token` — a string writes `/query` back
+ * (Esc keeps the typed filter), `null` drops the token (Backspace on
+ * an empty filter). Click-away blur hides without this event. */
+export const EV_PALETTE_CLOSED = 'bar:palette-closed';
 /** Emitted to the bar when a frame exists but screen permission was
  * revoked mid-session (ask.rs) — it flips back to its permission card. */
 export const EV_CAPTURE_PERMISSION_NEEDED = 'capture:permission-needed'; // { permission: 'screen' }

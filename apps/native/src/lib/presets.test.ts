@@ -8,7 +8,9 @@ import {
   matchPreset,
   presetToken,
   resolveSlash,
+  slashQuery,
   slashToken,
+  stripSlashToken,
 } from './presets';
 
 const P = (id: string, name: string, text = ''): Preset => ({
@@ -143,4 +145,24 @@ test('langName mirrors prompts.rs', () => {
   // Prototype keys are not languages — a plain-object lookup would leak
   // `Object.prototype.toString` here.
   expect(langName('toString')).toBe('English');
+});
+
+describe('slashQuery / stripSlashToken', () => {
+  test('slashQuery seeds the palette filter from the token', () => {
+    expect(slashQuery('/trans hello')).toBe('trans');
+    expect(slashQuery('/')).toBe('');
+    expect(slashQuery('plain text')).toBeNull();
+  });
+
+  test('stripSlashToken drops the token and ONE space', () => {
+    expect(stripSlashToken('/trans hello')).toBe('hello');
+    expect(stripSlashToken('/')).toBe('');
+    expect(stripSlashToken('/sum')).toBe('');
+    // A second `/` ends the token — the rest survives untouched.
+    expect(stripSlashToken('/x/y')).toBe('/y');
+    // Non-slash text passes through untouched.
+    expect(stripSlashToken('hello')).toBe('hello');
+    // Extra spaces after the token belong to the user's text.
+    expect(stripSlashToken('/sum  indented')).toBe(' indented');
+  });
 });

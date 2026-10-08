@@ -55,7 +55,8 @@ Listen.
 | Prompt presets | shipped | Built-in catalog + custom presets in `config.toml`, glass palette picker + `/name` shorthand, per-send `{input}`/`{lang}` badges — spec: `docs/superpowers/specs/2026-10-07-prompt-presets-design.md`; becomes the seed of skill bundles (Phase 3) |
 | Ollama model management | planned | Named in the v0.1.0 notes — pull/remove models from settings |
 | Gemini search-grounding toggle | planned | Named in the v0.1.0 notes; first grounded-answer path |
-| Summary + transcript export (markdown / clipboard) | planned | Data already sits in `marvis.db`; there's no egress path at all |
+| Summary + transcript export (markdown / clipboard) | in progress | Spec: `docs/superpowers/specs/2026-10-08-transcript-export-design.md`; implemented — markdown copy + `.md` save via `save_text_file`, pending manual QA |
+| Session audio export (WAV) | planned | Follow-up to doc export: `sessions.audio_file` WAVs already retained in `~/.marvis/audios`; needs a `save_file_copy`-style command beside `save_text_file` and a "Save audio…" menu item |
 | In-app WAV playback | planned | Listen sessions retain `audio_file` but nothing can play it |
 | Rename diarized speakers | planned | "You" is pinned by voiceprint; speakers 1–4 stay anonymous |
 | File & image attachments in Ask | exploring | Beyond the screen frame — drag-drop / picker into the composer |

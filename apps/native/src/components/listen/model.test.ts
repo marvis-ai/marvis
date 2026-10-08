@@ -7,7 +7,9 @@ import {
   audioOffset,
   buildBlocks,
   exportFileName,
+  resolveSpeakerNames,
   timeLabel,
+  transcriptCopyText,
   transcriptMarkdown,
   type Turn,
 } from './model';
@@ -116,6 +118,69 @@ describe('buildBlocks', () => {
     ]);
     expect(blocks).toHaveLength(2);
     expect(blocks[1]!.ts).toBe(10);
+  });
+});
+
+describe('resolveSpeakerNames', () => {
+  test('assigns one You identity and unique anonymous names by first sighting', () => {
+    const turns = [
+      turn(0, { speaker: 'them', speaker_idx: 0 }),
+      turn(1, { speaker: 'me', speaker_idx: null }),
+      turn(2, { speaker: 'me', speaker_idx: 1 }),
+      turn(3, { speaker: 'them', speaker_idx: 1 }),
+    ];
+
+    expect([...resolveSpeakerNames(turns)]).toEqual([
+      ['them:0', 'Speaker 1'],
+      ['me:0', 'You'],
+      ['me:1', 'Speaker 2'],
+      ['them:1', 'Speaker 3'],
+    ]);
+  });
+
+  test('overrides one identity without changing its stable filter key', () => {
+    const blocks = buildBlocks(
+      [
+        turn(0, { speaker: 'them', speaker_idx: 0 }),
+        turn(1, { speaker: 'me', speaker_idx: 1 }),
+        turn(2, { speaker: 'them', speaker_idx: 0 }),
+      ],
+      new Map([['them:0', 'Alice']]),
+    );
+
+    expect(blocks.map((block) => [block.key, block.name])).toEqual([
+      ['them:0', 'Alice'],
+      ['me:1', 'Speaker 2'],
+      ['them:0', 'Alice'],
+    ]);
+    expect(blocks[0]!.canRename).toBe(true);
+    expect(blocks[1]!.canRename).toBe(true);
+  });
+
+  test('You and an unlabelled system turn are not renameable', () => {
+    const blocks = buildBlocks([
+      turn(0, { speaker: 'me', speaker_idx: null }),
+      turn(1, { speaker: 'them', speaker_idx: null }),
+    ]);
+
+    expect(blocks.map((block) => [block.name, block.canRename])).toEqual([
+      ['You', false],
+      ['Speaker', false],
+    ]);
+  });
+
+  test('copy and Markdown export use the resolved names', () => {
+    const blocks = buildBlocks(
+      [turn(1_700_000_042, { speaker: 'them', speaker_idx: 0 })],
+      new Map([['them:0', 'Alice']]),
+    );
+
+    expect(transcriptCopyText(blocks, 1_700_000_000, null)).toContain(
+      'Alice: t1700000042',
+    );
+    expect(
+      transcriptMarkdown(blocks, { startedAt: 1_700_000_000 }, null),
+    ).toContain('Alice:** t1700000042');
   });
 });
 

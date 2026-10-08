@@ -46,18 +46,52 @@ export const speakerKey = (turn: TurnIdentity) =>
   `${turn.speaker}:${turn.speaker_idx ?? (turn.speaker === 'me' ? 0 : '')}`;
 
 /** A `me`-channel turn the diarizer clustered to someone other than the
- *  enrolled voice — a guest on the user's mic, shown as "Guest N". */
+ *  enrolled voice — a guest on the user's mic, colored like the other
+ *  diarized speakers rather than the accent. */
 const isMicGuest = (turn: TurnIdentity) =>
   turn.speaker === 'me' && turn.speaker_idx != null && turn.speaker_idx > 0;
 
-export const speakerName = (turn: TurnIdentity) =>
-  turn.speaker === 'me'
-    ? isMicGuest(turn)
-      ? `Guest ${turn.speaker_idx}`
-      : 'You'
-    : turn.speaker_idx == null
-      ? 'Speaker'
-      : `Speaker ${turn.speaker_idx + 1}`;
+/** Session-local display-name overrides keyed by `speakerKey`. Never
+ *  persisted — a rename lives only as long as the viewed session. */
+export type SpeakerNameOverrides = ReadonlyMap<string, string>;
+
+const isYouIdentity = (turn: TurnIdentity) =>
+  turn.speaker === 'me' &&
+  (turn.speaker_idx === null || turn.speaker_idx === 0);
+
+/** Only a diarized, non-You identity takes a session-local name — the
+ *  enrolled voice is pinned by voiceprint, and an unlabeled `them` turn
+ *  has no stable cluster to rename. */
+export const isRenameableSpeaker = (turn: TurnIdentity) =>
+  turn.speaker_idx !== null && !isYouIdentity(turn);
+
+/** One display name per identity across a session's turns: `You` for
+ *  the enrolled voice, a bare `Speaker` for unlabeled `them` turns, and
+ *  `Speaker N` in first-seen order for every other diarized identity —
+ *  independent of the diarizer's cluster index. `overrides` replace the
+ *  resolved default without touching the identity key. */
+export const resolveSpeakerNames = (
+  turns: readonly Turn[],
+  overrides: SpeakerNameOverrides = new Map(),
+): ReadonlyMap<string, string> => {
+  const defaults = new Map<string, string>();
+  let next = 1;
+  for (const turn of turns) {
+    const key = speakerKey(turn);
+    if (defaults.has(key)) continue;
+    defaults.set(
+      key,
+      isYouIdentity(turn)
+        ? 'You'
+        : turn.speaker_idx === null
+          ? 'Speaker'
+          : `Speaker ${next++}`,
+    );
+  }
+  return new Map(
+    [...defaults].map(([key, name]) => [key, overrides.get(key) ?? name]),
+  );
+};
 
 export const SPEAKER_COLOR_CLASSES = [
   'text-speaker-1',
@@ -76,6 +110,7 @@ export const speakerColor = (turn: TurnIdentity) =>
 export interface TurnBlock {
   key: string;
   name: string;
+  canRename: boolean;
   color: string;
   ts: number;
   audioStartMs: number | null;
@@ -96,8 +131,14 @@ const BLOCK_PAUSE_SECS = 15;
 const lastActivityTs = (b: TurnBlock) =>
   b.interim?.ts ?? b.finals[b.finals.length - 1]?.ts ?? b.ts;
 
-/** The old `blocks` useMemo body as a pure function. */
-export const buildBlocks = (turns: Turn[]): TurnBlock[] => {
+/** The old `blocks` useMemo body as a pure function. Display names
+ *  resolve once per call — `overrides` rename an identity across every
+ *  block that shares its key. */
+export const buildBlocks = (
+  turns: Turn[],
+  overrides: SpeakerNameOverrides = new Map(),
+): TurnBlock[] => {
+  const names = resolveSpeakerNames(turns, overrides);
   const out: TurnBlock[] = [];
   for (const turn of turns) {
     const key = speakerKey(turn);
@@ -118,7 +159,8 @@ export const buildBlocks = (turns: Turn[]): TurnBlock[] => {
       }
       block = {
         key,
-        name: speakerName(turn),
+        name: names.get(key) ?? 'Speaker',
+        canRename: isRenameableSpeaker(turn),
         color: speakerColor(turn),
         ts: turn.ts,
         audioStartMs: turn.audio_start_ms,
@@ -149,9 +191,12 @@ export const elapsedLabel = (secs: number) => {
 
 export const audioOffset = (block: TurnBlock, startedAt: number | null) =>
   // Legacy turns have no capture position; retain their approximate timestamp.
-  Math.max(0, block.audioStartMs != null
-    ? block.audioStartMs / 1000
-    : block.ts - (startedAt ?? block.ts));
+  Math.max(
+    0,
+    block.audioStartMs != null
+      ? block.audioStartMs / 1000
+      : block.ts - (startedAt ?? block.ts),
+  );
 
 export const activeBlockAt = (
   blocks: TurnBlock[],
@@ -164,7 +209,10 @@ export const activeBlockAt = (
   for (const block of blocks) {
     if (block.audioStartMs == null && startedAt == null) continue;
     const offset = audioOffset(block, startedAt);
-    if (offset <= seconds && (!active || offset >= audioOffset(active, startedAt))) {
+    if (
+      offset <= seconds &&
+      (!active || offset >= audioOffset(active, startedAt))
+    ) {
       active = block;
     }
   }

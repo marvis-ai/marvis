@@ -6,7 +6,7 @@
  * sent message and `{lang}` becomes an editable language badge;
  * without `{input}` the text steers the reply silently.
  */
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Trash2Icon } from '@marvis/ui';
 import { configSet, type Preset } from '@/lib/commands';
 import { usePresets } from '@/hooks/usePresets';
@@ -35,6 +35,11 @@ const mintId = () => `u:${Math.random().toString(36).slice(2, 10)}`;
 export const PresetsTab = ({ data }: { data: PrefsData }) => {
   const customs = data.config?.prompts.custom ?? [];
   const builtins = usePresets().filter((p) => p.id.startsWith('b:'));
+  const confirmedCustoms = useRef(customs);
+  const writes = useRef(Promise.resolve());
+  useEffect(() => {
+    confirmedCustoms.current = data.config?.prompts.custom ?? [];
+  }, [data.config]);
 
   const [editing, setEditing] = useState<Preset | null>(null);
   const [isNew, setIsNew] = useState(false);
@@ -42,7 +47,21 @@ export const PresetsTab = ({ data }: { data: PrefsData }) => {
    *  user-surfaceable (`presets::validate_custom`). */
   const [saveError, setSaveError] = useState('');
 
-  const write = (next: Preset[]) => configSet('prompts.custom', next);
+  const write = (update: (current: Preset[]) => Preset[]) => {
+    // Build the next list only after the previous write has confirmed it.
+    const result = writes.current.then(async () => {
+      const config = await configSet(
+        'prompts.custom',
+        update(confirmedCustoms.current),
+      );
+      confirmedCustoms.current = config.prompts.custom;
+      data.setConfig(config);
+    });
+    // A rejected write leaves the confirmed list intact and must not
+    // prevent subsequent saves or deletions from running.
+    writes.current = result.catch(() => {});
+    return result;
+  };
 
   const startNew = () => {
     setIsNew(true);
@@ -57,15 +76,15 @@ export const PresetsTab = ({ data }: { data: PrefsData }) => {
       text: editing.text.trim(),
     };
     if (!clean.name || !clean.text) return;
-    const next = isNew
-      ? [...customs, clean]
-      : customs.map((p) => (p.id === clean.id ? clean : p));
     // Close only on success — a rejected write keeps the editor open so
     // the draft isn't silently lost, and says why.
     setSaveError('');
-    void write(next)
-      .then((c) => {
-        data.setConfig(c);
+    void write((current) =>
+      isNew
+        ? [...current, clean]
+        : current.map((p) => (p.id === clean.id ? clean : p)),
+    )
+      .then(() => {
         setEditing(null);
       })
       .catch((e) => setSaveError(typeof e === 'string' ? e : 'Save failed'));
@@ -111,8 +130,7 @@ export const PresetsTab = ({ data }: { data: PrefsData }) => {
               aria-label={`Delete ${p.name}`}
               className={ICON_BTN}
               onClick={() =>
-                void write(customs.filter((x) => x.id !== p.id))
-                  .then(data.setConfig)
+                void write((current) => current.filter((x) => x.id !== p.id))
                   .catch(() => {})
               }>
               <Trash2Icon className='size-3.5' />

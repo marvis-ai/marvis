@@ -1,5 +1,12 @@
 # Prompt Presets Implementation Plan
 
+> **Superseded (2026-10-08):** Follow the revised
+> [prompt-presets design](../specs/2026-10-07-prompt-presets-design.md).
+> This historical plan's `PresetKind` model and native `popup_menu` picker
+> are outdated. Current behavior derives expansion from `{input}` in the
+> preset text, supports the `{lang}` placeholder, and uses the palette
+> window with `/name` shorthand. Do not implement the obsolete steps below.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Per-send prompt presets for Ask — built-in + user-defined —

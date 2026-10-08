@@ -502,7 +502,7 @@ const Bar = () => {
       setText(rest);
       focusFieldEnd();
       if (rest.trim()) {
-        submitAsk();
+        submitAsk(false, { skipSlashResolution: true });
       }
       return;
     }
@@ -560,10 +560,14 @@ const Bar = () => {
    *  forces a screen read even when the text shows no intent. A send
    *  from the listen card binds to that doc's own chat — the viewed
    *  session's id, else the live session's. */
-  const sendAsk = async (withScreen = false, question?: string) => {
+  const sendAsk = async (
+    withScreen = false,
+    question?: string,
+    { skipSlashResolution = false } = {},
+  ) => {
     let preset = armedPresetRef.current;
     let slashInput: string | undefined;
-    if (question === undefined) {
+    if (question === undefined && !skipSlashResolution) {
       const raw = textRef.current;
       // Bare `/` opens the preset palette instead of sending a slash.
       if (raw.trim() === '/') {
@@ -628,9 +632,12 @@ const Bar = () => {
   // expands the window itself — no local collapse needed either way.
   // The flag only rides along when the handshake actually sends — a
   // live dictation still stops for review first, never auto-submits.
-  const submitAsk = (withScreen = false) => {
+  const submitAsk = (
+    withScreen = false,
+    options: { skipSlashResolution?: boolean } = {},
+  ) => {
     setPinned('chat');
-    dictation.submit(() => void sendAsk(withScreen));
+    dictation.submit(() => void sendAsk(withScreen, undefined, options));
   };
 
   /** Toggle continuous screen capture — a pure recorder switch that

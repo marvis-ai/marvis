@@ -1,6 +1,3 @@
-
----
-
 # 用户反馈记录
 
 **来源页面**：[https://www.reddit.com/r/buildinpublic/comments/1x0enk5/building_a_tiny_localfirst_private_ai_copilot_for/](https://www.reddit.com/r/buildinpublic/comments/1x0enk5/building_a_tiny_localfirst_private_ai_copilot_for/)

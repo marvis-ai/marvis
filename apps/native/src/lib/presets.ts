@@ -17,14 +17,14 @@ export const isTemplate = (p: Preset): boolean => p.text.includes('{input}');
 export const hasLangParam = (p: Preset): boolean => p.text.includes('{lang}');
 
 /** The caret-0 `/token`: `text` starts with `/`; the token is the
- *  `[a-z0-9-]` run after it — the `i` flag admits A–Z too, so `token`
+ *  `[a-z0-9:-]` run after it — the `i` flag admits A–Z too, so `token`
  *  keeps its typed case (`/Sum` → `Sum`; `matchPreset` lowercases for
  *  the compare). `rest` is everything that follows (leading
  *  whitespace included). `null` when text isn't a slash command. */
 export const slashToken = (
   text: string,
 ): { token: string; rest: string } | null => {
-  const m = /^\/([a-z0-9-]*)([\s\S]*)$/i.exec(text);
+  const m = /^\/([a-z0-9:-]*)([\s\S]*)$/i.exec(text);
   if (!m) return null;
   return { token: m[1], rest: m[2] };
 };

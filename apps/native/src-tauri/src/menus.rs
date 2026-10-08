@@ -5,8 +5,9 @@
 //! Items live under the `menu.*` id namespace, dispatched through the
 //! single global `on_menu_event` listener registered in lib.rs
 //! (`menu_dispatch`). Menu events broadcast to EVERY registered
-//! listener (global + per-window), so the prefix match is what keeps
-//! dispatch single-fire.
+//! listener (global + per-window). Dispatch fires once only while this
+//! is the sole handler for these IDs; the `menu.*` prefix does not
+//! prevent other listeners from dispatching the same event.
 //!
 //! The menu is rebuilt rather than mutated: [`build`] reads live state
 //! (capture running, listen live, nearest edge, `window.bar_locked`, and

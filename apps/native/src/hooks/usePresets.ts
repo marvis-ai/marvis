@@ -5,20 +5,29 @@
  * palette seed (`Bar`), the `· name` provenance resolver
  * (`ChatSection`), and the Settings preset list (`PresetsTab`).
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { presetsList, type Config, type Preset } from '@/lib/commands';
 import { EV_CONFIG_CHANGED, useTauriEvent } from '@/lib/events';
 
 export const usePresets = (): Preset[] => {
   const [presets, setPresets] = useState<Preset[]>([]);
+  const requestSequence = useRef(0);
   const refresh = () => {
+    const sequence = ++requestSequence.current;
     void presetsList()
-      .then(setPresets)
+      .then((list) => {
+        if (sequence === requestSequence.current) setPresets(list);
+      })
       .catch(() => {});
   };
   // Mount fetch covers the first render; `config:changed` drives every
   // later write.
-  useEffect(refresh, []);
+  useEffect(() => {
+    refresh();
+    return () => {
+      ++requestSequence.current;
+    };
+  }, []);
   useTauriEvent<Config>(EV_CONFIG_CHANGED, refresh);
   return presets;
 };

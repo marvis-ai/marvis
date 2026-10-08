@@ -35,6 +35,10 @@ describe('slashToken', () => {
       rest: ' hello world',
     });
     expect(slashToken('/sum.x')).toEqual({ token: 'sum', rest: '.x' });
+    expect(slashToken('/u:xx  hello\nworld')).toEqual({
+      token: 'u:xx',
+      rest: '  hello\nworld',
+    });
     expect(slashToken('mid /sum')).toBeNull();
   });
 });
@@ -74,6 +78,16 @@ describe('matchPreset', () => {
 });
 
 describe('resolveSlash', () => {
+  test('full preset IDs resolve eagerly and at send time', () => {
+    expect(resolveSlash('/u:xx hello', presets, false)).toEqual({
+      preset: presets[2],
+      rest: 'hello',
+    });
+    expect(resolveSlash('/B:SUM', presets, true)?.preset.id).toBe('b:sum');
+    expect(resolveSlash('/u:xx', presets, false)).toBeNull();
+    expect(stripSlashToken('/u:xx  hello')).toBe(' hello');
+  });
+
   test('eager pass needs a whitespace terminator', () => {
     expect(resolveSlash('/sum ', presets, false)?.preset.id).toBe('b:sum');
     expect(resolveSlash('/sum', presets, false)).toBeNull();

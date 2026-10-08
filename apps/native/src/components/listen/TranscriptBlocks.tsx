@@ -10,6 +10,7 @@ import {
 
 const ACTIVE_BLOCK_CLASSES: Record<string, string> = {
   'text-accent': 'bg-accent/10 ring-1 ring-accent/25',
+  'text-fg-2': 'bg-fg-2/10 ring-1 ring-fg-2/25',
   'text-speaker-1': 'bg-speaker-1/10 ring-1 ring-speaker-1/25',
   'text-speaker-2': 'bg-speaker-2/10 ring-1 ring-speaker-2/25',
   'text-speaker-3': 'bg-speaker-3/10 ring-1 ring-speaker-3/25',

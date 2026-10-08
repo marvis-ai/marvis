@@ -2535,6 +2535,53 @@ fn session_resume(state: State<'_, AppState>, id: i64) -> Result<bool, String> {
         .map_err(|e| e.to_string())
 }
 
+/// Document egress (export): a native save dialog + write. Deliberately
+/// dumb — the webview builds the document; this owns the two things a
+/// webview can't do without an fs capability. `None` = user cancel
+/// (also the gate-drop result: a crafted invoke gets the same nothing).
+#[tauri::command]
+async fn save_text_file(
+    app: AppHandle,
+    suggested_name: String,
+    contents: String,
+) -> Result<Option<String>, String> {
+    let state = app.state::<AppState>();
+    if *state.gate.lock() != Gate::Main {
+        log::warn!("save_text_file dropped while gate != Main");
+        return Ok(None);
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let Some(path) = rfd::FileDialog::new()
+            .set_file_name(sanitize_suggested_name(&suggested_name))
+            .add_filter("Markdown", &["md"])
+            .save_file()
+        else {
+            return Ok(None);
+        };
+        std::fs::write(&path, contents).map_err(|e| e.to_string())?;
+        Ok(Some(path.to_string_lossy().into_owned()))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// The dialog's suggested name: path separators and control chars can't
+/// smuggle a directory choice past the picker; the cap keeps the dialog
+/// field sane. Never a path — just a filename.
+fn sanitize_suggested_name(name: &str) -> String {
+    let clean: String = name
+        .chars()
+        .filter(|c| !matches!(c, '/' | '\\') && !c.is_control())
+        .take(80)
+        .collect();
+    let clean = clean.trim();
+    if clean.is_empty() {
+        "marvis-export.md".to_string()
+    } else {
+        clean.to_string()
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Commands — config / app
 // ---------------------------------------------------------------------------
@@ -2996,6 +3043,7 @@ pub fn run() {
             session_delete,
             session_end_active,
             session_resume,
+            save_text_file,
             config_get,
             config_set,
             surface_material,
@@ -3079,6 +3127,40 @@ mod tests {
         assert!(source.contains(concat!("EV_", "PALETTE_QUERY")));
         assert!(source.contains(concat!("EV_", "PALETTE_KEY")));
         assert!(source.contains(concat!("EV_", "PALETTE_CLOSED")));
+    }
+
+    /// The export surface: `save_text_file` is registered in
+    /// `generate_handler!`, gate-guarded like the palette commands, and
+    /// runs its blocking dialog off the async executor. `concat!` keeps
+    /// the literal out of this file's text so the assert can't
+    /// self-satisfy.
+    #[test]
+    fn export_command_is_registered_and_gate_guarded() {
+        let source = include_str!("lib.rs");
+        assert!(source.contains(concat!("save", "_text_file,")));
+        let body = source
+            .split("async fn save_text_file(")
+            .nth(1)
+            .and_then(|rest| rest.split("\n/// ").next())
+            .expect("save_text_file body not found");
+        assert!(
+            body.contains("*state.gate.lock() != Gate::Main"),
+            "save_text_file must check Gate::Main"
+        );
+        assert!(
+            body.contains("spawn_blocking"),
+            "save_text_file's dialog must run off the async executor"
+        );
+    }
+
+    #[test]
+    fn suggested_name_sanitizes_separators_controls_and_caps() {
+        assert_eq!(sanitize_suggested_name("a/b\\c.md"), "abc.md");
+        assert_eq!(sanitize_suggested_name("n\u{0}ame.md"), "name.md");
+        assert_eq!(sanitize_suggested_name("   "), "marvis-export.md");
+        assert_eq!(sanitize_suggested_name(""), "marvis-export.md");
+        assert_eq!(sanitize_suggested_name(&"x".repeat(200)).len(), 80);
+        assert_eq!(sanitize_suggested_name("notes.md"), "notes.md");
     }
 
     /// The punctuation auto-install chain: a completed sherpa download

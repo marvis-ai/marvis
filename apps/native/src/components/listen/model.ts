@@ -24,6 +24,7 @@ export interface ListenViewing {
   id: number;
   startedAt: number;
   endedAt: number | null;
+  audioFile: string | null;
   stt: string | null;
 }
 
@@ -144,6 +145,23 @@ export const elapsedLabel = (secs: number) => {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
 };
 
+export const audioOffset = (block: TurnBlock, startedAt: number | null) =>
+  Math.max(0, block.ts - (startedAt ?? block.ts));
+
+export const activeBlockAt = (
+  blocks: TurnBlock[],
+  startedAt: number | null,
+  seconds: number,
+) => {
+  if (startedAt == null || seconds < 0) return null;
+  const timestamp = startedAt + seconds;
+  const index = blocks.findIndex((block, i) => {
+    const next = blocks[i + 1];
+    return block.ts <= timestamp && (!next || timestamp < next.ts);
+  });
+  return index < 0 ? null : `${blocks[index]!.key}-${blocks[index]!.ts}`;
+};
+
 /** Adaptive stamp — today `14:32`, yesterday `Yesterday · 14:32`, older
  *  `Sep 26 · 14:32` (`Sep 26, 2025 · 14:32` across years). Viewed-session
  *  header subtitle + chat row stamp. */
@@ -244,11 +262,12 @@ export const transcriptMarkdown = (
   return out.join('\n');
 };
 
-/** `marvis-{slug}-YYYYMMDD-HHmm.md` — slug off the doc title (`listen`
- *  fallback); the stamp comes from `startedAt`, else now. */
+/** `marvis-{slug}-YYYYMMDD-HHmm.{extension}` — slug off the doc title
+ *  (`listen` fallback); the stamp comes from `startedAt`, else now. */
 export const exportFileName = (
   topic: string | null | undefined,
   startedAt: number | null,
+  extension = 'md',
 ): string => {
   const slug = (topic ?? '')
     .toLowerCase()
@@ -260,5 +279,5 @@ export const exportFileName = (
     (startedAt ?? Date.now() / 1000) * 1000,
     'yyyyMMdd-HHmm',
   );
-  return `marvis-${slug || 'listen'}-${stamp}.md`;
+  return `marvis-${slug || 'listen'}-${stamp}.${extension}`;
 };

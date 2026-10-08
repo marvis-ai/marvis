@@ -279,6 +279,7 @@ export const ListenSection = ({
             id,
             startedAt: started,
             endedAt: Date.now() / 1000,
+            audioFile: null,
             stt: engine,
           });
         }

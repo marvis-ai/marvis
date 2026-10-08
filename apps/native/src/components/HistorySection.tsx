@@ -85,6 +85,7 @@ export const HistorySection = ({
             id: s.id,
             startedAt: s.started_at,
             endedAt: s.ended_at,
+            audioFile: s.audio_file,
             stt: s.stt,
           },
     );

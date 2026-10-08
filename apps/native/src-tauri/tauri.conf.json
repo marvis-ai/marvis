@@ -12,7 +12,13 @@
   "app": {
     "macOSPrivateApi": true,
     "windows": [],
-    "security": { "csp": null }
+    "security": {
+      "csp": null,
+      "assetProtocol": {
+        "enable": true,
+        "scope": ["$HOME/.marvis/audios/**"]
+      }
+    }
   },
   "plugins": {
     "deep-link": {

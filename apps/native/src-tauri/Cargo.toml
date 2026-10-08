@@ -23,6 +23,7 @@ tauri = { version = "2", features = [
     "tray-icon",
     "image-png",
     "image-ico",
+    "protocol-asset",
     # Powers transparent/glass windows; tauri-build's allowlist only
     # inspects this declaration, so it stays here — the feature is a
     # no-op when compiled off macOS.

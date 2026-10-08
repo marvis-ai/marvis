@@ -3,6 +3,8 @@ import { describe, expect, test } from 'bun:test';
 import { format } from 'date-fns';
 import type { ListenSummaryPayload } from '@/lib/events';
 import {
+  activeBlockAt,
+  audioOffset,
   buildBlocks,
   exportFileName,
   timeLabel,
@@ -258,4 +260,27 @@ describe('exportFileName', () => {
     const long = exportFileName('a'.repeat(60), null);
     expect(long).toMatch(/^marvis-a{40}-\d{8}-\d{4}\.md$/);
   });
+});
+
+test('audioOffset clamps a block before the session start', () => {
+  const [block] = buildBlocks([turn(90, { speaker: 'me', speaker_idx: null })]);
+  expect(audioOffset(block!, 100)).toBe(0);
+  expect(audioOffset(block!, 42)).toBe(48);
+});
+
+test('activeBlockAt resolves blocks and leaves gaps inactive', () => {
+  const blocks = buildBlocks([
+    turn(100, { speaker: 'me', speaker_idx: null }),
+    turn(110, { speaker: 'them', speaker_idx: 0 }),
+  ]);
+  expect(activeBlockAt(blocks, 100, 0)).toBe('me:0-100');
+  expect(activeBlockAt(blocks, 100, 9)).toBe('me:0-100');
+  expect(activeBlockAt(blocks, 100, 10)).toBe('them:0-110');
+  expect(activeBlockAt(blocks, 100, -1)).toBe(null);
+});
+
+test('exportFileName supports a WAV extension', () => {
+  expect(exportFileName('Weekly Standup', 1_700_000_000, 'wav')).toMatch(
+    /^marvis-weekly-standup-\d{8}-\d{4}\.wav$/,
+  );
 });

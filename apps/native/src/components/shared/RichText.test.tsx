@@ -24,7 +24,7 @@ describe('RichText', () => {
     expect(html).not.toContain('**');
   });
 
-  test('interactive mode renders anchors with resolved hrefs', () => {
+  test('interactive mode renders anchors for resolved links', () => {
     const src = 'www.a.b and me@x.io and [docs](https://a.b)';
     const html = renderToStaticMarkup(
       <RichText
@@ -32,9 +32,11 @@ describe('RichText', () => {
         interactive
       />,
     );
-    expect(html).toContain('href="https://www.a.b"');
-    expect(html).toContain('href="mailto:me@x.io"');
-    expect(html).toContain('href="https://a.b"');
+    // All three link kinds emit an anchor, but no token-derived URL reaches
+    // `href` — the opener owns navigation and `#` is only the focus/Enter
+    // affordance (js/xss-through-dom: URL text must not reach a DOM sink).
+    expect(html.match(/<a /g)).toHaveLength(3);
+    expect(html).not.toMatch(/href="(?!#)/);
     expect(html).toContain('>docs</a>');
   });
 

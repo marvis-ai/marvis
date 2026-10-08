@@ -30,10 +30,12 @@ const HL: Record<Exclude<TokenRole, 'text'>, string> = {
 
 const CODE_CHIP = 'rounded-[3px] bg-fg-soft px-0.5 font-mono text-[0.92em]';
 
-/** Only `http(s)`/`mailto:` hrefs reach the DOM — `tokenizeInline`
- *  already whitelists schemes at emit time, and this sink-side check
- *  keeps the invariant if a new href producer is ever added (a
- *  `javascript:`/`data:` URL in an anchor href is a stored-XSS sink). */
+/** Only `http(s)`/`mailto:` hrefs become links — `tokenizeInline` already
+ *  whitelists schemes at emit time, and this sink-side re-check keeps the
+ *  invariant if a new href producer is ever added. The sanitized value
+ *  feeds only the Tauri opener; the anchor itself renders `href="#"`, so
+ *  no token-derived string ever reaches a URL attribute (a `javascript:`
+ *  href would be a stored-XSS sink). */
 const safeHref = (href?: string): string | undefined =>
   href !== undefined && /^(?:https?:|mailto:)/i.test(href) ? href : undefined;
 
@@ -84,13 +86,14 @@ export const RichText = ({
           case 'email':
           case 'link': {
             const href = safeHref(t.href);
+            if (href === undefined) return <span key={i}>{slice}</span>;
             return (
               <a
                 key={i}
-                href={href}
+                href='#'
                 onClick={(e) => {
                   e.preventDefault();
-                  if (href) void openUrl(href);
+                  void openUrl(href);
                 }}
                 className='underline underline-offset-2'>
                 {slice}

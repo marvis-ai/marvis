@@ -73,8 +73,8 @@ Playback stops on doc switch and unmount.
 | Where | Change |
 | --- | --- |
 | `lib.rs` | `save_audio_file(session_id, suggested_name) -> Result<Option<String>, String>` — Gate::Main, registered + contract-tested; `listen_status` gains `audio_file` (db read it already owns) |
-| `tauri.conf.json` | `app.security.assetProtocol = { enable: true, assetScope: ["$HOME/.marvis/audios/**"] }` |
-| `capabilities/default.json` | `core:asset:default` (enables `convertFileSrc` + the scoped protocol) |
+| `tauri.conf.json` | `app.security.assetProtocol = { enable: true, scope: ["$HOME/.marvis/audios/**"] }` |
+| `capabilities/default.json` | No new permission — `convertFileSrc` uses the configured core asset protocol; keep the capability least-privileged |
 
 `save_audio_file`:
 

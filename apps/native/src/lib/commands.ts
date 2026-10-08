@@ -282,6 +282,9 @@ export interface AskSendOpts {
   /** The `{lang}` badge's edited value (`undefined` → the configured
    *  main language). */
   presetLang?: string;
+  /** Normalized image attachments — already JPEG-encoded via
+   *  `image-attachments.ts`; max four, each ≤20 MiB pre-normalization. */
+  attachments?: AskImageInput[];
 }
 
 /** Fire-and-forget: returns after pre-flight; tokens stream as `ask:*`. */
@@ -292,6 +295,7 @@ export const askSend = (text: string, opts: AskSendOpts = {}) =>
     listenId: opts.listenId,
     presetId: opts.presetId,
     presetLang: opts.presetLang,
+    attachments: opts.attachments ?? [],
   });
 
 /** The bar's camera affordance — a screen-only ask (fixed prompt,

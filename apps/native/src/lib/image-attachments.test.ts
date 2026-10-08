@@ -48,8 +48,8 @@ test('normalizes an accepted image to a bounded JPEG payload', async () => {
         w: number,
         h: number,
       ) => draws.push([this.width, this.height, w, h]),
-    } as unknown as CanvasRenderingContext2D;
-  } as typeof win.HTMLCanvasElement.prototype.getContext;
+    };
+  } as unknown as typeof win.HTMLCanvasElement.prototype.getContext;
   win.HTMLCanvasElement.prototype.toDataURL = () =>
     'data:image/jpeg;base64,PREVIEW';
   try {

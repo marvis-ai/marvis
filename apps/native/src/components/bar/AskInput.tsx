@@ -5,7 +5,8 @@ import {
   type RefObject,
   type SyntheticEvent,
 } from 'react';
-import { cn } from '@/lib/classes';
+import { PaperclipIcon } from '@marvis/ui';
+import { cn, ICON_BTN } from '@/lib/classes';
 import { PALETTE_KEYS } from '@/lib/presets';
 import { RichText } from '@/components/shared/RichText';
 
@@ -13,6 +14,17 @@ import { RichText } from '@/components/shared/RichText';
  *  overlay — font, size, leading, and padding must stay identical or
  *  the overlay drifts off the (invisible) real caret. */
 const METRICS = 'text-[14px] leading-5';
+
+/** Attachment wiring owned by `Bar`: `onPick` is the generic
+ *  "composer interaction" signal (same wake-the-pill role as
+ *  `onFocus`), `onFiles` receives raw files from the hidden picker —
+ *  validation/normalization happens in `image-attachments`, not here —
+ *  and `dropActive` rings the field while a drag hovers the form. */
+export interface AskInputAttachmentProps {
+  onPick: () => void;
+  onFiles: (files: File[]) => void;
+  dropActive: boolean;
+}
 
 /** The Ask field — a growing textarea shared by the input pill and the
  *  card header, with a mirrored highlight overlay: the textarea's text
@@ -45,6 +57,7 @@ export const AskInput = ({
   onFocus,
   onSubmit,
   onDisarm,
+  attachments,
 }: {
   ref: RefObject<HTMLTextAreaElement | null>;
   value: string;
@@ -61,8 +74,11 @@ export const AskInput = ({
   onFocus: () => void;
   onSubmit: (withScreen: boolean) => void;
   onDisarm: () => boolean;
+  /** Picker/drop wiring — absent where the field can't take images. */
+  attachments?: AskInputAttachmentProps;
 }) => {
   const overlayRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   /* `color: transparent` would hide the CJK marked-text preview too,
    * so composition briefly restores the real color and hides the
    * overlay — a transient unstyled flash, but the preview stays
@@ -71,7 +87,7 @@ export const AskInput = ({
   return (
     <div
       className={cn(
-        'relative min-w-0 flex-1 self-center',
+        'relative flex min-w-0 flex-1 items-center self-center',
         'transition-[max-width_var(--motion-base)_var(--ease),' +
           'opacity_var(--motion-fast)_var(--ease),' +
           'margin-inline_var(--motion-base)_var(--ease)]',
@@ -79,73 +95,107 @@ export const AskInput = ({
         visible
           ? 'max-w-full'
           : 'pointer-events-none -mx-0.75 max-w-0 opacity-0',
+        attachments?.dropActive && 'rounded-lg shadow-(--focus-ring)',
       )}>
-      <div
-        ref={overlayRef}
-        aria-hidden
-        className={cn(
-          'pointer-events-none absolute inset-0 select-none',
-          'overflow-hidden whitespace-pre-wrap wrap-break-word',
-          METRICS,
-          cardOpen && 'pl-2',
-          composing && 'opacity-0',
-        )}>
-        <RichText text={value} />
+      <div className='relative min-w-0 flex-1'>
+        <div
+          ref={overlayRef}
+          aria-hidden
+          className={cn(
+            'pointer-events-none absolute inset-0 select-none',
+            'overflow-hidden whitespace-pre-wrap wrap-break-word',
+            METRICS,
+            cardOpen && 'pl-2',
+            composing && 'opacity-0',
+          )}>
+          <RichText text={value} />
+        </div>
+        <textarea
+          ref={ref}
+          value={value}
+          rows={1}
+          onKeyDown={(e) => {
+            const composing = e.nativeEvent.isComposing || e.keyCode === 229;
+            if (paletteOpen && !composing && PALETTE_KEYS.includes(e.key)) {
+              // The palette owns this key set — forward it AND consume
+              // the event: preventDefault alone still bubbles to the
+              // window keydown, where Esc would collapse the bar.
+              e.preventDefault();
+              e.stopPropagation();
+              onPaletteKey(e.key);
+              return;
+            }
+            if (e.key === 'Enter' && !e.shiftKey && !composing) {
+              e.preventDefault();
+              onSubmit(e.metaKey || e.ctrlKey);
+            } else if (
+              (e.key === 'Backspace' || e.key === 'Delete') &&
+              !composing &&
+              e.currentTarget.selectionStart === 0 &&
+              e.currentTarget.selectionEnd === 0 &&
+              onDisarm()
+            ) {
+              e.preventDefault();
+            }
+          }}
+          onChange={onChange}
+          onSelect={onSelect}
+          onFocus={onFocus}
+          onScroll={(e) => {
+            const o = overlayRef.current;
+            if (o) o.scrollTop = e.currentTarget.scrollTop;
+          }}
+          onCompositionStart={() => setComposing(true)}
+          onCompositionEnd={() => setComposing(false)}
+          placeholder='Ask Marvis…'
+          aria-label='Ask Marvis'
+          className={cn(
+            // `block` — an inline textarea sits on the wrapper's anonymous
+            // line-box baseline, leaving a strut-descent strip below it
+            // that pushes the text off the pill's vertical center.
+            'field-sizing-content relative block w-full resize-none',
+            'overflow-y-auto border-0 bg-transparent caret-accent',
+            'outline-none select-text placeholder:text-muted-foreground',
+            'focus-visible:shadow-none',
+            METRICS,
+            composing ? 'text-foreground' : 'text-transparent',
+            // Line cap: 2 inside the fixed-height pill (scrolls past),
+            // ~6 in the card — its ResizeObserver reports growth up.
+            cardOpen ? 'max-h-30 pl-2' : 'max-h-10',
+          )}
+        />
       </div>
-      <textarea
-        ref={ref}
-        value={value}
-        rows={1}
-        onKeyDown={(e) => {
-          const composing = e.nativeEvent.isComposing || e.keyCode === 229;
-          if (paletteOpen && !composing && PALETTE_KEYS.includes(e.key)) {
-            // The palette owns this key set — forward it AND consume
-            // the event: preventDefault alone still bubbles to the
-            // window keydown, where Esc would collapse the bar.
-            e.preventDefault();
-            e.stopPropagation();
-            onPaletteKey(e.key);
-            return;
-          }
-          if (e.key === 'Enter' && !e.shiftKey && !composing) {
-            e.preventDefault();
-            onSubmit(e.metaKey || e.ctrlKey);
-          } else if (
-            (e.key === 'Backspace' || e.key === 'Delete') &&
-            !composing &&
-            e.currentTarget.selectionStart === 0 &&
-            e.currentTarget.selectionEnd === 0 &&
-            onDisarm()
-          ) {
-            e.preventDefault();
-          }
-        }}
-        onChange={onChange}
-        onSelect={onSelect}
-        onFocus={onFocus}
-        onScroll={(e) => {
-          const o = overlayRef.current;
-          if (o) o.scrollTop = e.currentTarget.scrollTop;
-        }}
-        onCompositionStart={() => setComposing(true)}
-        onCompositionEnd={() => setComposing(false)}
-        placeholder='Ask Marvis…'
-        aria-label='Ask Marvis'
-        className={cn(
-          // `block` — an inline textarea sits on the wrapper's anonymous
-          // line-box baseline, leaving a strut-descent strip below it
-          // that pushes the text off the pill's vertical center.
-          'field-sizing-content relative block w-full resize-none',
-          'overflow-y-auto border-0 bg-transparent caret-accent',
-          'outline-none select-text placeholder:text-muted-foreground',
-          'focus-visible:shadow-none',
-          METRICS,
-          composing ? 'text-foreground' : 'text-transparent',
-          // Line cap: 2 inside the fixed-height pill (scrolls past),
-          // ~6 in the card — its ResizeObserver reports growth up.
-          cardOpen ? 'max-h-30 pl-2' : 'max-h-10',
-        )}
-      />
+      {attachments && (
+        <>
+          <button
+            type='button'
+            aria-label='Attach images'
+            title='Attach images'
+            onClick={(event) => {
+              event.stopPropagation();
+              attachments.onPick();
+              fileInputRef.current?.click();
+            }}
+            className={cn(ICON_BTN, 'size-6 self-center')}>
+            <PaperclipIcon
+              aria-hidden
+              className='size-3.5'
+            />
+          </button>
+          <input
+            ref={fileInputRef}
+            type='file'
+            accept='image/jpeg,image/png,image/webp'
+            multiple
+            className='sr-only'
+            onChange={(event) => {
+              attachments.onFiles(Array.from(event.currentTarget.files ?? []));
+              // Same-file repicks must fire `change` again.
+              event.currentTarget.value = '';
+            }}
+          />
+        </>
+      )}
     </div>
   );
 };

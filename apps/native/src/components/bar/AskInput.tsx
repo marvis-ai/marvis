@@ -6,6 +6,7 @@ import {
   type SyntheticEvent,
 } from 'react';
 import { cn } from '@/lib/classes';
+import { PALETTE_KEYS } from '@/lib/presets';
 import { RichText } from '@/components/shared/RichText';
 
 /** Typography shared verbatim by the textarea and its highlight
@@ -26,16 +27,24 @@ const METRICS = 'text-[14px] leading-5';
  *  never submits — WKWebView dispatches `compositionend` before that
  *  keydown, so `isComposing` is already false and `keyCode === 229` is
  *  the reliable signal (WebKit bug 165004). `onChange`/`onSelect` feed
- *  the dictation tracker. */
+ *  the dictation tracker. `onDisarm` fires on Backspace/Delete at a
+ *  collapsed caret-0 — the armed preset badges' remove gesture; it
+ *  returns whether it disarmed (a `true` swallows the key so forward
+ *  Delete can't eat the first character too). While `paletteOpen`,
+ *  the nav/pick/dismiss keys forward to the unfocused preset palette
+ *  via `onPaletteKey` (its `/` session leaves this field focused). */
 export const AskInput = ({
   ref,
   value,
   cardOpen,
   visible,
+  paletteOpen,
+  onPaletteKey,
   onChange,
   onSelect,
   onFocus,
   onSubmit,
+  onDisarm,
 }: {
   ref: RefObject<HTMLTextAreaElement | null>;
   value: string;
@@ -44,10 +53,14 @@ export const AskInput = ({
   /** The icon-row ⇄ input-row swap — hidden collapses to `max-w-0` so
    *  the capsule's controls take the width. */
   visible: boolean;
+  /** The preset palette is up — nav/pick/dismiss keys are its. */
+  paletteOpen: boolean;
+  onPaletteKey: (key: string) => void;
   onChange: (e: ChangeEvent<HTMLTextAreaElement>) => void;
   onSelect: (e: SyntheticEvent<HTMLTextAreaElement>) => void;
   onFocus: () => void;
   onSubmit: (withScreen: boolean) => void;
+  onDisarm: () => boolean;
 }) => {
   const overlayRef = useRef<HTMLDivElement>(null);
   /* `color: transparent` would hide the CJK marked-text preview too,
@@ -84,14 +97,27 @@ export const AskInput = ({
         value={value}
         rows={1}
         onKeyDown={(e) => {
-          if (
-            e.key === 'Enter' &&
-            !e.shiftKey &&
-            !e.nativeEvent.isComposing &&
-            e.keyCode !== 229
-          ) {
+          const composing = e.nativeEvent.isComposing || e.keyCode === 229;
+          if (paletteOpen && !composing && PALETTE_KEYS.includes(e.key)) {
+            // The palette owns this key set — forward it AND consume
+            // the event: preventDefault alone still bubbles to the
+            // window keydown, where Esc would collapse the bar.
+            e.preventDefault();
+            e.stopPropagation();
+            onPaletteKey(e.key);
+            return;
+          }
+          if (e.key === 'Enter' && !e.shiftKey && !composing) {
             e.preventDefault();
             onSubmit(e.metaKey || e.ctrlKey);
+          } else if (
+            (e.key === 'Backspace' || e.key === 'Delete') &&
+            !composing &&
+            e.currentTarget.selectionStart === 0 &&
+            e.currentTarget.selectionEnd === 0 &&
+            onDisarm()
+          ) {
+            e.preventDefault();
           }
         }}
         onChange={onChange}

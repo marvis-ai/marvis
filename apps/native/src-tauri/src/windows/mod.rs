@@ -66,6 +66,18 @@ pub enum Dir {
     Down,
 }
 
+/// The anchor a palette open resolved — `x` is the caret's screen-x.
+/// `top` exists only on card-mode opens: the composer is the card's
+/// bottom-anchored footer, so the palette pops above the row's
+/// screen-top (`bar_rect`'s edge is the card's TOP when it grows
+/// down, nowhere near the input). A height reflow re-anchors to the
+/// same spot.
+#[derive(Debug, Clone, Copy)]
+struct PaletteAnchor {
+    x: f64,
+    top: Option<f64>,
+}
+
 /// The bar window's two widths: the capsule IS the window under liquid
 /// glass, so idle rests at BAR_IDLE_W (the four capsule controls) and
 /// any expanded content — input row, gate cards — uses BAR_W. Height
@@ -107,6 +119,23 @@ pub const PICKER_LABEL: &str = "picker";
 const PICKER_W: f64 = 760.0;
 const PICKER_H: f64 = 560.0;
 const PICKER_RADIUS: f64 = 16.0;
+/// The preset palette (`?view=palette`) — the wand's small Marvis-glass
+/// overlay anchored above/below the bar at the pointer, sized for the
+/// merged preset list (scrolls past ~6 rows) and the future skills
+/// surface. Lazy like `picker`; a focus loss hides it, menu-style.
+pub const PALETTE_LABEL: &str = "palette";
+const PALETTE_W: f64 = 300.0;
+/// Height is content-driven — the view reports its natural height
+/// (`presets_palette_height`), clamped to these bounds; the list
+/// scrolls past `PALETTE_MAX_H` (~6 rows ≈ 224 — the default shows
+/// six, a 7th row peeks over the cap as the scroll affordance).
+const PALETTE_H: f64 = 228.0;
+/// Floor for the content-height clamp — kept just under a single
+/// row's natural height (~68: header + row + list padding); a taller
+/// floor leaves bare glass below the list.
+const PALETTE_MIN_H: f64 = 64.0;
+const PALETTE_MAX_H: f64 = 228.0;
+const PALETTE_RADIUS: f64 = 18.0;
 /// Slide-in distance above the target rect when the alert toast appears.
 const SHOW_OFFSET_Y: f64 = 10.0;
 /// Fallback work area if every monitor query fails.
@@ -143,6 +172,22 @@ pub struct WindowPool {
     /// The share-picker panel (`?view=picker`) — built lazily on first
     /// `show_picker`, then re-shown; it never joins the gate lifecycle.
     picker: Option<WebviewWindow>,
+    /// The preset palette (`?view=palette`) — lazy like `picker`;
+    /// blur-dismissed, so it never needs gate cleanup either.
+    palette: Option<WebviewWindow>,
+    /// Whether the palette holds (or opened with) key focus — the wand
+    /// opens it focused; a `/`-typed open leaves the composer key and
+    /// only a real user click promotes it. `Focused(false)` dismisses
+    /// menu-style only while this is set — an unfocused palette must
+    /// not hide itself from the show()/refocus ping-pong it isn't in.
+    palette_focused: bool,
+    /// Content height last reported by the palette view — the window
+    /// hugs the list (auto-fit up to `PALETTE_MAX_H`). Reused across
+    /// opens so a reopened palette doesn't flicker through the default.
+    palette_h: f64,
+    /// The anchor the last open resolved — reused by a height reflow
+    /// to keep the same composer-side gap.
+    palette_anchor: Option<PaletteAnchor>,
     /// Whether the unified card (chat or listen mode) is open.
     chat_open: bool,
     /// Last reported card CONTENT height — window = `BAR_H + this`.
@@ -175,6 +220,10 @@ impl WindowPool {
             prefs: None,
             prefs_mode: String::new(),
             picker: None,
+            palette: None,
+            palette_focused: false,
+            palette_h: PALETTE_H,
+            palette_anchor: None,
             chat_open: false,
             chat_height: CHAT_DEFAULT_H,
             expand_dir: Dir::Down,
@@ -187,6 +236,7 @@ impl WindowPool {
             BAR_H,
             BAR_H / 2.0,
             accent_glass_tint(accent),
+            false,
         )?;
         {
             // Persist the resting place on every move — user drags via
@@ -228,6 +278,33 @@ impl WindowPool {
                         };
                         state.pool.lock().enforce_bar_bounds();
                     }
+                    // An unfocused (`/`-typed) palette belongs to the
+                    // composer — the bar losing focus (another app)
+                    // retires it so it can't float orphaned over other
+                    // windows. A palette CLICK also resigns the bar's
+                    // key status — the resign posts before the
+                    // palette's own `Focused(true)`, so checking here
+                    // would see `palette_focused` still false and kill
+                    // the palette mid-click. Deferring one main-queue
+                    // turn lets the promotion land first: a real blur
+                    // still hides it, a click-through doesn't.
+                    tauri::WindowEvent::Focused(false) => {
+                        let app = app_resized.clone();
+                        let app2 = app_resized.clone();
+                        let _ = app.run_on_main_thread(move || {
+                            let Some(state) = app2.try_state::<crate::AppState>() else {
+                                return;
+                            };
+                            // `try_lock`, never park: a command holding
+                            // `pool` can itself be waiting on this main
+                            // thread (window ops) — blocking here is the
+                            // ABBA deadlock AGENTS.md §14 names. A lost
+                            // race just skips one blur-dismiss.
+                            if let Some(mut pool) = state.pool.try_lock() {
+                                pool.hide_palette_unfocused(&app2);
+                            };
+                        });
+                    }
                     _ => {}
                 }
             });
@@ -243,6 +320,7 @@ impl WindowPool {
             ALERT_H,
             14.0,
             None,
+            false,
         )?);
         pool.position_bar_at_startup();
         if show_bar {
@@ -283,6 +361,10 @@ impl WindowPool {
             prefs: None,
             prefs_mode: String::new(),
             picker: None,
+            palette: None,
+            palette_focused: false,
+            palette_h: PALETTE_H,
+            palette_anchor: None,
             chat_open: false,
             chat_height: CHAT_DEFAULT_H,
             expand_dir: Dir::Down,
@@ -409,7 +491,15 @@ impl WindowPool {
     pub fn show_picker(&mut self, app: &AppHandle) -> bool {
         if self.picker.is_none() {
             let tint = accent_glass_tint(&app.state::<crate::AppState>().accent());
-            match build_window(app, PICKER_LABEL, PICKER_W, PICKER_H, PICKER_RADIUS, tint) {
+            match build_window(
+                app,
+                PICKER_LABEL,
+                PICKER_W,
+                PICKER_H,
+                PICKER_RADIUS,
+                tint,
+                false,
+            ) {
                 Ok(win) => self.picker = Some(win),
                 Err(e) => {
                     log::warn!("windows: picker build failed: {e}");
@@ -431,6 +521,225 @@ impl WindowPool {
         if let Some(win) = &self.picker {
             let _ = win.hide();
         }
+    }
+
+    /// Show (lazily building) the preset palette below/above the bar —
+    /// `palette_rect` picks the side with more room and left-aligns to
+    /// `anchor_x` (the composer caret's x in BAR-viewport px; null
+    /// falls back to the pointer, then the bar's center) — then
+    /// announce `palette:open` with the `/` query seed (the view
+    /// refetches `presets_list` on it, same race cover as
+    /// `picker:open`). `focused` picks the interaction model: wand
+    /// and right-click opens take key focus (own key nav, click-away
+    /// blur hides); a `/`-typed open orders front UNFOCUSED so the
+    /// composer keeps typing — its `/token` streams in as
+    /// `palette:query` and its keys arrive forwarded as `palette:key`.
+    /// `palette_focused` records which — `Focused(false)` is the
+    /// menu's dismiss only then.
+    pub fn show_palette(
+        &mut self,
+        app: &AppHandle,
+        anchor_x: Option<f64>,
+        anchor_y: Option<f64>,
+        query: Option<String>,
+        focused: bool,
+    ) -> bool {
+        if self.palette.is_none() {
+            let tint = accent_glass_tint(&app.state::<crate::AppState>().accent());
+            let win = match build_window(
+                app,
+                PALETTE_LABEL,
+                PALETTE_W,
+                PALETTE_H,
+                PALETTE_RADIUS,
+                tint,
+                // The `/` open keeps this window non-key — without
+                // first-mouse, macOS eats the activating click and the
+                // row under the cursor never sees it.
+                true,
+            ) {
+                Ok(win) => win,
+                Err(e) => {
+                    log::warn!("windows: palette build failed: {e}");
+                    return false;
+                }
+            };
+            {
+                let app2 = app.clone();
+                win.on_window_event(move |event| {
+                    // `try_state` like the bar's `Resized` arm — the
+                    // handler outlives any gate/state teardown.
+                    let Some(state) = app2.try_state::<crate::AppState>() else {
+                        return;
+                    };
+                    match event {
+                        // A click on the unfocused palette makes it key
+                        // (`accept_first_mouse` delivers the click
+                        // through, and the activation promotes it) so
+                        // the click-away below still dismisses,
+                        // menu-style. `try_lock` — `on_window_event`
+                        // runs on the main thread, where a `pool`
+                        // holder may be parked on window ops; dropping
+                        // on contention beats deadlocking.
+                        tauri::WindowEvent::Focused(true) => {
+                            if let Some(mut pool) = state.pool.try_lock() {
+                                pool.palette_focused = true;
+                            }
+                        }
+                        tauri::WindowEvent::Focused(false) => {
+                            if let Some(mut pool) = state.pool.try_lock() {
+                                if pool.palette_focused {
+                                    pool.hide_palette(&app2);
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                });
+            }
+            self.palette = Some(win);
+        }
+        let Some(win) = self.palette.clone() else {
+            return false;
+        };
+        // Anchor precedence: the caller's caret x (viewport px, offset
+        // by the window's screen position — `outer_position` tracks
+        // the expanded card, `bar_rect` only the pill), then the
+        // pointer, then the bar's center.
+        let anchor_x = anchor_x
+            .zip(self.bar.as_ref())
+            .and_then(|(ax, bar)| {
+                let scale = bar.scale_factor().ok()?;
+                let pos: LogicalPosition<f64> = bar.outer_position().ok()?.to_logical(scale);
+                Some(pos.x + ax)
+            })
+            .or_else(|| {
+                self.bar.as_ref().and_then(|bar| {
+                    let scale = bar.scale_factor().ok()?;
+                    let pos: LogicalPosition<f64> = bar.cursor_position().ok()?.to_logical(scale);
+                    Some(pos.x)
+                })
+            })
+            .unwrap_or_else(|| self.bar_rect.center_x());
+        // The composer row's top edge resolves the same way — viewport
+        // px + `outer_position` (the live window, card included). Card
+        // mode pops the palette above it; the pill ignores it.
+        let anchor_y = anchor_y.zip(self.bar.as_ref()).and_then(|(ay, bar)| {
+            let scale = bar.scale_factor().ok()?;
+            let pos: LogicalPosition<f64> = bar.outer_position().ok()?.to_logical(scale);
+            Some(pos.y + ay)
+        });
+        self.palette_anchor = Some(PaletteAnchor {
+            x: anchor_x,
+            top: anchor_y,
+        });
+        let r = self.palette_placement(anchor_x, anchor_y);
+        set_rect(&win, r);
+        self.palette_focused = focused;
+        if focused {
+            let _ = win.show();
+            let _ = win.set_focus();
+        } else {
+            // A `/`-typed open leaves the composer key — order the
+            // palette front WITHOUT making key (macOS `orderFront:`;
+            // `show()` would steal focus). Elsewhere `show()` is the
+            // only primitive — if it does activate, `Focused(true)`
+            // promotes the palette into focused-mode anyway.
+            order_front_unfocused(&win);
+        }
+        let _ = app.emit_to(
+            PALETTE_LABEL,
+            crate::EV_PALETTE_OPEN,
+            serde_json::json!({ "query": query }),
+        );
+        true
+    }
+
+    /// Hide the palette and reset its focus mode — announces
+    /// `bar:palette-closed` on every hide (pick, Esc, blur, the bar
+    /// leaving focus) so the composer stops forwarding keys.
+    pub fn hide_palette(&mut self, app: &AppHandle) {
+        self.palette_focused = false;
+        if let Some(win) = &self.palette {
+            let _ = win.hide();
+        }
+        let _ = app.emit_to(BAR_LABEL, crate::EV_PALETTE_CLOSED, ());
+    }
+
+    /// The bar's own blur dismisses an UNFOCUSED palette — a
+    /// `/`-opened overlay must not outlive the composer it filters.
+    /// A focused palette owns its blur path instead (it took key
+    /// status deliberately), so a wand-opened palette survives this.
+    pub fn hide_palette_unfocused(&mut self, app: &AppHandle) {
+        if !self.palette_focused && self.palette.is_some() {
+            self.hide_palette(app);
+        }
+    }
+
+    /// Forward a composer key to the open palette — the `/`-typed
+    /// session keeps the bar focused, so `↑↓`/`Enter`/`Esc`/`Tab`/
+    /// `Home`/`End` arrive here and ride `palette:key`.
+    pub fn palette_key(&self, app: &AppHandle, key: &str) {
+        let _ = app.emit_to(
+            PALETTE_LABEL,
+            crate::EV_PALETTE_KEY,
+            serde_json::json!({ "key": key }),
+        );
+    }
+
+    /// Push the composer's `/token` as the palette's filter query —
+    /// called on every composer edit while an unfocused palette is up.
+    pub fn palette_query(&self, app: &AppHandle, query: &str) {
+        let _ = app.emit_to(
+            PALETTE_LABEL,
+            crate::EV_PALETTE_QUERY,
+            serde_json::json!({ "query": query }),
+        );
+    }
+
+    /// The palette's rect for an open or a height reflow. While a card
+    /// is up the composer is its bottom-anchored footer — the palette
+    /// pops above the row's top edge (`anchor_top`, a screen y) instead
+    /// of picking a pill side, which in grow-down would park it on the
+    /// card's top header, nowhere near the input. Collapsed, or a
+    /// missing edge, keeps `palette_rect`'s pill-side pick.
+    fn palette_placement(&self, anchor_x: f64, anchor_top: Option<f64>) -> Rect {
+        let work = self.bar_work_area();
+        if let (true, Some(top)) = (self.chat_open, anchor_top) {
+            return clamp_to_work_area(
+                Rect {
+                    x: anchor_x,
+                    y: top - self.palette_h - layout::PANEL_PAD,
+                    w: PALETTE_W,
+                    h: self.palette_h,
+                },
+                work,
+            );
+        }
+        layout::palette_rect(self.bar_rect, anchor_x, PALETTE_W, self.palette_h, work)
+    }
+
+    /// The view's content-height report — the palette hugs its list:
+    /// clamp to `[MIN, MAX]` (past MAX the list scrolls), then
+    /// re-anchor through `palette_placement` so a shrink keeps the same
+    /// composer-side gap. Position only while visible — a hidden window
+    /// just stores the height for its next show.
+    pub fn set_palette_height(&mut self, height: f64) {
+        self.palette_h = height
+            .clamp(PALETTE_MIN_H, PALETTE_MAX_H)
+            .min(self.bar_work_area().h);
+        let Some(win) = self.palette.clone() else {
+            return;
+        };
+        if !win.is_visible().unwrap_or(false) {
+            return;
+        }
+        let PaletteAnchor { x, top } = self.palette_anchor.unwrap_or(PaletteAnchor {
+            x: self.bar_rect.center_x(),
+            top: None,
+        });
+        let r = self.palette_placement(x, top);
+        set_rect(&win, r);
     }
 
     /// The window's animated destination: the derived card rect while
@@ -880,6 +1189,33 @@ fn accent_glass_tint(accent: &str) -> Option<String> {
     (accent.len() == 7 && accent.starts_with('#')).then(|| format!("{accent}15"))
 }
 
+/// Order `win` front WITHOUT taking key status — `show()` calls
+/// `makeKeyAndOrderFront` on macOS, which would steal the composer's
+/// focus mid-`/` typing. `orderFront:` surfaces the palette within the
+/// app's window level, unfocused. Other platforms fall back to
+/// `show()` — if it activates, the palette degrades to focused-mode
+/// (its own keydown + click-away still work).
+#[cfg(target_os = "macos")]
+fn order_front_unfocused(win: &WebviewWindow) {
+    use objc2_app_kit::NSWindow;
+    match win.ns_window() {
+        // SAFETY: tauri hands us the live NSWindow for `win`.
+        Ok(ptr) => unsafe {
+            let ns_win = &*(ptr as *const NSWindow);
+            ns_win.orderFront(None);
+        },
+        Err(e) => {
+            log::warn!("windows: palette orderFront failed ({e}) — falling back to show");
+            let _ = win.show();
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn order_front_unfocused(win: &WebviewWindow) {
+    let _ = win.show();
+}
+
 /// Build a hidden overlay for `index.html?view={label}`, sized in logical
 /// pixels by `w` and `h`. On macOS, `corner_radius` and `tint_color` configure
 /// the glass surface. On Windows, request capture protection when a Marvis
@@ -892,10 +1228,12 @@ fn build_window(
     h: f64,
     corner_radius: f64,
     tint_color: Option<String>,
+    accept_first_mouse: bool,
 ) -> anyhow::Result<WebviewWindow> {
     let url = WebviewUrl::App(format!("index.html?view={label}").into());
     let win = WebviewWindowBuilder::new(app, label, url)
         .inner_size(w, h)
+        .accept_first_mouse(accept_first_mouse)
         // Pin user-resize to the built size: Tahoe edge-drags borderless
         // windows even with `resizable(false)`, and min == max drops the
         // affordance/cursor. Programmatic `set_size` is not limited, so

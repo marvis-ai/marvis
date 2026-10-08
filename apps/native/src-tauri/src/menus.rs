@@ -2,11 +2,12 @@
 //! idle-state right-click popup, plus the item builders the app
 //! menubar (menubar.rs) reuses.
 //!
-//! Every item lives under the `menu.*` id namespace and is dispatched by
-//! the single global `on_menu_event` listener registered in lib.rs
-//! (`menu_dispatch`). Menu events broadcast to EVERY registered listener
-//! (global + per-window), so the prefix match is what keeps dispatch
-//! single-fire.
+//! Items live under the `menu.*` id namespace, dispatched through the
+//! single global `on_menu_event` listener registered in lib.rs
+//! (`menu_dispatch`). Menu events broadcast to EVERY registered
+//! listener (global + per-window). Dispatch fires once only while this
+//! is the sole handler for these IDs; the `menu.*` prefix does not
+//! prevent other listeners from dispatching the same event.
 //!
 //! The menu is rebuilt rather than mutated: [`build`] reads live state
 //! (capture running, listen live, nearest edge, `window.bar_locked`, and

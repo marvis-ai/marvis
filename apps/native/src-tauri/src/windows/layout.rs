@@ -112,6 +112,26 @@ pub fn snap_edge(bar: Rect, dir: Dir, work: Rect) -> (f64, f64) {
     }
 }
 
+/// The preset palette's rect: `w`×`h`, `PANEL_PAD` off the bar —
+/// below when the bar's lower side has more room (`expand_dir_for`'s
+/// rule, the same side the card would grow toward), above otherwise —
+/// with its LEFT edge at `anchor_x` (the input caret's logical screen
+/// x), so the menu reads as growing out of the caret. Then clamped
+/// inside `work` — a caret near the right edge keeps it on-screen.
+pub fn palette_rect(bar: Rect, anchor_x: f64, w: f64, h: f64, work: Rect) -> Rect {
+    let r = Rect {
+        x: anchor_x,
+        y: if expand_dir_for(bar, work) == Dir::Down {
+            bar.bottom() + PANEL_PAD
+        } else {
+            bar.y - h - PANEL_PAD
+        },
+        w,
+        h,
+    };
+    clamp_to_work_area(r, work)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -153,6 +173,61 @@ mod tests {
             snap_edge(BAR, Dir::Down, WORK),
             (BAR.x, WORK.bottom() - BAR.h - 12.0)
         );
+    }
+
+    #[test]
+    fn palette_drops_below_or_above_by_free_space() {
+        let (w, h) = (300.0, 320.0);
+        // A bar near the top has more room below → the palette drops;
+        // a bar near the bottom → it pops above.
+        let top_bar = Rect {
+            x: 100.0,
+            y: WORK.y + 12.0,
+            ..PILL
+        };
+        let top = palette_rect(top_bar, 500.0, w, h, WORK);
+        assert_eq!(top.y, top_bar.bottom() + PANEL_PAD);
+        let bot_bar = Rect {
+            x: 100.0,
+            y: WORK.bottom() - PILL.h - 12.0,
+            ..PILL
+        };
+        let bottom = palette_rect(bot_bar, 500.0, w, h, WORK);
+        assert_eq!(bottom.y, bot_bar.y - h - PANEL_PAD);
+    }
+
+    #[test]
+    fn palette_left_edge_tracks_the_anchor_and_clamps() {
+        let (w, h) = (300.0, 320.0);
+        let bar = Rect {
+            x: 100.0,
+            y: WORK.y + 12.0,
+            ..PILL
+        };
+        // The caret's screen x is the palette's left edge.
+        let r = palette_rect(bar, 700.0, w, h, WORK);
+        assert_eq!(r.x, 700.0);
+        // A caret near the right edge would overflow — clamped back.
+        let edge = palette_rect(bar, WORK.right() - 10.0, w, h, WORK);
+        assert_eq!(edge.x, WORK.right() - w);
+        // …and one left of the work area pins to its edge.
+        let edge = palette_rect(bar, WORK.x - 10.0, w, h, WORK);
+        assert_eq!(edge.x, WORK.x);
+    }
+
+    #[test]
+    fn palette_clamps_inside_the_work_area() {
+        let (w, h) = (300.0, 320.0);
+        // A bar hugging the bottom edge has no room above — the clamp
+        // keeps the palette fully on-screen anyway.
+        let edge_bar = Rect {
+            x: 100.0,
+            y: WORK.bottom() - PILL.h,
+            ..PILL
+        };
+        let r = palette_rect(edge_bar, 500.0, w, h, WORK);
+        assert!(r.x >= WORK.x && r.right() <= WORK.right());
+        assert!(r.y >= WORK.y && r.bottom() <= WORK.bottom());
     }
 
     #[test]

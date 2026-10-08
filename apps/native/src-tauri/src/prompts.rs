@@ -77,6 +77,17 @@ pub fn live_system_prompt_for(language: &str) -> String {
     )
 }
 
+/// `live_system_prompt_for` plus an optional per-send instruction — a
+/// preset's `instruct` text appended AFTER the language directive for
+/// that send only. `None`/blank leaves the base untouched.
+pub fn live_system_prompt_with(language: &str, instruction: Option<&str>) -> String {
+    let base = live_system_prompt_for(language);
+    match instruction.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(extra) => format!("{base}\n\n{extra}"),
+        None => base,
+    }
+}
+
 /// The default summary focus — the Meeting template; an empty
 /// `recording.summary_prompt` reads as this.
 pub const DEFAULT_SUMMARY_INSTRUCTION: &str =
@@ -155,6 +166,16 @@ mod tests {
         assert!(summary.contains("## Focus\n\nFocus on risks."));
         let default = summary_system_prompt_for("en", "   ");
         assert!(default.contains(DEFAULT_SUMMARY_INSTRUCTION));
+    }
+
+    #[test]
+    fn live_system_prompt_with_appends_instruction() {
+        let base = live_system_prompt_for("en");
+        assert_eq!(live_system_prompt_with("en", None), base);
+        assert_eq!(live_system_prompt_with("en", Some("  ")), base);
+        let with = live_system_prompt_with("en", Some("Be terse."));
+        assert!(with.starts_with(&base));
+        assert!(with.ends_with("\n\nBe terse."));
     }
 
     #[test]

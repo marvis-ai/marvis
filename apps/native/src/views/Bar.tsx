@@ -31,7 +31,14 @@
  *
  * Errors go to the `alert` window (`raise`) — the pill has no room.
  */
-import { Suspense, lazy, useEffect, useRef, useState } from 'react';
+import {
+  Suspense,
+  lazy,
+  useEffect,
+  useRef,
+  useState,
+  type ChangeEvent,
+} from 'react';
 import {
   HistoryIcon,
   MicAudioLinesIcon,
@@ -39,6 +46,8 @@ import {
   MonitorDotIcon,
   SettingsIcon,
   ShineBorder,
+  WandSparklesIcon,
+  XIcon,
   cn,
 } from '@marvis/ui';
 import {
@@ -50,18 +59,25 @@ import {
   configGet,
   listenStart,
   listenStatus,
+  presetsPaletteClose,
+  presetsPaletteKey,
+  presetsPaletteOpen,
+  presetsPaletteQuery,
   raise,
   windowFocusBar,
   windowSetBarExpanded,
   windowSetChatOpen,
   windowShowSettings,
   type Config,
+  type Preset,
 } from '@/lib/commands';
 import {
   EV_BAR_SHOW_HISTORY,
   EV_BAR_START_LISTEN,
   EV_BAR_TOGGLE_INPUT,
   EV_CONFIG_CHANGED,
+  EV_PALETTE_CLOSED,
+  EV_PRESET_PICK,
   useTauriEvent,
 } from '@/lib/events';
 import { barControls, hasActiveWork } from '@/lib/bar-state';
@@ -69,6 +85,7 @@ import { useBarActivity } from '@/hooks/useBarActivity';
 import { useCardGeometry } from '@/hooks/useCardGeometry';
 import { useDictation } from '@/hooks/useDictation';
 import { useGate } from '@/hooks/useGate';
+import { usePresets } from '@/hooks/usePresets';
 import { AskInput } from '@/components/bar/AskInput';
 import { BarButton } from '@/components/bar/BarButton';
 import { BootErrorRow } from '@/components/bar/BootErrorRow';
@@ -80,6 +97,17 @@ import { HistorySection } from '@/components/HistorySection';
 import { ListenSection } from '@/components/ListenSection';
 import type { ListenViewing } from '@/components/listen/model';
 import { PANEL } from '@/lib/classes';
+import { caretViewportX } from '@/lib/caret';
+import {
+  expandTemplate,
+  hasLangParam,
+  isTemplate,
+  langName,
+  resolveSlash,
+  slashQuery,
+  slashToken,
+  stripSlashToken,
+} from '@/lib/presets';
 
 const LaunchIntro = lazy(() =>
   import('@/components/LaunchIntro').then((m) => ({
@@ -122,6 +150,56 @@ const Bar = () => {
   const [listenViewing, setListenViewing] = useState<ListenViewing | null>(
     null,
   );
+  /** The merged preset list (built-ins + customs) behind the palette
+   *  and the `/name` shorthand — `usePresets` fetches on mount and
+   *  refetches on `config:changed`. `armed` is the per-send preset
+   *  badge, `langParam` its editable `{lang}` value (null when the
+   *  armed text has no `{lang}`). `mainLang` seeds the badge's
+   *  default. */
+  const presets = usePresets();
+  const [armedPreset, setArmedPresetState] = useState<Preset | null>(null);
+  const [langParam, setLangParamState] = useState<string | null>(null);
+  const [editingLang, setEditingLang] = useState(false);
+  /** Whether the preset palette is up — set on our opens, cleared by
+   *  `bar:palette-closed` (every hide emits it). While true the
+   *  composer's `/token` is its live filter (`palette:query`) and its
+   *  nav keys forward over `palette:key`. */
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const paletteOpenRef = useRef(false);
+  const setPalette = (v: boolean) => {
+    paletteOpenRef.current = v;
+    setPaletteOpen(v);
+  };
+  /** Live mirrors for `sendAsk`/`onDisarm` — `dictation.submit` can
+   *  defer the send behind a settling stop, so render-time state
+   *  would read stale there (same shape as `textRef`). */
+  const armedPresetRef = useRef<Preset | null>(null);
+  const langParamRef = useRef<string | null>(null);
+  /** The pre-edit `{lang}` value — the mini field's Esc reverts to it. */
+  const langRevert = useRef<string | null>(null);
+  const setArmedPreset = (p: Preset | null) => {
+    armedPresetRef.current = p;
+    setArmedPresetState(p);
+  };
+  const setLangParam = (v: string | null) => {
+    langParamRef.current = v;
+    setLangParamState(v);
+  };
+  /** Arm a preset: its badge plus — when the text carries `{lang}` —
+   *  a second, editable language badge seeded from the main language. */
+  const armPreset = (p: Preset) => {
+    setArmedPreset(p);
+    setLangParam(hasLangParam(p) ? langName(mainLang) : null);
+    setEditingLang(false);
+  };
+  /** Full disarm — the badge group goes together (✕, Esc, a caret-0
+   *  Backspace/Delete, or a fired send). */
+  const disarmPreset = () => {
+    setArmedPreset(null);
+    setLangParam(null);
+    setEditingLang(false);
+  };
+  const [mainLang, setMainLang] = useState('en');
 
   const { cardOpen } = useCardGeometry(cardRef, stageRef);
   /** Live mirror of `cardOpen` for async callbacks — the card can
@@ -170,6 +248,12 @@ const Bar = () => {
     section !== 'history' &&
     !bootError &&
     gate !== 'needs_permission';
+  /** Live mirror of `inputRendered` for `bar:preset-pick` — the event
+   *  can land between a render and the listener's closure refresh
+   *  (a pick on a surface whose composer just unmounted must no-op,
+   *  same as the context-menu gate). */
+  const inputRenderedRef = useRef(inputRendered);
+  inputRenderedRef.current = inputRendered;
   /** The row's control set for this surface — `bar-state.ts` owns the
    *  contract, the conditionals below consume it so the two can't
    *  drift. */
@@ -247,11 +331,15 @@ const Bar = () => {
   const [barLocked, setBarLocked] = useState(false);
   useEffect(() => {
     void configGet()
-      .then((cfg) => setBarLocked(cfg.window.bar_locked ?? false))
+      .then((cfg) => {
+        setBarLocked(cfg.window.bar_locked ?? false);
+        setMainLang(cfg.app.main_language);
+      })
       .catch(() => {});
   }, []);
   useTauriEvent<Config>(EV_CONFIG_CHANGED, (cfg) => {
     setBarLocked(cfg.window.bar_locked ?? false);
+    setMainLang(cfg.app.main_language);
   });
 
   // Every card open starts unpinned with no viewed session.
@@ -299,14 +387,23 @@ const Bar = () => {
         return;
       }
       if (e.key === 'Escape') {
+        // An open palette owns Esc — dismisses it first, never the
+        // bar. The composer's keydown already forwards it (and stops
+        // bubbling); this covers Esc landing while focus sits
+        // elsewhere in the bar.
+        if (paletteOpenRef.current) {
+          void presetsPaletteKey('Escape').catch(() => {});
+          return;
+        }
         if (cardOpen) {
           void askClose().catch(() => {});
           return;
         }
         // Esc discards the field — a pending stop's returned draft must
         // not land in the cleared text, and a live anchor stops without
-        // applying.
+        // applying. The armed preset badges disarm with the field.
         dictation.discard();
+        disarmPreset();
         setText('');
         setOpen(false);
         inputRef.current?.blur();
@@ -330,6 +427,11 @@ const Bar = () => {
         dictation.discard();
         setText(e.key);
         setOpen(true);
+        // `/` wakes straight into the preset palette — the field
+        // mounts on this render, so the caret anchor waits a frame.
+        if (e.key === '/') {
+          requestAnimationFrame(() => openPalette(false));
+        }
       }
     };
     window.addEventListener('keydown', onKey);
@@ -339,6 +441,115 @@ const Bar = () => {
   const collapse = () => {
     setOpen(false);
     inputRef.current?.blur();
+    // The field unmounts under an open palette — its `/token` is gone.
+    if (paletteOpenRef.current) {
+      void presetsPaletteClose().catch(() => {});
+    }
+  };
+
+  /** Open the preset palette — left-aligned to the input caret (the
+   *  Rust side turns the viewport x into a screen anchor; a missing
+   *  field falls back to the pointer/bar center). `focused`: wand and
+   *  right-click opens take key focus; a `/`-typed open leaves the
+   *  composer key so the `/token` keeps filtering live (`query` seeds
+   *  it from the field's current token). */
+  const openPalette = (focused: boolean) => {
+    // The Rust side gate-checks too, but an off-Main invoke would drop
+    // the open — and a stuck `paletteOpen` swallows composer keys.
+    if (gate !== 'main' || !inputRenderedRef.current) return;
+    setPalette(true);
+    const el = inputRef.current;
+    // The card's composer is a bottom-anchored footer, so its row top
+    // is the palette's pop-above edge (viewport px — Rust adds the
+    // window's screen position, same as the caret x). Collapsed opens
+    // send it too; the pill's side pick ignores it.
+    const anchorY = el?.closest('form')?.getBoundingClientRect().top;
+    void presetsPaletteOpen(
+      el ? caretViewportX(el) : undefined,
+      anchorY,
+      slashQuery(textRef.current) ?? undefined,
+      focused,
+    ).catch(() => setPalette(false));
+  };
+  /** Palette hid itself (pick, Esc, blur, bar blur) — stop key
+   *  forwarding and query pushes. */
+  useTauriEvent(EV_PALETTE_CLOSED, () => setPalette(false));
+
+  /** Place the caret at the end of the field after a programmatic
+   *  setText — the DOM value lands on render, so selection waits a
+   *  frame. */
+  const focusFieldEnd = () => {
+    requestAnimationFrame(() => {
+      const el = inputRef.current;
+      if (!el) return;
+      el.focus();
+      el.setSelectionRange(el.value.length, el.value.length);
+    });
+  };
+
+  /** Palette pick (`bar:preset-pick`) — every preset arms as a badge
+   *  (+ its `{lang}` param badge when the text has one); expansion
+   *  waits for send. A `/token` sitting in the field is the palette's
+   *  trigger text — the badge replaces it, and a `/name args`+Enter
+   *  sends straight through (the pick is the run — coding-agent
+   *  parity); a bare `/name` just arms for editing. Paused while
+   *  dictation owns the field. */
+  const applyPreset = (p: Preset) => {
+    dictation.discard();
+    armPreset(p);
+    if (textRef.current.startsWith('/')) {
+      const rest = stripSlashToken(textRef.current);
+      setText(rest);
+      focusFieldEnd();
+      if (rest.trim()) {
+        submitAsk(false, { skipSlashResolution: true });
+      }
+      return;
+    }
+    inputRef.current?.focus();
+  };
+  useTauriEvent<Preset>(EV_PRESET_PICK, (p) => {
+    // The palette outlives the webview's render — a pick landing
+    // after the composer unmounted (history card, gate/error rows)
+    // must no-op rather than mutate a hidden field.
+    if (dictation.state === 'listening' || !inputRenderedRef.current) {
+      return;
+    }
+    applyPreset(p);
+  });
+
+  /** Slash shorthand: an exact `/name` token followed by a space
+   *  applies on the spot (end-of-text tokens wait for send — a prefix
+   *  name can't swallow a longer one mid-typing). A `/` arriving at
+   *  caret-0 pops the palette UNFOCUSED — this field keeps focus and
+   *  the token streams over `palette:query` as its live filter,
+   *  coding-agent slash-menu style; leaving the `/` prefix closes it. */
+  const onFieldChange = (e: ChangeEvent<HTMLTextAreaElement>) => {
+    dictation.handleChange(e);
+    if (dictation.state === 'listening') return;
+    const v = e.target.value;
+    if (v.startsWith('/') && !text.startsWith('/')) {
+      openPalette(false);
+      return;
+    }
+    if (paletteOpenRef.current) {
+      const s = slashToken(v);
+      if (!s) {
+        // The `/` was deleted (or the caret context left it) — the
+        // menu's reason to exist is gone.
+        void presetsPaletteClose().catch(() => {});
+      } else {
+        void presetsPaletteQuery(s.token).catch(() => {});
+      }
+    }
+    const hit = resolveSlash(v, presets, false);
+    if (!hit) return;
+    dictation.discard();
+    armPreset(hit.preset);
+    setText(hit.rest);
+    if (paletteOpenRef.current) {
+      void presetsPaletteClose().catch(() => {});
+    }
   };
 
   /** Send a question — the field's text by default, or an explicit one
@@ -349,14 +560,59 @@ const Bar = () => {
    *  forces a screen read even when the text shows no intent. A send
    *  from the listen card binds to that doc's own chat — the viewed
    *  session's id, else the live session's. */
-  const sendAsk = async (withScreen = false, question?: string) => {
-    const t = (question ?? textRef.current).trim();
-    if (!t) {
+  const sendAsk = async (
+    withScreen = false,
+    question?: string,
+    { skipSlashResolution = false } = {},
+  ) => {
+    let preset = armedPresetRef.current;
+    let slashInput: string | undefined;
+    if (question === undefined && !skipSlashResolution) {
+      const raw = textRef.current;
+      // Bare `/` opens the preset palette instead of sending a slash.
+      if (raw.trim() === '/') {
+        openPalette(false);
+        return;
+      }
+      const hit = resolveSlash(raw, presets, true);
+      if (hit) {
+        const rest = hit.rest.trim();
+        dictation.discard();
+        if (!rest) {
+          // `/name` alone arms the badge — the request is still to
+          // come; the send below only runs once there's text.
+          armPreset(hit.preset);
+          setText('');
+          inputRef.current?.focus();
+          return;
+        }
+        preset = hit.preset;
+        slashInput = rest;
+        setText('');
+      }
+    }
+    const t0 = (slashInput ?? question ?? textRef.current).trim();
+    if (!t0) {
       return;
     }
+    // An armed `{input}` preset expands around the typed text — the
+    // bubble shows the resolved request (WYSIWYG at send, not pick).
+    const t =
+      preset && isTemplate(preset)
+        ? expandTemplate(
+            preset.text,
+            t0,
+            langParamRef.current ?? langName(mainLang),
+          ).trim()
+        : t0;
     if (question === undefined) {
       setText('');
     }
+    const presetLang =
+      preset && hasLangParam(preset)
+        ? (langParamRef.current ?? undefined)
+        : undefined;
+    disarmPreset(); // one-shot: the badges clear when a send fires
     let listenId = section === 'listen' ? listenViewing?.id : undefined;
     if (section === 'listen' && listenId === undefined) {
       listenId =
@@ -364,16 +620,24 @@ const Bar = () => {
           .then((s) => s.session_id)
           .catch(() => null)) ?? undefined;
     }
-    void askSend(t, withScreen, listenId).catch(() => raise('Send failed'));
+    void askSend(t, {
+      withScreen,
+      listenId,
+      presetId: preset?.id,
+      presetLang,
+    }).catch(() => raise('Send failed'));
   };
 
   // Submit = ask (a follow-up while the card is open). The backend
   // expands the window itself — no local collapse needed either way.
   // The flag only rides along when the handshake actually sends — a
   // live dictation still stops for review first, never auto-submits.
-  const submitAsk = (withScreen = false) => {
+  const submitAsk = (
+    withScreen = false,
+    options: { skipSlashResolution?: boolean } = {},
+  ) => {
     setPinned('chat');
-    dictation.submit(() => void sendAsk(withScreen));
+    dictation.submit(() => void sendAsk(withScreen, undefined, options));
   };
 
   /** Toggle continuous screen capture — a pure recorder switch that
@@ -584,16 +848,93 @@ const Bar = () => {
             disabled={gate !== 'main'}
           />
         )}
+        {/* The armed preset's badges — the name in accent, then its
+            editable `{lang}` param in neutral when the text carries
+            one. One-shot: ✕/Esc/caret-0 Backspace-Delete disarms, a
+            fired send clears them. */}
+        {showInputRow && armedPreset && (
+          <span className='flex flex-none items-center gap-1 self-center rounded-full bg-accent-soft px-2 py-0.75 text-[11.5px] font-medium text-accent-text'>
+            {armedPreset.name}
+            <button
+              type='button'
+              aria-label={`Remove ${armedPreset.name} preset`}
+              onClick={disarmPreset}
+              className='-mr-0.5 rounded-full p-px text-accent-text/70 transition-colors duration-(--motion-fast) hover:text-accent-text focus-visible:outline-2 focus-visible:outline-accent'>
+              <XIcon className='size-3' />
+            </button>
+          </span>
+        )}
+        {showInputRow && armedPreset && langParam !== null && (
+          <span className='flex flex-none items-center self-center'>
+            {editingLang ? (
+              <input
+                autoFocus
+                size={Math.max(4, langParam.length + 1)}
+                value={langParam}
+                aria-label='Preset language'
+                onChange={(e) => setLangParam(e.target.value)}
+                onBlur={() => {
+                  setEditingLang(false);
+                }}
+                onKeyDown={(e) => {
+                  e.stopPropagation();
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    setEditingLang(false);
+                    inputRef.current?.focus();
+                  } else if (e.key === 'Escape') {
+                    e.preventDefault();
+                    if (langRevert.current !== null) {
+                      setLangParam(langRevert.current);
+                    }
+                    setEditingLang(false);
+                    inputRef.current?.focus();
+                  }
+                }}
+                className='rounded-full bg-fg-soft px-2 py-0.75 text-[11.5px] font-medium text-foreground outline-none focus:shadow-(--focus-ring)'
+              />
+            ) : (
+              <button
+                type='button'
+                title='Language for {lang} — click to change'
+                onClick={() => {
+                  langRevert.current = langParam;
+                  setEditingLang(true);
+                }}
+                className='rounded-full bg-fg-soft px-2 py-0.75 text-[11.5px] font-medium text-foreground transition-colors duration-(--motion-fast) hover:bg-[color-mix(in_oklch,var(--fg)_14%,transparent)] focus-visible:outline-2 focus-visible:outline-accent'>
+                {langParam}
+              </button>
+            )}
+          </span>
+        )}
         <AskInput
           ref={inputRef}
           value={text}
           cardOpen={cardOpen}
           visible={showInputRow}
-          onChange={dictation.handleChange}
+          paletteOpen={paletteOpen}
+          onPaletteKey={(key) => void presetsPaletteKey(key).catch(() => {})}
+          onChange={onFieldChange}
           onSelect={dictation.handleSelect}
           onFocus={() => gate === 'main' && setOpen(true)}
           onSubmit={submitAsk}
+          onDisarm={() => {
+            if (!armedPresetRef.current) return false;
+            dictation.discard();
+            disarmPreset();
+            return true;
+          }}
         />
+        {/* Preset palette — the styled glass overlay beside the bar;
+            picks arrive as bar:preset-pick. */}
+        {showInputRow && (
+          <BarButton
+            label='Prompt presets'
+            disabled={gate !== 'main'}
+            onPress={() => openPalette(true)}>
+            <WandSparklesIcon className='size-5' />
+          </BarButton>
+        )}
         {/* Collapsed-only recorders (`barControls(false)`): the screen
             capture toggle and meeting Listen. The expanded row renders
             neither — it gets dictation + settings instead. */}
@@ -705,9 +1046,13 @@ const Bar = () => {
       ref={stageRef}
       onContextMenu={(e) => {
         e.preventDefault();
-        // The shared menu is the idle capsule's surface — expanded
-        // rows and open cards have their own chrome.
-        if (gate === 'main' && !showInputRow) {
+        if (gate !== 'main') return;
+        // The composer's right-click is the preset palette; surfaces
+        // without one (idle capsule, history card, gate/error rows)
+        // get the shared menu — a pick needs a field to land in.
+        if (inputRendered) {
+          openPalette(true);
+        } else {
           void barContextMenu().catch(() => {});
         }
       }}

@@ -28,7 +28,9 @@
 //!   fires on each attempt's FIRST token; every `loading` carries
 //!   `"question"` so the card resets its buffer + header per run AND
 //!   per failover retry (pre-flight errors emit `loading` → `error` →
-//!   `idle` too).
+//!   `idle` too); `send_chain`'s `loading`s also carry `"preset"` —
+//!   the armed `instruct` preset id, `null` for a plain send or an id
+//!   that didn't resolve.
 //! - `ask:chunk` `{"text": token}` per token.
 //! - `ask:done` `{"full": full_reply, "provider": id, "model": id,
 //!   "usage": {"input": n?, "output": n?} | null}` on success — the pair
@@ -64,7 +66,7 @@ use crate::capture::{Frame, RingBuffer};
 use crate::config::Config;
 use crate::keystore::Keystore;
 use crate::llm::{ChatMessage, LlmError, Provider, Role, StreamReply, TokenUsage};
-use crate::prompts::{live_system_prompt_for, live_user_prompt};
+use crate::prompts::{live_system_prompt_with, live_user_prompt};
 use crate::screen_read;
 use crate::storage::{Db, MessageMeta, Transcript};
 use crate::windows::{WindowPool, BAR_LABEL};
@@ -143,7 +145,10 @@ pub struct Deps<'a> {
 /// failed-shot→error rule; `regenerate` is `retry`'s
 /// re-ask-the-last-turn mode; `listen_id` binds the send to a listen
 /// doc's own ask session (`send` only — a retry inherits the link from
-/// its session row).
+/// its session row); `preset` is the armed `instruct` preset's id
+/// (`presetId` invoke arg) — resolved to its text inside `kick`; only a
+/// RESOLVED id persists on the user row (so `retry` re-arms it) and
+/// rides the `loading` emits.
 #[derive(Default)]
 pub(crate) struct SendOpts<'a> {
     pub text: &'a str,
@@ -151,6 +156,16 @@ pub(crate) struct SendOpts<'a> {
     pub screen_required: bool,
     pub regenerate: bool,
     pub listen_id: Option<i64>,
+    /// The armed preset id — resolved against the catalog +
+    /// `prompts.custom` in `kick`; `None` for a plain send. A resolvable
+    /// id persists on the user row either way (the `· name` provenance
+    /// covers expanding presets too); only a non-`{input}` preset
+    /// contributes instruction text.
+    pub preset: Option<String>,
+    /// The `{lang}` param badge's per-send value — substitutes the
+    /// preset text's `{lang}` placeholder; `None` resolves it to the
+    /// configured main language.
+    pub preset_lang: Option<String>,
 }
 
 /// One ask at a time; the Task-14 `AppState` share.
@@ -220,6 +235,7 @@ impl AskService {
     /// Returns after synchronous pre-flight; the stream itself runs on a
     /// `tauri::async_runtime::spawn` task so the calling command handler
     /// never blocks on the LLM.
+    #[allow(clippy::too_many_arguments)]
     pub fn send(
         self: &Arc<Self>,
         app: &AppHandle,
@@ -227,6 +243,8 @@ impl AskService {
         text: &str,
         with_screen: bool,
         listen_id: Option<i64>,
+        preset: Option<String>,
+        preset_lang: Option<String>,
     ) {
         self.kick(
             app,
@@ -235,6 +253,8 @@ impl AskService {
                 text,
                 with_screen,
                 listen_id,
+                preset,
+                preset_lang,
                 ..SendOpts::default()
             },
         );
@@ -261,7 +281,7 @@ impl AskService {
     /// second user row and drops the rejected reply's row, so a reload
     /// never replays it. A retry with no prior user turn is a no-op.
     pub fn retry(self: &Arc<Self>, app: &AppHandle, deps: &Deps<'_>) {
-        let text = deps
+        let last = deps
             .db
             .session_active_id("ask")
             .ok()
@@ -271,9 +291,9 @@ impl AskService {
                 rows.iter()
                     .rev()
                     .find(|r| r.role == "user")
-                    .map(|r| r.content.clone())
+                    .map(|r| (r.content.clone(), r.preset.clone()))
             });
-        let Some(text) = text else {
+        let Some((text, preset)) = last else {
             log::warn!("ask::retry: no user turn to regenerate");
             return;
         };
@@ -282,6 +302,7 @@ impl AskService {
             deps,
             SendOpts {
                 text: &text,
+                preset,
                 regenerate: true,
                 ..SendOpts::default()
             },
@@ -311,6 +332,8 @@ impl AskService {
             screen_required,
             regenerate,
             listen_id,
+            preset,
+            preset_lang,
         } = opts;
         let gen = {
             let mut state = self.state.lock();
@@ -340,14 +363,36 @@ impl AskService {
         // The failover chain: `providers.order` minus disabled/unusable.
         // An empty chain is the "no usable provider" error — nothing to
         // fall back TO, so the card links straight to settings. The
-        // screen reader (`[vision]`) resolves under the same lock.
-        let (candidates, vision, language) = {
+        // screen reader (`[vision]`), the armed preset's resolution, and
+        // its `{lang}` substitution all read under the same lock.
+        let (candidates, vision, language, instruction, preset_hit) = {
             let cfg = deps.config.lock();
             let ks = deps.keystore.lock();
+            let resolved = preset.as_deref().and_then(|id| {
+                let p = crate::presets::resolve(id, &cfg.prompts.custom);
+                if p.is_none() {
+                    log::warn!("ask: preset {id} unresolved — sending without");
+                }
+                p
+            });
+            // `{lang}` — the param badge's edited value when the send
+            // carried one, else the configured main language.
+            let lang_arg = preset_lang.clone().unwrap_or_else(|| {
+                crate::prompts::language_name(&cfg.app.main_language).to_string()
+            });
+            // An expanding preset (`{input}` in its text) contributes no
+            // instruction — the webview already folded it into `text`;
+            // the id persists below purely as provenance.
+            let instruction = resolved
+                .as_ref()
+                .filter(|p| !crate::presets::is_template(p))
+                .map(|p| p.text.replace("{lang}", &lang_arg));
             (
                 crate::provider_candidates(&cfg, &ks),
                 crate::vision_candidate(&cfg, &ks),
                 cfg.app.main_language.clone(),
+                instruction,
+                resolved.is_some(),
             )
         };
         if candidates.is_empty() {
@@ -378,6 +423,11 @@ impl AskService {
         let reader = Arc::clone(&deps.reader);
         let ring = Arc::clone(&deps.ring);
         let capture_running = deps.capture_running;
+        // `None` when the id didn't resolve — a stale/deleted preset
+        // must not persist `preset = "u:dead"` on the user row or claim
+        // provenance it never had in the `loading` emits (the send
+        // itself still proceeds per the warn above).
+        let preset_id = preset.filter(|_| preset_hit);
         tauri::async_runtime::spawn(async move {
             // Outgoing events also fold into Rust-side state — but only
             // while this run is the current generation; a cancelled
@@ -428,6 +478,8 @@ impl AskService {
                     regenerate,
                     listen_id,
                     language: &language,
+                    instruction: instruction.as_deref(),
+                    preset_id: preset_id.as_deref(),
                 },
             )
             .await;
@@ -487,7 +539,9 @@ impl Default for AskService {
 /// session so this run mints a fresh row; `regenerate` re-asks the
 /// session's last user row; `listen_id` binds the run to a listen
 /// doc's own ask session — one chat per doc; `language` is the
-/// `config.app.main_language` snapshot — the reply language.
+/// `config.app.main_language` snapshot — the reply language;
+/// `instruction`/`preset_id` are the armed `instruct` preset's text
+/// and id.
 #[derive(Default)]
 pub(crate) struct ChainOpts<'a> {
     pub text: &'a str,
@@ -495,6 +549,11 @@ pub(crate) struct ChainOpts<'a> {
     pub regenerate: bool,
     pub listen_id: Option<i64>,
     pub language: &'a str,
+    /// Resolved `instruct` preset text — appended to the system prompt.
+    pub instruction: Option<&'a str>,
+    /// The armed preset id — `None` when it didn't resolve; persisted
+    /// on the user row so `retry` re-resolves it.
+    pub preset_id: Option<&'a str>,
 }
 
 /// The testable core: persist → walk the failover chain → persist,
@@ -556,6 +615,8 @@ pub(crate) async fn send_chain(
         regenerate,
         listen_id,
         language,
+        instruction,
+        preset_id,
     } = opts;
     // A send that arrived with the card closed is a new conversation:
     // end the still-open ask session so get_or_create mints a fresh row.
@@ -602,9 +663,12 @@ pub(crate) async fn send_chain(
         listen_id.or_else(|| session_id.and_then(|sid| db.session_listen_id(sid).ok().flatten()));
     let listen_history = load_listen_context(db, listen_id);
     if !re_asked {
-        persist_user_message(db, session_id, text);
+        persist_user_message(db, session_id, text, preset_id);
     }
-    emit(EV_STATE, json!({"state": "loading", "question": text}));
+    emit(
+        EV_STATE,
+        json!({"state": "loading", "question": text, "preset": preset_id}),
+    );
 
     // The screen-material truth table (spec §Ask flow): cached context /
     // ring frame / inline one-shot describe / raw frame / none. A failed
@@ -641,7 +705,10 @@ pub(crate) async fn send_chain(
         // A failover hand-off re-announces `loading` so the card drops
         // the failed attempt's partial chunks before the next stream.
         if i > 0 {
-            emit(EV_STATE, json!({"state": "loading", "question": text}));
+            emit(
+                EV_STATE,
+                json!({"state": "loading", "question": text, "preset": preset_id}),
+            );
         }
         match stream_candidate(
             &*cand.provider,
@@ -653,6 +720,7 @@ pub(crate) async fn send_chain(
             screen.as_deref(),
             cancel,
             language,
+            instruction,
         )
         .await
         {
@@ -893,9 +961,18 @@ async fn stream_candidate(
     screen: Option<&str>,
     cancel: &CancellationToken,
     language: &str,
+    instruction: Option<&str>,
 ) -> CandidateOutcome {
     let mut streaming = false;
-    let mut msgs = build_messages(history, listen_history, text, frame, screen, language);
+    let mut msgs = build_messages(
+        history,
+        listen_history,
+        text,
+        frame,
+        screen,
+        language,
+        instruction,
+    );
     let mut retried = false;
     loop {
         match stream_once(provider, &msgs, emit, cancel, &mut streaming).await {
@@ -905,7 +982,15 @@ async fn stream_candidate(
                 // Vision-incapable model gets ONE retry without the frame.
                 if !retried && frame.is_some() && e.is_multimodal() {
                     retried = true;
-                    msgs = build_messages(history, listen_history, text, None, screen, language);
+                    msgs = build_messages(
+                        history,
+                        listen_history,
+                        text,
+                        None,
+                        screen,
+                        language,
+                        instruction,
+                    );
                     continue;
                 }
                 return CandidateOutcome::Failed(e);
@@ -965,7 +1050,9 @@ async fn stream_once(
 /// new user turn pairs `text` with the frame's JPEG when one was
 /// captured, else with the screen reader's `<screen_context>` description when
 /// a vision provider read it; text-only otherwise (and on the retry —
-/// the description, when present, survives it).
+/// the description, when present, survives it). The system message is
+/// `live_system_prompt_with(language, instruction)` — the armed
+/// `instruct` preset's text appended after the language directive.
 fn build_messages(
     history: &[ChatMessage],
     listen_history: &str,
@@ -973,11 +1060,12 @@ fn build_messages(
     frame: Option<&Frame>,
     screen: Option<&str>,
     language: &str,
+    instruction: Option<&str>,
 ) -> Vec<ChatMessage> {
     let mut msgs = Vec::with_capacity(history.len() + 2);
     msgs.push(ChatMessage::text(
         Role::System,
-        live_system_prompt_for(language),
+        live_system_prompt_with(language, instruction),
     ));
     msgs.extend(history.iter().cloned());
     let request = live_user_prompt(text, listen_history, screen);
@@ -1102,14 +1190,19 @@ fn regenerate_tail(db: &Db, session_id: Option<i64>) -> Option<Vec<ChatMessage>>
     Some(rows_to_history(&rows[..cut]))
 }
 
-/// The new user row, next to its session. `None` session (lookup
-/// failed) skips the write — the stream must not die on a storage
-/// hiccup.
-fn persist_user_message(db: &Db, session_id: Option<i64>, text: &str) {
+/// The new user row, next to its session. `preset` records the armed
+/// instruct preset (presets.rs id) so `retry` re-resolves the same
+/// steering. `None` session (lookup failed) skips the write — the
+/// stream must not die on a storage hiccup.
+fn persist_user_message(db: &Db, session_id: Option<i64>, text: &str, preset: Option<&str>) {
     let Some(sid) = session_id else {
         return;
     };
-    if let Err(e) = db.message_add(sid, "user", text) {
+    let meta = MessageMeta {
+        preset: preset.map(str::to_string),
+        ..MessageMeta::default()
+    };
+    if let Err(e) = db.message_add_meta(sid, "user", text, &meta) {
         log::warn!("ask: failed to persist user message: {e}");
     }
 }
@@ -1132,6 +1225,8 @@ fn persist_assistant_message(
         model: Some(model.to_string()),
         tokens_in: usage.and_then(|u| u.input.map(|n| n as i64)),
         tokens_out: usage.and_then(|u| u.output.map(|n| n as i64)),
+        // Armed presets ride user rows, not assistant replies.
+        preset: None,
     };
     if let Err(e) = db.message_add_meta(sid, "assistant", full, &meta) {
         log::warn!("ask: failed to persist assistant message: {e}");
@@ -1351,6 +1446,7 @@ mod tests {
             None,
             None,
             "en",
+            None,
         );
         let system = match &messages[0].content[0] {
             ContentPart::Text(text) => text,
@@ -1471,7 +1567,7 @@ mod tests {
             vec![
                 ev(
                     EV_STATE,
-                    json!({"state": "loading", "question": "what is this?"})
+                    json!({"state": "loading", "question": "what is this?", "preset": null})
                 ),
                 ev(EV_STATE, json!({"state": "streaming"})),
                 ev(EV_CHUNK, json!({"text": "Hello"})),
@@ -1501,6 +1597,64 @@ mod tests {
         assert_eq!(calls[0][1].role, Role::User);
         assert!(has_image(&calls[0][1]));
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An `instruct` preset reaches the provider's system message and
+    /// its id persists on the user row.
+    #[tokio::test]
+    async fn send_chain_applies_instruct_preset() {
+        let dir = tmp_dir();
+        let db = Db::at(dir.join("marvis.db")).unwrap();
+        let provider = MockProvider::new(vec![Behavior::Tokens(vec!["ok".into()])]);
+        let calls = provider.calls();
+        let (events, emit) = recorder();
+        let reader = screen_read::ScreenReader::new();
+        let ring = Mutex::new(RingBuffer::new(4, 1 << 20));
+        let input = input(&reader, &ring);
+        let cancel = CancellationToken::new();
+
+        send_chain(
+            vec![candidate("mock", provider)],
+            None,
+            &db,
+            &emit,
+            &input,
+            &cancel,
+            ChainOpts {
+                text: "hi",
+                language: "en",
+                instruction: Some("Be terse."),
+                preset_id: Some("b:concise"),
+                ..ChainOpts::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        // The instruct text lands in the system message.
+        {
+            let calls = calls.lock();
+            let system = match &calls[0][0].content[0] {
+                ContentPart::Text(text) => text,
+                _ => panic!("system prompt must be text"),
+            };
+            assert!(system.contains("Be terse."));
+        }
+
+        // The `loading` emit announces the armed id to the card.
+        assert_eq!(
+            events.lock()[0],
+            ev(
+                EV_STATE,
+                json!({"state": "loading", "question": "hi", "preset": "b:concise"})
+            )
+        );
+
+        // The armed id persists on the user row — `retry` re-resolves it.
+        let sid = db.session_active_id("ask").unwrap().unwrap();
+        let rows = db.messages_for(sid).unwrap();
+        assert_eq!(rows[0].preset.as_deref(), Some("b:concise"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1545,8 +1699,14 @@ mod tests {
         assert_eq!(
             got,
             vec![
-                ev(EV_STATE, json!({"state": "loading", "question": "q"})),
-                ev(EV_STATE, json!({"state": "loading", "question": "q"})),
+                ev(
+                    EV_STATE,
+                    json!({"state": "loading", "question": "q", "preset": null})
+                ),
+                ev(
+                    EV_STATE,
+                    json!({"state": "loading", "question": "q", "preset": null})
+                ),
                 ev(EV_STATE, json!({"state": "streaming"})),
                 ev(EV_CHUNK, json!({"text": "ok"})),
                 ev(
@@ -1599,8 +1759,14 @@ mod tests {
         assert_eq!(
             events.lock().clone(),
             vec![
-                ev(EV_STATE, json!({"state": "loading", "question": "q"})),
-                ev(EV_STATE, json!({"state": "loading", "question": "q"})),
+                ev(
+                    EV_STATE,
+                    json!({"state": "loading", "question": "q", "preset": null})
+                ),
+                ev(
+                    EV_STATE,
+                    json!({"state": "loading", "question": "q", "preset": null})
+                ),
                 ev(EV_ERROR, json!({"message": "http 500: boom"})),
                 ev(EV_STATE, json!({"state": "idle"})),
             ]
@@ -1741,7 +1907,10 @@ mod tests {
         assert_eq!(
             got,
             vec![
-                ev(EV_STATE, json!({"state": "loading", "question": "q"})),
+                ev(
+                    EV_STATE,
+                    json!({"state": "loading", "question": "q", "preset": null})
+                ),
                 ev(
                     EV_ERROR,
                     json!({"message": LlmError::MultimodalUnsupported.to_string()})
@@ -1795,7 +1964,10 @@ mod tests {
         assert_eq!(
             got,
             vec![
-                ev(EV_STATE, json!({"state": "loading", "question": "q"})),
+                ev(
+                    EV_STATE,
+                    json!({"state": "loading", "question": "q", "preset": null})
+                ),
                 ev(EV_STATE, json!({"state": "idle"})),
             ]
         );
@@ -1878,7 +2050,10 @@ mod tests {
         assert_eq!(
             got,
             vec![
-                ev(EV_STATE, json!({"state": "loading", "question": "q"})),
+                ev(
+                    EV_STATE,
+                    json!({"state": "loading", "question": "q", "preset": null})
+                ),
                 ev(EV_ERROR, json!({"message": LlmError::Auth.to_string()})),
                 ev(EV_STATE, json!({"state": "idle"})),
             ]
@@ -1952,7 +2127,7 @@ mod tests {
             vec![
                 ev(
                     EV_STATE,
-                    json!({"state": "loading", "question": "what broke?"})
+                    json!({"state": "loading", "question": "what broke?", "preset": null})
                 ),
                 ev(EV_STATE, json!({"state": "streaming"})),
                 ev(EV_CHUNK, json!({"text": "answer"})),
@@ -2088,7 +2263,10 @@ mod tests {
         assert_eq!(
             got,
             vec![
-                ev(EV_STATE, json!({"state": "loading", "question": "q"})),
+                ev(
+                    EV_STATE,
+                    json!({"state": "loading", "question": "q", "preset": null})
+                ),
                 ev(EV_STATE, json!({"state": "idle"})),
             ]
         );

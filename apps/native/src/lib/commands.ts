@@ -129,6 +129,21 @@ export interface RecordingPrefs {
   summary_prompt: string;
 }
 
+/** `presets_list` row — built-ins (`b:` ids) then `prompts.custom`
+ *  (`u:` ids). No kind field: a `text` containing `{input}` expands
+ *  into the sent message (with `{lang}` → the param badge's language);
+ *  anything else appends silently to that send's system prompt. */
+export interface Preset {
+  id: string;
+  name: string;
+  text: string;
+}
+
+/** `[prompts]` section — user presets only. */
+export interface PromptPrefs {
+  custom: Preset[];
+}
+
 /** `config_get` / `config_set` return / `config:changed` payload. */
 export interface Config {
   app: AppPrefs;
@@ -139,6 +154,7 @@ export interface Config {
   window: WindowPrefs;
   compat: CompatPrefs;
   vision: VisionPrefs;
+  prompts: PromptPrefs;
 }
 
 /** `session_list` row (storage.rs `Session`; `kind` is the `type` column). */
@@ -168,6 +184,8 @@ export interface Message {
   model: string | null;
   tokens_in: number | null;
   tokens_out: number | null;
+  /** The armed `instruct` preset id — user rows only. */
+  preset: string | null;
   ts: number;
 }
 
@@ -241,13 +259,30 @@ export const providerSetEnabled = (provider: string, enabled: boolean) =>
 // ask
 // ---------------------------------------------------------------------------
 
-/** Fire-and-forget: returns after pre-flight; tokens stream as `ask:*`.
- *  `withScreen` (the bar's Cmd/Ctrl+Enter) is the explicit attach flag —
- *  a screen read runs even when the text shows no intent. `listenId`
- *  binds the send to a listen doc — its own ask session (one chat per
- *  doc), its summary+transcript as the meeting context. */
-export const askSend = (text: string, withScreen = false, listenId?: number) =>
-  invoke<void>('ask_send', { text, withScreen, listenId });
+/** `ask_send` options — every field optional; see `askSend`. */
+export interface AskSendOpts {
+  /** The bar's Cmd/Ctrl+Enter — the explicit attach flag; a screen read
+   *  runs even when the text shows no intent. */
+  withScreen?: boolean;
+  /** Bind the send to a listen doc — its own ask session (one chat per
+   *  doc), its summary+transcript as the meeting context. */
+  listenId?: number;
+  /** Arm a preset for this send only. */
+  presetId?: string;
+  /** The `{lang}` badge's edited value (`undefined` → the configured
+   *  main language). */
+  presetLang?: string;
+}
+
+/** Fire-and-forget: returns after pre-flight; tokens stream as `ask:*`. */
+export const askSend = (text: string, opts: AskSendOpts = {}) =>
+  invoke<void>('ask_send', {
+    text,
+    withScreen: opts.withScreen ?? false,
+    listenId: opts.listenId,
+    presetId: opts.presetId,
+    presetLang: opts.presetLang,
+  });
 
 /** The bar's camera affordance — a screen-only ask (fixed prompt,
  *  frame required). */
@@ -271,6 +306,54 @@ export interface AskCurrent {
 
 /** The live ask tail — a re-expanded chat resyncs from this. */
 export const askCurrent = () => invoke<AskCurrent>('ask_current');
+
+// ---------------------------------------------------------------------------
+// presets
+// ---------------------------------------------------------------------------
+
+/** The merged preset list — built-ins then customs. */
+export const presetsList = () => invoke<Preset[]>('presets_list');
+
+/** Open the preset palette — the small glass overlay left-aligned to
+ *  `anchorX` (the composer caret's x in viewport px; omitted →
+ *  pointer/center fallback) and, while a card is up, popped above
+ *  `anchorY` (the composer row's top edge in viewport px — the row is
+ *  the card's bottom footer, nowhere near the pill edge when the card
+ *  grows down). `query` seeds the filter (a `/token`'s name part);
+ *  `focused` picks the mode — wand/right-click pass true (key-focused
+ *  menu), a `/`-typed open passes false so the composer keeps typing
+ *  (the filter then streams over `palette:query` and nav keys forward
+ *  over `palette:key`). */
+export const presetsPaletteOpen = (
+  anchorX?: number,
+  anchorY?: number,
+  query?: string,
+  focused?: boolean,
+) => invoke<void>('presets_palette_open', { anchorX, anchorY, query, focused });
+
+/** A palette row pick — the backend closes the palette, refocuses the
+ *  bar, and emits the chosen preset as `bar:preset-pick`. */
+export const presetsPaletteSelect = (id: string) =>
+  invoke<void>('presets_palette_select', { id });
+
+/** The palette's keyed dismiss (Esc — click-away blur and the bar's
+ *  own blur hide it without this call). */
+export const presetsPaletteClose = () => invoke<void>('presets_palette_close');
+
+/** Forward a composer key to the unfocused palette — `/`-mode nav
+ *  (`ArrowUp`, `ArrowDown`, `Enter`, `Tab`, `Escape`, `Home`, `End`)
+ *  rides `palette:key`. */
+export const presetsPaletteKey = (key: string) =>
+  invoke<void>('presets_palette_key', { key });
+
+/** Push the composer's `/token` as the palette's live filter query. */
+export const presetsPaletteQuery = (query: string) =>
+  invoke<void>('presets_palette_query', { query });
+
+/** The palette view's content-height report — the window hugs the
+ *  list (auto-fit, capped + scrolling server-side). */
+export const presetsPaletteHeight = (height: number) =>
+  invoke<void>('presets_palette_height', { height });
 
 // ---------------------------------------------------------------------------
 // listen
@@ -616,7 +699,9 @@ export const configGet = () => invoke<Config>('config_get');
  * `vision.models.<id>` (string; `''` removes),
  * `recording.auto_screenshots` (bool), `recording.fps` (`8|4|2`),
  * `recording.read_interval_secs` (number ≥1 — applies on next
- * capture start), `recording.summary_prompt` (string). Provider
+ * capture start), `recording.summary_prompt` (string),
+ * `prompts.custom` (array of `{id, name, text}` presets —
+ * replaces the whole list). Provider
  * order/switches/models go through `providersReorder`/
  * `providerSetEnabled`/`modelSetSelected`. Every successful write
  * broadcasts `config:changed` and resolves to the full updated config.

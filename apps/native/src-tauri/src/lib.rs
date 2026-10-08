@@ -47,6 +47,7 @@ mod menubar;
 mod menus;
 mod paths;
 mod permissions;
+mod presets;
 mod prompts;
 mod screen_read;
 mod sherpa_models;
@@ -641,6 +642,21 @@ const EV_BAR_TOGGLE_INPUT: &str = "bar:toggle-input";
 /// dispatch only emits.
 const EV_BAR_START_LISTEN: &str = "bar:start-listen";
 const EV_BAR_SHOW_HISTORY: &str = "bar:show-history";
+/// Emitted to the `bar` window only — a preset palette pick
+/// (`presets_palette_select`); payload is the full `Preset`.
+const EV_PRESET_PICK: &str = "bar:preset-pick";
+/// Rust→palette events emitted from `windows/mod.rs` (`pub(crate)`
+/// keeps one const per name): `show_palette` announces the open
+/// (`{ query }` seeds the filter), `palette_query` pushes the
+/// composer's live `/token`, `palette_key` forwards nav keys while
+/// the bar keeps focus.
+pub(crate) const EV_PALETTE_OPEN: &str = "palette:open";
+pub(crate) const EV_PALETTE_QUERY: &str = "palette:query";
+pub(crate) const EV_PALETTE_KEY: &str = "palette:key";
+/// Emitted to the `bar` window on every palette hide (`windows`'s
+/// `hide_palette`) — the composer stops forwarding `/`-mode keys.
+/// Emitted from `windows/mod.rs`; `pub(crate)` keeps one const.
+pub(crate) const EV_PALETTE_CLOSED: &str = "bar:palette-closed";
 
 /// Map [`hotkey::Action`]s onto pool calls / bar events. Owns an
 /// `AppHandle` and re-resolves `AppState` per press, so the same
@@ -679,7 +695,9 @@ fn deeplink_dispatch(app: &AppHandle) -> impl Fn(deeplink::Action) + Send + Sync
                 if let Some(bar) = bar {
                     let _ = bar.set_focus();
                 }
-                state.ask.send(&app, &state.deps(), &text, false, None);
+                state
+                    .ask
+                    .send(&app, &state.deps(), &text, false, None, None, None);
             } else {
                 // Not ready yet — if the bar is visible (onboarding done,
                 // permission pending) surface its gate card instead of
@@ -1246,8 +1264,21 @@ async fn model_list_available(app: AppHandle, provider: String) -> Vec<String> {
 /// (optional) is the explicit attach flag — a screen read runs even when
 /// the text shows no intent. `listenId` (optional) binds the send to a
 /// listen doc — its own ask session, its summary+transcript as context.
+/// `presetId` (optional) arms a preset — a resolvable id persists on
+/// the user row so `ask_retry` re-applies it; its instruction text
+/// (everything not carrying `{input}`) appends to the system prompt
+/// for this send. `presetLang` (optional) is the `{lang}` param
+/// badge's edited value — `None` resolves `{lang}` to the configured
+/// main language.
 #[tauri::command]
-fn ask_send(app: AppHandle, text: String, with_screen: Option<bool>, listen_id: Option<i64>) {
+fn ask_send(
+    app: AppHandle,
+    text: String,
+    with_screen: Option<bool>,
+    listen_id: Option<i64>,
+    preset_id: Option<String>,
+    preset_lang: Option<String>,
+) {
     let state = app.state::<AppState>();
     // Crafted-invoke guard: the shipped UI gates sends behind `Main`,
     // but a crafted invoke during onboarding would otherwise proceed —
@@ -1262,6 +1293,8 @@ fn ask_send(app: AppHandle, text: String, with_screen: Option<bool>, listen_id: 
         &text,
         with_screen.unwrap_or(false),
         listen_id,
+        preset_id,
+        preset_lang,
     );
 }
 
@@ -1867,6 +1900,150 @@ fn bar_context_menu(app: AppHandle) -> Result<(), String> {
     bar.popup_menu(&menu).map_err(|e| e.to_string())
 }
 
+/// The merged preset list — built-ins first, then `prompts.custom`.
+/// The palette view, the bar's chip matcher, and the prefs tab read
+/// it; `ask_send` resolves ids against the same order server-side.
+#[tauri::command]
+fn presets_list(state: State<'_, AppState>) -> Vec<presets::Preset> {
+    presets::all(&state.config.lock().prompts.custom)
+}
+
+/// The composer wand's popup (and the input-row right-click, the bare
+/// `/` send, a leading `/` keystroke): the preset palette — a small
+/// overlay left-aligned to the composer caret (`anchor_x` is the
+/// caret's x in bar-viewport px, resolved against the window's outer
+/// position; the pointer, then the bar's center, are the fallbacks)
+/// and announced as `palette:open { query }` — `query` seeds the
+/// palette's filter when the open rides a typed `/token`. `anchor_y`
+/// is the composer row's top edge in bar-viewport px — a card-mode
+/// open pops the palette above it (the row is the card's bottom
+/// footer; the pill edge only coincides with it growing up).
+/// `focused` selects the interaction model: the wand/right-click open
+/// key-focus it (own nav, click-away dismiss); a `/`-typed open
+/// surfaces it unfocused so the composer keeps the `/token`
+/// (`palette:query` streams the filter, `palette:key` forwards nav
+/// keys). Gate-guarded like `ask_send` — a crafted invoke during
+/// onboarding must not pop chrome over the wizard.
+#[tauri::command]
+fn presets_palette_open(
+    app: AppHandle,
+    anchor_x: Option<f64>,
+    anchor_y: Option<f64>,
+    query: Option<String>,
+    focused: Option<bool>,
+) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    if *state.gate.lock() != Gate::Main {
+        log::warn!("presets_palette_open dropped while gate != Main");
+        return Ok(());
+    }
+    state.pool.lock().show_palette(
+        &app,
+        anchor_x,
+        anchor_y,
+        query,
+        focused.unwrap_or(true),
+    );
+    Ok(())
+}
+
+/// A palette row pick: hide the palette, hand focus back to the bar,
+/// then emit the preset as `bar:preset-pick` — the same event the
+/// composer's apply path consumes for the `/` shorthand.
+#[tauri::command]
+fn presets_palette_select(app: AppHandle, id: String) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    if *state.gate.lock() != Gate::Main {
+        log::warn!("presets_palette_select dropped while gate != Main");
+        return Ok(());
+    }
+    let preset = presets::find(&id, &state.config.lock().prompts.custom);
+    let bar = {
+        let mut pool = state.pool.lock();
+        pool.hide_palette(&app);
+        pool.bar().cloned()
+    };
+    if let Some(bar) = bar {
+        let _ = bar.set_focus();
+    }
+    if let Some(p) = preset {
+        let _ = app.emit_to(windows::BAR_LABEL, EV_PRESET_PICK, p);
+    }
+    Ok(())
+}
+
+/// Palette dismissed by key — Esc in either focus mode, or a
+/// forwarded Esc (click-away blur and the bar's own blur hide it
+/// without this call). Hides + refocuses the bar; the composer's
+/// `/token` text needs no reconciliation — it never left the field.
+/// `hide_palette` announces `bar:palette-closed` for the bar's
+/// key-forwarding gate. Gate-guarded like `open` — a crafted invoke
+/// during onboarding must not refocus the (hidden) bar.
+#[tauri::command]
+fn presets_palette_close(app: AppHandle) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    if *state.gate.lock() != Gate::Main {
+        log::warn!("presets_palette_close dropped while gate != Main");
+        return Ok(());
+    }
+    let bar = {
+        let mut pool = state.pool.lock();
+        pool.hide_palette(&app);
+        pool.bar().cloned()
+    };
+    if let Some(bar) = bar {
+        let _ = bar.set_focus();
+    }
+    Ok(())
+}
+
+/// A composer key forwarded to the open palette (`palette:key`) —
+/// the `/`-typed palette is unfocused, so the bar pipes `↑↓`, `Enter`,
+/// `Tab`, `Esc`, `Home`, `End` through here for the view to run.
+/// Emits to the palette window only; harmless when it's hidden.
+/// Gate-guarded like `open`.
+#[tauri::command]
+fn presets_palette_key(app: AppHandle, key: String) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    if *state.gate.lock() != Gate::Main {
+        log::warn!("presets_palette_key dropped while gate != Main");
+        return Ok(());
+    }
+    state.pool.lock().palette_key(&app, &key);
+    Ok(())
+}
+
+/// The composer's `/token` pushed as the palette's filter
+/// (`palette:query`) on every composer edit while an unfocused
+/// palette is up — the field that once lived in the palette now lives
+/// in the composer. Gate-guarded like `open`.
+#[tauri::command]
+fn presets_palette_query(app: AppHandle, query: String) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    if *state.gate.lock() != Gate::Main {
+        log::warn!("presets_palette_query dropped while gate != Main");
+        return Ok(());
+    }
+    state.pool.lock().palette_query(&app, &query);
+    Ok(())
+}
+
+/// The palette view's content-height report — the window hugs its
+/// list: clamped to `[PALETTE_MIN_H, PALETTE_MAX_H]` (past max the
+/// list scrolls) and re-anchored to the open-time caret x, so a
+/// filter-shrink keeps the same gap off the bar. Gate-guarded like
+/// `open`.
+#[tauri::command]
+fn presets_palette_height(app: AppHandle, height: f64) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    if *state.gate.lock() != Gate::Main {
+        log::warn!("presets_palette_height dropped while gate != Main");
+        return Ok(());
+    }
+    state.pool.lock().set_palette_height(height);
+    Ok(())
+}
+
 /// Dev-only inspector for webviews without the shared menu (prefs,
 /// alert): opens the CALLING window's devtools — their right-click
 /// invokes this under `import.meta.env.DEV`. No-op in release, where
@@ -2379,7 +2556,9 @@ fn config_get(state: State<'_, AppState>) -> Config {
 /// `recording.fps` (`8|4|2` — a write during a live capture restarts it
 /// so the new rate applies now), `recording.read_interval_secs` (u64
 /// ≥1 — minimum seconds between ambient screen reads; applies on the
-/// next capture start), and `recording.summary_prompt` (string).
+/// next capture start), `recording.summary_prompt` (string), and
+/// `prompts.custom` (array of `{id, name, text}` presets —
+/// replaces the whole custom list; rejected rows fail the write).
 /// Provider order/switches/models have
 /// their own commands (`providers_reorder`,
 /// `provider_set_enabled`, `model_set_selected`). Persists `config.toml`
@@ -2449,6 +2628,7 @@ fn config_set(app: AppHandle, key: String, value: serde_json::Value) -> Result<C
                 )?;
             }
             key if config::apply_recording_config(&mut cfg.recording, key, &value)? => {}
+            key if config::apply_prompts_config(&mut cfg.prompts, key, &value)? => {}
             "compat.name" => {
                 cfg.compat.name = value
                     .as_str()
@@ -2789,6 +2969,13 @@ pub fn run() {
             window_bar_edge,
             window_set_bar_expanded,
             bar_context_menu,
+            presets_list,
+            presets_palette_open,
+            presets_palette_select,
+            presets_palette_close,
+            presets_palette_key,
+            presets_palette_query,
+            presets_palette_height,
             open_devtools,
             permissions_status,
             permissions_request_screen,
@@ -2867,6 +3054,31 @@ mod tests {
         assert!(source.contains("sherpa_cancel_download,"));
         assert!(source.contains("sherpa_remove_model,"));
         assert!(source.contains("session_resume,"));
+    }
+
+    /// The preset surface: `presets_list` plus the palette commands
+    /// registered (open/select/close plus the `/`-session plumbing —
+    /// key forward, query push, visibility probe), and the palette
+    /// event constants declared — all asserted against the
+    /// registration source itself. `concat!` keeps each literal out
+    /// of this file's text (same trick as the `concat!("listen_",
+    /// "stub")` negative assert above) so the asserts can't
+    /// self-satisfy.
+    #[test]
+    fn preset_commands_and_dispatch_are_in_the_contract() {
+        let source = include_str!("lib.rs");
+        assert!(source.contains(concat!("presets", "_list,")));
+        assert!(source.contains(concat!("presets", "_palette_open,")));
+        assert!(source.contains(concat!("presets", "_palette_select,")));
+        assert!(source.contains(concat!("presets", "_palette_close,")));
+        assert!(source.contains(concat!("presets", "_palette_key,")));
+        assert!(source.contains(concat!("presets", "_palette_query,")));
+        assert!(source.contains(concat!("presets", "_palette_height,")));
+        assert!(source.contains(concat!("EV_", "PRESET_PICK")));
+        assert!(source.contains(concat!("EV_", "PALETTE_OPEN")));
+        assert!(source.contains(concat!("EV_", "PALETTE_QUERY")));
+        assert!(source.contains(concat!("EV_", "PALETTE_KEY")));
+        assert!(source.contains(concat!("EV_", "PALETTE_CLOSED")));
     }
 
     /// The punctuation auto-install chain: a completed sherpa download

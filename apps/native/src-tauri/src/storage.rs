@@ -12,7 +12,7 @@
 //! ```sql
 //! sessions(id PK, type 'ask'|'listen', title?, audio_file?, stt?, started_at, ended_at?, last_active_at)
 //! messages(id PK, session_id FK → sessions.id ON DELETE CASCADE, role, content,
-//!          provider?, model?, tokens_in?, tokens_out?, ts)
+//!          provider?, model?, tokens_in?, tokens_out?, preset?, ts)
 //! transcripts(id PK, session_id FK → sessions.id ON DELETE CASCADE, speaker, speaker_idx?, content, ts)
 //! summaries(id PK, session_id FK → sessions.id ON DELETE CASCADE UNIQUE, tldr, bullets, follow_ups, topic?, created_at, updated_at)
 //! ```
@@ -61,6 +61,7 @@ const SCHEMA: &str = "
         model      TEXT,
         tokens_in  INTEGER,
         tokens_out INTEGER,
+        preset     TEXT,
         ts         INTEGER NOT NULL,
         FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
     );
@@ -121,18 +122,25 @@ pub struct Message {
     pub model: Option<String>,
     pub tokens_in: Option<i64>,
     pub tokens_out: Option<i64>,
+    /// The `instruct` preset armed on this user send (presets.rs id) —
+    /// `ask_retry` re-resolves it. NULL on assistant rows and rows
+    /// written before presets existed.
+    pub preset: Option<String>,
     pub ts: i64,
 }
 
-/// Optional provenance + token spend recorded on an assistant
-/// `messages` row — the card's ⋯ menu reads it back. `Default` leaves
-/// the columns NULL, which is what every non-reply write wants.
+/// Optional provenance columns: the armed preset rides user rows;
+/// provider/model/tokens ride assistant replies — the card's ⋯ menu
+/// reads them back. `Default` leaves the columns NULL, which is what
+/// every non-reply write wants.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct MessageMeta {
     pub provider: Option<String>,
     pub model: Option<String>,
     pub tokens_in: Option<i64>,
     pub tokens_out: Option<i64>,
+    /// The armed preset id — user rows only.
+    pub preset: Option<String>,
 }
 
 /// A persisted speaker turn from a listen session.
@@ -463,6 +471,7 @@ impl Db {
     }
 
     /// Append a message to a session; returns the new row id.
+    #[allow(dead_code)] // test convenience — prod writes carry `MessageMeta`
     pub fn message_add(&self, session_id: i64, role: &str, content: &str) -> anyhow::Result<i64> {
         self.message_add_meta(session_id, role, content, &MessageMeta::default())
     }
@@ -482,8 +491,8 @@ impl Db {
         let conn = self.conn.lock();
         let ts = now();
         conn.execute(
-            "INSERT INTO messages (session_id, role, content, provider, model, tokens_in, tokens_out, ts)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            "INSERT INTO messages (session_id, role, content, provider, model, tokens_in, tokens_out, preset, ts)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 session_id,
                 role,
@@ -492,6 +501,7 @@ impl Db {
                 meta.model,
                 meta.tokens_in,
                 meta.tokens_out,
+                meta.preset,
                 ts
             ],
         )?;
@@ -517,7 +527,7 @@ impl Db {
     pub fn messages_for(&self, session_id: i64) -> anyhow::Result<Vec<Message>> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
-            "SELECT id, session_id, role, content, provider, model, tokens_in, tokens_out, ts
+            "SELECT id, session_id, role, content, provider, model, tokens_in, tokens_out, preset, ts
              FROM messages
              WHERE session_id = ?1 ORDER BY ts ASC, id ASC",
         )?;
@@ -531,7 +541,8 @@ impl Db {
                 model: row.get(5)?,
                 tokens_in: row.get(6)?,
                 tokens_out: row.get(7)?,
-                ts: row.get(8)?,
+                preset: row.get(8)?,
+                ts: row.get(9)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -735,6 +746,14 @@ fn migrate(conn: &Connection) -> anyhow::Result<()> {
             )?;
         } else {
             conn.execute_batch("ALTER TABLE ai_messages RENAME TO messages")?;
+        }
+    }
+    if table_exists("messages")? {
+        let columns = columns("messages")?;
+        if !columns.iter().any(|c| c == "preset") {
+            // The armed prompt preset on a user turn (presets.rs) —
+            // NULL on every row written before presets existed.
+            conn.execute_batch("ALTER TABLE messages ADD COLUMN preset TEXT")?;
         }
     }
     if table_exists("transcripts")? {
@@ -1558,5 +1577,50 @@ mod tests {
         // Unknown ids read as None instead of erroring.
         assert_eq!(db.session_started_at(sid + 1000).unwrap(), None);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn message_preset_roundtrips_and_migrates() {
+        // Fresh schema: the column writes and reads.
+        let dir = tmp_dir();
+        let db = Db::at(dir.join("marvis.db")).unwrap();
+        let sid = db.session_get_or_create_active("ask").unwrap();
+        db.message_add_meta(
+            sid,
+            "user",
+            "hi",
+            &MessageMeta {
+                preset: Some("b:concise".to_string()),
+                ..MessageMeta::default()
+            },
+        )
+        .unwrap();
+        db.message_add(sid, "user", "plain").unwrap();
+        let rows = db.messages_for(sid).unwrap();
+        assert_eq!(rows[0].preset.as_deref(), Some("b:concise"));
+        assert_eq!(rows[1].preset, None);
+
+        // A pre-column database gains `preset` via migrate().
+        let dir2 = tmp_dir();
+        std::fs::create_dir_all(&dir2).unwrap();
+        let path = dir2.join("marvis.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(V1_SCHEMA).unwrap();
+            conn.execute_batch(
+                "INSERT INTO sessions (type, started_at, last_active_at)
+                 VALUES ('ask', 1, 1);
+                 CREATE TABLE messages (
+                    id INTEGER PRIMARY KEY, session_id INTEGER NOT NULL,
+                    role TEXT NOT NULL, content TEXT NOT NULL, ts INTEGER NOT NULL);
+                 INSERT INTO messages (session_id, role, content, ts)
+                 VALUES (1, 'user', 'old', 1);",
+            )
+            .unwrap();
+        }
+        let db = Db::at(&path).unwrap();
+        assert_eq!(db.messages_for(1).unwrap()[0].preset, None);
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&dir2);
     }
 }

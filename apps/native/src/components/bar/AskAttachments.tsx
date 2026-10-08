@@ -47,7 +47,7 @@ export const AskAttachments = ({
           <img
             src={image.previewUrl}
             alt={image.name}
-            className='size-5 flex-none rounded-[4px] object-cover'
+            className='size-5 flex-none rounded-sm object-cover'
           />
           <span
             title={image.name}
@@ -66,7 +66,10 @@ export const AskAttachments = ({
               'enabled:hover:bg-fg-soft enabled:hover:text-foreground',
               'focus-visible:outline-2 focus-visible:outline-accent',
             )}>
-            <XIcon aria-hidden className='size-2.5' />
+            <XIcon
+              aria-hidden
+              className='size-2.5'
+            />
           </button>
         </span>
       ))}

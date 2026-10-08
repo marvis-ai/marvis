@@ -26,6 +26,8 @@ export const SpeakerFilter = ({
   onCopy,
   onCopyMarkdown,
   onSaveMarkdown,
+  onSaveAudio,
+  canSaveAudio,
 }: {
   speakers: { key: string; name: string; color: string }[];
   active: string | null;
@@ -38,6 +40,8 @@ export const SpeakerFilter = ({
   onCopy: () => void;
   onCopyMarkdown: () => void;
   onSaveMarkdown: () => void;
+  onSaveAudio: () => void;
+  canSaveAudio: boolean;
 }) => {
   const [exportOpen, setExportOpen] = useState(false);
   return (
@@ -163,6 +167,22 @@ export const SpeakerFilter = ({
                 }}>
                 Save .md…
               </button>
+              {canSaveAudio && (
+                <button
+                  type='button'
+                  disabled={!canSaveAudio}
+                  className={cn(
+                    'flex w-full cursor-pointer items-center border-0',
+                    'bg-transparent px-2.5 py-1.5 text-left text-foreground',
+                    'enabled:hover:bg-fg-soft disabled:opacity-40',
+                  )}
+                  onClick={() => {
+                    setExportOpen(false);
+                    onSaveAudio();
+                  }}>
+                  Save audio…
+                </button>
+              )}
             </div>
           </>
         )}

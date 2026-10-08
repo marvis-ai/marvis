@@ -8,6 +8,7 @@ import {
   listenStatus,
   listenStop,
   raise,
+  saveAudioFile,
   saveTextFile,
   transcriptsFor,
   summaryLatest,
@@ -47,14 +48,6 @@ import { TranscriptBlocks } from '@/components/listen/TranscriptBlocks';
 import { EmptyState } from '@/components/shared/EmptyState';
 import { ErrorBanner } from '@/components/shared/ErrorBanner';
 
-type ListenStatusWithAudio = ListenStatus & {
-  /** Task 4 adds this field to the shared command wrapper. */
-  audio_file?: string | null;
-};
-type ListenStateWithAudio = ListenStatePayload & {
-  audio_file?: string | null;
-};
-
 /** The structured meeting document — header (title, badge, timer,
  *  controls), speaker filter, timestamped transcript blocks, and the
  *  jump-to-live scroll affordance. `viewing === null` is the live
@@ -82,7 +75,7 @@ export const ListenSection = ({
   const viewingRef = useRef(viewing);
   viewingRef.current = viewing;
 
-  const [status, setStatus] = useState<ListenStatusWithAudio>({
+  const [status, setStatus] = useState<ListenStatus>({
     state: 'idle',
     provider: null,
     session_id: null,
@@ -214,7 +207,7 @@ export const ListenSection = ({
     setFilterKey(null);
   }, [viewing?.id, status.session_id]);
 
-  useTauriEvent<ListenStateWithAudio>(EV_LISTEN_STATE, (next) => {
+  useTauriEvent<ListenStatePayload>(EV_LISTEN_STATE, (next) => {
     if (viewingRef.current) return;
     if (next.state === 'listening' && next.session_id !== sessionRef.current) {
       sessionRef.current = next.session_id;
@@ -409,6 +402,7 @@ export const ListenSection = ({
     !audioUnavailable &&
     audioReady &&
     audioDuration > 0;
+  const canSaveAudio = Boolean(audioFile && audioEnded && audioReady);
 
   const copyAll = () => {
     void navigator.clipboard
@@ -452,6 +446,25 @@ export const ListenSection = ({
         }
       })
       .catch((e) => raise(typeof e === 'string' ? e : 'Export failed'));
+  };
+
+  const saveAudio = () => {
+    if (!audioFile || !audioReady || !audioEnded) return;
+    const sessionId = live ? status.session_id : viewing.id;
+    if (sessionId == null) return;
+    void saveAudioFile(
+      sessionId,
+      exportFileName(summary?.topic, startedAt, 'wav'),
+    )
+      .then((path) => {
+        if (path !== null) {
+          setExported(true);
+          window.setTimeout(() => setExported(false), 1500);
+        }
+      })
+      .catch((error) =>
+        raise(typeof error === 'string' ? error : 'Audio export failed'),
+      );
   };
 
   const title = summary?.topic ?? 'Listen';
@@ -527,6 +540,8 @@ export const ListenSection = ({
         onCopy={copyAll}
         onCopyMarkdown={copyMarkdown}
         onSaveMarkdown={saveMarkdown}
+        onSaveAudio={saveAudio}
+        canSaveAudio={canSaveAudio}
       />
       <div className='relative min-h-0 flex-1'>
         <div

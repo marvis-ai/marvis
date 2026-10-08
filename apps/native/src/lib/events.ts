@@ -55,6 +55,7 @@ export interface ListenStatePayload {
   state: 'idle' | 'listening' | 'paused' | 'error';
   provider: string | null;
   session_id: number | null;
+  audio_file: string | null;
   mic: boolean;
   error: ListenErrorPayload | null;
   started_at: number | null;

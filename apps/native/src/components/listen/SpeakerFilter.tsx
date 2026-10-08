@@ -7,6 +7,7 @@ import {
   ShareIcon,
 } from '@marvis/ui';
 import { CHIP, ICON_BTN, NUM, cn } from '@/lib/classes';
+import { SpeakerNameEditor } from './SpeakerNameEditor';
 
 /** Speaker filter row — `all` + one chip per distinct block identity,
  *  with the document meta pinned right (`{n} lines`, the elapsed
@@ -23,13 +24,19 @@ export const SpeakerFilter = ({
   copied,
   exported,
   onPick,
+  onRename,
   onCopy,
   onCopyMarkdown,
   onSaveMarkdown,
   onSaveAudio,
   canSaveAudio,
 }: {
-  speakers: { key: string; name: string; color: string }[];
+  speakers: {
+    key: string;
+    name: string;
+    color: string;
+    canRename: boolean;
+  }[];
   active: string | null;
   count: number;
   /** Formatted `m:ss` duration — null while no session is on screen. */
@@ -37,6 +44,8 @@ export const SpeakerFilter = ({
   copied: boolean;
   exported: boolean;
   onPick: (key: string | null) => void;
+  /** Session-local rename — `''` restores the default label. */
+  onRename: (key: string, label: string) => void;
   onCopy: () => void;
   onCopyMarkdown: () => void;
   onSaveMarkdown: () => void;
@@ -47,29 +56,52 @@ export const SpeakerFilter = ({
   return (
     <div className='flex items-center gap-1.5 border-b border-border px-3 py-1.75'>
       <div className='flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto scrollbar-none [&::-webkit-scrollbar]:hidden'>
-        {[
-          { key: null as string | null, name: 'all', color: '' },
-          ...speakers,
-        ].map((s) => (
-          <button
-            key={s.key ?? 'all'}
-            type='button'
-            onClick={() => onPick(s.key)}
+        {/* `all` stays a plain button; speaker chips split into two
+            controls — the colored dot filters (`onPick`), the name edits
+            in place (`onRename`). */}
+        <button
+          type='button'
+          onClick={() => onPick(null)}
+          className={cn(
+            CHIP,
+            'shrink-0 cursor-pointer lowercase transition-colors',
+            active === null
+              ? 'border-foreground/60 bg-fg-soft text-foreground'
+              : 'hover:text-foreground',
+          )}>
+          all
+        </button>
+        {speakers.map((s) => (
+          <span
+            key={s.key}
             className={cn(
               CHIP,
-              'shrink-0 cursor-pointer lowercase transition-colors',
+              'shrink-0 lowercase transition-colors',
               active === s.key
                 ? 'border-foreground/60 bg-fg-soft text-foreground'
                 : 'hover:text-foreground',
             )}>
-            {s.key !== null && (
+            <button
+              type='button'
+              onClick={() => onPick(s.key)}
+              aria-label={`Filter by ${s.name}`}
+              title={`Filter by ${s.name}`}
+              className={cn(
+                '-my-0.5 -ml-0.5 grid cursor-pointer place-items-center',
+                'rounded-full border-0 bg-transparent p-1 text-inherit',
+                'focus-visible:outline-2 focus-visible:outline-accent',
+              )}>
               <i
                 aria-hidden
                 className={cn('size-1.5 rounded-full bg-current', s.color)}
               />
-            )}
-            {s.name}
-          </button>
+            </button>
+            <SpeakerNameEditor
+              label={s.name}
+              editable={s.canRename}
+              onCommit={(label) => onRename(s.key, label)}
+            />
+          </span>
         ))}
       </div>
       <span

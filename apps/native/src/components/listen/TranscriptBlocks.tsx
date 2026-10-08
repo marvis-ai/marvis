@@ -8,6 +8,7 @@ import {
   timeLabel,
   type TurnBlock,
 } from './model';
+import { SpeakerNameEditor } from './SpeakerNameEditor';
 
 const ACTIVE_BLOCK_CLASSES: Record<string, string> = {
   'text-accent': 'bg-accent/10 ring-1 ring-accent/25',
@@ -26,11 +27,14 @@ export const TranscriptBlocks = ({
   startedAt,
   activeBlock = null,
   onSeekBlock,
+  onRename,
 }: {
   blocks: TurnBlock[];
   startedAt: number | null;
   activeBlock?: string | null;
   onSeekBlock?: (block: TurnBlock) => void;
+  /** Session-local rename — `''` restores the default label. */
+  onRename: (key: string, label: string) => void;
 }) => {
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const copyBlock = (b: TurnBlock) => {
@@ -89,7 +93,11 @@ export const TranscriptBlocks = ({
                 className='size-1.75 flex-none rounded-full bg-current'
               />
               <span className='text-[12px] font-[650] tracking-[-0.005em]'>
-                {block.name}
+                <SpeakerNameEditor
+                  label={block.name}
+                  editable={block.canRename}
+                  onCommit={(label) => onRename(block.key, label)}
+                />
               </span>
               <button
                 type='button'

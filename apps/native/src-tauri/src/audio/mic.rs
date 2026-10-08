@@ -103,7 +103,7 @@ impl MicSource {
             .map_err(|error| anyhow!("failed to build microphone input stream: {error}"))
         };
 
-        let stream = match build(config.clone()) {
+        let stream = match build(config) {
             Ok(stream) => stream,
             Err(first_error) if config.buffer_size != BufferSize::Default => {
                 log::warn!(

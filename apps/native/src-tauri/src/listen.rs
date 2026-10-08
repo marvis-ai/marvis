@@ -596,7 +596,15 @@ impl ListenService {
                 log::warn!("listen: session_set_audio_file failed: {error}");
             }
         }
-        let audio_file = db.session_audio_file(session_id).ok().flatten();
+        let audio_file = match db.session_audio_file(session_id) {
+            Ok(path) => path,
+            Err(error) => {
+                log::warn!(
+                    "listen: session_audio_file failed for session {session_id}: {error}"
+                );
+                None
+            }
+        };
         let cancel = Arc::new(AtomicBool::new(false));
         let paused = Arc::new(AtomicBool::new(false));
         let assembler = Arc::new(Mutex::new(TurnAssembler::new()));

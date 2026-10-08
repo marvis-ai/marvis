@@ -170,7 +170,6 @@ export const SpeakerFilter = ({
               {canSaveAudio && (
                 <button
                   type='button'
-                  disabled={!canSaveAudio}
                   className={cn(
                     'flex w-full cursor-pointer items-center border-0',
                     'bg-transparent px-2.5 py-1.5 text-left text-foreground',

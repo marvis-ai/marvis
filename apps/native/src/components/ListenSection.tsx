@@ -393,7 +393,7 @@ export const ListenSection = ({
     audio.currentTime = seconds;
     setAudioTime(seconds);
     setActiveBlock(activeBlockAt(blocks, startedAt, seconds));
-    void audio.play().catch(() => {});
+    void audio.play().catch(() => setActiveBlock(null));
   };
 
   const canSeekAudio =
@@ -507,7 +507,6 @@ export const ListenSection = ({
           audioFile={audioFile}
           audioRef={audioRef}
           blocks={blocks}
-          startedAt={startedAt}
           activeBlock={activeBlock}
           audioReady={audioReady}
           duration={audioDuration}

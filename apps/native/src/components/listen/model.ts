@@ -17,8 +17,8 @@ import type { ListenSummaryPayload, ListenTurnPayload } from '@/lib/events';
 export type Turn = ListenTurnPayload & { interim?: boolean };
 
 /** The session the card is viewing instead of the live capture — set
- *  after stop (and, later, from History). `endedAt` is null only for a
- *  still-open session. `stt` is the engine label that recorded it —
+ *  after stop or from History. `endedAt` is null only for a still-open
+ *  session. `stt` is the engine label that recorded it —
  *  `sessions.stt`; null on sessions written before the column. */
 export interface ListenViewing {
   id: number;

@@ -22,7 +22,6 @@ export const SessionPlayer = ({
   audioFile: string;
   audioRef: RefObject<HTMLAudioElement | null>;
   blocks: TurnBlock[];
-  startedAt: number;
   activeBlock: string | null;
   audioReady: boolean;
   duration: number;

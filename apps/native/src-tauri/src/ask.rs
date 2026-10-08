@@ -203,6 +203,10 @@ pub struct AskService {
     current_response: Mutex<String>,
     /// Last submitted user text.
     current_question: Mutex<String>,
+    /// The run's user-turn attachments (persisted metadata folded out
+    /// of `ask:state{loading}`) — `ask_current` resyncs them so a
+    /// re-expanded card renders the message's images.
+    current_attachments: Mutex<Vec<MessageAttachment>>,
     /// The last `ask:error` payload — kept so `ask_current` can resync
     /// an error that fired before the webview was listening (pre-flight
     /// errors land ~0ms after the card starts opening).
@@ -219,6 +223,7 @@ impl AskService {
             cancel: Mutex::new(CancellationToken::new()),
             current_response: Mutex::new(String::new()),
             current_question: Mutex::new(String::new()),
+            current_attachments: Mutex::new(Vec::new()),
             last_error: Mutex::new(None),
             generation: AtomicU64::new(0),
         }
@@ -246,6 +251,7 @@ impl AskService {
             "question": self.current_question(),
             "response": self.current_response(),
             "error": self.last_error.lock().clone(),
+            "attachments": self.current_attachments.lock().clone(),
         })
     }
 
@@ -350,6 +356,7 @@ impl AskService {
         *self.cancel.lock() = CancellationToken::new();
         *self.state.lock() = AskState::Idle;
         *self.last_error.lock() = None;
+        *self.current_attachments.lock() = Vec::new();
         pool.lock().set_chat_open(app, false);
     }
 
@@ -380,8 +387,9 @@ impl AskService {
         };
         *self.current_question.lock() = text.to_string();
         // Run boundary: the `ask_current` resync tail must not leak the
-        // previous run's reply or error into this one.
+        // previous run's reply, attachments, or error into this one.
         *self.current_response.lock() = String::new();
+        *self.current_attachments.lock() = Vec::new();
         *self.last_error.lock() = None;
         // A send arriving with the card closed starts a NEW conversation —
         // the pill input isn't a follow-up field. Read before the flag flips.
@@ -556,6 +564,13 @@ impl AskService {
             *self.last_error.lock() = Some(payload.clone());
         } else if name == EV_STATE && payload["state"].as_str() == Some("loading") {
             *self.last_error.lock() = None;
+            if let Some(atts) = payload.get("attachments") {
+                if let Ok(atts) =
+                    serde_json::from_value::<Vec<MessageAttachment>>(atts.clone())
+                {
+                    *self.current_attachments.lock() = atts;
+                }
+            }
         }
     }
 }
@@ -709,13 +724,38 @@ pub(crate) async fn send_chain(
     // user row, and history ends BEFORE it (a missing tail — shouldn't
     // happen, `retry` resolved the question from that row — degrades
     // to a normal send).
-    let (history, re_asked) = if regenerate {
-        match regenerate_tail(db, session_id) {
-            Some(h) => (h, true),
-            None => (load_history(db, session_id), false),
+    let (history_rows, re_asked, regen_atts) = if regenerate {
+        match regenerate_tail_rows(db, session_id) {
+            Some((rows, atts)) => (rows, true, atts),
+            None => (message_rows(db, session_id), false, Vec::new()),
         }
     } else {
-        (load_history(db, session_id), false)
+        (message_rows(db, session_id), false, Vec::new())
+    };
+    // History turns replay their persisted attachments as image parts;
+    // a regenerate's turn images come from the re-asked row's managed
+    // files. Blocking reads run off the async executor; a missing or
+    // corrupt file is a user-facing attachment error — the prompt must
+    // never silently lose images.
+    let loaded = {
+        let root = attachments_root.clone();
+        let regen_atts = regen_atts.clone();
+        tokio::task::spawn_blocking(
+            move || -> Result<(Vec<ChatMessage>, Vec<Vec<u8>>), String> {
+                let history = rows_to_history_at(&history_rows, &root)?;
+                let images = regen_atts
+                    .iter()
+                    .map(|a| read_attachment(&root, a))
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok((history, images))
+            },
+        )
+        .await
+    };
+    let (history, regen_images) = match loaded {
+        Ok(Ok(pair)) => pair,
+        Ok(Err(message)) => return Err(attachment_error(emit, message)),
+        Err(e) => return Err(attachment_error(emit, format!("Couldn't load attachments: {e}"))),
     };
     // The effective doc link: the send's explicit one, else the resolved
     // session's stored link — a continued doc chat (or its retry) keeps
@@ -723,10 +763,10 @@ pub(crate) async fn send_chain(
     let listen_id =
         listen_id.or_else(|| session_id.and_then(|sid| db.session_listen_id(sid).ok().flatten()));
     let listen_history = load_listen_context(db, listen_id);
-    let mut user_images: Vec<Vec<u8>> = Vec::new();
+    let mut user_images: Vec<Vec<u8>> = regen_images;
     // The run's user-turn attachments — the `loading` payload advertises
     // them so the card/resync renders the persisted message correctly.
-    let mut run_attachments: Vec<MessageAttachment> = Vec::new();
+    let mut run_attachments: Vec<MessageAttachment> = regen_atts;
     if !re_asked {
         let message_id = persist_user_message(db, session_id, text, preset_id);
         if !pending.is_empty() {
@@ -1364,15 +1404,15 @@ fn open_ask_session(db: &Db) -> Option<i64> {
     }
 }
 
-/// The trailing persisted turns as text-only `ChatMessage`s — at most
-/// `HISTORY_TAIL` rows, user/assistant roles only (images were never
-/// persisted, so history is text by construction).
-fn load_history(db: &Db, session_id: Option<i64>) -> Vec<ChatMessage> {
+/// The session's persisted `messages` rows (attachments already joined)
+/// — the send's history source. `None` session or a failed lookup
+/// yields an empty tail: a storage hiccup must not block the stream.
+fn message_rows(db: &Db, session_id: Option<i64>) -> Vec<crate::storage::Message> {
     let Some(sid) = session_id else {
         return Vec::new();
     };
     match db.messages_for(sid) {
-        Ok(rows) => rows_to_history(&rows),
+        Ok(rows) => rows,
         Err(e) => {
             log::warn!("ask: history load failed: {e}");
             Vec::new()
@@ -1380,33 +1420,63 @@ fn load_history(db: &Db, session_id: Option<i64>) -> Vec<ChatMessage> {
     }
 }
 
-/// Rows → the trailing text-only `ChatMessage` tail [`load_history`]
-/// describes.
-fn rows_to_history(rows: &[crate::storage::Message]) -> Vec<ChatMessage> {
+/// The managed JPEG bytes for one stored attachment. The stored path
+/// must resolve under `root` — a row pointing elsewhere is corrupt
+/// metadata, not a file to open. A missing file is an error for the
+/// caller to surface, never a silent skip.
+fn read_attachment(root: &Path, att: &MessageAttachment) -> Result<Vec<u8>, String> {
+    let path = PathBuf::from(&att.path);
+    if !path.starts_with(root) {
+        return Err(format!("Attachment \"{}\" has an invalid path", att.name));
+    }
+    std::fs::read(&path)
+        .map_err(|_| format!("Attachment \"{}\" is missing — the image can't be sent", att.name))
+}
+
+/// Rows → the trailing `ChatMessage` tail — at most `HISTORY_TAIL`
+/// rows, user/assistant only. A user row's attachments re-read as
+/// `ImageJpeg` parts (same wire shape as the live send); their file
+/// reads are why this runs inside `spawn_blocking`.
+fn rows_to_history_at(
+    rows: &[crate::storage::Message],
+    root: &Path,
+) -> Result<Vec<ChatMessage>, String> {
     rows.iter()
         .skip(rows.len().saturating_sub(HISTORY_TAIL))
         .filter_map(|m| match m.role.as_str() {
-            "user" => Some(ChatMessage::text(Role::User, m.content.clone())),
-            "assistant" => Some(ChatMessage::text(Role::Assistant, m.content.clone())),
+            "user" => Some(
+                m.attachments
+                    .iter()
+                    .map(|a| read_attachment(root, a))
+                    .collect::<Result<Vec<_>, _>>()
+                    .map(|images| ChatMessage::user_with_images(m.content.clone(), images)),
+            ),
+            "assistant" => Some(Ok(ChatMessage::text(Role::Assistant, m.content.clone()))),
             _ => None,
         })
         .collect()
 }
 
-/// `regenerate` history: rows BEFORE the session's last user turn — the
-/// row being re-asked — with every later row (the rejected reply)
-/// deleted so a reload never replays it. `None` when the session has no
-/// user turn to re-ask or the lookup failed.
-fn regenerate_tail(db: &Db, session_id: Option<i64>) -> Option<Vec<ChatMessage>> {
+/// `regenerate` inputs: history ROWS before the session's last user
+/// turn — the row being re-asked — plus that row's attachments (their
+/// files re-read by the caller as the turn's images). Every later row
+/// (the rejected reply) is deleted so a reload never replays it.
+/// `None` when the session has no user turn to re-ask or the lookup
+/// failed.
+fn regenerate_tail_rows(
+    db: &Db,
+    session_id: Option<i64>,
+) -> Option<(Vec<crate::storage::Message>, Vec<MessageAttachment>)> {
     let sid = session_id?;
     let rows = db.messages_for(sid).ok()?;
     let cut = rows.iter().rposition(|r| r.role == "user")?;
+    let re_asked_attachments = rows[cut].attachments.clone();
     for row in &rows[cut + 1..] {
         if let Err(e) = db.message_delete(row.id) {
             log::warn!("ask: failed to drop rejected reply {}: {e}", row.id);
         }
     }
-    Some(rows_to_history(&rows[..cut]))
+    Some((rows[..cut].to_vec(), re_asked_attachments))
 }
 
 /// The new user row, next to its session; returns its id for the
@@ -2558,6 +2628,202 @@ mod tests {
         let msgs = ask_messages(&db);
         assert_eq!(msgs.len(), 1);
         assert_eq!(msgs[0].attachments.len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An earlier turn's persisted images ride the NEXT send's history
+    /// as image parts — same provider representation as the live send.
+    #[tokio::test]
+    async fn send_chain_history_carries_persisted_images() {
+        let dir = tmp_dir();
+        let db = Db::at(dir.join("marvis.db")).unwrap();
+        let att_root = dir.join("attachments");
+        let reader = screen_read::ScreenReader::new();
+        let ring = Mutex::new(RingBuffer::new(4, 1 << 20));
+        let input = input(&reader, &ring);
+        let cancel = CancellationToken::new();
+
+        // Turn 1: the attachment-bearing send.
+        send_chain(
+            vec![candidate("openai", MockProvider::new(vec![
+                Behavior::Tokens(vec!["first".into()]),
+            ]))],
+            None,
+            &db,
+            &recorder().1,
+            &input,
+            &cancel,
+            ChainOpts {
+                text: "first question",
+                language: "en",
+                attachments: vec![AskAttachmentInput {
+                    name: "p.jpg".into(),
+                    jpeg_base64: jpeg_b64(),
+                }],
+                attachments_root: Some(&att_root),
+                ..ChainOpts::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        // Turn 2: a text-only follow-up — its history replays turn 1's
+        // image.
+        let provider = MockProvider::new(vec![Behavior::Tokens(vec!["second".into()])]);
+        let calls = provider.calls();
+        send_chain(
+            vec![candidate("openai", provider)],
+            None,
+            &db,
+            &recorder().1,
+            &input,
+            &cancel,
+            ChainOpts {
+                text: "and now?",
+                language: "en",
+                attachments_root: Some(&att_root),
+                ..ChainOpts::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        let calls = calls.lock();
+        let history_user = &calls[0][1];
+        assert_eq!(history_user.role, Role::User);
+        assert!(has_image(history_user));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `regenerate` re-asks the last user turn WITH its persisted
+    /// attachments re-read from disk — retry never drops the images.
+    #[tokio::test]
+    async fn send_chain_regenerate_reloads_persisted_attachments() {
+        let dir = tmp_dir();
+        let db = Db::at(dir.join("marvis.db")).unwrap();
+        let att_root = dir.join("attachments");
+        let reader = screen_read::ScreenReader::new();
+        let ring = Mutex::new(RingBuffer::new(4, 1 << 20));
+        let input = input(&reader, &ring);
+        let cancel = CancellationToken::new();
+
+        send_chain(
+            vec![candidate("openai", MockProvider::new(vec![
+                Behavior::Tokens(vec!["first".into()]),
+            ]))],
+            None,
+            &db,
+            &recorder().1,
+            &input,
+            &cancel,
+            ChainOpts {
+                text: "with pic",
+                language: "en",
+                attachments: vec![AskAttachmentInput {
+                    name: "p.jpg".into(),
+                    jpeg_base64: jpeg_b64(),
+                }],
+                attachments_root: Some(&att_root),
+                ..ChainOpts::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        // The regenerate send carries NO input attachments — the chain
+        // must resolve the re-asked row's managed files itself.
+        let provider = MockProvider::new(vec![Behavior::Tokens(vec!["again".into()])]);
+        let calls = provider.calls();
+        send_chain(
+            vec![candidate("openai", provider)],
+            None,
+            &db,
+            &recorder().1,
+            &input,
+            &cancel,
+            ChainOpts {
+                text: "with pic",
+                language: "en",
+                regenerate: true,
+                attachments_root: Some(&att_root),
+                ..ChainOpts::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        let calls = calls.lock();
+        assert!(has_image(&calls[0][1]));
+        // The rejected reply's row was dropped; the regen lands a new one.
+        let msgs = ask_messages(&db);
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[0].attachments.len(), 1);
+        assert_eq!(msgs[1].content, "again");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A managed file gone missing is a user-facing attachment error,
+    /// never a silently degraded prompt.
+    #[tokio::test]
+    async fn send_chain_missing_attachment_file_errors() {
+        let dir = tmp_dir();
+        let db = Db::at(dir.join("marvis.db")).unwrap();
+        let att_root = dir.join("attachments");
+        let reader = screen_read::ScreenReader::new();
+        let ring = Mutex::new(RingBuffer::new(4, 1 << 20));
+        let input = input(&reader, &ring);
+        let cancel = CancellationToken::new();
+
+        send_chain(
+            vec![candidate("openai", MockProvider::new(vec![
+                Behavior::Tokens(vec!["first".into()]),
+            ]))],
+            None,
+            &db,
+            &recorder().1,
+            &input,
+            &cancel,
+            ChainOpts {
+                text: "with pic",
+                language: "en",
+                attachments: vec![AskAttachmentInput {
+                    name: "p.jpg".into(),
+                    jpeg_base64: jpeg_b64(),
+                }],
+                attachments_root: Some(&att_root),
+                ..ChainOpts::default()
+            },
+        )
+        .await
+        .unwrap();
+        // Corrupt the managed file's row target.
+        let mid = ask_messages(&db)[0].id;
+        let path = db.attachments_for(mid).unwrap()[0].path.clone();
+        std::fs::remove_file(&path).unwrap();
+
+        let provider = MockProvider::new(vec![Behavior::Tokens(vec!["x".into()])]);
+        let calls = provider.calls();
+        let (events, emit) = recorder();
+        let err = send_chain(
+            vec![candidate("openai", provider)],
+            None,
+            &db,
+            &emit,
+            &input,
+            &cancel,
+            ChainOpts {
+                text: "follow-up",
+                language: "en",
+                attachments_root: Some(&att_root),
+                ..ChainOpts::default()
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("p.jpg"), "{err}");
+        assert_eq!(calls.lock().len(), 0);
+        assert!(events.lock().iter().any(|(n, p)| n == EV_ERROR
+            && p["message"].as_str().unwrap().contains("p.jpg")));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

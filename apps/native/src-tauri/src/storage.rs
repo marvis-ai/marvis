@@ -143,7 +143,6 @@ pub struct MessageAttachment {
 /// [`Db::attachments_add`] writes. `position` is the caller's pick
 /// order (the composer's chip order).
 #[derive(Debug, Clone, PartialEq)]
-#[allow(dead_code)] // wired by the Ask attachment pipeline
 pub struct NewAttachment {
     pub name: String,
     pub path: String,
@@ -610,7 +609,6 @@ impl Db {
     /// Persist attachment metadata for a message; returns the inserted
     /// rows (with ids) in `position` order — the `loading` payload and
     /// provider history both read that order back.
-    #[allow(dead_code)] // wired by the Ask attachment pipeline
     pub fn attachments_add(
         &self,
         message_id: i64,
@@ -651,7 +649,7 @@ impl Db {
     }
 
     /// A message's attachments in `position` order.
-    #[allow(dead_code)] // wired by the Ask attachment pipeline
+    #[allow(dead_code)] // test convenience — prod reads them on `Message`
     pub fn attachments_for(&self, message_id: i64) -> anyhow::Result<Vec<MessageAttachment>> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(

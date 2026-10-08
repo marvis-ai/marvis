@@ -170,7 +170,6 @@ pub fn audios_dir() -> PathBuf {
 /// `~/.marvis/attachments` — managed Ask composer images (normalized
 /// JPEGs with generated names). Path only; callers create the
 /// directory when they need it.
-#[allow(dead_code)] // wired by the Ask attachment pipeline
 pub fn attachments_dir() -> PathBuf {
     root().join("attachments")
 }

@@ -68,7 +68,7 @@ export const TranscriptBlocks = ({
           <div
             key={blockId}
             className={cn(
-              'group/row relative mb-3.5 rounded-lg',
+              'group/row relative mb-3.5 rounded-lg p-2',
               activeBlock === blockId && ACTIVE_BLOCK_CLASSES[block.color],
             )}>
             <div className={cn('flex items-center gap-1.5', block.color)}>

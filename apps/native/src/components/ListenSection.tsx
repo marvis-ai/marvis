@@ -99,7 +99,7 @@ export const ListenSection = ({
   const audioRef = useRef<HTMLAudioElement>(null);
   const [audioReady, setAudioReady] = useState(false);
   const [audioDuration, setAudioDuration] = useState(0);
-  const [audioTime, setAudioTime] = useState(0);
+  const [audioPlaying, setAudioPlaying] = useState(false);
   const [activeBlock, setActiveBlock] = useState<string | null>(null);
   const [audioUnavailable, setAudioUnavailable] = useState(false);
 
@@ -294,7 +294,7 @@ export const ListenSection = ({
     if (audio) audio.currentTime = 0;
     setAudioReady(false);
     setAudioDuration(0);
-    setAudioTime(0);
+    setAudioPlaying(false);
     setActiveBlock(null);
     setAudioUnavailable(false);
     return () => {
@@ -350,11 +350,9 @@ export const ListenSection = ({
 
   const handleAudioTime = (seconds: number) => {
     if (!Number.isFinite(seconds)) {
-      setAudioTime(0);
       setActiveBlock(null);
       return;
     }
-    setAudioTime(seconds);
     setActiveBlock(
       audioRef.current?.ended
         ? null
@@ -363,7 +361,6 @@ export const ListenSection = ({
   };
 
   const handleAudioSeek = (seconds: number) => {
-    setAudioTime(seconds);
     setActiveBlock(activeBlockAt(blocks, startedAt, seconds));
   };
 
@@ -372,16 +369,13 @@ export const ListenSection = ({
     setAudioDuration(valid ? duration : 0);
     setAudioReady(valid);
     setAudioUnavailable(!valid);
-    if (!valid) {
-      setAudioTime(0);
-      setActiveBlock(null);
-    }
+    if (!valid) setActiveBlock(null);
   };
 
   const handleAudioError = () => {
     setAudioReady(false);
     setAudioDuration(0);
-    setAudioTime(0);
+    setAudioPlaying(false);
     setActiveBlock(null);
     setAudioUnavailable(true);
   };
@@ -391,9 +385,29 @@ export const ListenSection = ({
     if (!audio || startedAt == null) return;
     const seconds = audioOffset(block, startedAt);
     audio.currentTime = seconds;
-    setAudioTime(seconds);
     setActiveBlock(activeBlockAt(blocks, startedAt, seconds));
     void audio.play().catch(() => setActiveBlock(null));
+  };
+
+  const toggleAudio = () => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    if (audio.paused) {
+      void audio.play().catch(() => setAudioPlaying(false));
+    } else {
+      audio.pause();
+    }
+  };
+
+  const skipAudio = (seconds: number) => {
+    const audio = audioRef.current;
+    if (!audio || audioDuration <= 0) return;
+    const next = Math.min(
+      Math.max(audio.currentTime + seconds, 0),
+      audioDuration,
+    );
+    audio.currentTime = next;
+    handleAudioSeek(next);
   };
 
   const canSeekAudio =
@@ -493,10 +507,13 @@ export const ListenSection = ({
         subtitle={subtitle}
         listening={live && listening}
         paused={live && paused}
-        // The state pill is live-only — a viewed doc (from History or
-        // the just-stopped transition) carries no badge; its duration
-        // sits on the SpeakerFilter row.
+        // The state pill and recording controls are live-only. Viewed docs
+        // carry the ended-session audio controls in this header.
         hasSession={live && status.session_id != null}
+        audioReady={canSeekAudio}
+        audioPlaying={audioPlaying}
+        onAudioSkip={skipAudio}
+        onAudioToggle={toggleAudio}
         onPause={() => void listenPause().catch(() => {})}
         onResume={() => void listenResume().catch(() => {})}
         onStop={stop}
@@ -506,15 +523,10 @@ export const ListenSection = ({
         <SessionPlayer
           audioFile={audioFile}
           audioRef={audioRef}
-          blocks={blocks}
-          activeBlock={activeBlock}
-          audioReady={audioReady}
-          duration={audioDuration}
-          currentTime={audioTime}
           onTime={handleAudioTime}
-          onSeek={handleAudioSeek}
           onReady={handleAudioReady}
           onError={handleAudioError}
+          onPlayingChange={setAudioPlaying}
         />
       )}
       {live && error && (

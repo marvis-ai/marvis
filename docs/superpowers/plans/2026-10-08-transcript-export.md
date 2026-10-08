@@ -1,6 +1,9 @@
 # Transcript Export Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use
+> superpowers:subagent-driven-development (recommended) or
+> superpowers:executing-plans to implement this plan task-by-task. Steps
+> use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Export a Listen session as a `.md` file via a native save
 dialog, plus a markdown clipboard copy — from the Listen document only,
@@ -172,8 +175,9 @@ Run: `cd apps/native/src-tauri && cargo clippy -- -D warnings`
 Expected: PASS, no warnings.
 
 ```bash
-git add apps/native/src-tauri/Cargo.toml apps/native/src-tauri/Cargo.lock apps/native/src-tauri/src/lib.rs
-git commit -m "Export: save_text_file — native save dialog + write, Gate::Main-guarded"
+git add apps/native/src-tauri/Cargo.toml \
+  apps/native/src-tauri/Cargo.lock apps/native/src-tauri/src/lib.rs
+git commit -m "Export: save_text_file — native save dialog"
 ```
 
 ---
@@ -245,7 +249,10 @@ describe('transcriptMarkdown', () => {
       [
         '# Weekly standup',
         '',
-        `_${format(1_700_000_000 * 1000, 'MMM d, yyyy · HH:mm')} · whisper tiny_`,
+        `_${format(
+          1_700_000_000 * 1000,
+          'MMM d, yyyy · HH:mm',
+        )} · whisper tiny_`,
         '',
         '## Summary',
         '',
@@ -267,7 +274,9 @@ describe('transcriptMarkdown', () => {
     );
   });
 
-  test('degrades: no summary, no stt, wall-clock stamps without startedAt', () => {
+  test(
+    'degrades: no summary, no stt, wall-clock stamps without startedAt',
+    () => {
     const md = transcriptMarkdown(
       buildBlocks([
         turn(1_700_000_042, {
@@ -285,7 +294,9 @@ describe('transcriptMarkdown', () => {
     expect(md).toContain(`- **[${timeLabel(1_700_000_042)}] You:** hi`);
   });
 
-  test('no turns drops the Transcript section; empty follow_ups drops its heading', () => {
+  test(
+    'no turns drops the Transcript section; empty follow_ups drops its heading',
+    () => {
     const md = transcriptMarkdown([], meta, { ...summary, follow_ups: [] });
     expect(md).not.toContain('## Transcript');
     expect(md).not.toContain('Follow-ups');
@@ -309,7 +320,9 @@ describe('transcriptMarkdown', () => {
     expect(md).not.toContain('draft');
   });
 
-  test('an interim-only block does not create an empty transcript bullet', () => {
+  test(
+    'an interim-only block does not create an empty transcript bullet',
+    () => {
     const md = transcriptMarkdown(
       buildBlocks([
         turn(1_700_000_050, {
@@ -330,7 +343,10 @@ describe('exportFileName', () => {
   test('slugifies the topic, stamps from startedAt', () => {
     const name = exportFileName('Weekly Standup!', 1_700_000_000);
     expect(name).toBe(
-      `marvis-weekly-standup-${format(1_700_000_000 * 1000, 'yyyyMMdd-HHmm')}.md`,
+      `marvis-weekly-standup-${format(
+        1_700_000_000 * 1000,
+        'yyyyMMdd-HHmm',
+      )}.md`,
     );
   });
 
@@ -359,7 +375,11 @@ Append to `apps/native/src/components/listen/model.ts`:
  *  its heading rather than rendering an empty shell. */
 export const transcriptMarkdown = (
   blocks: TurnBlock[],
-  meta: { title?: string | null; startedAt: number | null; stt?: string | null },
+  meta: {
+    title?: string | null;
+    startedAt: number | null;
+    stt?: string | null;
+  },
   summary: ListenSummaryPayload | null,
 ): string => {
   const metaLine = [
@@ -424,8 +444,9 @@ Expected: PASS.
 - [ ] **Step 3: Commit**
 
 ```bash
-git add apps/native/src/components/listen/model.ts apps/native/src/components/listen/model.test.ts
-git commit -m "Export: transcriptMarkdown + exportFileName builders in the listen doc model"
+git add apps/native/src/components/listen/model.ts \
+  apps/native/src/components/listen/model.test.ts
+git commit -m "Export: transcript markdown builders"
 ```
 
 ---
@@ -525,12 +546,25 @@ In `apps/native/src/components/listen/SpeakerFilter.tsx`:
             aria-hidden
             tabIndex={-1}
             onClick={() => setExportOpen(false)}
-            className='fixed inset-0 z-10 cursor-default border-0 bg-transparent'
+            className={cn(
+              'fixed inset-0 z-10 cursor-default',
+              'border-0 bg-transparent',
+            )}
           />
-          <div className='absolute right-0 top-full z-20 mt-1 min-w-36 rounded-xl border border-border bg-[color-mix(in_oklch,var(--surface)_88%,transparent)] py-1 text-[12px] text-foreground shadow-md backdrop-blur-lg'>
+          <div
+            className={cn(
+              'absolute right-0 top-full z-20 mt-1 min-w-36 rounded-xl',
+              'border border-border',
+              'bg-[color-mix(in_oklch,var(--surface)_88%,transparent)]',
+              'py-1 text-[12px] text-foreground shadow-md backdrop-blur-lg',
+            )}>
             <button
               type='button'
-              className='flex w-full cursor-pointer items-center border-0 bg-transparent px-2.5 py-1.5 text-left text-foreground enabled:hover:bg-fg-soft'
+              className={cn(
+                'flex w-full cursor-pointer items-center border-0',
+                'bg-transparent px-2.5 py-1.5 text-left text-foreground',
+                'enabled:hover:bg-fg-soft',
+              )}
               onClick={() => {
                 setExportOpen(false);
                 onCopyMarkdown();
@@ -539,7 +573,11 @@ In `apps/native/src/components/listen/SpeakerFilter.tsx`:
             </button>
             <button
               type='button'
-              className='flex w-full cursor-pointer items-center border-0 bg-transparent px-2.5 py-1.5 text-left text-foreground enabled:hover:bg-fg-soft'
+              className={cn(
+                'flex w-full cursor-pointer items-center border-0',
+                'bg-transparent px-2.5 py-1.5 text-left text-foreground',
+                'enabled:hover:bg-fg-soft',
+              )}
               onClick={() => {
                 setExportOpen(false);
                 onSaveMarkdown();
@@ -620,7 +658,9 @@ Expected: PASS.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add packages/ui/src/index.ts apps/native/src/lib/commands.ts apps/native/src/components/listen/SpeakerFilter.tsx apps/native/src/components/ListenSection.tsx
+git add packages/ui/src/index.ts apps/native/src/lib/commands.ts \
+  apps/native/src/components/listen/SpeakerFilter.tsx \
+  apps/native/src/components/ListenSection.tsx
 git commit -m "Export: markdown copy + .md save menu on the listen doc"
 ```
 

@@ -233,6 +233,61 @@ test('a speaker chip renames through onRename, not onPick', async () => {
   }
 });
 
+test('a non-editable chip filters on the whole chip — the name is not dead text', async () => {
+  const win = new GlobalWindow();
+  Object.assign(globalThis, {
+    window: win,
+    document: win.document,
+    IS_REACT_ACT_ENVIRONMENT: true,
+  });
+  const picks: (string | null)[] = [];
+  const host = document.createElement('div');
+  document.body.appendChild(host);
+  const root = createRoot(host);
+  try {
+    await act(async () =>
+      root.render(
+        <SpeakerFilter
+          speakers={[
+            {
+              key: 'me:0',
+              name: 'You',
+              color: 'text-accent',
+              canRename: false,
+            },
+          ]}
+          active={null}
+          count={1}
+          elapsed={null}
+          copied={false}
+          exported={false}
+          onPick={(key) => picks.push(key)}
+          onRename={() => {}}
+          onCopy={() => {}}
+          onCopyMarkdown={() => {}}
+          onSaveMarkdown={() => {}}
+          onSaveAudio={() => {}}
+          canSaveAudio={false}
+        />,
+      ),
+    );
+    // No rename affordance — and clicking the name itself filters.
+    expect(host.querySelector('[aria-label="Rename You"]')).toBeNull();
+    await act(async () =>
+      (
+        [...host.querySelectorAll('button')].find(
+          (b) => b.textContent === 'You',
+        ) as HTMLButtonElement
+      ).click(),
+    );
+    expect(picks).toEqual(['me:0']);
+  } finally {
+    await act(async () => root.unmount());
+    host.remove();
+    await win.happyDOM.close();
+  }
+});
+
 test('a transcript header renames through onRename', async () => {
   const win = new GlobalWindow();
   Object.assign(globalThis, {

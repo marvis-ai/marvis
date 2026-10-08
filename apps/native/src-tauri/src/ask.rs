@@ -947,7 +947,9 @@ fn attachment_filename() -> String {
     format!("att-{nanos}-{}.jpg", N.fetch_add(1, Ordering::Relaxed))
 }
 
-/// Write every pending image under `root` with generated names. A
+/// Write every pending image under `root` with generated names and
+/// owner-only Unix permissions (same 0600 as keys.json/marvis.db — the
+/// 0700 root is the real gate, this is the standing convention). A
 /// partial failure unlinks what it wrote — callers see all-or-nothing.
 fn write_attachment_files(root: &Path, jpegs: &[Vec<u8>]) -> std::io::Result<Vec<PathBuf>> {
     std::fs::create_dir_all(root)?;
@@ -959,6 +961,11 @@ fn write_attachment_files(root: &Path, jpegs: &[Vec<u8>]) -> std::io::Result<Vec
                 let _ = std::fs::remove_file(written);
             }
             return Err(e);
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
         }
         paths.push(path);
     }
@@ -1310,6 +1317,7 @@ async fn stream_once(
 /// The system message is
 /// `live_system_prompt_with(language, instruction)` — the armed
 /// `instruct` preset's text appended after the language directive.
+#[allow(clippy::too_many_arguments)]
 fn build_messages(
     history: &[ChatMessage],
     listen_history: &str,
@@ -1426,7 +1434,13 @@ fn message_rows(db: &Db, session_id: Option<i64>) -> Vec<crate::storage::Message
 /// caller to surface, never a silent skip.
 fn read_attachment(root: &Path, att: &MessageAttachment) -> Result<Vec<u8>, String> {
     let path = PathBuf::from(&att.path);
-    if !path.starts_with(root) {
+    // `starts_with` is component-wise — a `..` segment would still
+    // prefix-match, so reject parent traversal explicitly too.
+    let escapes = !path.starts_with(root)
+        || path
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir));
+    if escapes {
         return Err(format!("Attachment \"{}\" has an invalid path", att.name));
     }
     std::fs::read(&path)

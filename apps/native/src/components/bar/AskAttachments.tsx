@@ -42,7 +42,7 @@ export const AskAttachments = ({
       ) : null}
       {images.map((image, index) => (
         <span
-          key={image.previewUrl}
+          key={image.id}
           className='flex flex-none items-center gap-1 rounded-md border border-border bg-surface py-0.5 pr-1 pl-0.5'>
           <img
             src={image.previewUrl}

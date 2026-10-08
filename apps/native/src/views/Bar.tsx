@@ -573,28 +573,33 @@ const Bar = () => {
 
   /** Normalize picked/dropped files into the pending strip. Each file
    *  is checked against the pending count as it lands (`next.length`)
-   *  so a multi-file drop stops at four; a rejection aborts the rest of
-   *  the batch and surfaces its reason beside the chips. Attaching
-   *  wakes the input row — same affordance as typing a character. */
+   *  so a multi-file drop stops adding at four. Rejections are
+   *  per-file — valid siblings still attach, and the first failure's
+   *  reason surfaces beside the chips. Attaching wakes the input row —
+   *  same affordance as typing a character. */
   const addFiles = async (files: File[]) => {
     if (files.length === 0) return;
     if (gate === 'main') setOpen(true);
     setAttachmentError(null);
     const next = [...pendingImagesRef.current];
-    try {
-      for (const file of files) {
+    let failure: string | null = null;
+    for (const file of files) {
+      try {
         next.push(await normalizeImageFile(file, next.length));
+      } catch (error) {
+        failure ??=
+          error instanceof Error ? error.message : 'Could not add image';
       }
-      setPendingImages(next);
-    } catch (error) {
-      setAttachmentError(
-        error instanceof Error ? error.message : 'Could not add image',
-      );
     }
+    setPendingImages(next);
+    if (failure) setAttachmentError(failure);
   };
 
-  const removePendingImage = (index: number) =>
+  const removePendingImage = (index: number) => {
+    // Removing a chip resolves a count rejection — drop the stale note.
+    setAttachmentError(null);
     setPendingImages(pendingImagesRef.current.filter((_, i) => i !== index));
+  };
 
   /** Send a question — the field's text by default, or an explicit one
    *  (`question`, e.g. a summary follow-up chip — the field's draft is
@@ -678,7 +683,10 @@ const Bar = () => {
       presetLang,
       attachments,
     })
-      .then(() => setPendingImages([]))
+      .then(() => {
+        setPendingImages([]);
+        setAttachmentError(null);
+      })
       .catch(() => raise('Send failed'));
   };
 
@@ -905,12 +913,15 @@ const Bar = () => {
            `stopPropagation` keeps the drop from reaching Tauri's
            window-level file handling (or the deep drag region). */
         onDragOver={(e) => {
+          // Only file drags earn the ring — text/element drags pass through.
+          if (!e.dataTransfer?.types.includes('Files')) return;
           e.preventDefault();
           e.stopPropagation();
           e.dataTransfer.dropEffect = 'copy';
           setDropActive(true);
         }}
         onDragEnter={(e) => {
+          if (!e.dataTransfer?.types.includes('Files')) return;
           e.preventDefault();
           setDropActive(true);
         }}
@@ -923,11 +934,9 @@ const Bar = () => {
           e.preventDefault();
           e.stopPropagation();
           setDropActive(false);
-          void addFiles(
-            Array.from(e.dataTransfer?.files ?? []).filter((file) =>
-              file.type.startsWith('image/'),
-            ),
-          );
+          // Every dropped file reaches the validator — a non-image
+          // drop must surface the type error, not vanish silently.
+          void addFiles(Array.from(e.dataTransfer?.files ?? []));
         }}
         className={formCls}
         data-tauri-drag-region='deep'>

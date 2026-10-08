@@ -11,10 +11,15 @@ export type { AskImageInput };
 
 /** A normalized image still waiting on the composer — `previewUrl` is
  *  the same JPEG as `jpegBase64`, wrapped as a data URL for the
- *  pending-chip thumbnail. */
+ *  pending-chip thumbnail. `id` keys the chip: identical files
+ *  normalize to identical payloads, so neither `previewUrl` nor `name`
+ *  is a safe React key. */
 export interface PendingAskImage extends AskImageInput {
+  id: string;
   previewUrl: string;
 }
+
+let pendingSeq = 0;
 
 export const MAX_ASK_ATTACHMENTS = 4;
 export const MAX_IMAGE_SOURCE_BYTES = 20 * 1024 * 1024;
@@ -75,6 +80,7 @@ export const normalizeImageFile = async (
   bitmap.close();
   const previewUrl = canvas.toDataURL('image/jpeg', 0.85);
   return {
+    id: `pending-${pendingSeq++}`,
     name: file.name,
     jpegBase64: jpegPayload(previewUrl),
     previewUrl,

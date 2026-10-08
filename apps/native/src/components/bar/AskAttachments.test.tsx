@@ -27,11 +27,13 @@ test('renders pending previews and removes one attachment', async () => {
         <AskAttachments
           images={[
             {
+              id: 'p1',
               name: 'one.png',
               jpegBase64: 'ONE',
               previewUrl: 'data:image/jpeg;base64,ONE',
             },
             {
+              id: 'p2',
               name: 'two.webp',
               jpegBase64: 'TWO',
               previewUrl: 'data:image/jpeg;base64,TWO',
@@ -75,7 +77,11 @@ test('shows the validation error and nothing at all when empty', async () => {
 
     await act(async () =>
       root.render(
-        <AskAttachments images={[]} error={null} onRemove={() => {}} />,
+        <AskAttachments
+          images={[]}
+          error={null}
+          onRemove={() => {}}
+        />,
       ),
     );
     expect(host.childElementCount).toBe(0);

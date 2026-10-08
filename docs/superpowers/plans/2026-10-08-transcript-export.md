@@ -308,6 +308,22 @@ describe('transcriptMarkdown', () => {
     expect(md).toContain('done');
     expect(md).not.toContain('draft');
   });
+
+  test('an interim-only block does not create an empty transcript bullet', () => {
+    const md = transcriptMarkdown(
+      buildBlocks([
+        turn(1_700_000_050, {
+          text: 'draft',
+          interim: true,
+          final: false,
+        }),
+      ]),
+      meta,
+      null,
+    );
+    expect(md).not.toContain('## Transcript');
+    expect(md).not.toContain('draft');
+  });
 });
 
 describe('exportFileName', () => {
@@ -364,9 +380,10 @@ export const transcriptMarkdown = (
       out.push(...summary.follow_ups.map((f) => `- ${f}`));
     }
   }
-  if (blocks.length) {
+  const finalBlocks = blocks.filter((b) => b.finals.length > 0);
+  if (finalBlocks.length) {
     out.push('', '## Transcript', '');
-    for (const b of blocks) {
+    for (const b of finalBlocks) {
       const stamp =
         meta.startedAt != null
           ? elapsedLabel(b.ts - meta.startedAt)

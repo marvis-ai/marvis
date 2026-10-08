@@ -67,4 +67,18 @@ describe('RichText', () => {
     const html = renderToStaticMarkup(<RichText text='https://a.b' />);
     expect(html).not.toContain('<a');
   });
+
+  test('non-http/mailto schemes never reach an anchor', () => {
+    // Stored-XSS guard: neither the tokenizer's scheme whitelist nor
+    // the sink's `safeHref` re-check may let a `javascript:`/`data:`
+    // payload become a link — it stays literal text.
+    const html = renderToStaticMarkup(
+      <RichText
+        text='[x](javascript:alert(1)) javascript:alert(1) [y](data:text/html,x)'
+        interactive
+      />,
+    );
+    expect(html).not.toContain('<a');
+    expect(html).not.toContain('href=');
+  });
 });

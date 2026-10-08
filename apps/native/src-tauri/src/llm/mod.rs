@@ -166,12 +166,20 @@ impl ChatMessage {
 
     /// User message pairing a caption with one JPEG frame.
     pub fn user_with_image(text: impl Into<String>, jpeg_bytes: Vec<u8>) -> Self {
+        Self::user_with_images(text, vec![jpeg_bytes])
+    }
+
+    /// User message pairing a prompt with its attached JPEGs — the
+    /// text part first, then one `ImageJpeg` per image in pick order.
+    /// An empty `images` yields the single-text-part shape the
+    /// text-only path already emits.
+    pub fn user_with_images(text: impl Into<String>, images: Vec<Vec<u8>>) -> Self {
+        let mut content = Vec::with_capacity(images.len() + 1);
+        content.push(ContentPart::Text(text.into()));
+        content.extend(images.into_iter().map(ContentPart::ImageJpeg));
         Self {
             role: Role::User,
-            content: vec![
-                ContentPart::Text(text.into()),
-                ContentPart::ImageJpeg(jpeg_bytes),
-            ],
+            content,
         }
     }
 }
@@ -680,6 +688,26 @@ mod tests {
                 ContentPart::Text("what's here?".to_string()),
                 ContentPart::ImageJpeg(vec![0xff, 0xd8]),
             ]
+        );
+
+        // Multi-image turns keep the text part first, then one image
+        // part per attachment in pick order.
+        let msg = ChatMessage::user_with_images("these?", vec![vec![1], vec![2], vec![3]]);
+        assert_eq!(msg.role, Role::User);
+        assert_eq!(
+            msg.content,
+            vec![
+                ContentPart::Text("these?".to_string()),
+                ContentPart::ImageJpeg(vec![1]),
+                ContentPart::ImageJpeg(vec![2]),
+                ContentPart::ImageJpeg(vec![3]),
+            ]
+        );
+        // An empty image list is just a text message — same shape the
+        // text-only path already emits.
+        assert_eq!(
+            ChatMessage::user_with_images("plain", Vec::new()).content,
+            vec![ContentPart::Text("plain".to_string())]
         );
     }
 

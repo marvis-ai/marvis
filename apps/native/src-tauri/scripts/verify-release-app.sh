@@ -40,3 +40,11 @@ else
   codesign --verify --deep --strict --verbose=2 "$APP_PATH"
   echo "Strict signature and ${expected_arch} app/Whisper architecture verification passed"
 fi
+
+# The bundler seals every signature with the hardened runtime — ad-hoc
+# included — under which AVCaptureDevice mic access requires the
+# audio-input entitlement; without it requestAccess is denied at the
+# signature level and dictation can never start.
+codesign -d --entitlements - "$APP_PATH" 2>/dev/null \
+  | grep -q 'com.apple.security.device.audio-input' \
+  || fail "missing com.apple.security.device.audio-input entitlement"

@@ -6,8 +6,9 @@ skills, and runs simple agentic loops under your approval. Local-first
 stays the default; hosted services arrive only as opt-ins.
 
 This document is the launch plan, the strategy, and the public
-contribution map in one. Phases are ordered by **dependency, not date** —
-each unlocks what follows. We don't promise timelines.
+contribution map in one. Product phases are ordered by **dependency, not
+date** — Phase X is the final release gate and is listed last. We don't
+promise timelines.
 
 Status markers: **shipped** · **in progress** · **planned** ·
 **exploring** · **won't**
@@ -17,10 +18,13 @@ Status markers: **shipped** · **in progress** · **planned** ·
 Already shipped, verified in the codebase:
 
 - Overlay bar: capsule→input→card morph, edge docking, liquid glass
-- Ask: streaming chat with screen frames, vision-provider screen
-  descriptions, per-meeting chat context, auto-titles, provider failover
+- Ask: streaming chat with screen frames, image attachments, vision-provider
+  screen descriptions, per-meeting chat context, auto-titles, provider failover
 - Listen: dual-channel STT → diarized transcript → rolling summaries,
-  voiceprint enrollment, retained WAV recordings
+  voiceprint enrollment, retained WAV recordings, inline playback + WAV export,
+  session-local speaker names
+- Session history: resumable chats, live listen rows, generated titles, and
+  session deletion
 - Dictation into the Ask input; `marvis://` deep links; five rebindable
   global hotkeys; onboarding + per-OS consent gates
 - BYOK providers (OpenAI · Anthropic · Gemini · OpenRouter · Ollama ·
@@ -29,36 +33,26 @@ Already shipped, verified in the codebase:
 - Cross-platform ports (macOS / Windows / Linux) with CI-built bundles
   and a local SQLite store under `~/.marvis`
 
-## Phase 0 — Ship-ready
-
-Launch gates. Everything after this phase compounds on top of it —
-features shipped to unsigned, un-updatable installs don't compound.
-
-| Item | Status | Why it gates |
-| --- | --- | --- |
-| macOS Developer ID signing + notarization | planned | `release.yml` ships "unsigned test builds — no Gatekeeper pass"; new users can't open the app |
-| Windows code signing (Azure Trusted Signing or cert) | planned | SmartScreen warnings kill installs on the platform just ported |
-| Auto-update (`tauri-plugin-updater` + signed manifest on GitHub Releases) | planned | Without it every user is stranded on the build they first downloaded |
-| Opt-in crash reporting (default off) | planned | Field quality is currently invisible; default-off preserves the privacy model |
-| Release notes automation (per-tag notes in the release job) | planned | `release_notes.md` is manual today |
-| Homebrew cask + winget manifests | planned | Friction-free installs once signed |
-| Resolve orphaned waitlist code (`functions/`, `db/`, `waitlist-dialog.tsx`) | planned | Dead since the move to GitHub Releases downloads — revive or remove |
-
 ## Phase 1 — Deepen the loop
 
 Finish what's already promised, then close the real gaps in Ask and
 Listen.
 
+**Phase 1 completion marker:** `v0.1.3` · `2026-10-09T12:12:26Z`
+
+Implementation status: shipped except for Ollama model management and Gemini
+search grounding; both remain planned provider-specific follow-ups.
+
 | Item | Status | Notes |
 | --- | --- | --- |
-| Session history polish | planned | Named in the v0.1.0 notes |
+| Session history polish | shipped | Unified history with resumable chats, live listen rows, generated titles, delete confirmation, and refresh on session activity |
 | Prompt presets | shipped | Built-in catalog + custom presets in `config.toml`, glass palette picker + `/name` shorthand, per-send `{input}`/`{lang}` badges — spec: `docs/superpowers/specs/2026-10-07-prompt-presets-design.md`; becomes the seed of skill bundles (Phase 3) |
-| Ollama model management | planned | Named in the v0.1.0 notes — pull/remove models from settings |
-| Gemini search-grounding toggle | planned | Named in the v0.1.0 notes; first grounded-answer path |
-| Summary + transcript export (markdown / clipboard) | in progress | Spec: `docs/superpowers/specs/2026-10-08-transcript-export-design.md`; implemented — markdown copy + `.md` save via `save_text_file`, pending manual QA |
-| Session audio: inline playback + WAV export | planned | Follow-up to doc export — `sessions.audio_file` WAVs already retained in `~/.marvis/audios`; one audio surface: play in the doc + "Save audio…" beside it (needs a `save_file_copy`-style command next to `save_text_file`) |
-| Rename diarized speakers | planned | "You" is pinned by voiceprint; speakers 1–4 stay anonymous |
-| File & image attachments in Ask | exploring | Beyond the screen frame — drag-drop / picker into the composer |
+| Ollama model management | planned | Ollama is already supported as a local provider; Settings can check `GET /api/tags` and select an installed model, but pulling/removing models from the app is not implemented |
+| Gemini search-grounding toggle | planned | Gemini is already supported for normal chat and vision; Google Search grounding is not wired into requests or Settings |
+| Summary + transcript export (markdown / clipboard) | shipped | Markdown summary/transcript copy + `.md` save via `save_text_file`; the native save dialog still needs manual QA |
+| Session audio: inline playback + WAV export | shipped | Ended-session inline playback with transcript sync and byte-for-byte WAV export via the native save dialog |
+| Rename diarized speakers | shipped | Session-local inline labels; "You" remains pinned by voiceprint and empty labels restore the default |
+| File & image attachments in Ask | shipped | Picker/drop input, validation, persisted history/retry, and provider image payloads with a text fallback |
 
 ## Phase 2 — Memory
 
@@ -96,6 +90,21 @@ Phase 3 approval card — nothing acts silently.
 | Post-meeting loop: summary → action items → drafted follow-ups | exploring | Builds on Listen summaries + export |
 | Proactive observe→suggest cycles | exploring | Screen context + memory propose next actions; the user always confirms |
 
+## Phase X — Ship-ready
+
+Launch gates are listed last because they are release and packaging work,
+not product capability work. Complete them before calling the app
+release-ready.
+
+| Item | Status | Why it gates |
+| --- | --- | --- |
+| macOS Developer ID signing + notarization | planned | `release.yml` ships "unsigned test builds — no Gatekeeper pass"; new users can't open the app |
+| Windows code signing (Azure Trusted Signing or cert) | planned | SmartScreen warnings kill installs on the platform just ported |
+| Auto-update (`tauri-plugin-updater` + signed manifest on GitHub Releases) | planned | Without it every user is stranded on the build they first downloaded |
+| Opt-in crash reporting (default off) | planned | Field quality is currently invisible; default-off preserves the privacy model |
+| Release notes automation (per-tag notes in the release job) | shipped | `release.yml` generates per-tag release notes in the release job |
+| Homebrew cask + winget manifests | planned | Friction-free installs once signed |
+
 ## Non-goals
 
 - **Accounts and cloud sync** — revisit only if an opt-in hosted tier
@@ -107,7 +116,7 @@ Phase 3 approval card — nothing acts silently.
 
 ## How to help
 
-- **Phase 0 items** are mostly CI/release work — good first issues for
+- **Phase X items** are mostly CI/release work — good first issues for
   contributors with packaging or signing experience
 - **Phase 1 items** are scoped, self-contained, and documented in the
   issue tracker — the best place to start contributing

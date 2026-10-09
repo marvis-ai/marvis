@@ -144,6 +144,30 @@ export interface PromptPrefs {
   custom: Preset[];
 }
 
+/** `[memory]` section — the consent-gated local memory extractor. Off by
+ *  default; `provider`/`model` are a DEDICATED selection independent of
+ *  the Ask failover chain (`''`/`''` = unconfigured). */
+export interface MemoryPrefs {
+  enabled: boolean;
+  provider: string;
+  model: string;
+}
+
+/** `memory_list` / `memory_update` row (storage.rs `Memory`). */
+export interface Memory {
+  id: number;
+  category: 'identity' | 'preference';
+  attribute: string;
+  value: string;
+  confidence: number;
+  basis: 'explicit' | 'inferred';
+  source: 'automatic' | 'manual';
+  source_session_id: number | null;
+  source_message_id: number | null;
+  created_at: number;
+  updated_at: number;
+}
+
 /** `config_get` / `config_set` return / `config:changed` payload. */
 export interface Config {
   app: AppPrefs;
@@ -155,6 +179,7 @@ export interface Config {
   compat: CompatPrefs;
   vision: VisionPrefs;
   prompts: PromptPrefs;
+  memory: MemoryPrefs;
 }
 
 /** `session_list` row (storage.rs `Session`; `kind` is the `type` column). */
@@ -725,6 +750,22 @@ export const saveTextFile = (suggestedName: string, contents: string) =>
 /** Session WAV export: native save dialog + byte-for-byte copy. */
 export const saveAudioFile = (sessionId: number, suggestedName: string) =>
   invoke<string | null>('save_audio_file', { sessionId, suggestedName });
+
+// ---------------------------------------------------------------------------
+// memory — the consent-gated local profile rows; every successful
+// mutation also lands as a `memory:changed` broadcast
+// ---------------------------------------------------------------------------
+
+export const memoryList = () => invoke<Memory[]>('memory_list');
+
+/** Manual edit — marks the row `source = 'manual'` so extraction can't
+ * overwrite it. Resolves to the updated row; rejects `'Memory not
+ * found'` on a stale id. */
+export const memoryUpdate = (id: number, value: string) =>
+  invoke<Memory>('memory_update', { id, value });
+
+export const memoryDelete = (id: number) =>
+  invoke<void>('memory_delete', { id });
 
 // ---------------------------------------------------------------------------
 // config / app

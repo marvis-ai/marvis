@@ -173,6 +173,8 @@ export interface PickerThumbPayload {
 /** Broadcast after every successful `config_set` — payload is the full
  * `Config`, so windows re-render without a second `config_get`. */
 export const EV_CONFIG_CHANGED = 'config:changed';
+/** Refresh hint after a memory insert, manual edit, or delete. */
+export const EV_MEMORY_CHANGED = 'memory:changed';
 /** Emitted to the `prefs` window only — `{"mode": "settings"|"onboarding"}`.
  * `prefs_mode` is the mount-time read for shows that raced the load. */
 export const EV_PREFS_MODE = 'prefs:mode';

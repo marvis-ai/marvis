@@ -1,8 +1,4 @@
-import type {
-  Config,
-  KeystoreStatus,
-  ModelSelection,
-} from '../../lib/commands';
+import type { Config, KeystoreStatus, ModelSelection } from '@/lib/commands';
 
 /**
  * The shared surface the prefs window loads once (`views/Prefs.tsx`) and

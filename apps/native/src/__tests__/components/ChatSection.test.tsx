@@ -61,7 +61,7 @@ mock.module('@tauri-apps/api/event', () => ({
     });
   },
 }));
-const { ChatSection } = await import('../../components/ChatSection');
+const { ChatSection } = await import('@/components/ChatSection');
 
 const attachment = {
   id: 1,

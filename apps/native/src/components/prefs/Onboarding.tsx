@@ -31,9 +31,9 @@ import {
   providersReorder,
   providerSetEnabled,
   windowShowSettings,
-} from '../../lib/commands';
-import { providerFor, PROVIDERS } from '../../lib/providers';
-import { LANGUAGES, recommendedSttProvider } from '../../lib/languages';
+} from '@/lib/commands';
+import { providerFor, PROVIDERS } from '@/lib/providers';
+import { LANGUAGES, recommendedSttProvider } from '@/lib/languages';
 import { VoiceSetup } from './VoiceSetup';
 import {
   BTN_LG,
@@ -49,7 +49,7 @@ import {
   PROV_NOTE,
   SPIN,
   cn,
-} from '../../lib/classes';
+} from '@/lib/classes';
 import type { PrefsData } from './types';
 
 const STEP_LABELS = [

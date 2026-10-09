@@ -33,8 +33,8 @@ import {
   modelListAvailable,
   modelSetSelected,
   modelValidateKey,
-} from '../../lib/commands';
-import { providerLabel, type ProviderDef } from '../../lib/providers';
+} from '@/lib/commands';
+import { providerLabel, type ProviderDef } from '@/lib/providers';
 import {
   BTN_LG,
   BTN_LINK,
@@ -50,7 +50,7 @@ import {
   PROV_NOTE,
   SPIN,
   cn,
-} from '../../lib/classes';
+} from '@/lib/classes';
 import { Switch, Tag } from './bits';
 import type { PrefsData } from './types';
 

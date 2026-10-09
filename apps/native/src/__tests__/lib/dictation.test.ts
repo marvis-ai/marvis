@@ -4,7 +4,7 @@ import {
   applyDictationDraft,
   reconcileDictationEdit,
   selectionAfterDictationDraft,
-} from '../../lib/dictation';
+} from '@/lib/dictation';
 
 describe('applyDictationDraft', () => {
   // The tracked range marks the dictated slice; each live draft replaces it

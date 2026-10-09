@@ -5,12 +5,8 @@
  * pick an edge and the bar animates there.
  */
 import { useEffect, useState } from 'react';
-import {
-  windowBarEdge,
-  windowRecenter,
-  windowSnapEdge,
-} from '../../lib/commands';
-import { BTN_LG, BTN_OUTLINE, H2, PRF_ROWS, SUB, cn } from '../../lib/classes';
+import { windowBarEdge, windowRecenter, windowSnapEdge } from '@/lib/commands';
+import { BTN_LG, BTN_OUTLINE, H2, PRF_ROWS, SUB, cn } from '@/lib/classes';
 import { PrefRow, Seg } from './bits';
 
 type Edge = 'top' | 'bottom' | 'left' | 'right';

@@ -4,8 +4,8 @@
  * applies throughout: the accent hue only marks live/primary state.
  */
 import type { ReactNode } from 'react';
-import { kbdTokens } from '../../lib/format';
-import { KBD, PR_CTL, PR_LABEL, PR_SUB, PRF_ROW, cn } from '../../lib/classes';
+import { kbdTokens } from '@/lib/format';
+import { KBD, PR_CTL, PR_LABEL, PR_SUB, PRF_ROW, cn } from '@/lib/classes';
 
 /** One settings row: label + sub on the left, control pinned right. */
 export const PrefRow = ({

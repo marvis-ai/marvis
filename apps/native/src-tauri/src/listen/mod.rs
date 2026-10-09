@@ -256,9 +256,7 @@ impl ListenService {
         let audio_file = match db.session_audio_file(session_id) {
             Ok(path) => path,
             Err(error) => {
-                log::warn!(
-                    "listen: session_audio_file failed for session {session_id}: {error}"
-                );
+                log::warn!("listen: session_audio_file failed: {error}");
                 None
             }
         };
@@ -316,17 +314,12 @@ impl ListenService {
                         let dropped = {
                             let mut gate = callback_gate.lock();
                             match event.channel {
-                                SpeakerChannel::Them
-                                    if event.finality == Finality::Final =>
-                                {
+                                SpeakerChannel::Them if event.finality == Finality::Final => {
                                     gate.record(&event.text);
                                     false
                                 }
                                 SpeakerChannel::Me if gate.is_echo(&event.text) => {
-                                    log::debug!(
-                                        "listen: dropped mic echo {:?}",
-                                        event.text
-                                    );
+                                    log::debug!("listen: dropped mic echo {:?}", event.text);
                                     true
                                 }
                                 _ => false,
@@ -652,4 +645,3 @@ impl ListenService {
         Some(status.clone())
     }
 }
-

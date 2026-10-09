@@ -235,24 +235,29 @@ Allowed values are validated in Rust:
 - `confidence`: finite `0.0..=1.0`.
 
 `attribute` is a normalized stable key such as `name`, `role`,
-`response_style`, or `formatting`. The extractor owns the key vocabulary for
-this first release through its prompt examples and Rust's identifier/length
-validation. Multiple preference attributes may coexist.
+`response_style`, or `formatting`: trim it, lowercase it, and require
+`1..=64` ASCII letters, digits, and underscores. Multiple preference
+attributes may coexist.
+
+`value` is trimmed and limited to `500` Unicode scalar values. One extraction
+response contributes at most `8` facts. The rendered Ask profile contains at
+most `32` rows and `4,000` UTF-8 bytes.
 
 Automatic writes use `(category, attribute)` as the update identity:
 
 - no row: insert an automatic fact;
-- same normalized value: leave the row unchanged except for a bounded freshness
-  update;
+- same normalized value: leave the row unchanged;
 - changed value: update the automatic row's value, basis, confidence, source
   IDs, and `updated_at`;
 - existing manual row: never overwrite it automatically.
 
 Manual edit updates only the requested row's value, sets `source = manual`,
-`basis = explicit`, and sets `confidence = 1.0`. A manual row remains
-authoritative until the user edits it again or deletes it. Deleting a memory
-row is permanent; if the user later states the same fact again, automatic
-extraction may create a new automatic row.
+`basis = explicit`, and sets `confidence = 1.0`. It also clears the original
+source session/message IDs because the edited value is no longer directly
+supported by that source row. A manual row remains authoritative until the user
+edits it again or deletes it. Deleting a memory row is permanent; if the user
+later states the same fact again, automatic extraction may create a new
+automatic row.
 
 Foreign keys to source sessions/messages are nullable and use `ON DELETE SET
 NULL`, so deleting history removes provenance references without deleting an
@@ -290,9 +295,13 @@ Rust validation performs all of the following before a write:
 - require a `facts` array;
 - allow only the two categories and two basis values;
 - require finite confidence within `0.0..=1.0`;
-- trim and bound attribute/value lengths;
-- cap facts processed from one response;
-- reject values matching obvious secret patterns or credential labels;
+- trim, lowercase, and validate attributes as `1..=64` ASCII
+  `[a-z0-9_]` characters;
+- trim and limit values to `500` Unicode scalar values;
+- process at most `8` facts from one response;
+- reject values containing credential labels such as `password`, `api key`,
+  `access token`, `secret`, or `private key`, and reject obvious key/token
+  formats;
 - discard empty facts and duplicate candidates;
 - log and discard the entire response on structural parse failure.
 
@@ -327,8 +336,8 @@ The surrounding live prompt explicitly labels this block as untrusted data:
   older profile value.
 
 When there are no facts, no empty placeholder is added. The profile is bounded
-by a fixed maximum rendered size and row count so an automatically growing
-profile cannot consume the Ask context window.
+to the first `32` deterministic rows and `4,000` UTF-8 bytes, so an
+automatically growing profile cannot consume the Ask context window.
 
 The block is part of the system message, not the persisted user message. It is
 therefore not duplicated in chat history or fed back as a new user statement.
@@ -417,9 +426,12 @@ the manual write is authoritative from that point forward.
 ## Security and privacy
 
 - The database remains local and keeps its existing `0600` file permission.
-- No memory data is sent anywhere unless the user has enabled extraction and
-  selected a provider that receives the extraction request.
-- The Memory tab explains the local-storage/remote-extraction distinction.
+- No memory-specific extraction request is sent anywhere unless the user has
+  enabled extraction and selected a provider. Existing profile facts may still
+  be included in a normal Ask request, because profile injection remains active
+  when extraction is disabled.
+- The Memory tab explains both the local-storage/remote-extraction distinction
+  and that normal Ask requests follow the user's existing provider choice.
 - Screen frames, OCR text, attachments, Listen transcripts, and assistant
   responses are excluded from this first extraction input.
 - Obvious secrets are rejected before persistence, but the UI must still warn

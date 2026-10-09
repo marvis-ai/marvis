@@ -59,7 +59,7 @@ mock.module('@tauri-apps/api/event', () => ({
     });
   },
 }));
-const { ChatSection } = await import('./ChatSection');
+const { ChatSection } = await import('../../components/ChatSection');
 
 const attachment = {
   id: 1,
@@ -103,7 +103,14 @@ afterEach(async () => {
 test('persisted user attachments render as managed-path thumbnails', async () => {
   sessionRows = [
     userRow(),
-    { ...userRow({ id: 11, role: 'assistant', content: 'a chart', attachments: [] }) },
+    {
+      ...userRow({
+        id: 11,
+        role: 'assistant',
+        content: 'a chart',
+        attachments: [],
+      }),
+    },
   ];
   await act(async () => root.render(<ChatSection onBack={() => {}} />));
 

@@ -5,7 +5,7 @@ import {
   MAX_IMAGE_SOURCE_BYTES,
   normalizeImageFile,
   validateImageFile,
-} from './image-attachments';
+} from '@/lib/image-attachments';
 
 const file = (type: string, size = 10) =>
   ({ name: 'input', type, size }) as File;

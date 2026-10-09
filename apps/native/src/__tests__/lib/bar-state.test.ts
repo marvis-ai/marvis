@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { barControls, hasActiveWork } from './bar-state';
+import { barControls, hasActiveWork } from '@/lib/bar-state';
 
 describe('hasActiveWork', () => {
   test('is false when the bar is idle', () => {

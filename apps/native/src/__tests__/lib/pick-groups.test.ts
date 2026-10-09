@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
-import { groupCandidates } from './pick-groups';
-import type { PickCandidate } from './commands';
+import { groupCandidates } from '@/lib/pick-groups';
+import type { PickCandidate } from '@/lib/commands';
 
 const c = (id: string, kind: PickCandidate['kind']): PickCandidate => ({
   id,

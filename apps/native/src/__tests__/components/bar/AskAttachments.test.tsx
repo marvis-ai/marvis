@@ -3,7 +3,7 @@ import { expect, test } from 'bun:test';
 import { GlobalWindow } from 'happy-dom';
 import { act } from 'react';
 import { createRoot } from 'react-dom/client';
-import { AskAttachments } from './AskAttachments';
+import { AskAttachments } from '@/components/bar/AskAttachments';
 
 const win = () => {
   const w = new GlobalWindow();

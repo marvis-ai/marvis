@@ -3,10 +3,10 @@ import { expect, test } from 'bun:test';
 import { GlobalWindow } from 'happy-dom';
 import { act } from 'react';
 import { createRoot } from 'react-dom/client';
-import { SpeakerNameEditor } from './SpeakerNameEditor';
-import { SpeakerFilter } from './SpeakerFilter';
-import { TranscriptBlocks } from './TranscriptBlocks';
-import type { TurnBlock } from './model';
+import { SpeakerNameEditor } from '@/components/listen/SpeakerNameEditor';
+import { SpeakerFilter } from '@/components/listen/SpeakerFilter';
+import { TranscriptBlocks } from '@/components/listen/TranscriptBlocks';
+import type { TurnBlock } from '@/components/listen/model';
 
 /** Drive a controlled React input: the native setter mutates `.value`,
  *  then an `input` event lets React's synthetic `onChange` see it. */

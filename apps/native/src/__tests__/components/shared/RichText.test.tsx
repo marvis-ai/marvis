@@ -1,7 +1,7 @@
 /// <reference types="bun-types" />
 import { describe, expect, test } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { RichText } from './RichText';
+import { RichText } from '@/components/shared/RichText';
 
 describe('RichText', () => {
   test('highlight mode keeps marks as dimmed spans', () => {

@@ -17,9 +17,10 @@
 //! rows (the user row persists once, before the first attempt). The
 //! first answered send on a still-untitled session also names it — the
 //! answering provider condenses the question into `sessions.title` via
-//! a sidecar call AFTER `ask:state{idle}` (history shows the
-//! first-question fallback until it lands, then `sessions:changed`
-//! refreshes it). A provider `MultimodalUnsupported` rejection retries
+//! a detached sidecar spawned after `ask:state{idle}` (history shows
+//! the first-question fallback until it lands, then `sessions:changed`
+//! refreshes it; an `abort` can't recall it, so an ended session still
+//! gets named). A provider `MultimodalUnsupported` rejection retries
 //! once text-only (per attempt): a screen frame is simply dropped,
 //! while the user's own attachments are first described by the
 //! `[vision]` reader into an `<attached_images>` block — never
@@ -74,7 +75,7 @@ mod screen;
 mod stream;
 mod title;
 
-use self::{pipeline::*, screen::*};
+use self::{pipeline::*, screen::*, title::TitleSidecar};
 
 #[cfg(test)]
 mod tests;
@@ -531,6 +532,16 @@ impl AskService {
         let svc = Arc::clone(self);
         let app = app.clone();
         let db = Arc::clone(&deps.db);
+        // The title sidecar's emit is dedicated — the spawned task's
+        // gen-guarded `emit` would drop it once this run's generation
+        // ends (abort/next send), but a landed title write should
+        // always refresh the history list.
+        let titled: Arc<dyn Fn(i64) + Send + Sync> = {
+            let app = app.clone();
+            Arc::new(move |sid| {
+                let _ = app.emit_to(BAR_LABEL, EV_SESSIONS_CHANGED, json!({"id": sid}));
+            })
+        };
         let text = text.to_string();
         // The `resolve_screen` inputs — computed here so the spawned
         // task owns plain values/`Arc`s (`deps` is a borrow that dies
@@ -611,6 +622,7 @@ impl AskService {
                     attachments,
                     attachments_root: None,
                     memory,
+                    title: Some(TitleSidecar::new(Arc::clone(&db), titled)),
                 },
             )
             .await;

@@ -38,6 +38,10 @@ pub(crate) struct ChainOpts<'a> {
     /// `[memory].enabled` resolved a usable dedicated provider in
     /// `kick`. Scheduled once, on success only.
     pub memory: Option<MemoryHook>,
+    /// The detached title sidecar — spawned on success only, after the
+    /// memory hook. `None` skips naming entirely (tests that don't
+    /// exercise it).
+    pub title: Option<TitleSidecar>,
 }
 
 /// The testable core: persist → walk the failover chain → persist,
@@ -55,8 +59,9 @@ pub(crate) struct ChainOpts<'a> {
 /// 3. Each [`ProviderCandidate`] streams via [`stream_candidate`]:
 ///    `Done` → persist assistant + `ask:done{full, provider, model,
 ///    usage}` +
-///    `ask:state{idle}`, then the title sidecar ([`maybe_title_session`])
-///    on a still-untitled session; `Failed` → warn-log, re-emit
+///    `ask:state{idle}`, then the detached title sidecar
+///    ([`TitleSidecar::schedule`]) on a still-untitled session;
+///    `Failed` → warn-log, re-emit
 ///    `loading` (the card resets its buffer — a dead provider's partial
 ///    chunks must not bleed into the next attempt), and try the NEXT
 ///    candidate; `Cancelled` → `ask:state{idle}` and stop immediately —
@@ -71,9 +76,10 @@ pub(crate) struct ChainOpts<'a> {
 /// `status:0`/`"cancelled"` [`LlmError::Http`] sentinel — the events, not
 /// the return value, drive the UI.
 /// Exhausting the chain returns the last provider error, or
-/// [`LlmError::NoModel`] for an empty chain. Success waits for the title
-/// attempt after emitting `idle`; title failures do not change the answer,
-/// and title usage is excluded from the reported turn usage.
+/// [`LlmError::NoModel`] for an empty chain. Success returns right after
+/// `idle` — the title attempt runs detached, so its failure can't touch
+/// the answer and `abort` can't recall it; title usage is excluded from
+/// the reported turn usage.
 ///
 /// `regenerate` (ask_retry): the run re-asks the session's last user
 /// row instead of persisting a new one, and the rejected reply's row is
@@ -105,6 +111,7 @@ pub(crate) async fn send_chain(
         attachments,
         attachments_root,
         memory,
+        title,
     } = opts;
     // Contract guard: a crafted invoke past the composer cap is an
     // attachment error — no row persists, no provider is called.
@@ -388,10 +395,17 @@ pub(crate) async fn send_chain(
                 if let Some(hook) = memory {
                     hook.schedule(text.to_string(), session_id, message_id);
                 }
-                // The sidecar runs after `idle` so the stream's end never
-                // waits on it; its spend isn't part of the turn's usage
-                // (done/persisted already).
-                maybe_title_session(db, &*cand.provider, session_id, text, emit, cancel).await;
+                // The title sidecar is detached like the memory hook —
+                // `idle` already went out, the run never waits on it,
+                // and an `abort` after this point can't recall it (an
+                // ended session still gets named).
+                if let Some(sidecar) = title {
+                    sidecar.schedule(
+                        Arc::clone(&cand.provider),
+                        session_id,
+                        text.to_string(),
+                    );
+                }
                 return Ok(reply.full);
             }
             // User row stays — it was already sent. Never fall over on

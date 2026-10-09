@@ -81,7 +81,9 @@ pub(crate) struct ProviderCandidate {
     pub id: String,
     /// The model the adapter was built with — reported on `ask:done`.
     pub model: String,
-    pub provider: Box<dyn llm::Provider>,
+    /// Arc'd so the answering candidate can share it with the detached
+    /// title sidecar — that task outlives the borrow of `candidates`.
+    pub provider: Arc<dyn llm::Provider>,
 }
 
 /// The failover chain in priority order: `providers.order`, minus the
@@ -110,7 +112,7 @@ pub(crate) fn provider_candidates(cfg: &Config, ks: &Keystore) -> Vec<ProviderCa
             }
             Some(ProviderCandidate {
                 id: id.clone(),
-                provider: make_provider(kind, api_key, model.clone(), base_url),
+                provider: Arc::from(make_provider(kind, api_key, model.clone(), base_url)),
                 model,
             })
         })
@@ -140,7 +142,7 @@ pub(crate) fn vision_candidate(cfg: &Config, ks: &Keystore) -> Option<ProviderCa
     }
     Some(ProviderCandidate {
         id: kind.as_str().to_string(),
-        provider: make_provider(kind, api_key, model.clone(), base_url),
+        provider: Arc::from(make_provider(kind, api_key, model.clone(), base_url)),
         model,
     })
 }

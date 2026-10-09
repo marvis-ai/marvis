@@ -26,7 +26,7 @@ export const EV_ASK_CHUNK = 'ask:chunk'; // { text: string, run?: number }
 export const EV_ASK_DONE = 'ask:done'; // { full, provider, model, usage, run?: number } — who answered
 export const EV_ASK_ERROR = 'ask:error'; // { message: string, needs_setup?: bool, run?: number }
 /** Emitted to the `bar` window when a session's generated title lands
- *  (ask.rs `maybe_title_session`) — the history list re-reads to swap
+ *  (ask.rs title sidecar) — the history list re-reads to swap
  *  its first-question fallback. */
 export const EV_SESSIONS_CHANGED = 'sessions:changed'; // { id: number }
 /** Listen lifecycle, transcript, summary, and terminal error events. */

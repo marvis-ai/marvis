@@ -48,7 +48,7 @@ use super::title::*;
         ProviderCandidate {
             id: id.to_string(),
             model: "mock-model".to_string(),
-            provider: Box::new(provider),
+            provider: Arc::new(provider),
         }
     }
 
@@ -355,11 +355,10 @@ use super::title::*;
         assert_eq!(msgs[1].role, "assistant");
         assert_eq!(msgs[1].content, "Hello world");
 
-        // The answer call's user message carried the image; the second
-        // call is the title sidecar (its empty default reply writes no
-        // title and emits no `sessions:changed`).
+        // The answer call's user message carried the image — the only
+        // call, `title` being `None` here.
         let calls = calls.lock();
-        assert_eq!(calls.len(), 2);
+        assert_eq!(calls.len(), 1);
         assert_eq!(calls[0][1].role, Role::User);
         assert!(has_image(&calls[0][1]));
 
@@ -456,8 +455,8 @@ use super::title::*;
         .unwrap();
         assert_eq!(full, "ok");
         assert_eq!(first_calls.lock().len(), 1);
-        // The answer plus the title sidecar on the provider that spoke.
-        assert_eq!(second_calls.lock().len(), 2);
+        // Just the answer on the provider that spoke.
+        assert_eq!(second_calls.lock().len(), 1);
 
         // loading → (fail) → loading reset → streaming → done naming the
         // SECOND provider — no ask:error between the attempts. The
@@ -620,10 +619,9 @@ use super::title::*;
         .unwrap();
         assert_eq!(full, "answer");
 
-        // Call 1 carried the image; the retry must be text-only; call 3
-        // is the title sidecar.
+        // Call 1 carried the image; the retry must be text-only.
         let calls = calls.lock();
-        assert_eq!(calls.len(), 3);
+        assert_eq!(calls.len(), 2);
         assert!(has_image(&calls[0][1]));
         assert!(!has_image(&calls[1][1]));
         assert_request_text(&calls[1][1], "q");
@@ -790,7 +788,7 @@ use super::title::*;
         .unwrap();
 
         let calls = calls.lock();
-        assert_eq!(calls.len(), 2); // answer + title sidecar
+        assert_eq!(calls.len(), 1); // the answer only
         assert_request_text(&calls[0][1], "q");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1142,9 +1140,9 @@ use super::title::*;
         drop(vcalls);
 
         // The retried call: no image parts, the description riding
-        // <attached_images>; then the title sidecar.
+        // <attached_images>.
         let ccalls = chat_calls.lock();
-        assert_eq!(ccalls.len(), 3);
+        assert_eq!(ccalls.len(), 2);
         assert!(has_image(&ccalls[0][1])); // the rejected attempt got the real bytes
         let retry = &ccalls[1][1];
         assert!(!has_image(retry));
@@ -1220,8 +1218,7 @@ use super::title::*;
 
         assert_eq!(vision_calls.lock().len(), 1);
         let second = second_calls.lock();
-        // image attempt → described retry → (no title sidecar: the
-        // session was titled... actually untitled — sidecar follows)
+        // image attempt → described retry.
         assert!(has_image(&second[0][1]));
         let retry = &second[1][1];
         assert!(!has_image(retry));
@@ -1280,7 +1277,7 @@ use super::title::*;
         // The next candidate still got the real image — a failed read
         // must not silently strip the attachment.
         let second = second_calls.lock();
-        assert_eq!(second.len(), 2); // answer + title sidecar
+        assert_eq!(second.len(), 1); // the answer only
         assert!(has_image(&second[0][1]));
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1978,7 +1975,7 @@ use super::title::*;
 
         // The chain got the raw screenshot as an image part.
         let ccalls = chat_calls.lock();
-        assert_eq!(ccalls.len(), 2); // answer + title sidecar
+        assert_eq!(ccalls.len(), 1); // the answer only
         assert!(has_image(&ccalls[0][1]));
         drop(ccalls);
         assert_eq!(vision_calls.lock().len(), 0);
@@ -2550,138 +2547,165 @@ use super::title::*;
     }
 
     /// The first answered send names a still-untitled session: the
-    /// provider that answered gets one extra call — [title prompt, raw
-    /// question] — its reply is cleaned, stored first-wins, and pinged
-    /// to the card after `idle`.
+    /// provider that answered gets a detached sidecar call — [title
+    /// prompt, raw question] — its reply is cleaned, stored first-wins,
+    /// and pinged through `titled` (the `sessions:changed` emit).
     #[tokio::test]
     async fn send_chain_titles_an_untitled_session() {
         let dir = tmp_dir();
-        let db = Db::at(dir.join("marvis.db")).unwrap();
+        let db = Arc::new(Db::at(dir.join("marvis.db")).unwrap());
         let provider = MockProvider::new(vec![
             Behavior::Tokens(vec!["answer".into()]),
             Behavior::Tokens(vec!["\"Capsule width fix\"\nignored".into()]),
         ]);
         let calls = provider.calls();
-        let (events, emit) = recorder();
+        let (_events, emit) = recorder();
         let reader = screen_read::ScreenReader::new();
         let ring = Mutex::new(RingBuffer::new(4, 1 << 20));
         let input = input(&reader, &ring);
         let cancel = CancellationToken::new();
+        let titled_ids = Arc::new(Mutex::new(Vec::<i64>::new()));
+        let titled: Arc<dyn Fn(i64) + Send + Sync> = {
+            let ids = Arc::clone(&titled_ids);
+            Arc::new(move |sid| ids.lock().push(sid))
+        };
 
         send_chain(
             vec![candidate("openai", provider)],
             None,
-            &db,
+            db.as_ref(),
             &emit,
             &input,
             &cancel,
             ChainOpts {
                 text: "how do I fix the capsule width?",
                 language: "en",
+                title: Some(TitleSidecar::new(Arc::clone(&db), titled)),
                 ..ChainOpts::default()
             },
         )
         .await
         .unwrap();
 
+        // The sidecar runs detached — poll for the ping like the
+        // memory hook's `changed`.
+        for _ in 0..40 {
+            if !titled_ids.lock().is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
         let sid = db.session_active_id("ask").unwrap().unwrap();
+        assert_eq!(titled_ids.lock().as_slice(), &[sid]);
         assert_eq!(
             db.session_title(sid).unwrap().as_deref(),
             Some("Capsule width fix")
         );
 
         // The sidecar gets the raw question, not the context-wrapped
-        // wire text.
+        // wire text — the ping already proves the call recorded.
         let calls = calls.lock();
         assert_eq!(calls.len(), 2);
         assert_eq!(calls[1][0].role, Role::System);
         assert_request_text(&calls[1][1], "how do I fix the capsule width?");
-        drop(calls);
-
-        // The ping lands after `idle` — an open history list re-reads.
-        let got = events.lock().clone();
-        assert_eq!(
-            got[got.len() - 2..],
-            [
-                ev(EV_STATE, json!({"state": "idle"})),
-                ev(EV_SESSIONS_CHANGED, json!({"id": sid})),
-            ]
-        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// An already-titled session never retitles — the NULL guard
-    /// short-circuits before the provider sees a sidecar call.
+    /// An already-titled session never retitles — `schedule`'s
+    /// still-untitled check short-circuits before a task even spawns.
     #[tokio::test]
     async fn send_chain_never_retitles_a_named_session() {
         let dir = tmp_dir();
-        let db = Db::at(dir.join("marvis.db")).unwrap();
+        let db = Arc::new(Db::at(dir.join("marvis.db")).unwrap());
         let sid = db.session_get_or_create_active("ask").unwrap();
         assert!(db.session_set_title(sid, "already named").unwrap());
         let provider = MockProvider::new(vec![Behavior::Tokens(vec!["ok".into()])]);
         let calls = provider.calls();
-        let (events, emit) = recorder();
+        let (_events, emit) = recorder();
         let reader = screen_read::ScreenReader::new();
         let ring = Mutex::new(RingBuffer::new(4, 1 << 20));
         let input = input(&reader, &ring);
         let cancel = CancellationToken::new();
+        let titled = Arc::new(AtomicBool::new(false));
+        let titled_cb: Arc<dyn Fn(i64) + Send + Sync> = {
+            let titled = Arc::clone(&titled);
+            Arc::new(move |_| titled.store(true, Ordering::SeqCst))
+        };
 
         send_chain(
             vec![candidate("openai", provider)],
             None,
-            &db,
+            db.as_ref(),
             &emit,
             &input,
             &cancel,
             ChainOpts {
                 text: "q",
                 language: "en",
+                title: Some(TitleSidecar::new(Arc::clone(&db), titled_cb)),
                 ..ChainOpts::default()
             },
         )
         .await
         .unwrap();
 
+        // schedule() returned before spawning — synchronous, no settle.
         assert_eq!(calls.lock().len(), 1); // the answer only — no title call
         assert_eq!(
             db.session_title(sid).unwrap().as_deref(),
             Some("already named")
         );
-        assert!(events.lock().iter().all(|(n, _)| n != EV_SESSIONS_CHANGED));
+        assert!(!titled.load(Ordering::SeqCst));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// A failed title call writes nothing and emits nothing — the run
+    /// A failed title call writes nothing and pings nothing — the run
     /// is unaffected and the next send retries.
     #[tokio::test]
     async fn send_chain_title_failure_keeps_the_fallback() {
         let dir = tmp_dir();
-        let db = Db::at(dir.join("marvis.db")).unwrap();
+        let db = Arc::new(Db::at(dir.join("marvis.db")).unwrap());
         let provider = MockProvider::new(vec![
             Behavior::Tokens(vec!["ok".into()]),
             Behavior::Fail(LlmError::Auth),
         ]);
-        let (events, emit) = recorder();
+        let calls = provider.calls();
+        let (_events, emit) = recorder();
         let reader = screen_read::ScreenReader::new();
         let ring = Mutex::new(RingBuffer::new(4, 1 << 20));
         let input = input(&reader, &ring);
         let cancel = CancellationToken::new();
+        let titled = Arc::new(AtomicBool::new(false));
+        let titled_cb: Arc<dyn Fn(i64) + Send + Sync> = {
+            let titled = Arc::clone(&titled);
+            Arc::new(move |_| titled.store(true, Ordering::SeqCst))
+        };
 
         send_chain(
             vec![candidate("openai", provider)],
             None,
-            &db,
+            db.as_ref(),
             &emit,
             &input,
             &cancel,
             ChainOpts {
                 text: "q",
                 language: "en",
+                title: Some(TitleSidecar::new(Arc::clone(&db), titled_cb)),
                 ..ChainOpts::default()
             },
         )
         .await
         .unwrap();
+
+        // Wait out the detached sidecar's failed call.
+        for _ in 0..40 {
+            if calls.lock().len() >= 2 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
 
         let sid = db.session_active_id("ask").unwrap().unwrap();
         assert_eq!(db.session_title(sid).unwrap(), None);
@@ -2694,7 +2718,7 @@ use super::title::*;
             .find(|s| s.id == sid)
             .unwrap();
         assert_eq!(session.title.as_deref(), Some("q"));
-        assert!(events.lock().iter().all(|(n, _)| n != EV_SESSIONS_CHANGED));
+        assert!(!titled.load(Ordering::SeqCst));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

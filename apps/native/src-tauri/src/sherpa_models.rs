@@ -15,7 +15,6 @@ use tokio_util::sync::CancellationToken;
 use crate::paths;
 use crate::voice_models::{DownloadErrorPayload, VoiceDownloadError};
 
-pub const CATALOG_SOURCE: &str = "Hugging Face · csukuangfj + k2-fsa/sherpa-onnx";
 /// `sherpa:download-*` — mirrors `EV_SHERPA_*` in `src/lib/events.ts`.
 const EV_SHERPA_DOWNLOAD_PROGRESS: &str = "sherpa:download-progress";
 const EV_SHERPA_DOWNLOAD_ERROR: &str = "sherpa:download-error";
@@ -76,7 +75,6 @@ pub struct SherpaCatalogEntry {
     pub label: &'static str,
     pub description: &'static str,
     pub files: &'static [SherpaFileSpec],
-    pub source: &'static str,
     pub kind: SherpaModelKind,
 }
 
@@ -145,36 +143,32 @@ const CATALOG: [SherpaCatalogEntry; 4] = [
         id: SherpaModelId::SenseVoice,
         dirname: "sense-voice",
         label: "SenseVoice",
-        description: "Multilingual SenseVoice recognition (zh/en/ja/ko/yue) segmented by Silero VAD.",
+        description: "Transcribes Chinese, English, Japanese, Korean, and Cantonese.",
         files: SENSE_VOICE_FILES,
-        source: CATALOG_SOURCE,
         kind: SherpaModelKind::Stt,
     },
     SherpaCatalogEntry {
         id: SherpaModelId::SpeakerEmbedding,
         dirname: "speaker-id",
         label: "Speaker ID",
-        description: "Speaker embeddings for diarization — labels distinct voices in the transcript.",
+        description: "Recognizes different voices so each speaker gets a label.",
         files: SPEAKER_EMBEDDING_FILES,
-        source: CATALOG_SOURCE,
         kind: SherpaModelKind::SpeakerEmbedding,
     },
     SherpaCatalogEntry {
         id: SherpaModelId::PunctEn,
         dirname: "punct-en",
         label: "Punctuation (English)",
-        description: "English punctuation and capitalization — SenseVoice emits English in all caps; this restores normal casing and , . ? in English segments.",
+        description: "Restores English punctuation and capitalization.",
         files: PUNCT_EN_FILES,
-        source: CATALOG_SOURCE,
         kind: SherpaModelKind::Punctuation,
     },
     SherpaCatalogEntry {
         id: SherpaModelId::PunctZh,
         dirname: "punct-zh",
         label: "Punctuation (中文)",
-        description: "Chinese punctuation — SenseVoice drops ，。？ entirely in zh segments; this restores them in Chinese and mixed text.",
+        description: "Restores Chinese punctuation in Chinese and mixed text.",
         files: PUNCT_ZH_FILES,
-        source: CATALOG_SOURCE,
         kind: SherpaModelKind::Punctuation,
     },
 ];
@@ -274,7 +268,6 @@ pub struct SherpaInstalledModel {
     pub label: &'static str,
     pub description: &'static str,
     pub bytes: u64,
-    pub source: &'static str,
     pub kind: &'static str,
     pub installed: bool,
 }
@@ -410,7 +403,6 @@ impl SherpaModelManager {
                     label: e.label,
                     description: e.description,
                     bytes: entry_bytes(e),
-                    source: e.source,
                     kind: e.kind.as_str(),
                     installed: entry_installed_at(&self.root, e),
                 })
@@ -928,7 +920,6 @@ mod tests {
                 label: "SenseVoice",
                 description: "d",
                 bytes: 1,
-                source: CATALOG_SOURCE,
                 kind: "stt",
                 installed: true,
             }],

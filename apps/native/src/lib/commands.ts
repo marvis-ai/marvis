@@ -419,7 +419,6 @@ export interface VoiceModelCatalogEntry {
   label: string;
   description: string;
   bytes: number;
-  source: string;
 }
 
 export interface WhisperInstalledModel {
@@ -469,7 +468,6 @@ export interface SherpaInstalledModel {
   label: string;
   description: string;
   bytes: number;
-  source: string;
   /** What the model is for — only `stt` entries may be selected as the
    * transcription model; `speaker-embedding` feeds diarization and
    * `punctuation` restores casing/punctuation in sherpa transcripts. */

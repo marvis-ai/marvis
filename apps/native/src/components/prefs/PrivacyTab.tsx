@@ -6,7 +6,7 @@
  * deletes.
  */
 import { useRef, useState } from 'react';
-import { sessionDelete, sessionList } from '../../lib/commands';
+import { sessionDelete, sessionList } from '@/lib/commands';
 import {
   BTN_DANGER,
   BTN_LG,
@@ -17,7 +17,7 @@ import {
   PRF_ROWS,
   SUB,
   cn,
-} from '../../lib/classes';
+} from '@/lib/classes';
 import { PrefRow } from './bits';
 
 const CONFIRM_MS = 4000;

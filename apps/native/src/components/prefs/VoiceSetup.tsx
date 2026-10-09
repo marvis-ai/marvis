@@ -547,9 +547,9 @@ export const VoiceSetup = ({
               if (e.target.value === 'sherpa') void refreshSherpa();
             }}
             aria-label='Speech-to-text provider'>
-            <option value='deepgram'>Deepgram</option>
             <option value='whisper'>Whisper (local)</option>
             <option value='sherpa'>Sherpa (local)</option>
+            <option value='deepgram'>Deepgram</option>
           </select>
         </div>
         {provider === 'deepgram' ? (

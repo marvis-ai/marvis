@@ -18,7 +18,6 @@ pub const HUGGING_FACE_PREFIX: &str = "https://huggingface.co/ggerganov/whisper.
 /// `whisper:download-*` — mirrors `EV_WHISPER_*` in `src/lib/events.ts`.
 const EV_WHISPER_DOWNLOAD_PROGRESS: &str = "whisper:download-progress";
 const EV_WHISPER_DOWNLOAD_ERROR: &str = "whisper:download-error";
-const CATALOG_SOURCE: &str = "Hugging Face · ggerganov/whisper.cpp";
 const SIZE_TOLERANCE_PERCENT: u64 = 10;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,7 +54,6 @@ pub struct VoiceModelInfo {
     pub label: &'static str,
     pub description: &'static str,
     pub bytes: u64,
-    pub source: &'static str,
 }
 #[derive(Debug, Clone, Serialize)]
 pub struct VoiceModelsCatalog {
@@ -67,7 +65,7 @@ const CATALOG: [ModelCatalogEntry; 3] = [
         id: ModelId::Tiny,
         filename: "ggml-tiny.bin",
         label: "Tiny",
-        description: "Smallest Whisper model with the fastest transcription.",
+        description: "Fastest transcription with the smallest download.",
         url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin",
         bytes: 75 * 1024 * 1024,
         sha1: "bd577a113a864445d4c299885e0cb97d4ba92b5f",
@@ -76,7 +74,7 @@ const CATALOG: [ModelCatalogEntry; 3] = [
         id: ModelId::Base,
         filename: "ggml-base.bin",
         label: "Base",
-        description: "Balanced Whisper model for speed and accuracy.",
+        description: "Balanced speed and accuracy — the everyday pick.",
         url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin",
         bytes: 142 * 1024 * 1024,
         sha1: "465707469ff3a37a2b9b8d8f89f2f99de7299dac",
@@ -85,7 +83,7 @@ const CATALOG: [ModelCatalogEntry; 3] = [
         id: ModelId::Small,
         filename: "ggml-small.bin",
         label: "Small",
-        description: "More accurate Whisper model with a larger footprint.",
+        description: "Most accurate transcription — the largest download.",
         url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin",
         bytes: 466 * 1024 * 1024,
         sha1: "55356645c2b361a969dfd0ef2c5a50d530afd8d5",
@@ -115,7 +113,6 @@ impl From<&ModelCatalogEntry> for VoiceModelInfo {
             label: e.label,
             description: e.description,
             bytes: e.bytes,
-            source: CATALOG_SOURCE,
         }
     }
 }
@@ -134,7 +131,6 @@ pub struct VoiceModelCatalogPayload {
     pub label: &'static str,
     pub description: &'static str,
     pub bytes: u64,
-    pub source: &'static str,
 }
 impl From<&ModelCatalogEntry> for VoiceModelCatalogPayload {
     fn from(e: &ModelCatalogEntry) -> Self {
@@ -144,7 +140,6 @@ impl From<&ModelCatalogEntry> for VoiceModelCatalogPayload {
             label: e.label,
             description: e.description,
             bytes: e.bytes,
-            source: CATALOG_SOURCE,
         }
     }
 }
@@ -646,7 +641,7 @@ mod tests {
     #[test]
     fn catalog_and_status_dtos_have_safe_documented_shapes() {
         let catalog = serde_json::to_value(VoiceModelCatalogPayload::from(&catalog()[0])).unwrap();
-        assert_eq!(catalog["source"], CATALOG_SOURCE);
+        assert!(catalog.get("source").is_none());
         assert!(catalog.get("url").is_none());
         assert!(catalog.get("sha1").is_none());
 

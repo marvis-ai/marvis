@@ -1,6 +1,6 @@
 [package]
 name = "Marvis"
-version = "0.1.2"
+version = "0.1.3"
 description = "Private and Personal AI for all on desktop"
 authors = ["Allen Chan <chenillen@gmail.com>"]
 license = "Apache-2.0"

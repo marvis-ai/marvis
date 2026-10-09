@@ -22,7 +22,7 @@
     },
     "apps/native": {
       "name": "@marvis/native",
-      "version": "0.1.2",
+      "version": "0.1.3",
       "dependencies": {
         "@gsap/react": "^2.1.2",
         "@marvis/ui": "workspace:*",

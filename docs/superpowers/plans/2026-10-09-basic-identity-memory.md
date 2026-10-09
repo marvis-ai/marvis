@@ -1,29 +1,59 @@
 # Basic Identity Memory Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:executing-plans` to implement this plan task-by-task. Steps use checkbox syntax and must be completed in order.
+> **For agentic workers:** REQUIRED SUB-SKILL:
+> Use `superpowers:executing-plans` to implement this plan task-by-task.
+> Steps use checkbox syntax and must be completed in order.
 
-**Goal:** Add an explicitly enabled, locally stored, editable identity/preferences profile that is extracted from new Ask messages and injected into future Ask requests.
+**Goal:** Add an explicitly enabled, locally stored, editable
+identity/preferences profile. Extract it from new Ask messages and inject it
+into future Ask requests.
 
-**Architecture:** Extend Marvis's existing Rust + SQLite core with a structured `memories` table and a dedicated `MemoryService`. A user-selected Memory LLM returns strict JSON facts in a serialized background job; Ask reads the compact profile before each run, while typed Tauri commands expose configuration and fact editing to a new Preferences tab.
+**Architecture:** Extend Marvis's existing Rust + SQLite core with a structured
+`memories` table and a dedicated `MemoryService`. A user-selected Memory LLM
+returns strict JSON facts in a serialized background job. Ask reads the compact
+profile before each run, while typed Tauri commands expose configuration and
+fact editing to a new Preferences tab.
 
-**Tech Stack:** Rust 2021, Tauri 2, `rusqlite` with bundled SQLite, Tokio, existing `llm::Provider` adapters, serde/serde_json, React 19, TypeScript, Bun test runner, happy-dom.
+**Tech Stack:** Rust 2021, Tauri 2, `rusqlite` with bundled SQLite, Tokio,
+existing `llm::Provider` adapters, serde/serde_json, React 19, TypeScript, Bun
+test runner, happy-dom.
 
 ## Global Constraints
 
-- Memory storage remains in `~/.marvis/marvis.db`; do not add a vector database, embedding model, Chroma, Supermemory server, Bun/Node worker, or `mem0-rs` dependency.
-- Automatic extraction reads only new Ask user messages; do not read screen frames, image attachments, Listen transcripts, assistant replies, or existing sessions for backfill.
-- `[memory].enabled = false` is the default and the consent boundary; provider/model are independent from the Ask failover chain.
-- The Memory LLM form may suggest the current Ask provider/model, but must not enable extraction or silently follow future Ask-provider changes.
-- A hosted Memory LLM is allowed only after explicit enablement; the UI must explain that storage is local but selected source text is sent to that provider. Ollama is never selected automatically.
-- Facts are limited to `identity` and `preference`; attributes are lowercase ASCII `[a-z0-9_]`, `1..=64` characters; values are at most `500` Unicode scalar values; one extraction response contributes at most `8` facts.
-- Ask profile rendering is capped at `32` rows and `4,000` UTF-8 bytes and is passed as untrusted `<user_profile>` data in the system message.
-- Automatic writes never overwrite a `source = manual` row and the model cannot request deletion; users edit/delete through Settings.
-- Extraction, parsing, storage, and event failures are non-fatal to Ask. Never surface provider keys, raw request bodies, paths, or panic text.
-- Serialize background extraction with Tokio synchronization; never hold a `parking_lot` or `std` mutex guard across `.await`.
-- All webview Tauri calls must use typed wrappers in `apps/native/src/lib/commands.ts` and `useTauriEvent` in `apps/native/src/lib/events.ts`.
-- Use Bun for webview tests and scripts. New React components use arrow functions and named exports. New webview tests live under `apps/native/src/__tests__/`.
-- Preserve icon-suffixed `lucide-react` exports through the `@marvis/ui` barrel.
-- Follow TDD: every production behavior below starts with a failing test, then minimal implementation, then green verification.
+- Memory storage remains in `~/.marvis/marvis.db`; do not add a vector database,
+  embedding model, Chroma, Supermemory server, Bun/Node worker, or `mem0-rs`
+  dependency.
+- Automatic extraction reads only new Ask user messages; do not read screen
+  frames, image attachments, Listen transcripts, assistant replies, or existing
+  sessions for backfill.
+- `[memory].enabled = false` is the default and the consent boundary;
+  provider/model are independent from the Ask failover chain.
+- The Memory LLM form may suggest the current Ask provider/model, but must not
+  enable extraction or silently follow future Ask-provider changes.
+- A hosted Memory LLM is allowed only after explicit enablement; the UI must
+  explain that storage is local but selected source text is sent to that
+  provider. Ollama is never selected automatically.
+- Facts are limited to `identity` and `preference`; attributes are lowercase
+  ASCII `[a-z0-9_]`, `1..=64` characters; values are at most `500` Unicode
+  scalar values; one extraction response contributes at most `8` facts.
+- Ask profile rendering is capped at `32` rows and `4,000` UTF-8 bytes and is
+  passed as untrusted `<user_profile>` data in the system message.
+- Automatic writes never overwrite a `source = manual` row and the model cannot
+  request deletion; users edit/delete through Settings.
+- Extraction, parsing, storage, and event failures are non-fatal to Ask. Never
+  surface provider keys, raw request bodies, paths, or panic text.
+- Serialize background extraction with Tokio synchronization; never hold a
+  `parking_lot` or `std` mutex guard across `.await`.
+- All webview Tauri calls must use typed wrappers in
+  `apps/native/src/lib/commands.ts` and `useTauriEvent` in
+  `apps/native/src/lib/events.ts`.
+- Use Bun for webview tests and scripts. New React components use arrow
+  functions and named exports. New webview tests live under
+  `apps/native/src/__tests__/`.
+- Preserve icon-suffixed `lucide-react` exports through the `@marvis/ui`
+  barrel.
+- Follow TDD: every production behavior below starts with a failing test, then
+  minimal implementation, then green verification.
 
 ---
 
@@ -70,12 +100,14 @@
 **Interfaces:**
 
 - Produces `Config.memory: MemoryPrefs`.
-- Produces `apply_memory_config(memory: &mut MemoryPrefs, key: &str, value: &serde_json::Value) -> Result<bool, String>`.
+- Produces `apply_memory_config(memory: &mut MemoryPrefs, key: &str,`
+  `value: &serde_json::Value) -> Result<bool, String>`.
 - Accepted keys are `memory.enabled`, `memory.provider`, and `memory.model`.
 
 - [ ] **Step 1: Write the failing config tests**
 
-Add these tests to `apps/native/src-tauri/src/config/tests.rs` before adding the production types:
+Add these tests to
+`apps/native/src-tauri/src/config/tests.rs` before adding the production types:
 
 ```rust
 #[test]
@@ -299,12 +331,16 @@ git commit -m "feat: add dedicated memory configuration"
 
 **Interfaces:**
 
-- Produces `Memory` with serialized fields `id`, `category`, `attribute`, `value`, `confidence`, `basis`, `source`, `source_session_id`, `source_message_id`, `created_at`, and `updated_at`.
+- Produces `Memory` with serialized fields `id`, `category`, `attribute`,
+  `value`, `confidence`, `basis`, `source`, `source_session_id`,
+  `source_message_id`, `created_at`, and `updated_at`.
 - Produces `MemoryCandidate` for validated extractor output.
 - Produces `Db::memory_profile() -> anyhow::Result<Vec<Memory>>`.
-- Produces `Db::memory_update(id: i64, value: &str) -> anyhow::Result<Option<Memory>>`.
+- Produces `Db::memory_update(id: i64, value: &str)` returning
+  `anyhow::Result<Option<Memory>>`.
 - Produces `Db::memory_delete(id: i64) -> anyhow::Result<()>`.
-- Produces `Db::memory_apply(session_id: Option<i64>, message_id: Option<i64>, facts: &[MemoryCandidate]) -> anyhow::Result<usize>`.
+- Produces `Db::memory_apply(session_id: Option<i64>, message_id: Option<i64>,`
+  `facts: &[MemoryCandidate]) -> anyhow::Result<usize>`.
 
 - [ ] **Step 1: Write failing storage tests**
 
@@ -643,7 +679,8 @@ git commit -m "feat: add local memory storage"
 - Produces `parse_response(text: &str) -> anyhow::Result<Vec<MemoryCandidate>>`.
 - Produces `profile_prompt(rows: &[Memory]) -> Option<String>`.
 - Produces `extraction_messages(existing: &[Memory], source_text: &str) -> Vec<ChatMessage>`.
-- Declares the `memory` module for the service implementation completed in Task 4.
+- Declares the `memory` module; its service implementation is completed in
+  Task 4.
 
 - [ ] **Step 1: Write failing parser and profile tests**
 
@@ -864,10 +901,17 @@ git add apps/native/src-tauri/src/lib.rs apps/native/src-tauri/src/memory
 
 - `MemoryService { gate: tokio::sync::Mutex<()> }`.
 - `MemoryService::new() -> Arc<MemoryService>`.
-- `MemoryService::extract_once(&self, provider: &dyn Provider, db: &Db, source_text: &str, session_id: Option<i64>, message_id: Option<i64>) -> anyhow::Result<usize>`.
-- `MemoryHook::new(service: Arc<MemoryService>, db: Arc<Db>, provider: Box<dyn Provider>, changed: Arc<dyn Fn() + Send + Sync>) -> MemoryHook`.
-- `MemoryHook::schedule(self, source_text: String, session_id: Option<i64>, message_id: Option<i64>)`.
-- `prepare_hook(config: &Config, keystore: &Keystore, db: Arc<Db>, service: Arc<MemoryService>, changed: Arc<dyn Fn() + Send + Sync>) -> Option<MemoryHook>`.
+- `MemoryService::extract_once(&self, provider: &dyn Provider, db: &Db,`
+  `source_text: &str, session_id: Option<i64>, message_id: Option<i64>)`
+  returns `anyhow::Result<usize>`.
+- `MemoryHook::new(service: Arc<MemoryService>, db: Arc<Db>,`
+  `provider: Box<dyn Provider>, changed: Arc<dyn Fn() + Send + Sync>)`
+  returns `MemoryHook`.
+- `MemoryHook::schedule(self, source_text: String, session_id: Option<i64>,`
+  `message_id: Option<i64>)`.
+- `prepare_hook(config: &Config, keystore: &Keystore, db: Arc<Db>,`
+  `service: Arc<MemoryService>, changed: Arc<dyn Fn() + Send + Sync>)`
+  returns `Option<MemoryHook>`.
 
 - [ ] **Step 1: Write a failing provider/service test**
 
@@ -1085,9 +1129,12 @@ git commit -m "feat: run memory extraction in the background"
 
 **Interfaces:**
 
-- Produces `prompts::live_system_prompt_with_profile(language, instruction, profile)`.
-- Extends `build_messages(..., instruction, profile)` with a final `Option<&str>` argument.
-- `send_chain` loads the profile once and passes it through all provider/failover paths.
+- Produces `prompts::live_system_prompt_with_profile(language, instruction,`
+  `profile)`.
+- Extends `build_messages(..., instruction, profile)` with a final
+  `Option<&str>` argument.
+- `send_chain` loads the profile once and passes it through all
+  provider/failover paths.
 
 - [ ] **Step 1: Write failing profile prompt and Ask tests**
 
@@ -1222,7 +1269,8 @@ git commit -m "feat: inject local user profile into Ask"
 **Interfaces:**
 
 - Extends `ChainOpts` with `memory: Option<MemoryHook>`.
-- `send_chain` schedules the hook only in `CandidateOutcome::Done` after the assistant row is persisted.
+- `send_chain` schedules the hook only in `CandidateOutcome::Done` after
+  the assistant row is persisted.
 - Cancelled or exhausted runs never schedule extraction.
 
 - [ ] **Step 1: Write a failing successful-send scheduling test**

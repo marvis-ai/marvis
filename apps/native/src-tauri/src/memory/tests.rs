@@ -3,6 +3,7 @@ use std::future::Future;
 use std::pin::Pin;
 
 use crate::llm::{ChatMessage, ContentPart, LlmError, Provider, Role, StreamReply};
+use crate::storage::Memory;
 
 fn assert_request_contains(message: &ChatMessage, expected: &str) {
     let text = message

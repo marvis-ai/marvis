@@ -33,7 +33,7 @@ use std::sync::Arc;
 use crate::config::Config;
 use crate::keystore::Keystore;
 use crate::llm::{make_provider, Provider, ProviderKind};
-use crate::storage::{Db, Memory, MemoryCandidate};
+use crate::storage::{Db, MemoryCandidate};
 
 /// One extraction response contributes at most this many facts.
 const MAX_FACTS: usize = 8;
@@ -135,11 +135,6 @@ pub(crate) fn parse_response(text: &str) -> anyhow::Result<Vec<MemoryCandidate>>
     facts.truncate(MAX_FACTS);
     Ok(facts)
 }
-
-/// Broadcast after `memory_apply` changes rows — the settings Memory
-/// tab refetches on it. Declared here (the domain module) like the ask
-/// module's `EV_*` consts; commands emit it too.
-pub(crate) const EV_MEMORY_CHANGED: &str = "memory:changed";
 
 /// Serialized extraction. `gate` is a `tokio::sync::Mutex` — the guard
 /// is deliberately held across the provider `.await` so overlapping

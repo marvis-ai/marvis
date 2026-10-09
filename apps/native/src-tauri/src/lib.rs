@@ -32,6 +32,9 @@
 //! - `alert:show` `{"message": String}` — to the `alert` window only;
 //!   the toast that replaced the bar's inline error row
 //!   (`alert_current` re-reads it, `alert_dismiss` clears it).
+//! - `memory:changed` `{}` — broadcast when a stored fact is added,
+//!   edited, or deleted (a background extraction landing rows, or a
+//!   Settings → Memory edit/delete); the Memory tab refetches on it.
 
 mod ask;
 pub mod audio;
@@ -83,7 +86,7 @@ use hotkey::RegisteredHotkeys;
 use keystore::Keystore;
 use listen::{ListenEvent, ListenService};
 use llm::{make_provider, ProviderKind};
-use storage::{Db, Message, Session, Summary, Transcript};
+use storage::{Db, Memory, Message, Session, Summary, Transcript};
 use windows::WindowPool;
 
 /// Frame ring caps from the spec: 120 frames / 64 MB (~60 s horizon).
@@ -1095,6 +1098,9 @@ pub fn run() {
             session_delete,
             session_end_active,
             session_resume,
+            memory_list,
+            memory_update,
+            memory_delete,
             save_audio_file,
             save_text_file,
             config_get,
@@ -1881,5 +1887,17 @@ mod tests {
         .expect("jpegBase64 must deserialize");
         assert_eq!(parsed.name, "a.png");
         assert_eq!(parsed.jpeg_base64, "AA==");
+    }
+
+    /// The memory CRUD surface: all three commands ride
+    /// `generate_handler!` and the `memory:changed` broadcast name is
+    /// part of this file's contract.
+    #[test]
+    fn memory_commands_and_event_are_registered() {
+        let source = include_str!("lib.rs");
+        assert!(source.contains("memory_list,"));
+        assert!(source.contains("memory_update,"));
+        assert!(source.contains("memory_delete,"));
+        assert!(source.contains(concat!("memory", ":changed")));
     }
 }

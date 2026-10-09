@@ -3,7 +3,7 @@ import { expect, test } from 'bun:test';
 import { GlobalWindow } from 'happy-dom';
 import { act, createRef } from 'react';
 import { createRoot } from 'react-dom/client';
-import { SessionPlayer } from '../../../components/listen/SessionPlayer';
+import { SessionPlayer } from '@/components/listen/SessionPlayer';
 
 test('playback controls follow metadata, playback, external seeks, slider input, and source changes', async () => {
   const win = new GlobalWindow();

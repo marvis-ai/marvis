@@ -151,8 +151,7 @@ impl Provider for ScriptedProvider {
 
 #[tokio::test]
 async fn extraction_stores_valid_facts_and_provider_failure_keeps_db_unchanged() {
-    let dir =
-        std::env::temp_dir().join(format!("marvis-memory-test-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("marvis-memory-test-{}", std::process::id()));
     let db = Db::at(dir.join("marvis.db")).unwrap();
     let service = MemoryService::new();
     let provider = ScriptedProvider::reply(
@@ -169,20 +168,17 @@ async fn extraction_stores_valid_facts_and_provider_failure_keeps_db_unchanged()
     assert_eq!(db.memory_profile().unwrap()[0].attribute, "name");
 
     let failing = ScriptedProvider::error();
-    assert!(
-        service
-            .extract_once(&failing, &db, "I prefer bullets.", None, None)
-            .await
-            .is_err()
-    );
+    assert!(service
+        .extract_once(&failing, &db, "I prefer bullets.", None, None)
+        .await
+        .is_err());
     assert_eq!(db.memory_profile().unwrap().len(), 1);
     let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]
 fn prepare_hook_uses_memory_selection_and_not_the_ask_failover_order() {
-    let dir =
-        std::env::temp_dir().join(format!("marvis-memory-config-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("marvis-memory-config-{}", std::process::id()));
     let db = Arc::new(Db::at(dir.join("marvis.db")).unwrap());
     let mut config = Config::default();
     config.memory.enabled = true;
@@ -194,7 +190,13 @@ fn prepare_hook_uses_memory_selection_and_not_the_ask_failover_order() {
 
     // Disabled in the chain and absent from `order` — yet the hook must
     // still resolve, because the memory pick is independent.
-    let hook = prepare_hook(&config, &keystore, db, MemoryService::new(), Arc::new(|| {}));
+    let hook = prepare_hook(
+        &config,
+        &keystore,
+        db,
+        MemoryService::new(),
+        Arc::new(|| {}),
+    );
     assert!(hook.is_some());
     let _ = std::fs::remove_dir_all(dir);
 }

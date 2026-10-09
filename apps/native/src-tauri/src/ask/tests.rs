@@ -3060,9 +3060,7 @@ async fn failed_send_never_schedules_memory_extraction() {
     let input = input(&reader, &ring);
     let (_events, emit) = recorder();
     let changed = Arc::new(AtomicBool::new(false));
-    let memory_provider = MockProvider::new(vec![Behavior::Tokens(vec![
-        r#"{"facts":[]}"#.into(),
-    ])]);
+    let memory_provider = MockProvider::new(vec![Behavior::Tokens(vec![r#"{"facts":[]}"#.into()])]);
     let memory_calls = memory_provider.calls();
     let hook = MemoryHook::new(
         MemoryService::new(),

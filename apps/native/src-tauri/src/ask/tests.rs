@@ -137,6 +137,7 @@ use super::title::*;
             None,
             "en",
             None,
+            None,
         );
         let system = match &messages[0].content[0] {
             ContentPart::Text(text) => text,
@@ -169,6 +170,7 @@ use super::title::*;
             None,
             "en",
             None,
+            None,
         );
         let parts = &messages[1].content;
         assert!(matches!(&parts[0], ContentPart::Text(t) if t.contains("what are these?")));
@@ -183,9 +185,32 @@ use super::title::*;
     #[test]
     fn build_messages_without_images_keeps_single_text_part() {
         let messages =
-            build_messages(&[], "", "q", &[], None, None, None, "en", None);
+            build_messages(&[], "", "q", &[], None, None, None, "en", None, None);
         assert_eq!(messages[1].content.len(), 1);
         assert_request_text(&messages[1], "q");
+    }
+
+    /// The memory profile block lands in the SYSTEM message as untrusted
+    /// data — the user's request stays the bare text in the user turn.
+    #[test]
+    fn build_messages_puts_profile_in_system_and_keeps_request_in_user_message() {
+        let messages = build_messages(
+            &[],
+            "",
+            "What should I do?",
+            &[],
+            None,
+            None,
+            None,
+            "en",
+            None,
+            Some("<user_profile>\n- preference/response_style: concise\n</user_profile>"),
+        );
+        let system = text_of(&messages[0]);
+        let request = text_of(&messages[1]);
+        assert!(system.contains("<user_profile>"));
+        assert!(system.contains("concise"));
+        assert_eq!(request, "What should I do?");
     }
 
     fn test_frame() -> Frame {
@@ -250,6 +275,14 @@ use super::title::*;
         // These tests have no listen session or vision read, so the
         // turn is the bare request — no context blocks.
         assert_eq!(text, request);
+    }
+
+    /// The first text part of a message — panics on image-only content.
+    fn text_of(message: &ChatMessage) -> &str {
+        match &message.content[0] {
+            ContentPart::Text(text) => text,
+            _ => panic!("expected a text part"),
+        }
     }
 
     #[tokio::test]

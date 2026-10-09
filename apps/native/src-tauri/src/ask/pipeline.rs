@@ -178,6 +178,16 @@ pub(crate) async fn send_chain(
     let listen_id =
         listen_id.or_else(|| session_id.and_then(|sid| db.session_listen_id(sid).ok().flatten()));
     let listen_history = load_listen_context(db, listen_id);
+    // The memory profile snapshot for this run — loaded once, shared by
+    // every candidate/retry. A storage hiccup degrades to `None` (the
+    // plain prompt); it must never fail the ask.
+    let memory_profile = match db.memory_profile() {
+        Ok(rows) => crate::memory::profile_prompt(&rows),
+        Err(error) => {
+            log::warn!("ask: memory profile load failed: {error}");
+            None
+        }
+    };
     let mut user_images: Vec<Vec<u8>> = Vec::new();
     // The run's user-turn attachments — the `loading` payload advertises
     // them so the card/resync renders the persisted message correctly.
@@ -334,6 +344,7 @@ pub(crate) async fn send_chain(
             cancel,
             language,
             instruction,
+            memory_profile.as_deref(),
         )
         .await
         {

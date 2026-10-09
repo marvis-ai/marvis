@@ -83,7 +83,7 @@ use crate::config::Config;
 use crate::keystore::Keystore;
 use crate::llm::{ChatMessage, ContentPart, LlmError, Provider, Role, StreamReply, TokenUsage};
 use crate::memory::{MemoryHook, MemoryService};
-use crate::prompts::{live_system_prompt_with, live_user_prompt};
+use crate::prompts::{live_system_prompt_with_profile, live_user_prompt};
 use crate::screen_read;
 use crate::storage::{Db, MessageAttachment, MessageMeta, NewAttachment, Transcript};
 use crate::windows::{WindowPool, BAR_LABEL};

@@ -82,6 +82,7 @@ use crate::capture::{Frame, RingBuffer};
 use crate::config::Config;
 use crate::keystore::Keystore;
 use crate::llm::{ChatMessage, ContentPart, LlmError, Provider, Role, StreamReply, TokenUsage};
+use crate::memory::{MemoryHook, MemoryService};
 use crate::prompts::{live_system_prompt_with, live_user_prompt};
 use crate::screen_read;
 use crate::storage::{Db, MessageAttachment, MessageMeta, NewAttachment, Transcript};
@@ -170,6 +171,9 @@ pub struct Deps<'a> {
     pub reader: Arc<screen_read::ScreenReader>,
     /// `state.capture` is live — ring frames are fresh.
     pub capture_running: bool,
+    /// The consent-gated extraction service — Arc'd because the
+    /// scheduled `MemoryHook` outlives this borrow.
+    pub memory: Arc<MemoryService>,
     pub keystore: &'a Mutex<Keystore>,
     pub config: &'a Mutex<Config>,
     pub pool: &'a Mutex<WindowPool>,

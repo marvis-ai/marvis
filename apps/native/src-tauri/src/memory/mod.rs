@@ -28,9 +28,12 @@ mod tests;
 pub(crate) use prompt::*;
 
 use std::collections::HashSet;
+use std::sync::Arc;
 
-use crate::llm::{ChatMessage, ContentPart, Role};
-use crate::storage::{Memory, MemoryCandidate};
+use crate::config::Config;
+use crate::keystore::Keystore;
+use crate::llm::{make_provider, Provider, ProviderKind};
+use crate::storage::{Db, Memory, MemoryCandidate};
 
 /// One extraction response contributes at most this many facts.
 const MAX_FACTS: usize = 8;
@@ -131,4 +134,138 @@ pub(crate) fn parse_response(text: &str) -> anyhow::Result<Vec<MemoryCandidate>>
     }
     facts.truncate(MAX_FACTS);
     Ok(facts)
+}
+
+/// Broadcast after `memory_apply` changes rows — the settings Memory
+/// tab refetches on it. Declared here (the domain module) like the ask
+/// module's `EV_*` consts; commands emit it too.
+pub(crate) const EV_MEMORY_CHANGED: &str = "memory:changed";
+
+/// Serialized extraction. `gate` is a `tokio::sync::Mutex` — the guard
+/// is deliberately held across the provider `.await` so overlapping
+/// successful asks can't interleave a read-modify-write on the same
+/// facts (and a burst of replies can't fan out duplicate provider calls).
+pub(crate) struct MemoryService {
+    gate: tokio::sync::Mutex<()>,
+}
+
+impl MemoryService {
+    pub(crate) fn new() -> Arc<Self> {
+        Arc::new(Self {
+            gate: tokio::sync::Mutex::new(()),
+        })
+    }
+
+    /// One extraction pass over `source_text` (the new Ask user message
+    /// — never anything else). Loads the current profile for the
+    /// prompt, calls the dedicated provider, strictly parses, and
+    /// upserts. Returns the number of rows changed; `0` for a clean
+    /// empty `facts` list (no db write, no event).
+    pub(crate) async fn extract_once(
+        &self,
+        provider: &dyn Provider,
+        db: &Db,
+        source_text: &str,
+        session_id: Option<i64>,
+        message_id: Option<i64>,
+    ) -> anyhow::Result<usize> {
+        let _permit = self.gate.lock().await;
+        let existing = db.memory_profile()?;
+        let messages = extraction_messages(&existing, source_text);
+        let mut on_token = |_token: &str| {};
+        let reply = provider.stream_chat(&messages, &mut on_token).await?;
+        let facts = parse_response(&reply.full)?;
+        Ok(db.memory_apply(session_id, message_id, &facts)?)
+    }
+}
+
+/// The scheduled extraction job handed to `send_chain` — fully owned
+/// (Arc'd service/db, boxed provider, owned callback) so nothing
+/// borrowed from `AppState`/config crosses the spawn boundary.
+pub(crate) struct MemoryHook {
+    service: Arc<MemoryService>,
+    db: Arc<Db>,
+    provider: Box<dyn Provider>,
+    changed: Arc<dyn Fn() + Send + Sync>,
+}
+
+impl MemoryHook {
+    pub(crate) fn new(
+        service: Arc<MemoryService>,
+        db: Arc<Db>,
+        provider: Box<dyn Provider>,
+        changed: Arc<dyn Fn() + Send + Sync>,
+    ) -> Self {
+        Self {
+            service,
+            db,
+            provider,
+            changed,
+        }
+    }
+
+    /// Fire-and-forget: extraction runs off the ask path, failures only
+    /// log (never surfaced to the ask UI), and `changed` fires only when
+    /// rows actually changed.
+    pub(crate) fn schedule(
+        self,
+        source_text: String,
+        session_id: Option<i64>,
+        message_id: Option<i64>,
+    ) {
+        let Self {
+            service,
+            db,
+            provider,
+            changed,
+        } = self;
+        tauri::async_runtime::spawn(async move {
+            match service
+                .extract_once(
+                    provider.as_ref(),
+                    db.as_ref(),
+                    &source_text,
+                    session_id,
+                    message_id,
+                )
+                .await
+            {
+                Ok(changed_rows) if changed_rows > 0 => changed(),
+                Ok(_) => {}
+                Err(error) => log::warn!("memory extraction skipped: {error}"),
+            }
+        });
+    }
+}
+
+/// Resolve the configured Memory LLM into a runnable hook. `None` unless
+/// `[memory].enabled` AND the pick is usable — a known provider, a key
+/// where the provider requires one, `compat.base_url` for `compatible`,
+/// and a non-empty model. `providers.order`/`disabled` are NOT consulted:
+/// this selection is independent of the Ask failover chain by design.
+pub(crate) fn prepare_hook(
+    config: &Config,
+    keystore: &Keystore,
+    db: Arc<Db>,
+    service: Arc<MemoryService>,
+    changed: Arc<dyn Fn() + Send + Sync>,
+) -> Option<MemoryHook> {
+    if !config.memory.enabled {
+        return None;
+    }
+    let kind = ProviderKind::from_str(&config.memory.provider)?;
+    let api_key = keystore.key(kind.as_str());
+    if api_key.is_none() && !kind.key_optional() {
+        return None; // no key — can't extract
+    }
+    let base_url = Some(config.compat.base_url.clone()).filter(|u| !u.is_empty());
+    if kind == ProviderKind::Compatible && base_url.is_none() {
+        return None; // endpoint never configured
+    }
+    let model = config.memory.model.trim();
+    if model.is_empty() {
+        return None; // no model picked
+    }
+    let provider = make_provider(kind, api_key, model.to_string(), base_url);
+    Some(MemoryHook::new(service, db, provider, changed))
 }

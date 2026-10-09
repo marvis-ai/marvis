@@ -140,6 +140,9 @@ pub struct AppState {
     /// Restart inputs, nested under `capture` just like `capture_target`.
     capture_restart: Mutex<Option<CaptureRestart>>,
     ask: Arc<AskService>,
+    /// Serialized memory extraction (`[memory]`-gated) — shared with
+    /// every ask send's `MemoryHook` schedule. Owned like `ask`/`listen`.
+    memory: Arc<memory::MemoryService>,
     listen: Arc<ListenService>,
     dictation: Arc<DictationService>,
     /// Whisper CLI staged beside the executable by `externalBin`.
@@ -192,6 +195,7 @@ impl AppState {
             db: Arc::clone(&self.db),
             ring: Arc::clone(&self.ring),
             reader: Arc::clone(&self.screen_reader),
+            memory: Arc::clone(&self.memory),
             capture_running: self
                 .capture
                 .lock()
@@ -249,6 +253,7 @@ impl AppState {
             capture_target: Mutex::new(None),
             capture_restart: Mutex::new(None),
             ask: Arc::new(AskService::new()),
+            memory: memory::MemoryService::new(),
             listen: Arc::new(ListenService::new()),
             dictation: Arc::new(DictationService::new()),
             bundled_whisper: None,
@@ -939,6 +944,7 @@ pub fn run() {
                 capture_target: Mutex::new(None),
                 capture_restart: Mutex::new(None),
                 ask: Arc::new(AskService::new()),
+                memory: memory::MemoryService::new(),
                 listen: Arc::new(ListenService::new()),
                 dictation: Arc::new(DictationService::new()),
                 bundled_whisper,

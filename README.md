@@ -196,11 +196,12 @@ loops under your approval. The full plan lives in
   rolling summaries), dictation, hotkey rebinding, deep links, tray,
   onboarding wizard, Windows + Linux ports with CI bundles for all
   three OSes.
-- **Phase 0 — Ship-ready** — signed + notarized builds, auto-update,
+- **Phase X — Ship-ready** — signed + notarized builds, auto-update,
   opt-in crash reporting, package-manager distribution.
-- **Phase 1 — Deepen the loop** — session history polish, prompt
-  presets, Ollama model management, Gemini search grounding, transcript
-  export, WAV playback.
+- **Phase 1 — Deepen the loop — complete** — session history polish, prompt
+  presets, transcript export, session audio playback + WAV export, diarized
+  speaker renaming, and Ask image attachments. Remaining provider follow-ups:
+  Ollama model pull/remove management and Gemini Search grounding.
 - **Phases 2–4 — Memory, Skills & tools, Agentic loops** — local recall,
   guarded tool execution (MCP), and bounded observe→propose→approve
   cycles. All `exploring` — design discussions on GitHub issues first.

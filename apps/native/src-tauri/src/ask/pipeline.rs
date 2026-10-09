@@ -157,30 +157,20 @@ pub(crate) async fn send_chain(
     } else {
         (message_rows(db, session_id), false, None, Vec::new())
     };
-    // History turns replay their persisted attachments as image parts;
-    // a regenerate's turn images come from the re-asked row's managed
-    // files. Blocking reads run off the async executor; a missing or
-    // corrupt file is a user-facing attachment error — the prompt must
-    // never silently lose images.
-    let loaded = {
+    // Prior history degrades unreadable images to markers. Current-turn
+    // attachments are loaded strictly after the fresh screenshot is resolved.
+    let history = {
         let root = attachments_root.clone();
-        let regen_atts = regen_atts.clone();
-        tokio::task::spawn_blocking(
-            move || -> Result<(Vec<ChatMessage>, Vec<Vec<u8>>), String> {
-                let history = rows_to_history_at(&history_rows, &root)?;
-                let images = regen_atts
-                    .iter()
-                    .map(|a| read_attachment(&root, a))
-                    .collect::<Result<Vec<_>, _>>()?;
-                Ok((history, images))
-            },
-        )
-        .await
-    };
-    let (history, regen_images) = match loaded {
-        Ok(Ok(pair)) => pair,
-        Ok(Err(message)) => return Err(attachment_error(emit, message)),
-        Err(e) => return Err(attachment_error(emit, format!("Couldn't load attachments: {e}"))),
+        match tokio::task::spawn_blocking(move || rows_to_history_at(&history_rows, &root)).await {
+            Ok(Ok(history)) => history,
+            Ok(Err(message)) => return Err(attachment_error(emit, message)),
+            Err(e) => {
+                return Err(attachment_error(
+                    emit,
+                    format!("Couldn't load attachments: {e}"),
+                ))
+            }
+        }
     };
     // The effective doc link: the send's explicit one, else the resolved
     // session's stored link — a continued doc chat (or its retry) keeps
@@ -188,7 +178,7 @@ pub(crate) async fn send_chain(
     let listen_id =
         listen_id.or_else(|| session_id.and_then(|sid| db.session_listen_id(sid).ok().flatten()));
     let listen_history = load_listen_context(db, listen_id);
-    let mut user_images: Vec<Vec<u8>> = regen_images;
+    let mut user_images: Vec<Vec<u8>> = Vec::new();
     // The run's user-turn attachments — the `loading` payload advertises
     // them so the card/resync renders the persisted message correctly.
     let mut run_attachments: Vec<MessageAttachment> = regen_atts;
@@ -250,6 +240,30 @@ pub(crate) async fn send_chain(
         Some(ScreenMaterial::Frame(f)) => (Some(f), None, None),
         None => (None, None, None),
     };
+    if re_asked {
+        if shot.is_some() {
+            run_attachments.retain(|attachment| attachment.name != "screenshot.jpg");
+        }
+        let root = attachments_root.clone();
+        let attachments = run_attachments.clone();
+        user_images = match tokio::task::spawn_blocking(move || {
+            attachments
+                .iter()
+                .map(|a| read_attachment(&root, a))
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .await
+        {
+            Ok(Ok(images)) => images,
+            Ok(Err(message)) => return Err(attachment_error(emit, message)),
+            Err(e) => {
+                return Err(attachment_error(
+                    emit,
+                    format!("Couldn't load attachments: {e}"),
+                ))
+            }
+        };
+    }
     // An explicit screen ask's frame joins the run like a user-picked
     // image: persisted on the user row (history + retries reload it),
     // advertised on `loading`, and sent as pixels — the attachment

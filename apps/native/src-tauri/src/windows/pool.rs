@@ -129,7 +129,9 @@ impl WindowPool {
                         let Some(state) = app_resized.try_state::<crate::AppState>() else {
                             return;
                         };
-                        state.pool.lock().enforce_bar_bounds();
+                        if let Some(pool) = state.pool.try_lock() {
+                            pool.enforce_bar_bounds();
+                        };
                     }
                     // An unfocused (`/`-typed) palette belongs to the
                     // composer — the bar losing focus (another app)

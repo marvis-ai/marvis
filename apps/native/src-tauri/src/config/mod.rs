@@ -89,8 +89,10 @@ impl Config {
         }
         self.providers.order = order;
 
-        self.providers.disabled.retain(|id| known(id));
-        self.providers.disabled.dedup();
+        let mut seen = std::collections::HashSet::new();
+        self.providers
+            .disabled
+            .retain(|id| known(id) && seen.insert(id.clone()));
         self.providers
             .models
             .retain(|id, m| known(id) && !m.is_empty());
@@ -158,13 +160,19 @@ impl Config {
 
 /// Load `~/.marvis/config.toml`; falls back to defaults on any error.
 pub fn load() -> Config {
-    match Config::load_from(paths::config_file()) {
+    load_or_default(&paths::config_file())
+}
+
+fn load_or_default(path: &Path) -> Config {
+    match Config::load_from(path) {
         Ok(cfg) => cfg,
         Err(err) => {
-            log::warn!(
-                "failed to load {}: {err}; using defaults",
-                paths::config_file().display()
-            );
+            log::warn!("failed to load {}: {err}; using defaults", path.display());
+            let mut backup = path.as_os_str().to_os_string();
+            backup.push(".bak");
+            if let Err(error) = std::fs::copy(path, &backup) {
+                log::warn!("failed to preserve unreadable config: {error}");
+            }
             Config::default()
         }
     }

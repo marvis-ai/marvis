@@ -100,8 +100,12 @@ pub(super) fn read_attachment(root: &Path, att: &MessageAttachment) -> Result<Ve
     if escapes {
         return Err(format!("Attachment \"{}\" has an invalid path", att.name));
     }
-    std::fs::read(&path)
-        .map_err(|_| format!("Attachment \"{}\" is missing — the image can't be sent", att.name))
+    std::fs::read(&path).map_err(|_| {
+        format!(
+            "Attachment \"{}\" is missing — the image can't be sent",
+            att.name
+        )
+    })
 }
 
 /// Rows → the trailing `ChatMessage` tail — at most `HISTORY_TAIL`
@@ -115,13 +119,23 @@ pub(super) fn rows_to_history_at(
     rows.iter()
         .skip(rows.len().saturating_sub(HISTORY_TAIL))
         .filter_map(|m| match m.role.as_str() {
-            "user" => Some(
-                m.attachments
-                    .iter()
-                    .map(|a| read_attachment(root, a))
-                    .collect::<Result<Vec<_>, _>>()
-                    .map(|images| ChatMessage::user_with_images(m.content.clone(), images)),
-            ),
+            "user" => {
+                let mut text = m.content.clone();
+                let mut images = Vec::new();
+                for attachment in &m.attachments {
+                    match read_attachment(root, attachment) {
+                        Ok(image) => images.push(image),
+                        Err(error) => {
+                            log::warn!("ask: history attachment unavailable: {error}");
+                            text.push_str(&format!(
+                                "\n[Attachment unavailable: {}]",
+                                attachment.name
+                            ));
+                        }
+                    }
+                }
+                Some(Ok(ChatMessage::user_with_images(text, images)))
+            }
             "assistant" => Some(Ok(ChatMessage::text(Role::Assistant, m.content.clone()))),
             _ => None,
         })

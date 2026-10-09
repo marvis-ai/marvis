@@ -33,14 +33,14 @@ pub(crate) fn window_focus_bar(app: AppHandle) {
 }
 
 /// Same entry point as the bar's `Cmd+,` and the tray's Settings item.
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn window_show_settings(app: AppHandle) {
     show_settings(&app);
 }
 
 /// Onboarding mode of the same prefs window — the startup first-run
 /// opener and the sidebar's "Re-run setup" both come through here.
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn window_show_onboarding(app: AppHandle) {
     app.state::<AppState>()
         .pool

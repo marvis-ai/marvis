@@ -1779,10 +1779,10 @@ use super::title::*;
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// A managed file gone missing is a user-facing attachment error,
-    /// never a silently degraded prompt.
+    /// History keeps readable images and marks missing files; retries
+    /// still require every current-turn attachment.
     #[tokio::test]
-    async fn send_chain_missing_attachment_file_errors() {
+    async fn send_chain_missing_history_attachment_degrades_but_retry_errors() {
         let dir = tmp_dir();
         let db = Db::at(dir.join("marvis.db")).unwrap();
         let att_root = dir.join("attachments");
@@ -1805,6 +1805,9 @@ use super::title::*;
                 language: "en",
                 attachments: vec![AskAttachmentInput {
                     name: "p.jpg".into(),
+                    jpeg_base64: jpeg_b64(),
+                }, AskAttachmentInput {
+                    name: "good.jpg".into(),
                     jpeg_base64: jpeg_b64(),
                 }],
                 attachments_root: Some(&att_root),
@@ -1829,7 +1832,8 @@ use super::title::*;
             &input,
             &cancel,
             ChainOpts {
-                text: "follow-up",
+                text: "with pic",
+                regenerate: true,
                 language: "en",
                 attachments_root: Some(&att_root),
                 ..ChainOpts::default()
@@ -1841,6 +1845,17 @@ use super::title::*;
         assert_eq!(calls.lock().len(), 0);
         assert!(events.lock().iter().any(|(n, p)| n == EV_ERROR
             && p["message"].as_str().unwrap().contains("p.jpg")));
+        let provider = MockProvider::new(vec![Behavior::Tokens(vec!["follow-up".into()])]);
+        let calls = provider.calls();
+        send_chain(vec![candidate("openai", provider)], None, &db, &emit, &input, &cancel,
+            ChainOpts {
+                text: "follow-up", language: "en", attachments_root: Some(&att_root),
+                ..ChainOpts::default()
+            }).await.unwrap();
+        let calls = calls.lock();
+        let prior_user = &calls[0][1];
+        assert!(prior_user.content.iter().filter_map(|part| match part { ContentPart::Text(text) => Some(text.as_str()), _ => None }).collect::<String>().contains("[Attachment unavailable: p.jpg]"));
+        assert!(has_image(prior_user));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2909,3 +2924,37 @@ use super::title::*;
             .iter()
             .any(|(n, _)| n == "capture:permission-needed"));
     }
+
+#[tokio::test]
+async fn retry_fresh_screenshot_replaces_old_shot_and_keeps_other_images() {
+    let dir = tmp_dir();
+    let db = Db::at(dir.join("marvis.db")).unwrap();
+    let root = dir.join("attachments");
+    let sid = db.session_get_or_create_active("ask").unwrap();
+    let mid = db.message_add(sid, "user", "look again").unwrap();
+    super::attachments::persist_attachments(&db, &root, mid, vec![
+        super::attachments::PendingImage { name: "screenshot.jpg".into(), jpeg: vec![1] },
+        super::attachments::PendingImage { name: "diagram.jpg".into(), jpeg: vec![2] },
+    ]).await.unwrap();
+    // Even a missing obsolete shot cannot prevent replacing it.
+    let old = db.attachments_for(mid).unwrap()[0].path.clone();
+    std::fs::remove_file(old).unwrap();
+    let reader = screen_read::ScreenReader::new();
+    let ring = Mutex::new(RingBuffer::new(4, 1 << 20));
+    let input = input_with_frame(&reader, &ring);
+    let chat = MockProvider::new(vec![Behavior::Tokens(vec!["answer".into()])]);
+    let calls = chat.calls();
+    send_chain(vec![candidate("openai", chat)], None, &db, &recorder().1, &input,
+        &CancellationToken::new(), ChainOpts {
+            text: "look again", regenerate: true, attachments_root: Some(&root),
+            ..ChainOpts::default()
+        }).await.unwrap();
+    let calls = calls.lock();
+    let images: Vec<_> = calls[0].last().unwrap().content.iter().filter_map(|part| {
+        if let ContentPart::ImageJpeg(bytes) = part { Some(bytes.clone()) } else { None }
+    }).collect();
+    assert_eq!(images.len(), 2);
+    assert_eq!(images[0], vec![2]);
+    assert_ne!(images[1], vec![1]);
+    std::fs::remove_dir_all(dir).unwrap();
+}

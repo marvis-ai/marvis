@@ -136,6 +136,8 @@ pub struct AppState {
     /// the auto primary-display path). Written under the `capture`
     /// lock — it nests inside it, never the reverse.
     capture_target: Mutex<Option<CaptureTarget>>,
+    /// Restart inputs, nested under `capture` just like `capture_target`.
+    capture_restart: Mutex<Option<CaptureRestart>>,
     ask: Arc<AskService>,
     listen: Arc<ListenService>,
     dictation: Arc<DictationService>,
@@ -163,7 +165,7 @@ pub struct AppState {
     /// must be one critical section or two concurrent first-starts can
     /// both see the peer idle and double-open the microphone. Async so
     /// the guard can be held across the permission await while the
-    /// command futures stay `Send`. Stops don't take it: dictation's
+    /// command futures stay `Send`. Listen stop also takes it; dictation's
     /// start/stop epoch already makes a mid-flight start lose safely.
     speech_lifecycle: tokio::sync::Mutex<()>,
     /// Payload of the alert toast currently on screen (`None` when
@@ -244,6 +246,7 @@ impl AppState {
             capture: Mutex::new(None),
             screen_reader: Arc::new(screen_read::ScreenReader::new()),
             capture_target: Mutex::new(None),
+            capture_restart: Mutex::new(None),
             ask: Arc::new(AskService::new()),
             listen: Arc::new(ListenService::new()),
             dictation: Arc::new(DictationService::new()),
@@ -394,6 +397,16 @@ fn emit_capture_state(app: &AppHandle, status: &CaptureStatus) {
     refresh_tray_menu(app);
 }
 
+#[derive(Clone)]
+struct CaptureRestart {
+    source: CaptureSource,
+    width: u32,
+    height: u32,
+    target: Option<CaptureTarget>,
+    resolver_id: Option<String>,
+}
+
+
 /// The one capture-start boundary — `enter_main`, the `capture_start`
 /// command, `toggle_capture`, and the picker's start share it (callers
 /// own source construction; `target` is the picker-selected scope or
@@ -411,6 +424,17 @@ fn start_capture(
     height: u32,
     target: Option<CaptureTarget>,
 ) -> CaptureStatus {
+    start_capture_with_resolver(app, source, width, height, target, None)
+}
+
+fn start_capture_with_resolver(
+    app: &AppHandle,
+    source: CaptureSource,
+    width: u32,
+    height: u32,
+    target: Option<CaptureTarget>,
+    resolver_id: Option<String>,
+) -> CaptureStatus {
     let state = app.state::<AppState>();
     // Config reads precede the capture lock (existing rule).
     let (fps, read_interval_secs) = {
@@ -427,6 +451,13 @@ fn start_capture(
             lifecycle.mark_running();
         }
         if lifecycle.start_decision() == StartDecision::Create {
+            let restart = CaptureRestart {
+                source: source.clone(),
+                width,
+                height,
+                target: target.clone(),
+                resolver_id,
+            };
             match PlatformCapture::new(source, width, height, fps) {
                 Ok(capture) => {
                     let ring = Arc::clone(&state.ring);
@@ -441,6 +472,7 @@ fn start_capture(
                     if capture.is_running() {
                         *slot = Some(capture);
                         *state.capture_target.lock() = target;
+                        *state.capture_restart.lock() = Some(restart);
                         lifecycle.mark_running();
                     } else {
                         log::warn!("gate: screen capture failed to start");
@@ -521,6 +553,7 @@ fn stop_capture(app: &AppHandle) -> CaptureStatus {
     }
     state.screen_reader.stop();
     *state.capture_target.lock() = None;
+    *state.capture_restart.lock() = None;
     let status = capture_snapshot(&state);
     emit_capture_state(app, &status);
     status
@@ -903,6 +936,7 @@ pub fn run() {
                 capture: Mutex::new(None),
                 screen_reader: Arc::new(screen_read::ScreenReader::new()),
                 capture_target: Mutex::new(None),
+                capture_restart: Mutex::new(None),
                 ask: Arc::new(AskService::new()),
                 listen: Arc::new(ListenService::new()),
                 dictation: Arc::new(DictationService::new()),
@@ -1207,12 +1241,13 @@ mod tests {
 
     #[test]
     fn suggested_name_sanitizes_separators_controls_and_caps() {
-        assert_eq!(sanitize_suggested_name("a/b\\c.md"), "abc.md");
-        assert_eq!(sanitize_suggested_name("n\u{0}ame.md"), "name.md");
-        assert_eq!(sanitize_suggested_name("   "), "marvis-export.md");
-        assert_eq!(sanitize_suggested_name(""), "marvis-export.md");
-        assert_eq!(sanitize_suggested_name(&"x".repeat(200)).len(), 80);
-        assert_eq!(sanitize_suggested_name("notes.md"), "notes.md");
+        assert_eq!(sanitize_suggested_name("a/b\\c.md", "marvis-export.md"), "abc.md");
+        assert_eq!(sanitize_suggested_name("n\u{0}ame.md", "marvis-export.md"), "name.md");
+        assert_eq!(sanitize_suggested_name("   ", "marvis-export.md"), "marvis-export.md");
+        assert_eq!(sanitize_suggested_name("", "marvis-export.md"), "marvis-export.md");
+        assert_eq!(sanitize_suggested_name(&"x".repeat(200), "marvis-export.md").len(), 80);
+        assert_eq!(sanitize_suggested_name("notes.md", "marvis-export.md"), "notes.md");
+        assert_eq!(sanitize_suggested_name(" /\\ ", "marvis-export.wav"), "marvis-export.wav");
     }
 
     /// The punctuation auto-install chain: a completed sherpa download
@@ -1311,7 +1346,7 @@ mod tests {
             let body = source
                 .split(signature)
                 .nth(1)
-                .and_then(|rest| rest.split("\n#[tauri::command]").next())
+                .and_then(|rest| rest.split("\n#[tauri::command").next())
                 .unwrap_or_else(|| panic!("{signature} body not found"));
             assert!(
                 body.contains("state.speech_lifecycle.lock().await"),
@@ -1332,14 +1367,14 @@ mod tests {
         let start_body = source
             .split("fn capture_start(app: AppHandle)")
             .nth(1)
-            .and_then(|rest| rest.split("\n#[tauri::command]").next())
+            .and_then(|rest| rest.split("\n#[tauri::command").next())
             .expect("capture_start body not found");
         assert!(
             start_body.contains("*state.gate.lock() != Gate::Main"),
             "capture_start must drop the invoke while gate != Main"
         );
         let transition_lock = start_body
-            .find("state.gate_transition.lock()")
+            .find("state.gate_transition.try_lock()")
             .expect("capture_start must hold gate_transition across check + start");
         let gate_check = start_body.find("*state.gate.lock() != Gate::Main").unwrap();
         let start_call = start_body
@@ -1352,7 +1387,7 @@ mod tests {
         let stop_body = source
             .split("fn capture_stop(app: AppHandle)")
             .nth(1)
-            .and_then(|rest| rest.split("\n#[tauri::command]").next())
+            .and_then(|rest| rest.split("\n#[tauri::command").next())
             .expect("capture_stop body not found");
         assert!(
             !stop_body.contains("Gate::Main"),
@@ -1452,7 +1487,7 @@ mod tests {
             source
                 .split(sig)
                 .nth(1)
-                .and_then(|rest| rest.split("\n#[tauri::command]").next())
+                .and_then(|rest| rest.split("\n#[tauri::command").next())
                 .unwrap_or_else(|| panic!("{sig} body not found"))
         };
         for sig in [
@@ -1462,7 +1497,7 @@ mod tests {
         ] {
             let b = body(sig);
             let lock = b
-                .find("state.gate_transition.lock()")
+                .find("state.gate_transition.try_lock()")
                 .unwrap_or_else(|| panic!("{sig} must hold gate_transition"));
             let check = b
                 .find("*state.gate.lock() != Gate::Main")
@@ -1474,7 +1509,7 @@ mod tests {
             .find("stop_capture(&app)")
             .expect("select must stop a live capture before retargeting");
         let start = select
-            .find("start_capture(&app")
+            .find("start_capture_with_resolver(&app")
             .expect("select must start_capture with the resolved filter");
         assert!(stop < start, "select must stop before starting");
     }

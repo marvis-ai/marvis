@@ -25,11 +25,13 @@ pub(super) fn migrate(conn: &Connection) -> anyhow::Result<()> {
             // A build with the new schema already ran once: `messages`
             // exists alongside the legacy table — merge rather than
             // rename, then drop the old one.
-            conn.execute_batch(
+            let tx = conn.unchecked_transaction()?;
+            tx.execute_batch(
                 "INSERT INTO messages (session_id, role, content, ts)
                  SELECT session_id, role, content, ts FROM ai_messages;
                  DROP TABLE ai_messages;",
             )?;
+            tx.commit()?;
         } else {
             conn.execute_batch("ALTER TABLE ai_messages RENAME TO messages")?;
         }

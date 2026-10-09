@@ -28,7 +28,10 @@ pub(crate) async fn save_audio_file(
     }
     tauri::async_runtime::spawn_blocking(move || {
         let Some(path) = rfd::FileDialog::new()
-            .set_file_name(sanitize_suggested_name(&suggested_name))
+            .set_file_name(sanitize_suggested_name(
+                &suggested_name,
+                "marvis-export.wav",
+            ))
             .add_filter("WAV audio", &["wav"])
             .save_file()
         else {
@@ -75,7 +78,7 @@ pub(crate) async fn save_text_file(
     }
     tauri::async_runtime::spawn_blocking(move || {
         let Some(path) = rfd::FileDialog::new()
-            .set_file_name(sanitize_suggested_name(&suggested_name))
+            .set_file_name(sanitize_suggested_name(&suggested_name, "marvis-export.md"))
             .add_filter("Markdown", &["md"])
             .save_file()
         else {
@@ -91,7 +94,7 @@ pub(crate) async fn save_text_file(
 /// The dialog's suggested name: path separators and control chars can't
 /// smuggle a directory choice past the picker; the cap keeps the dialog
 /// field sane. Never a path — just a filename.
-pub(crate) fn sanitize_suggested_name(name: &str) -> String {
+pub(crate) fn sanitize_suggested_name(name: &str, fallback: &str) -> String {
     let clean: String = name
         .chars()
         .filter(|c| !matches!(c, '/' | '\\') && !c.is_control())
@@ -99,7 +102,7 @@ pub(crate) fn sanitize_suggested_name(name: &str) -> String {
         .collect();
     let clean = clean.trim();
     if clean.is_empty() {
-        "marvis-export.md".to_string()
+        fallback.to_string()
     } else {
         clean.to_string()
     }

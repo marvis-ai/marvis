@@ -864,3 +864,39 @@
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&dir2);
     }
+
+#[test]
+fn concurrent_session_resolution_creates_one_row() {
+    for linked in [false, true] {
+        let dir = tmp_dir();
+        let db = std::sync::Arc::new(Db::at(dir.join("marvis.db")).unwrap());
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(16));
+        let workers: Vec<_> = (0..16).map(|_| {
+            let db = db.clone();
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                if linked { db.ask_session_for_listen(42).unwrap() }
+                else { db.session_get_or_create_active("ask").unwrap() }
+            })
+        }).collect();
+        let ids: Vec<_> = workers.into_iter().map(|worker| worker.join().unwrap()).collect();
+        assert!(ids.iter().all(|id| *id == ids[0]));
+        assert_eq!(db.session_list().unwrap().len(), 1);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[test]
+fn legacy_message_merge_rolls_back_if_drop_fails() {
+    let conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch("PRAGMA foreign_keys = ON;
+        CREATE TABLE ai_messages (id INTEGER PRIMARY KEY, session_id INTEGER, role TEXT, content TEXT, ts INTEGER);
+        CREATE TABLE messages (session_id INTEGER, role TEXT, content TEXT, ts INTEGER);
+        CREATE TABLE legacy_child (parent INTEGER REFERENCES ai_messages(id));
+        INSERT INTO ai_messages VALUES (1, 1, 'user', 'preserve me', 1);
+        INSERT INTO legacy_child VALUES (1);").unwrap();
+    assert!(migrate(&conn).is_err());
+    assert_eq!(conn.query_row("SELECT COUNT(*) FROM messages", [], |row| row.get::<_, i64>(0)).unwrap(), 0);
+    assert_eq!(conn.query_row("SELECT content FROM ai_messages", [], |row| row.get::<_, String>(0)).unwrap(), "preserve me");
+}

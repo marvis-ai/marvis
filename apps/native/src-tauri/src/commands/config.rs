@@ -31,8 +31,12 @@ pub(crate) fn config_get(state: State<'_, AppState>) -> Config {
 /// `app.onboarding_done` is the wizard's completion write: `true` ends
 /// onboarding → `transition_gate` can now reach `Main` (capture, the
 /// card) and the bar appears; `false` (a re-run) reverses it.
-#[tauri::command]
-pub(crate) fn config_set(app: AppHandle, key: String, value: serde_json::Value) -> Result<Config, String> {
+#[tauri::command(async)]
+pub(crate) fn config_set(
+    app: AppHandle,
+    key: String,
+    value: serde_json::Value,
+) -> Result<Config, String> {
     let state = app.state::<AppState>();
     let mut hotkeys_changed = false;
     let mut onboarding_changed = false;
@@ -161,21 +165,58 @@ pub(crate) fn config_set(app: AppHandle, key: String, value: serde_json::Value) 
         // reaches the material on the next pill⇄card morph.
         state.pool.lock().refresh_bar_glass(&app);
     }
-    if fps_changed
-        && state
-            .capture
-            .lock()
-            .as_ref()
-            .is_some_and(PlatformCapture::is_running)
-    {
-        // A live session keeps its old cadence — rebuild it so the new
-        // rate applies immediately.
-        stop_capture(&app);
-        match primary_display_source() {
-            Ok((source, w, h)) => {
-                start_capture(&app, source, w, h, None);
+    if fps_changed {
+        let _transition = state.gate_transition.lock();
+        let restart = {
+            let capture = state.capture.lock();
+            if capture.as_ref().is_some_and(PlatformCapture::is_running) {
+                state.capture_restart.lock().clone()
+            } else {
+                None
             }
-            Err(e) => log::warn!("capture: display source failed: {e}"),
+        };
+        if let Some(mut restart) = restart {
+            // Resolve before stopping: a stale picker identity must never
+            // widen the capture to the primary display.
+            let resolved = if restart.target.is_none() {
+                primary_display_source().map(|(source, w, h)| {
+                    restart.source = source;
+                    restart.width = w;
+                    restart.height = h;
+                })
+            } else {
+                #[cfg(not(target_os = "linux"))]
+                let result = if let Some(id) = &restart.resolver_id {
+                    capture::resolve_candidate(id).map(|res| {
+                        restart.source = res.source;
+                        restart.width = res.w;
+                        restart.height = res.h;
+                        restart.target = Some(CaptureTarget {
+                            kind: res.kind,
+                            label: res.label,
+                        });
+                    })
+                } else {
+                    Ok(())
+                };
+                #[cfg(target_os = "linux")]
+                let result: anyhow::Result<()> = Ok(());
+                result
+            };
+            match resolved {
+                Ok(()) => {
+                    stop_capture(&app);
+                    start_capture_with_resolver(
+                        &app,
+                        restart.source,
+                        restart.width,
+                        restart.height,
+                        restart.target,
+                        restart.resolver_id,
+                    );
+                }
+                Err(e) => log::warn!("capture: restart source failed: {e}"),
+            }
         }
     }
     if onboarding_changed {

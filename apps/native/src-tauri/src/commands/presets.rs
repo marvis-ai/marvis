@@ -24,7 +24,7 @@ pub(crate) fn presets_list(state: State<'_, AppState>) -> Vec<presets::Preset> {
 /// (`palette:query` streams the filter, `palette:key` forwards nav
 /// keys). Gate-guarded like `ask_send` — a crafted invoke during
 /// onboarding must not pop chrome over the wizard.
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn presets_palette_open(
     app: AppHandle,
     anchor_x: Option<f64>,
@@ -37,13 +37,10 @@ pub(crate) fn presets_palette_open(
         log::warn!("presets_palette_open dropped while gate != Main");
         return Ok(());
     }
-    state.pool.lock().show_palette(
-        &app,
-        anchor_x,
-        anchor_y,
-        query,
-        focused.unwrap_or(true),
-    );
+    state
+        .pool
+        .lock()
+        .show_palette(&app, anchor_x, anchor_y, query, focused.unwrap_or(true));
     Ok(())
 }
 

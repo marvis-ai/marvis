@@ -580,3 +580,24 @@
         let bad = serde_json::json!([{ "id": "u:a1", "name": "", "text": "x" }]);
         assert!(apply_prompts_config(&mut prompts, "prompts.custom", &bad).is_err());
     }
+
+#[test]
+fn disabled_providers_keep_only_the_first_known_occurrence() {
+    let mut config = Config::default();
+    config.providers.disabled = ["openai", "gemini", "openai", "unknown", "gemini"]
+        .into_iter().map(str::to_owned).collect();
+    config.normalize();
+    assert_eq!(config.providers.disabled, ["openai", "gemini"]);
+}
+
+#[test]
+fn invalid_config_is_backed_up_before_default_fallback() {
+    let dir = tempfile_dir();
+    let path = dir.join("config.toml");
+    let invalid = b"[app\ninvalid = \xff";
+    std::fs::write(&path, invalid).unwrap();
+    assert_eq!(load_or_default(&path), Config::default());
+    assert_eq!(std::fs::read(dir.join("config.toml.bak")).unwrap(), invalid);
+    assert_eq!(std::fs::read(path).unwrap(), invalid);
+    std::fs::remove_dir_all(dir).unwrap();
+}

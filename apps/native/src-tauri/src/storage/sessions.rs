@@ -1,5 +1,5 @@
-use super::*;
 use super::types::*;
+use super::*;
 
 impl Db {
     /// The most recently active open (`ended_at IS NULL`) session of
@@ -24,26 +24,34 @@ impl Db {
     /// The most recently active open (`ended_at IS NULL`) session of `kind`,
     /// or a fresh row when none exists.
     pub fn session_get_or_create_active(&self, kind: &str) -> anyhow::Result<i64> {
-        if let Some(id) = self.session_active_id(kind)? {
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction()?;
+        let existing = tx
+            .query_row(
+                "SELECT id FROM sessions WHERE type = ?1 AND ended_at IS NULL
+             ORDER BY last_active_at DESC, id DESC LIMIT 1",
+                [kind],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if let Some(id) = existing {
             return Ok(id);
         }
-        let conn = self.conn.lock();
-        conn.execute(
+        tx.execute(
             "INSERT INTO sessions (type, title, started_at, ended_at, last_active_at)
              VALUES (?1, NULL, ?2, NULL, ?2)",
             params![kind, now()],
         )?;
-        Ok(conn.last_insert_rowid())
+        let id = tx.last_insert_rowid();
+        tx.commit()?;
+        Ok(id)
     }
 
-    /// The ask session bound to a listen doc — one chat per doc. The
-    /// most recent linked row is reopened (`session_reopen` ends other
-    /// open asks and clears `ended_at`, so returning to a doc resumes
-    /// its thread); a fresh linked row is minted when none exists.
+    /// Reopen or create the single chat for a listen document atomically.
     pub fn ask_session_for_listen(&self, listen_id: i64) -> anyhow::Result<i64> {
-        let existing: Option<i64> = self
-            .conn
-            .lock()
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction()?;
+        let existing: Option<i64> = tx
             .query_row(
                 "SELECT id FROM sessions
                  WHERE type = 'ask' AND listen_id = ?1
@@ -52,18 +60,24 @@ impl Db {
                 |row| row.get(0),
             )
             .optional()?;
-        if let Some(id) = existing {
-            self.session_reopen(id, "ask")?;
-            return Ok(id);
-        }
-        self.session_end_open("ask")?;
-        let conn = self.conn.lock();
-        conn.execute(
-            "INSERT INTO sessions (type, title, listen_id, started_at, ended_at, last_active_at)
-             VALUES ('ask', NULL, ?1, ?2, NULL, ?2)",
-            params![listen_id, now()],
+        tx.execute(
+            "UPDATE sessions SET ended_at = ?1 WHERE type = 'ask' AND ended_at IS NULL
+             AND (?2 IS NULL OR id != ?2)",
+            params![now(), existing],
         )?;
-        Ok(conn.last_insert_rowid())
+        let id = if let Some(id) = existing {
+            tx.execute("UPDATE sessions SET ended_at = NULL WHERE id = ?1", [id])?;
+            id
+        } else {
+            tx.execute(
+                "INSERT INTO sessions (type, title, listen_id, started_at, ended_at, last_active_at)
+                 VALUES ('ask', NULL, ?1, ?2, NULL, ?2)",
+                params![listen_id, now()],
+            )?;
+            tx.last_insert_rowid()
+        };
+        tx.commit()?;
+        Ok(id)
     }
 
     /// The session's `listen_id` link — `None` for plain sessions and

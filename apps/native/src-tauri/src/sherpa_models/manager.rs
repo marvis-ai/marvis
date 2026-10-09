@@ -90,7 +90,11 @@ impl SherpaModelManager {
         reclaim_catalog_temps(&root);
         Self {
             root,
-            client: reqwest::Client::new(),
+            client: reqwest::Client::builder()
+                .connect_timeout(std::time::Duration::from_secs(15))
+                .read_timeout(std::time::Duration::from_secs(60))
+                .build()
+                .expect("download HTTP client"),
             state: Arc::new(Mutex::new(ManagerState {
                 active: None,
                 selected: None,
@@ -104,7 +108,11 @@ impl SherpaModelManager {
         }
     }
     #[cfg(test)]
-    pub(super) fn with_test_files(root: PathBuf, model: SherpaModelId, files: Vec<TestSource>) -> Self {
+    pub(super) fn with_test_files(
+        root: PathBuf,
+        model: SherpaModelId,
+        files: Vec<TestSource>,
+    ) -> Self {
         // `download()` consumes the override positionally, one `TestSource`
         // per file of the downloaded entry — a short vec would silently fall
         // back to the pinned production URLs, so require a complete set for

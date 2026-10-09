@@ -53,14 +53,28 @@ impl EchoGate {
         if probe.chars().count() < ECHO_MIN_CHARS || self.them_recent.is_empty() {
             return false;
         }
-        // One concatenated window covers an echo that re-decoded to a
-        // slice of a speaker segment or spanned a segment boundary.
-        let reference: String = self
-            .them_recent
+        self.them_recent
             .iter()
-            .map(|(_, segment)| segment.as_str())
-            .collect();
-        echo_containment(&probe, &reference) >= ECHO_CONTAINMENT
+            .any(|(_, segment)| echo_containment(&probe, segment) >= ECHO_CONTAINMENT)
+            || self
+                .them_recent
+                .iter()
+                .zip(self.them_recent.iter().skip(1))
+                .any(|((_, left), (_, right))| {
+                    // Only the boundary neighborhood can contribute to a
+                    // boundary-spanning echo, not two entire long segments.
+                    let chars = probe.chars().count();
+                    let suffix: String = left
+                        .chars()
+                        .rev()
+                        .take(chars)
+                        .collect::<Vec<_>>()
+                        .into_iter()
+                        .rev()
+                        .collect();
+                    let prefix: String = right.chars().take(chars).collect();
+                    echo_containment(&probe, &(suffix + &prefix)) >= ECHO_CONTAINMENT
+                })
     }
 
     fn evict(&mut self, now: Instant) {

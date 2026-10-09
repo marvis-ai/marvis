@@ -127,40 +127,76 @@ pub(super) fn persist_turn(context: &Arc<SessionContext>, turn: ClosedTurn) {
     }));
 
     if count % SUMMARY_EVERY == 0 {
-        let summary_context = context.clone();
-        context
-            .summary_workers
-            .lock()
-            .push(std::thread::spawn(move || {
-                let result = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .ok()
-                    .and_then(|runtime| {
-                        runtime
-                            .block_on(async {
-                                tokio::time::timeout(
-                                    SUMMARY_TIMEOUT,
-                                    generate_summary(
-                                        &summary_context.db,
-                                        summary_context.session_id,
-                                        &summary_context.config,
-                                        &summary_context.keystore,
-                                    ),
-                                )
-                                .await
-                            })
-                            .ok()
-                            .and_then(Result::ok)
-                    });
-                if let Some(summary) = result {
-                    (summary_context.emit)(ListenEvent::Summary(ListenSummaryEvent {
-                        session_id: summary_context.session_id,
-                        summary,
-                    }));
-                }
-            }));
+        schedule_summary(context);
     }
+}
+
+#[derive(Default)]
+pub(super) struct SummarySchedule {
+    running: bool,
+    pending: bool,
+}
+
+impl SummarySchedule {
+    fn request(&mut self) -> bool {
+        if self.running {
+            self.pending = true;
+            false
+        } else {
+            self.running = true;
+            true
+        }
+    }
+
+    fn finish(&mut self) -> bool {
+        if std::mem::take(&mut self.pending) {
+            true
+        } else {
+            self.running = false;
+            false
+        }
+    }
+}
+
+fn schedule_summary(context: &Arc<SessionContext>) {
+    if !context.summary_schedule.lock().request() {
+        return;
+    }
+    let context = context.clone();
+    std::thread::spawn(move || loop {
+        let result = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .ok()
+            .and_then(|runtime| {
+                runtime
+                    .block_on(async {
+                        tokio::time::timeout(
+                            SUMMARY_TIMEOUT,
+                            generate_summary(
+                                &context.db,
+                                context.session_id,
+                                &context.config,
+                                &context.keystore,
+                            ),
+                        )
+                        .await
+                    })
+                    .ok()
+                    .and_then(Result::ok)
+            });
+        if let Some(summary) = result {
+            (context.emit)(ListenEvent::Summary(ListenSummaryEvent {
+                session_id: context.session_id,
+                summary,
+            }));
+        }
+        // Finish and claim any pending work under one lock, so a new
+        // boundary cannot start a second worker in between these steps.
+        if !context.summary_schedule.lock().finish() {
+            break;
+        }
+    });
 }
 
 pub(super) fn preserve_previous_summary(
@@ -264,3 +300,20 @@ pub async fn generate_summary(
     )
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn boundaries_during_a_run_coalesce_and_are_drained_before_idle() {
+        let mut schedule = SummarySchedule::default();
+        assert!(schedule.request());
+        assert!(!schedule.request());
+        assert!(!schedule.request());
+        assert!(schedule.finish()); // the same worker must refresh the summary
+        assert!(!schedule.request()); // it still owns the next pass
+        assert!(schedule.finish());
+        assert!(!schedule.finish());
+        assert!(schedule.request()); // idle can start a new worker
+    }
+}

@@ -64,9 +64,10 @@ const STOP_POLL: Duration = Duration::from_millis(50);
 /// hands to [`LinuxCapture::new`]: the live portal session (kept alive
 /// for the capture's duration — dropping it kills the stream), the
 /// PipeWire remote fd, and the node id of the granted stream.
+#[derive(Clone)]
 pub struct Source {
-    _session: Session<Screencast>,
-    fd: OwnedFd,
+    _session: Arc<Session<Screencast>>,
+    fd: Arc<OwnedFd>,
     node_id: u32,
 }
 
@@ -166,8 +167,8 @@ pub(crate) fn primary_display_source() -> Result<(Source, u32, u32)> {
         outcome.ok_or_else(|| anyhow!("portal restore cancelled"))?;
     Ok((
         Source {
-            _session: session,
-            fd,
+            _session: Arc::new(session),
+            fd: Arc::new(fd),
             node_id,
         },
         w,
@@ -186,8 +187,8 @@ pub(crate) fn portal_pick_blocking() -> Result<Option<(Source, u32, u32, &'stati
     let label = if kind == "window" { "Window" } else { "Screen" }.to_string();
     Ok(Some((
         Source {
-            _session: session,
-            fd,
+            _session: Arc::new(session),
+            fd: Arc::new(fd),
             node_id,
         },
         w,
@@ -357,7 +358,10 @@ fn pw_run(
         .add_local_listener_with_user_data(StreamState {
             tx,
             format: None,
-            size: Rectangle { width: 0, height: 0 },
+            size: Rectangle {
+                width: 0,
+                height: 0,
+            },
             warned: false,
         })
         .param_changed(|_stream, state, id, pod| {

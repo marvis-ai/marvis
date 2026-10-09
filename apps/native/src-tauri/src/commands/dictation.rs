@@ -116,11 +116,15 @@ pub(crate) async fn dictation_start(app: AppHandle) -> Result<dictation::Dictati
 /// Stop dictation and return the authoritative final draft. Idempotent —
 /// repeated calls return an empty final draft and leave the input alone.
 #[tauri::command]
-pub(crate) fn dictation_stop(app: AppHandle) -> dictation::DictationDraft {
-    let state = app.state::<AppState>();
-    let draft = state.dictation.stop();
-    emit_dictation_state(&app, &state.dictation.status());
-    draft
+pub(crate) async fn dictation_stop(app: AppHandle) -> Result<dictation::DictationDraft, String> {
+    let app_for_stop = app.clone();
+    let draft = tauri::async_runtime::spawn_blocking(move || {
+        app_for_stop.state::<AppState>().dictation.stop()
+    })
+    .await
+    .map_err(|_| "Could not stop dictation".to_string())?;
+    emit_dictation_state(&app, &app.state::<AppState>().dictation.status());
+    Ok(draft)
 }
 
 /// Live dictation status for bar resync (`idle` | `listening` | `error`).

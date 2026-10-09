@@ -22,7 +22,9 @@ pub(crate) fn capture_start(app: AppHandle) -> serde_json::Value {
     // `transition_gate`: a bare gate read could pass just before a
     // transition swaps the gate and `leave_main` tears capture down,
     // letting this start relight capture outside `Main`.
-    let _transition = state.gate_transition.lock();
+    let Some(_transition) = state.gate_transition.try_lock() else {
+        return capture_snapshot(&state);
+    };
     if *state.gate.lock() != Gate::Main {
         log::warn!("capture_start dropped while gate != Main");
         return capture_snapshot(&state);
@@ -60,7 +62,7 @@ pub(crate) fn capture_stop(app: AppHandle) -> serde_json::Value {
 /// the in-app picker window (Windows) or the portal dialog (Linux)
 /// already covers the flow, so this alias just forwards there.
 #[cfg(target_os = "macos")]
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn capture_pick_and_start(app: AppHandle) {
     let state = app.state::<AppState>();
     if *state.gate.lock() != Gate::Main {
@@ -91,6 +93,10 @@ pub(crate) fn capture_pick_and_start(app: AppHandle) {
                     // display filter excluding our application). Window/app
                     // picks can't be ours (`excluded_bundle_ids`), so
                     // their filters pass through untouched.
+                    let resolver_id = match result.source() {
+                        SCPickedSource::Display(id) => Some(format!("d:{id}")),
+                        _ => None,
+                    };
                     let (filter, w, h, target) = match result.source() {
                         SCPickedSource::Display(id) => {
                             match capture::resolve_candidate(&format!("d:{id}")) {
@@ -164,7 +170,7 @@ pub(crate) fn capture_pick_and_start(app: AppHandle) {
                     {
                         stop_capture(&app2);
                     }
-                    start_capture(&app2, filter, w, h, Some(target));
+                    start_capture_with_resolver(&app2, filter, w, h, Some(target), resolver_id);
                 }
                 SCPickerOutcome::Error(e) => {
                     log::warn!("capture_pick_and_start: picker error: {e}");
@@ -181,7 +187,7 @@ pub(crate) fn capture_pick_and_start(app: AppHandle) {
 /// custom-picker flow (Windows) or portal dialog (Linux) — whichever
 /// `capture_pick_begin` drives on this OS.
 #[cfg(not(target_os = "macos"))]
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn capture_pick_and_start(app: AppHandle) {
     capture_pick_begin(app);
 }
@@ -226,10 +232,12 @@ pub(crate) fn portal_pick_flow(app: AppHandle) {
 /// must not surface the picker (or a capture behind it). The bar is
 /// re-shown by `capture_pick_select`/`capture_pick_cancel`. On Linux
 /// the portal's native dialog replaces the picker window entirely.
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn capture_pick_begin(app: AppHandle) {
     let state = app.state::<AppState>();
-    let _transition = state.gate_transition.lock();
+    let Some(_transition) = state.gate_transition.try_lock() else {
+        return;
+    };
     if *state.gate.lock() != Gate::Main {
         log::warn!("capture_pick_begin dropped while gate != Main");
         return;
@@ -273,7 +281,9 @@ pub(crate) fn capture_pick_begin(app: AppHandle) {
 #[tauri::command]
 pub(crate) fn capture_pick_list(app: AppHandle) -> Result<Vec<PickCandidate>, String> {
     let state = app.state::<AppState>();
-    let _transition = state.gate_transition.lock();
+    let Some(_transition) = state.gate_transition.try_lock() else {
+        return Err("capture transition in progress".into());
+    };
     if *state.gate.lock() != Gate::Main {
         return Err("picker is only available in the main window".into());
     }
@@ -316,7 +326,9 @@ pub(crate) fn capture_pick_list(app: AppHandle) -> Result<Vec<PickCandidate>, St
 #[tauri::command]
 pub(crate) fn capture_pick_select(app: AppHandle, id: String) -> Result<(), String> {
     let state = app.state::<AppState>();
-    let _transition = state.gate_transition.lock();
+    let Some(_transition) = state.gate_transition.try_lock() else {
+        return Err("capture transition in progress".into());
+    };
     if *state.gate.lock() != Gate::Main {
         return Err("picker is only available in the main window".into());
     }
@@ -333,7 +345,7 @@ pub(crate) fn capture_pick_select(app: AppHandle, id: String) -> Result<(), Stri
         kind: res.kind,
         label: res.label,
     };
-    start_capture(&app, res.source, res.w, res.h, Some(target));
+    start_capture_with_resolver(&app, res.source, res.w, res.h, Some(target), Some(id));
     let pool = state.pool.lock();
     pool.hide_picker();
     if let Some(bar) = pool.bar() {

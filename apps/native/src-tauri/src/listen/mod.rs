@@ -137,7 +137,7 @@ struct SessionContext {
     config: Config,
     keystore: Keystore,
     persisted_turns: Arc<AtomicUsize>,
-    summary_workers: Arc<Mutex<Vec<JoinHandle<()>>>>,
+    summary_schedule: Mutex<SummarySchedule>,
     /// The session's retained recording (`None` when the WAV couldn't be
     /// created — recording is best-effort, never fatal to capture).
     recorder: Arc<Mutex<Option<SessionRecorder>>>,
@@ -275,31 +275,25 @@ impl ListenService {
             config: config.clone(),
             keystore: keystore.clone(),
             persisted_turns: Arc::new(AtomicUsize::new(existing.len())),
-            summary_workers: Arc::new(Mutex::new(Vec::new())),
+            summary_schedule: Mutex::new(SummarySchedule::default()),
             recorder: Arc::new(Mutex::new(recorder.map(|(recorder, _)| recorder))),
         });
         let mut workers = Vec::new();
         let mut add =
             |channel: SpeakerChannel, mut source: Box<dyn AudioSource>| -> anyhow::Result<()> {
-                let (tx, rx) = mpsc::channel::<PcmChunk>();
-                if let Err(error) = source.start(tx) {
-                    source.stop();
-                    return Err(error);
-                }
-                let mut stt = match make_stt_provider(
+                let mut stt = make_stt_provider(
                     &provider_name,
                     key.clone(),
                     model.clone(),
                     channel,
                     bundled_whisper,
                     true,
-                ) {
-                    Ok(stt) => stt,
-                    Err(error) => {
-                        source.stop();
-                        return Err(error);
-                    }
-                };
+                )?;
+                let (tx, rx) = mpsc::channel::<PcmChunk>();
+                if let Err(error) = source.start(tx) {
+                    source.stop();
+                    return Err(error);
+                }
                 let callback_assembler = assembler.clone();
                 let callback_gate = echo_gate.clone();
                 let callback_context = context.clone();
@@ -611,12 +605,6 @@ impl ListenService {
         // SUMMARY_TIMEOUT. Detach it after capture finalization so Stop
         // returns promptly; its session-tagged event can finish the viewed
         // document when the result arrives.
-        let _detached_summaries = running
-            .context
-            .summary_workers
-            .lock()
-            .drain(..)
-            .collect::<Vec<_>>();
         let _ = running.context.db.session_end(running.session_id);
         *self.state.lock() = ListenStatus {
             state: "idle".into(),

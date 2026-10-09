@@ -93,10 +93,17 @@ pub(crate) async fn listen_start(app: AppHandle) -> Result<listen::ListenStatus,
 }
 
 #[tauri::command]
-pub(crate) fn listen_stop(app: AppHandle) {
+pub(crate) async fn listen_stop(app: AppHandle) -> Result<(), String> {
     let state = app.state::<AppState>();
-    state.listen.stop();
+    let _lifecycle = state.speech_lifecycle.lock().await;
+    let app_for_stop = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        app_for_stop.state::<AppState>().listen.stop();
+    })
+    .await
+    .map_err(|_| "Could not stop listening".to_string())?;
     emit_listen_state(&app, &state.listen.status());
+    Ok(())
 }
 
 #[tauri::command]

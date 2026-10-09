@@ -602,3 +602,28 @@
         .unwrap();
         assert_eq!(restored, previous);
     }
+
+#[test]
+fn long_english_reference_window_preserves_unrelated_short_reply() {
+    let mut gate = EchoGate::default();
+    let now = Instant::now();
+    for segment in [
+        "the roadmap review moved to next friday",
+        "we should update the documentation before the release",
+        "our customers requested better performance and faster loading",
+        "the team will discuss the migration strategy after lunch",
+        "please check the monitoring dashboards for any errors",
+    ] {
+        gate.record_at(segment, now);
+    }
+    assert!(!gate.is_echo_at("I disagree with that plan entirely", now));
+}
+
+#[test]
+fn echo_can_span_adjacent_segment_boundary() {
+    let mut gate = EchoGate::default();
+    let now = Instant::now();
+    gate.record_at("we should update the documentation", now);
+    gate.record_at("before the release next week", now);
+    assert!(gate.is_echo_at("the documentation before the release", now));
+}

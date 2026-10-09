@@ -54,8 +54,5 @@
     "@types/node": "^26.6.2",
     "@types/pg": "^8.23.1",
     "bun-types": "^1.4.2"
-  },
-  "patchedDependencies": {
-    "@opennextjs/cloudflare@1.20.9": "patches/@opennextjs%2Fcloudflare@1.20.9.patch"
   }
 }

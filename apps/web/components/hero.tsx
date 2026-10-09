@@ -32,7 +32,7 @@ export const Hero = () => (
           rel='noopener noreferrer'
           data-od-id='hero-cta-primary'>
           <span className='font-semibold'>Download</span>
-          <span className='text-xs text-muted-foreground/10'>
+          <span className='text-xs text-muted-foreground/30'>
             Latest version: {APP_VERSION}
           </span>
         </Link>

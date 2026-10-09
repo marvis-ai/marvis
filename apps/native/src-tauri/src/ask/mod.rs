@@ -453,7 +453,7 @@ impl AskService {
             let changed: Arc<dyn Fn() + Send + Sync> = {
                 let app = app.clone();
                 Arc::new(move || {
-                    let _ = app.emit(crate::memory::EV_MEMORY_CHANGED, json!({}));
+                    let _ = app.emit(crate::EV_MEMORY_CHANGED, json!({}));
                 })
             };
             (

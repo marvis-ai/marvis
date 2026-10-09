@@ -67,19 +67,15 @@ export const MemoryTab = ({ data }: { data: PrefsData }) => {
   const [provider, setProvider] = useState(
     memory.provider || suggested?.provider || '',
   );
-  const [model, setModel] = useState(
-    memory.model || suggested?.model || '',
-  );
+  const [model, setModel] = useState(memory.model || suggested?.model || '');
   const [models, setModels] = useState<string[]>([]);
-  const [confirmingEnable, setConfirmingEnable] = useState(false);
+  const [confirmingDisable, setConfirmingEnable] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [editingId, setEditingId] = useState<number | null>(null);
-  const [confirmingDelete, setConfirmingDelete] = useState<number | null>(
-    null,
-  );
+  const [confirmingDelete, setConfirmingDelete] = useState<number | null>(null);
   const editValue = useRef<HTMLInputElement | null>(null);
-  const enableTimer = useRef<number | undefined>(undefined);
+  const disableTimer = useRef<number | undefined>(undefined);
   const deleteTimer = useRef<number | undefined>(undefined);
 
   const refreshFacts = () => {
@@ -136,6 +132,20 @@ export const MemoryTab = ({ data }: { data: PrefsData }) => {
 
   const toggleMemory = async () => {
     if (memory.enabled) {
+      // Disabling is the destructive-feeling direction for the user —
+      // their profile stops learning — so it arms, then confirms.
+      if (!confirmingDisable) {
+        setConfirmingEnable(true);
+        setError('');
+        window.clearTimeout(disableTimer.current);
+        disableTimer.current = window.setTimeout(
+          () => setConfirmingEnable(false),
+          CONFIRM_MS,
+        );
+        return;
+      }
+      window.clearTimeout(disableTimer.current);
+      setConfirmingEnable(false);
       try {
         data.setConfig(await configSet('memory.enabled', false));
       } catch {
@@ -143,18 +153,8 @@ export const MemoryTab = ({ data }: { data: PrefsData }) => {
       }
       return;
     }
-    if (!confirmingEnable) {
-      setConfirmingEnable(true);
-      setError('');
-      window.clearTimeout(enableTimer.current);
-      enableTimer.current = window.setTimeout(
-        () => setConfirmingEnable(false),
-        CONFIRM_MS,
-      );
-      return;
-    }
-    window.clearTimeout(enableTimer.current);
-    setConfirmingEnable(false);
+    // Enabling is one click — the privacy disclosure is always on the
+    // row, and the resolved pick writes before the consent bit.
     const p = provider || suggested?.provider || '';
     const m = model || suggested?.model || '';
     if (!p || !m) {
@@ -212,40 +212,47 @@ export const MemoryTab = ({ data }: { data: PrefsData }) => {
     <>
       <h2 className={H2}>Memory</h2>
       <p className={SUB}>
-        When enabled, each Ask you send can teach Marvis durable facts —
-        your name, role, and preferences — kept locally in marvis.db and
-        shown to future replies. Off by default; every row is editable.
+        When enabled, each Ask you send can teach Marvis durable facts — your
+        name, role, and preferences — kept locally in marvis.db and shown to
+        future replies. Off by default; every row is editable.
       </p>
 
       <div className={PRF_ROWS}>
         <PrefRow
           label={memory.enabled ? 'Memory is on' : 'Memory is off'}
           sub='Extraction runs after a successful Ask, on the typed text only.'
-          last={!confirmingEnable}>
+          last={memory.enabled && !confirmingDisable}>
           <button
             type='button'
             aria-label={memory.enabled ? 'Disable memory' : 'Enable memory'}
             className={cn(
               BTN_SM,
-              memory.enabled || confirmingEnable ? BTN_OUTLINE : BTN_PRIMARY,
+              memory.enabled || confirmingDisable ? BTN_OUTLINE : BTN_PRIMARY,
             )}
             disabled={saving}
             onClick={() => void toggleMemory()}>
-            {confirmingEnable
+            {confirmingDisable
               ? 'Click to confirm'
               : memory.enabled
                 ? 'Disable memory'
                 : 'Enable memory'}
           </button>
         </PrefRow>
-        {confirmingEnable && (
+        {confirmingDisable ? (
           <p className={cn(PROV_NOTE, 'border-b border-border pb-3')}>
-            Your new Ask text is sent to the Memory model below to extract
-            facts. Facts stay in local SQLite, but hosted providers receive
-            the source text — Ollama stays local and may use your CPU/GPU.
-            Screen frames, attachments, Listen transcripts, assistant
-            replies, and past sessions are never analyzed.
+            Disabling stops extraction — your stored facts stay in marvis.db and
+            keep shaping replies until you delete them.
           </p>
+        ) : (
+          !memory.enabled && (
+            <p className={cn(PROV_NOTE, 'border-b border-border pb-3')}>
+              Your new Ask text is sent to the Memory model below to extract
+              facts. Facts stay in local SQLite, but hosted providers receive
+              the source text — Ollama stays local and may use your CPU/GPU.
+              Screen frames, attachments, Listen transcripts, assistant replies,
+              and past sessions are never analyzed.
+            </p>
+          )
         )}
       </div>
 
@@ -377,8 +384,8 @@ export const MemoryTab = ({ data }: { data: PrefsData }) => {
             <div>
               <div className={PR_LABEL}>Nothing remembered yet</div>
               <div className={PR_SUB}>
-                Facts appear here after enabled Ask sends — and you can edit
-                or delete any of them.
+                Facts appear here after enabled Ask sends — and you can edit or
+                delete any of them.
               </div>
             </div>
           </div>

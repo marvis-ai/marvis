@@ -128,15 +128,25 @@ test('renders the suggested current Ask model without enabling memory', async ()
   expect(host.querySelector('[aria-label="Enable memory"]')).not.toBeNull();
 });
 
-test('requires a second confirmation click before enabling extraction', async () => {
+test('enables in one click and confirms before disabling', async () => {
   await act(async () =>
     root.render(<MemoryTab data={prefsData(config, null)} />),
   );
   await click('Enable memory');
+  expect(configWrites).toContainEqual({ key: 'memory.enabled', value: true });
+
+  // Enabled — the first click only arms, the second writes.
+  const on = {
+    ...config,
+    memory: { enabled: true, provider: 'openai', model: 'gpt-4o' },
+  } as unknown as Config;
+  await act(async () => root.render(<MemoryTab data={prefsData(on, null)} />));
+  configWrites.length = 0;
+  await click('Disable memory');
   expect(host.textContent).toContain('Click to confirm');
   expect(configWrites).toHaveLength(0);
   await click('Click to confirm');
-  expect(configWrites).toContainEqual({ key: 'memory.enabled', value: true });
+  expect(configWrites).toContainEqual({ key: 'memory.enabled', value: false });
 });
 
 test('edits, deletes, and refreshes profile facts', async () => {

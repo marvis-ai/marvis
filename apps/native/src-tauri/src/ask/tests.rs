@@ -333,7 +333,7 @@ use super::title::*;
             vec![
                 ev(
                     EV_STATE,
-                    json!({"state": "loading", "question": "what is this?", "preset": null, "attachments": shot})
+                    json!({"state": "loading", "question": "what is this?", "preset": null, "attempt": 0, "regenerate": false, "attachments": shot})
                 ),
                 ev(EV_STATE, json!({"state": "streaming"})),
                 ev(EV_CHUNK, json!({"text": "Hello"})),
@@ -413,7 +413,7 @@ use super::title::*;
             events.lock()[0],
             ev(
                 EV_STATE,
-                json!({"state": "loading", "question": "hi", "preset": "b:concise"})
+                json!({"state": "loading", "question": "hi", "preset": "b:concise", "attempt": 0, "regenerate": false})
             )
         );
 
@@ -460,18 +460,19 @@ use super::title::*;
         assert_eq!(second_calls.lock().len(), 2);
 
         // loading → (fail) → loading reset → streaming → done naming the
-        // SECOND provider — no ask:error between the attempts.
+        // SECOND provider — no ask:error between the attempts. The
+        // hand-off re-emit carries `attempt: 1`.
         let got = events.lock().clone();
         assert_eq!(
             got,
             vec![
                 ev(
                     EV_STATE,
-                    json!({"state": "loading", "question": "q", "preset": null})
+                    json!({"state": "loading", "question": "q", "preset": null, "attempt": 0, "regenerate": false})
                 ),
                 ev(
                     EV_STATE,
-                    json!({"state": "loading", "question": "q", "preset": null})
+                    json!({"state": "loading", "question": "q", "preset": null, "attempt": 1, "regenerate": false})
                 ),
                 ev(EV_STATE, json!({"state": "streaming"})),
                 ev(EV_CHUNK, json!({"text": "ok"})),
@@ -527,11 +528,11 @@ use super::title::*;
             vec![
                 ev(
                     EV_STATE,
-                    json!({"state": "loading", "question": "q", "preset": null})
+                    json!({"state": "loading", "question": "q", "preset": null, "attempt": 0, "regenerate": false})
                 ),
                 ev(
                     EV_STATE,
-                    json!({"state": "loading", "question": "q", "preset": null})
+                    json!({"state": "loading", "question": "q", "preset": null, "attempt": 1, "regenerate": false})
                 ),
                 ev(EV_ERROR, json!({"message": "http 500: boom"})),
                 ev(EV_STATE, json!({"state": "idle"})),
@@ -681,7 +682,7 @@ use super::title::*;
             vec![
                 ev(
                     EV_STATE,
-                    json!({"state": "loading", "question": "q", "preset": null})
+                    json!({"state": "loading", "question": "q", "preset": null, "attempt": 0, "regenerate": false})
                 ),
                 ev(
                     EV_ERROR,
@@ -745,7 +746,7 @@ use super::title::*;
             vec![
                 ev(
                     EV_STATE,
-                    json!({"state": "loading", "question": "q", "preset": null, "attachments": shot})
+                    json!({"state": "loading", "question": "q", "preset": null, "attempt": 0, "regenerate": false, "attachments": shot})
                 ),
                 ev(EV_STATE, json!({"state": "idle"})),
             ]
@@ -834,7 +835,7 @@ use super::title::*;
             vec![
                 ev(
                     EV_STATE,
-                    json!({"state": "loading", "question": "q", "preset": null, "attachments": shot})
+                    json!({"state": "loading", "question": "q", "preset": null, "attempt": 0, "regenerate": false, "attachments": shot})
                 ),
                 ev(EV_ERROR, json!({"message": LlmError::Auth.to_string()})),
                 ev(EV_STATE, json!({"state": "idle"})),
@@ -2299,11 +2300,15 @@ use super::title::*;
         assert_eq!(msgs[3].tokens_in, Some(10));
         assert_eq!(msgs[3].tokens_out, Some(4));
 
-        // `ask:done` reports the same spend.
+        // `ask:done` reports the same spend — and `loading` marked the
+        // run a re-ask (`regenerate`) so the card folds in place rather
+        // than appending a phantom turn.
         let got = events.lock().clone();
         assert!(got
             .iter()
             .any(|(n, p)| { n == EV_DONE && p["usage"] == json!({"input": 10, "output": 4}) }));
+        assert_eq!(got[0].1["regenerate"], json!(true));
+        assert_eq!(got[0].1["attempt"], json!(0));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

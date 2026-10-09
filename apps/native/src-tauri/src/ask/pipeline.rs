@@ -240,7 +240,7 @@ pub(crate) async fn send_chain(
         Err(msg) => {
             // The persisted row never painted — `loading` first so the
             // card still shows the question under the error toast.
-            emit(EV_STATE, make_loading(text, preset_id, &run_attachments));
+            emit(EV_STATE, make_loading(text, preset_id, &run_attachments, 0, re_asked));
             emit(EV_ERROR, json!({ "message": msg }));
             emit(EV_STATE, json!({"state": "idle"}));
             return Err(LlmError::Http {
@@ -314,7 +314,7 @@ pub(crate) async fn send_chain(
     }
     // `loading` announces the run's full attachment list — composer
     // picks plus any just-persisted screenshot.
-    let loading = make_loading(text, preset_id, &run_attachments);
+    let loading = make_loading(text, preset_id, &run_attachments, 0, re_asked);
     emit(EV_STATE, loading.clone());
     // The turn's spend = the answering attempt plus any attachment
     // describe a text-only retry arms (a failed candidate's usage is
@@ -331,9 +331,12 @@ pub(crate) async fn send_chain(
     let mut last_err: Option<LlmError> = None;
     for (i, cand) in candidates.iter().enumerate() {
         // A failover hand-off re-announces `loading` so the card drops
-        // the failed attempt's partial chunks before the next stream.
+        // the failed attempt's partial chunks before the next stream —
+        // `attempt: i` marks it as a retry of THIS run, not a new turn.
         if i > 0 {
-            emit(EV_STATE, loading.clone());
+            let mut retry = loading.clone();
+            retry["attempt"] = json!(i);
+            emit(EV_STATE, retry);
         }
         match stream_candidate(
             &*cand.provider,

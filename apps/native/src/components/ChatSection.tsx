@@ -5,10 +5,12 @@
  *
  * `ask:state{loading}` is a RUN boundary, not an append: it fires once
  * per run AND once per failover retry (and `ask_current` resyncs a live
- * run whose user row is already persisted). `applyLoading` folds all
- * three cases: retry of the current pair → drop the dead attempt's
- * partial text; resync over an existing user row → attach the live tail;
- * anything else → append the new pair.
+ * run whose user row is already persisted). The emit says WHICH it is
+ * — `attempt`/`regenerate` on the payload — so `applyLoading` folds
+ * without text-matching: retry/regenerate of the tail pair → reset its
+ * assistant bubble; the pair already painted (the emit landed behind
+ * the resync) → attach the live tail; anything else → append the new
+ * pair, so a same-text re-send shows the second turn it persists.
  *
  * Height reporting moved OUT to Bar.tsx — the observer measures the
  * whole card (this section contributes height naturally) and reports
@@ -70,6 +72,15 @@ interface AskStatePayload {
    *  emit fold); `liveRun` drops packets a killed run emitted before
    *  the backend's `abort` landed. */
   run?: number;
+  /** `loading` only — the 0-based failover index (ask.rs
+   *  `make_loading`): `> 0` marks a retry re-emit WITHIN the run, so
+   *  a same-text re-send (attempt 0 of a fresh run) appends a second
+   *  pair instead of dropping the previous reply. */
+  attempt?: number;
+  /** `loading` only — `ask_retry`'s re-ask (ask.rs `re_asked`): the
+   *  tail pair resets in place; the rejected reply's row was already
+   *  deleted server-side. */
+  regenerate?: boolean;
 }
 
 /** Meta fields surface in the ⋯ menu, not inline; absent while the
@@ -93,36 +104,83 @@ const PIN_PX = 24;
 
 const nowSecs = () => Math.floor(Date.now() / 1000);
 
+/** What kind of `loading` boundary this emit is — stated on the
+ *  payload (`attempt`/`regenerate`) or reconstructed for a resync,
+ *  never guessed from the question text. */
+interface LoadingBoundary {
+  /** The emit's run (`run` on the payload, `cur.run` on a resync). */
+  run?: number;
+  /** 0-based failover index — `> 0` is a retry of the tail pair's own
+   *  run. */
+  attempt?: number;
+  /** `ask_retry`'s re-ask — the tail pair resets in place. */
+  regenerate?: boolean;
+  /** The run the painted tail pair belongs to — the emit's pair is
+   *  already painted when they match (the mount resync folded the
+   *  live tail before the `loading` emit landed). `null` when the
+   *  tail is persisted history. */
+  tailRun: number | null;
+}
+
 /** Fold a `loading` boundary into the message list (see file doc).
  *  `preset` is the run's armed preset id — only the appended user row
  *  carries it (retries/resyncs reuse the persisted row's own). */
 const applyLoading = (
   prev: ChatMsg[],
   q: string,
+  boundary: LoadingBoundary,
   preset?: string | null,
   attachments?: MessageAttachment[],
 ): ChatMsg[] => {
   const last = prev[prev.length - 1];
-  if (
+  const pairTail =
     last?.role === 'assistant' &&
     prev[prev.length - 2]?.role === 'user' &&
-    prev[prev.length - 2].content === q
-  ) {
-    // Failover retry of the current run — drop the dead attempt's text.
-    return [...prev.slice(0, -1), { role: 'assistant', content: '' }];
+    prev[prev.length - 2].content === q;
+  const userTail = last?.role === 'user' && last.content === q;
+  const sameRun = boundary.run != null && boundary.run === boundary.tailRun;
+  const retry = (boundary.attempt ?? 0) > 0 && sameRun;
+  const regen = boundary.regenerate === true;
+  // A boundary can merge attachments that landed after the user row
+  // painted (a retry's fresh screenshot). `[]` is "not yet known"
+  // (the run's emit hasn't landed), never "none" — don't wipe
+  // attachments the row already carries.
+  const mergeAtts = (row: ChatMsg): ChatMsg =>
+    attachments != null && attachments.length > 0
+      ? { ...row, attachments }
+      : row;
+
+  if (retry || regen) {
+    // Failover retry of the tail pair's OWN run / `ask_retry`'s
+    // re-ask: reset its assistant bubble — a dead attempt's partial
+    // chunks or the rejected reply — keeping the user row.
+    if (pairTail) {
+      return [...prev.slice(0, -1), { role: 'assistant', content: '' }];
+    }
+    if (userTail) {
+      return [...prev, { role: 'assistant', content: '' }];
+    }
+    // The pair isn't painted — fall through and paint it.
+  } else if (sameRun) {
+    // A fresh run boundary whose pair the mount resync already
+    // painted (the emit was in the IPC pipe behind `ask_current`) —
+    // merge its attachments onto the run's user row; never double
+    // the pair.
+    if (pairTail) {
+      return [...prev.slice(0, -2), mergeAtts(prev[prev.length - 2]), last];
+    }
+    if (userTail) {
+      return [
+        ...prev.slice(0, -1),
+        mergeAtts(last),
+        { role: 'assistant', content: '' },
+      ];
+    }
+    // Nothing of this run painted yet — fall through and paint it.
   }
-  if (last?.role === 'user' && last.content === q) {
-    // Resync: the persisted user row already rendered — merge any
-    // attachments that landed after the row painted (a retry's fresh
-    // screenshot), then attach the tail. An empty payload list is "not
-    // yet known" (the run's emit hasn't landed), never "none" — don't
-    // wipe attachments the row already carries.
-    const user =
-      attachments != null && attachments.length > 0
-        ? { ...last, attachments }
-        : last;
-    return [...prev.slice(0, -1), user, { role: 'assistant', content: '' }];
-  }
+  // A fresh turn — append unconditionally. A same-text re-send is a
+  // real second turn: the backend persists a second user row, so the
+  // card must show exactly what reopening the history replays.
   return [
     ...prev,
     { role: 'user', content: q, ts: nowSecs(), preset, attachments },
@@ -205,14 +263,25 @@ export const ChatSection = ({ onBack }: { onBack: () => void }) => {
    *  here instead of re-painting the cleared list. */
   const runRef = useRef<number | null>(null);
   const deadRunsRef = useRef(new Set<number>());
+  /** The run the painted tail pair belongs to — `loading` compares
+   *  the emit's `run` against this to tell "the pair is already
+   *  painted, attach the tail" from "a fresh turn, append". Persisted
+   *  history owns no run (null until a live fold tags one). */
+  const tailRunRef = useRef<number | null>(null);
 
   /** Live-packet gate: runless payloads (the service's own `idle`
    *  settle after `abort`) always pass; a dead run's packet drops.
    *  Surviving packets teach `runRef` the live run — a mid-stream
-   *  mount may have missed the `loading`. */
+   *  mount may have missed the `loading`. Generations only move
+   *  forward, so a packet OLDER than the newest run seen is stale by
+   *  definition — that's also what catches a `session_resume`-aborted
+   *  run's in-pipe packets after this section remounts (`deadRuns`
+   *  only remembers kills made in this mount). */
   const liveRun = (run: number | undefined): boolean => {
     if (run == null) return true;
     if (deadRunsRef.current.has(run)) return false;
+    const last = runRef.current;
+    if (last != null && run < last) return false;
     runRef.current = run;
     return true;
   };
@@ -242,9 +311,19 @@ export const ChatSection = ({ onBack }: { onBack: () => void }) => {
           runRef.current = cur.run;
         }
         if (!cancelled && cur.state !== 'idle') {
+          // The painted tail belongs to the live run — tag it so the
+          // run's `loading` emit (in the IPC pipe behind this resync)
+          // re-attaches instead of appending a second pair.
+          tailRunRef.current = cur.run ?? null;
           setMsgs((prev) =>
             setTail(
-              applyLoading(prev, cur.question, null, cur.attachments),
+              applyLoading(
+                prev,
+                cur.question,
+                { run: cur.run, tailRun: cur.run ?? null },
+                null,
+                cur.attachments,
+              ),
               cur.response,
             ),
           );
@@ -303,10 +382,21 @@ export const ChatSection = ({ onBack }: { onBack: () => void }) => {
         // `newChat` may have landed mid-refetch — the dead run's fold
         // must not paint its pair into the fresh list.
         if (!liveRun(run)) return;
+        // Read the pre-fold tail run BEFORE retagging — the boundary
+        // compares against who owned the tail pair when this emit
+        // arrived, not after.
+        const tailRun = tailRunRef.current;
+        tailRunRef.current = run ?? tailRun;
         setMsgs((prev) => {
           const next = applyLoading(
             base ?? prev,
             p.question ?? '',
+            {
+              run,
+              attempt: p.attempt,
+              regenerate: p.regenerate,
+              tailRun,
+            },
             p.preset,
             p.attachments,
           );
@@ -400,11 +490,13 @@ export const ChatSection = ({ onBack }: { onBack: () => void }) => {
   const newChat = () => {
     // `session_end_active` aborts the in-flight run with its session —
     // mark its generation dead so packets it already emitted drop here
-    // instead of re-painting the cleared list.
+    // instead of re-painting the cleared list. `runRef` stays at the
+    // killed run: the stale bound (`run < last seen`) then also covers
+    // any older run's strays in the pipe.
     if (runRef.current != null) {
       deadRunsRef.current.add(runRef.current);
-      runRef.current = null;
     }
+    tailRunRef.current = null;
     void sessionEndActive('ask').catch(() => {});
     sessionRef.current = null;
     setMsgs([]);

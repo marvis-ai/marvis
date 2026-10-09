@@ -236,3 +236,101 @@ test('New chat during a loading refetch drops the dead fold', async () => {
   expect(host.textContent).not.toContain('q');
   expect(host.textContent).toContain('Ask Marvis');
 });
+
+test('a same-text re-send appends a second pair instead of hiding the first', async () => {
+  // The reported bug: re-asking the identical question hit the
+  // failover fold (same `loading` shape) and silently dropped the
+  // previous reply — while the DB, and the history view on reopen,
+  // kept both turns. `attempt` now marks the boundary: attempt 0 of
+  // a NEW run appends like any fresh turn.
+  await act(async () => root.render(<ChatSection onBack={() => {}} />));
+  const emitState = listeners.get('ask:state')!;
+  const emitChunk = listeners.get('ask:chunk')!;
+  const emitDone = listeners.get('ask:done')!;
+
+  await act(async () =>
+    emitState({
+      payload: { state: 'loading', question: 'same?', run: 1, attempt: 0 },
+    }),
+  );
+  await act(async () => emitChunk({ payload: { text: 'first', run: 1 } }));
+  await act(async () => emitDone({ payload: { full: 'first', run: 1 } }));
+  await act(async () => emitState({ payload: { state: 'idle', run: 1 } }));
+
+  await act(async () =>
+    emitState({
+      payload: { state: 'loading', question: 'same?', run: 2, attempt: 0 },
+    }),
+  );
+  await act(async () => emitChunk({ payload: { text: 'second', run: 2 } }));
+  await act(async () => emitDone({ payload: { full: 'second', run: 2 } }));
+
+  const text = host.textContent ?? '';
+  expect(text).toContain('first');
+  expect(text).toContain('second');
+  // Two user bubbles — the second turn is its own row, like history.
+  expect(host.querySelectorAll('.rounded-br-sm')).toHaveLength(2);
+});
+
+test('a failover retry (attempt>0) drops the dead attempt\u2019s partial', async () => {
+  await act(async () => root.render(<ChatSection onBack={() => {}} />));
+  const emitState = listeners.get('ask:state')!;
+  const emitChunk = listeners.get('ask:chunk')!;
+  const emitDone = listeners.get('ask:done')!;
+
+  await act(async () =>
+    emitState({
+      payload: { state: 'loading', question: 'q', run: 1, attempt: 0 },
+    }),
+  );
+  await act(async () => emitChunk({ payload: { text: 'par', run: 1 } }));
+  expect(host.textContent).toContain('par');
+
+  // Provider one died mid-stream — the chain re-announces `loading`
+  // with attempt 1: the partial resets before the next stream.
+  await act(async () =>
+    emitState({
+      payload: { state: 'loading', question: 'q', run: 1, attempt: 1 },
+    }),
+  );
+  await act(async () => emitChunk({ payload: { text: 'full', run: 1 } }));
+  await act(async () => emitDone({ payload: { full: 'full', run: 1 } }));
+
+  const text = host.textContent ?? '';
+  expect(text).toContain('full');
+  expect(text).not.toContain('par');
+});
+
+test('a regenerate folds in place — one pair, rejected reply dropped', async () => {
+  await act(async () => root.render(<ChatSection onBack={() => {}} />));
+  const emitState = listeners.get('ask:state')!;
+  const emitDone = listeners.get('ask:done')!;
+
+  await act(async () =>
+    emitState({
+      payload: { state: 'loading', question: 'q', run: 1, attempt: 0 },
+    }),
+  );
+  await act(async () => emitDone({ payload: { full: 'a1', run: 1 } }));
+  await act(async () => emitState({ payload: { state: 'idle', run: 1 } }));
+
+  // `ask_retry` — a new run flagged `regenerate`: the rejected reply's
+  // row is already deleted server-side, so the fold resets the tail.
+  await act(async () =>
+    emitState({
+      payload: {
+        state: 'loading',
+        question: 'q',
+        run: 2,
+        attempt: 0,
+        regenerate: true,
+      },
+    }),
+  );
+  await act(async () => emitDone({ payload: { full: 'a2', run: 2 } }));
+
+  const text = host.textContent ?? '';
+  expect(text).toContain('a2');
+  expect(text).not.toContain('a1');
+  expect(host.querySelectorAll('.rounded-br-sm')).toHaveLength(1);
+});

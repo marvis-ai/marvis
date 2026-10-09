@@ -15,8 +15,13 @@ export const EV_KEYSTORE_CHANGED = 'keystore:changed';
  *  chat drops a killed run's packets that were already in the IPC pipe
  *  when `session_end_active`'s abort landed. */
 // `loading` also carries `question` — the run's submitted text — plus
-// `attachments` (MessageAttachment[]) when the user turn has images.
-export const EV_ASK_STATE = 'ask:state'; // { state: 'loading'|'streaming'|'idle', question?: string, attachments?: MessageAttachment[], run?: number }
+// `attachments` (MessageAttachment[]) when the user turn has images,
+// and the run-boundary fields the chat folds on: `attempt` (0-based
+// failover index — >0 is a retry of the same run, never a new turn)
+// and `regenerate` (ask_retry's re-ask — resets the tail pair in
+// place). A same-text re-send is attempt 0 of a fresh run, so it
+// appends like the persisted history shows.
+export const EV_ASK_STATE = 'ask:state'; // { state: 'loading'|'streaming'|'idle', question?: string, preset?, attachments?: MessageAttachment[], run?: number, attempt?: number, regenerate?: boolean }
 export const EV_ASK_CHUNK = 'ask:chunk'; // { text: string, run?: number }
 export const EV_ASK_DONE = 'ask:done'; // { full, provider, model, usage, run?: number } — who answered
 export const EV_ASK_ERROR = 'ask:error'; // { message: string, needs_setup?: bool, run?: number }

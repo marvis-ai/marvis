@@ -33,9 +33,14 @@
 //!   fires on each attempt's FIRST token; every `loading` carries
 //!   `"question"` so the card resets its buffer + header per run AND
 //!   per failover retry (pre-flight errors emit `loading` → `error` →
-//!   `idle` too); `send_chain`'s `loading`s also carry `"preset"` —
-//!   the armed `instruct` preset id, `null` for a plain send or an id
-//!   that didn't resolve.
+//!   `idle` too). The run-boundary fields tell the fold WHAT the emit
+//!   is without text-matching: `"attempt"` is the 0-based failover
+//!   index (>0 marks a retry of the same run, never a new turn) and
+//!   `"regenerate"` marks `ask_retry`'s re-ask — a same-text re-send
+//!   is attempt 0 of a fresh run, so it appends a second pair just
+//!   like the persisted history shows. `send_chain`'s `loading`s also
+//!   carry `"preset"` — the armed `instruct` preset id, `null` for a
+//!   plain send or an id that didn't resolve.
 //! - `ask:chunk` `{"text": token}` per token.
 //! - `ask:done` `{"full": full_reply, "provider": id, "model": id,
 //!   "usage": {"input": n?, "output": n?} | null}` on success — the pair
@@ -515,6 +520,7 @@ impl AskService {
             return self.pre_spawn_error(
                 app,
                 text,
+                regenerate,
                 json!({
                     "message": "No AI provider is configured — add a key in Settings → Providers",
                     "needs_setup": true,
@@ -620,14 +626,28 @@ impl AskService {
     /// [`observe`] before emitting — it lands ~0ms after the card
     /// starts opening, so the `ask_current` resync is the only reliable
     /// delivery to the still-mounting webview.
-    fn pre_spawn_error(&self, app: &AppHandle, text: &str, payload: serde_json::Value) {
+    fn pre_spawn_error(
+        &self,
+        app: &AppHandle,
+        text: &str,
+        regenerate: bool,
+        payload: serde_json::Value,
+    ) {
         // `run`-tagged like the spawned task's emits — `kick` already
-        // bumped the generation for this run before delegating.
+        // bumped the generation for this run before delegating. The
+        // `attempt`/`regenerate` boundary fields match `make_loading`'s
+        // run-start shape so the card folds this the same way.
         let run = self.generation.load(Ordering::SeqCst);
         let _ = app.emit_to(
             BAR_LABEL,
             EV_STATE,
-            json!({"state": "loading", "question": text, "run": run}),
+            json!({
+                "state": "loading",
+                "question": text,
+                "attempt": 0,
+                "regenerate": regenerate,
+                "run": run,
+            }),
         );
         let mut payload = payload;
         payload["run"] = run.into();

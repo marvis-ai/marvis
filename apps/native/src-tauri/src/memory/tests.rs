@@ -47,6 +47,28 @@ fn parser_rejects_invalid_categories_attributes_confidence_and_secrets() {
     }
 }
 
+/// Small models compress "nothing to store" to a bare `[]` (and some
+/// emit the fact array without the `{"facts":…}` wrapper at all). The
+/// container shape isn't part of the safety contract — every element
+/// still gets the full per-fact validation — so a bare array parses.
+#[test]
+fn parser_tolerates_a_bare_fact_array_from_small_models() {
+    assert_eq!(parse_response("[]").unwrap().len(), 0);
+    let facts = parse_response(
+        r#"[{"category":"identity","attribute":"name","value":"The user's name is Allen.","confidence":0.9,"basis":"explicit"}]"#,
+    )
+    .unwrap();
+    assert_eq!(facts.len(), 1);
+    assert_eq!(facts[0].attribute, "name");
+    // …but a bare array does NOT relax per-fact validation.
+    assert!(
+        parse_response(
+            r#"[{"category":"project","attribute":"name","value":"x","confidence":1.0,"basis":"explicit"}]"#,
+        )
+        .is_err()
+    );
+}
+
 #[test]
 fn parser_caps_facts_and_profile_is_bounded_untrusted_data() {
     let facts = (0..10)

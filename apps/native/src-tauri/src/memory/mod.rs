@@ -88,14 +88,25 @@ fn is_valid_attribute(attribute: &str) -> bool {
 
 /// Parse the extractor's reply into validated candidates. Any malformed
 /// JSON or ANY invalid fact discards the whole response — a model that
-/// can't hold the contract isn't trusted to half-hold it.
+/// can't hold the contract isn't trusted to half-hold it. The container
+/// is lenient on purpose: the contract asks for `{"facts":[…]}` but
+/// small models answer the bare array (`[]` for "nothing to store") —
+/// the strictness lives in the per-fact validation below either way.
 pub(crate) fn parse_response(text: &str) -> anyhow::Result<Vec<MemoryCandidate>> {
-    let response: ExtractionResponse = serde_json::from_str(text.trim())
+    let value: serde_json::Value = serde_json::from_str(text.trim())
         .map_err(|e| anyhow::anyhow!("memory extraction response is not strict JSON: {e}"))?;
+    let raw_facts = if value.is_array() {
+        serde_json::from_value::<Vec<RawFact>>(value)
+            .map_err(|e| anyhow::anyhow!("memory extraction fact array is malformed: {e}"))?
+    } else {
+        serde_json::from_value::<ExtractionResponse>(value)
+            .map_err(|e| anyhow::anyhow!("memory extraction response is not strict JSON: {e}"))?
+            .facts
+    };
 
     let mut seen = HashSet::new();
     let mut facts = Vec::new();
-    for raw in response.facts {
+    for raw in raw_facts {
         let category = normalize_slug(&raw.category);
         if !matches!(category.as_str(), "identity" | "preference") {
             anyhow::bail!("unknown memory category {:?}", raw.category);
@@ -169,7 +180,13 @@ impl MemoryService {
         let messages = extraction_messages(&existing, source_text);
         let mut on_token = |_token: &str| {};
         let reply = provider.stream_chat(&messages, &mut on_token).await?;
-        let facts = parse_response(&reply.full)?;
+        // A malformed reply is unactionable without seeing it — carry a
+        // bounded snippet in the (local) log line so the failure mode is
+        // debuggable instead of a bare serde error.
+        let facts = parse_response(&reply.full).map_err(|e| {
+            let snippet: String = reply.full.chars().take(120).collect();
+            anyhow::anyhow!("{e}; reply: {snippet:?}")
+        })?;
         Ok(db.memory_apply(session_id, message_id, &facts)?)
     }
 }

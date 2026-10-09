@@ -26,11 +26,22 @@ pub(super) fn accent_glass_tint(accent: &str) -> Option<String> {
 pub(super) fn order_front_unfocused(win: &WebviewWindow) {
     use objc2_app_kit::NSWindow;
     match win.ns_window() {
-        // SAFETY: tauri hands us the live NSWindow for `win`.
-        Ok(ptr) => unsafe {
-            let ns_win = &*(ptr as *const NSWindow);
-            ns_win.orderFront(None);
-        },
+        // `orderFront:` is a main-thread-only AppKit write — off the main
+        // thread the window manager asserts ("Must only be used from the
+        // main thread", SIGTRAP). Hop: inline on the main thread, queued
+        // otherwise — the call stays safe wherever a caller lands.
+        Ok(ptr) => {
+            let ptr = ptr as usize;
+            if let Err(e) = win.run_on_main_thread(move || unsafe {
+                // SAFETY: tauri hands us the live NSWindow for `win`; the
+                // pool owns the window, so it outlives this dispatch.
+                let ns_win = &*(ptr as *const NSWindow);
+                ns_win.orderFront(None);
+            }) {
+                log::warn!("windows: palette orderFront hop failed ({e}) — falling back to show");
+                let _ = win.show();
+            }
+        }
         Err(e) => {
             log::warn!("windows: palette orderFront failed ({e}) — falling back to show");
             let _ = win.show();

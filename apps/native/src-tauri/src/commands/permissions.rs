@@ -31,7 +31,15 @@ pub(crate) async fn permissions_request_screen(app: AppHandle) -> bool {
     let granted = tauri::async_runtime::spawn_blocking(permissions::screen_request)
         .await
         .unwrap_or(false);
-    transition_gate(&app);
+    // `transition_gate` → `enter_main`/`leave_main` is window work —
+    // this command resumes on a tokio worker after the await, so hop
+    // to the main thread (the pool's getters park the caller on the
+    // main queue, which is the ABBA deadlock the window-event
+    // `try_lock`s exist to avoid).
+    let app2 = app.clone();
+    if let Err(e) = app.run_on_main_thread(move || transition_gate(&app2)) {
+        log::warn!("permissions_request_screen: gate transition hop failed: {e}");
+    }
     granted
 }
 

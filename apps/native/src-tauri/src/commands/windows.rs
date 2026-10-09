@@ -33,14 +33,19 @@ pub(crate) fn window_focus_bar(app: AppHandle) {
 }
 
 /// Same entry point as the bar's `Cmd+,` and the tray's Settings item.
-#[tauri::command(async)]
+/// Main-thread command: `show_prefs` is window work end to end — its
+/// getters (`is_visible` in `set_bar_shown`) park the caller on the
+/// main queue, which deadlocks if a worker arrives holding `pool`
+/// while main waits on it. Never mark `(async)`.
+#[tauri::command]
 pub(crate) fn window_show_settings(app: AppHandle) {
     show_settings(&app);
 }
 
 /// Onboarding mode of the same prefs window — the startup first-run
 /// opener and the sidebar's "Re-run setup" both come through here.
-#[tauri::command(async)]
+/// Main-thread command for the same reason as `window_show_settings`.
+#[tauri::command]
 pub(crate) fn window_show_onboarding(app: AppHandle) {
     app.state::<AppState>()
         .pool

@@ -44,6 +44,7 @@ mod hotkey;
 mod keystore;
 mod listen;
 mod llm;
+mod memory;
 mod menubar;
 mod menus;
 mod paths;

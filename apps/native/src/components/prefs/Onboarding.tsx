@@ -257,7 +257,7 @@ const LanguageStep = ({
 
   return (
     <>
-      <h1 className={H1}>Main language</h1>
+      <h1 className={H1}>Output language</h1>
       <p className={LEDE}>
         Chat replies, meeting summaries, and dictation default to this language.
       </p>

@@ -70,15 +70,6 @@ export const PrivacyTab = () => {
         <em>ask composer images, normalized JPEGs</em>
       </div>
 
-      <p className={cn(PROV_NOTE, 'mt-0 mb-3.5')}>
-        Memory (off by default) stores profile facts in marvis.db — edit or
-        delete them under Memory. Extraction runs only after you enable it and
-        only sends your new Ask text to the selected Memory LLM: hosted
-        providers receive that text, Ollama stays local (it may use your
-        CPU/GPU). Screen frames, attachments, Listen transcripts, assistant
-        replies, and past sessions are never analyzed.
-      </p>
-
       <div className='my-3.5 grid grid-cols-3 gap-2.5'>
         <div className='border-t border-foreground pt-2'>
           <div

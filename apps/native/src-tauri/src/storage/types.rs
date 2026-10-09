@@ -117,3 +117,36 @@ pub struct Summary {
     pub updated_at: i64,
 }
 
+/// A row of `memories` — one stored identity/preference fact.
+/// `Serialize` so the `memory_list` command hands rows to the settings
+/// UI verbatim. `category`/`attribute`/`value` are the display columns;
+/// `basis` (`"explicit"`/`"inferred"`) and `confidence` are provenance.
+/// `source` is `"automatic"` (extracted by the Memory LLM) or `"manual"`
+/// (user-edited — automatic writes never overwrite it).
+/// `source_*` ids point at the ask turn a fact came from; `ON DELETE
+/// SET NULL` clears them when history is wiped.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct Memory {
+    pub id: i64,
+    pub category: String,
+    pub attribute: String,
+    pub value: String,
+    pub confidence: f64,
+    pub basis: String,
+    pub source: String,
+    pub source_session_id: Option<i64>,
+    pub source_message_id: Option<i64>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+/// A parsed extraction candidate — the not-yet-persisted half of a
+/// [`Memory`]. `memory_apply` upserts these under `source = "auto"`.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct MemoryCandidate {
+    pub category: String,
+    pub attribute: String,
+    pub value: String,
+    pub confidence: f64,
+    pub basis: String,
+}

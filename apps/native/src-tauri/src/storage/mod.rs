@@ -15,6 +15,9 @@
 //!          provider?, model?, tokens_in?, tokens_out?, preset?, ts)
 //! transcripts(id PK, session_id FK → sessions.id ON DELETE CASCADE, speaker, speaker_idx?, content, ts)
 //! summaries(id PK, session_id FK → sessions.id ON DELETE CASCADE UNIQUE, tldr, bullets, follow_ups, topic?, created_at, updated_at)
+//! memories(id PK, category, attribute, value, confidence, basis, source 'automatic'|'manual',
+//!          source_session_id? FK → sessions.id ON DELETE SET NULL,
+//!          source_message_id? FK → messages.id ON DELETE SET NULL, created_at, updated_at)
 //! ```
 //!
 //! `summaries` holds one row per session — the live summary is an upsert,
@@ -26,14 +29,15 @@
 //!
 //! All timestamps are unix-epoch seconds (`i64`).
 
+mod memories;
 mod messages;
 mod migrate;
 mod sessions;
 mod transcripts;
 mod types;
 
-pub(crate) use types::*;
 use self::migrate::*;
+pub(crate) use types::*;
 
 #[cfg(test)]
 mod tests;
@@ -109,6 +113,26 @@ const SCHEMA: &str = "
         position   INTEGER NOT NULL,
         FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE
     );
+
+    CREATE TABLE IF NOT EXISTS memories (
+        id               INTEGER PRIMARY KEY,
+        category         TEXT NOT NULL,
+        attribute        TEXT NOT NULL,
+        value            TEXT NOT NULL,
+        confidence       REAL NOT NULL,
+        basis            TEXT NOT NULL,
+        source           TEXT NOT NULL,
+        source_session_id INTEGER,
+        source_message_id INTEGER,
+        created_at       INTEGER NOT NULL,
+        updated_at       INTEGER NOT NULL,
+        FOREIGN KEY (source_session_id) REFERENCES sessions(id) ON DELETE SET NULL,
+        FOREIGN KEY (source_message_id) REFERENCES messages(id) ON DELETE SET NULL
+    );
+    CREATE INDEX IF NOT EXISTS memories_category_attribute
+        ON memories(category, attribute);
+    CREATE INDEX IF NOT EXISTS memories_updated_at
+        ON memories(updated_at DESC, id DESC);
 ";
 
 /// The database handle. Cheap to share: all state lives behind the mutex.
@@ -156,4 +180,3 @@ fn now() -> i64 {
         .expect("system clock before unix epoch")
         .as_secs() as i64
 }
-

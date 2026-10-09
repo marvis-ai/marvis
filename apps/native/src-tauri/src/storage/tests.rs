@@ -919,3 +919,121 @@ fn legacy_message_merge_rolls_back_if_drop_fails() {
         "preserve me"
     );
 }
+
+#[test]
+fn memory_profile_inserts_updates_and_manual_edits_win() {
+    let dir = tmp_dir();
+    let db = Db::at(dir.join("marvis.db")).unwrap();
+    let session_id = db.session_get_or_create_active("ask").unwrap();
+    let message_id = db
+        .message_add(session_id, "user", "My name is Allen.")
+        .unwrap();
+    let name = MemoryCandidate {
+        category: "identity".into(),
+        attribute: "name".into(),
+        value: "The user's name is Allen.".into(),
+        confidence: 0.98,
+        basis: "explicit".into(),
+    };
+
+    assert_eq!(
+        db.memory_apply(Some(session_id), Some(message_id), &[name.clone()])
+            .unwrap(),
+        1
+    );
+    let first = db.memory_profile().unwrap();
+    assert_eq!(first.len(), 1);
+    assert_eq!(first[0].value, "The user's name is Allen.");
+    assert_eq!(first[0].source_session_id, Some(session_id));
+    assert_eq!(first[0].source_message_id, Some(message_id));
+
+    let changed = MemoryCandidate {
+        value: "The user's name is Chenillen.".into(),
+        confidence: 0.99,
+        ..name.clone()
+    };
+    assert_eq!(
+        db.memory_apply(Some(session_id), Some(message_id), &[changed.clone()])
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        db.memory_profile().unwrap()[0].value,
+        "The user's name is Chenillen."
+    );
+
+    let id = db.memory_profile().unwrap()[0].id;
+    let edited = db
+        .memory_update(id, "The user's preferred name is Chenillen.")
+        .unwrap()
+        .unwrap();
+    assert_eq!(edited.source, "manual");
+    assert_eq!(edited.basis, "explicit");
+    assert_eq!(edited.confidence, 1.0);
+    assert_eq!(edited.source_session_id, None);
+    assert_eq!(edited.source_message_id, None);
+
+    // Automatic extraction must never overwrite a manual row.
+    let ignored = MemoryCandidate {
+        value: "The user's name is Different.".into(),
+        ..changed
+    };
+    assert_eq!(
+        db.memory_apply(Some(session_id), Some(message_id), &[ignored])
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        db.memory_profile().unwrap()[0].value,
+        "The user's preferred name is Chenillen."
+    );
+
+    db.memory_delete(id).unwrap();
+    assert!(db.memory_profile().unwrap().is_empty());
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn memory_source_foreign_keys_are_cleared_when_history_is_deleted() {
+    let dir = tmp_dir();
+    let db = Db::at(dir.join("marvis.db")).unwrap();
+    let session_id = db.session_get_or_create_active("ask").unwrap();
+    let message_id = db
+        .message_add(session_id, "user", "I prefer lists.")
+        .unwrap();
+    db.memory_apply(
+        Some(session_id),
+        Some(message_id),
+        &[MemoryCandidate {
+            category: "preference".into(),
+            attribute: "formatting".into(),
+            value: "The user prefers lists.".into(),
+            confidence: 0.9,
+            basis: "explicit".into(),
+        }],
+    )
+    .unwrap();
+
+    db.session_delete(session_id).unwrap();
+    let row = &db.memory_profile().unwrap()[0];
+    assert_eq!(row.source_session_id, None);
+    assert_eq!(row.source_message_id, None);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn existing_database_open_creates_memory_table_without_backfill() {
+    let dir = tmp_dir();
+    let path = dir.join("marvis.db");
+    std::fs::create_dir_all(&dir).unwrap();
+    let conn = Connection::open(&path).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE sessions (id INTEGER PRIMARY KEY, type TEXT NOT NULL, started_at INTEGER NOT NULL, last_active_at INTEGER NOT NULL);",
+    )
+    .unwrap();
+    drop(conn);
+
+    let db = Db::at(&path).unwrap();
+    assert!(db.memory_profile().unwrap().is_empty());
+    let _ = std::fs::remove_dir_all(dir);
+}

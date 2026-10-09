@@ -1,6 +1,7 @@
 import { Badge, MicIcon, MonitorIcon, VideoIcon, XIcon } from '@marvis/ui';
 import { MvBar, MvListen } from './mv';
-import { GITHUB_RELEASES } from '@/lib/constants';
+import { APP_VERSION, GITHUB_RELEASES } from '@/lib/constants';
+import Link from 'next/link';
 
 const TILES: { initials: string; name: string; cls: string }[] = [
   { initials: 'AK', name: 'Ava', cls: 'av-1' },
@@ -24,14 +25,17 @@ export const Hero = () => (
         leave your device.
       </p>
       <div className='hero-cta'>
-        <a
-          className='btn btn-primary'
+        <Link
+          className='flex flex-col items-center gap-0.5 btn-primary text-primary-foreground rounded-xl px-8 py-2'
           href={GITHUB_RELEASES}
           target='_blank'
           rel='noopener noreferrer'
           data-od-id='hero-cta-primary'>
-          Download
-        </a>
+          <span className='font-semibold'>Download</span>
+          <span className='text-xs text-muted-foreground/10'>
+            Latest version: {APP_VERSION}
+          </span>
+        </Link>
         <a
           className='btn btn-ghost btn-arrow'
           href='#privacy'

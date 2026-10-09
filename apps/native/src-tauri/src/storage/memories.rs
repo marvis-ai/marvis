@@ -45,8 +45,9 @@ impl Db {
     /// and the `<user_profile>` prompt block.
     pub fn memory_profile(&self) -> anyhow::Result<Vec<Memory>> {
         let conn = self.conn.lock();
-        let mut stmt =
-            conn.prepare(&format!("{MEMORY_SELECT} ORDER BY category ASC, attribute ASC, id ASC"))?;
+        let mut stmt = conn.prepare(&format!(
+            "{MEMORY_SELECT} ORDER BY category ASC, attribute ASC, id ASC"
+        ))?;
         let rows = stmt.query_map([], read_memory)?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }

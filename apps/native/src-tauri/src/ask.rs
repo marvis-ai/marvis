@@ -20,8 +20,11 @@
 //! a sidecar call AFTER `ask:state{idle}` (history shows the
 //! first-question fallback until it lands, then `sessions:changed`
 //! refreshes it). A provider `MultimodalUnsupported` rejection retries
-//! once without the image (per attempt); [`AskService::close`] aborts
-//! any in-flight stream via a [`CancellationToken`].
+//! once text-only (per attempt): a screen frame is simply dropped,
+//! while the user's own attachments are first described by the
+//! `[vision]` reader into an `<attached_images>` block — never
+//! silently discarded. [`AskService::close`] aborts any in-flight
+//! stream via a [`CancellationToken`].
 //!
 //! Event protocol (emitted to the `bar` window via `app.emit_to`):
 //! - `ask:state` `{"state": "loading"|"streaming"|"idle"}` — `streaming`
@@ -827,9 +830,17 @@ pub(crate) async fn send_chain(
         Some(ScreenMaterial::Frame(f)) => (Some(f), None),
         None => (None, None),
     };
-    // The turn's spend = vision read + the answering attempt (a failed
-    // candidate's usage is unknowable — errors carry none).
+    // The turn's spend = vision reads (screen + any attachment
+    // describe) + the answering attempt (a failed candidate's usage is
+    // unknowable — errors carry none).
     let mut usage = resolved.1;
+    // The multimodal fallback: when a chat candidate rejects image
+    // input, the vision reader describes the user's attachments ONCE —
+    // every later candidate's text-only retry reuses the block.
+    let mut image_fallback = ImageFallback {
+        vision: vision.as_ref(),
+        described: None,
+    };
 
     let mut last_err: Option<LlmError> = None;
     for (i, cand) in candidates.iter().enumerate() {
@@ -847,6 +858,8 @@ pub(crate) async fn send_chain(
             &user_images,
             frame.as_ref(),
             screen.as_deref(),
+            &mut image_fallback,
+            &mut usage,
             cancel,
             language,
             instruction,
@@ -1201,10 +1214,100 @@ pub(crate) async fn resolve_screen(
     Ok((Some(ScreenMaterial::Frame(frame)), usage))
 }
 
+/// The run's multimodal fallback — the `[vision]` provider describes
+/// the user's attachments when a chat candidate can't take image
+/// input, the same idea as `resolve_screen` turning a frame into
+/// `<screen_context>`. `described` memoizes the `<attached_images>`
+/// block: one vision read per run, shared by every candidate's
+/// text-only retry.
+struct ImageFallback<'a> {
+    vision: Option<&'a ProviderCandidate>,
+    described: Option<String>,
+}
+
+impl ImageFallback<'_> {
+    /// Arm the text-only retry by describing `images` through the
+    /// vision provider. `Ok(true)` = `described` now holds the block;
+    /// `Ok(false)` = cancelled mid-read; `Err` = no usable vision read
+    /// (reader unconfigured, failed, or answered empty — the caller
+    /// hands the original rejection off to the next candidate).
+    async fn describe(
+        &mut self,
+        images: &[Vec<u8>],
+        question: &str,
+        usage: &mut TokenUsage,
+        cancel: &CancellationToken,
+    ) -> Result<bool, LlmError> {
+        if self.described.is_some() {
+            return Ok(true);
+        }
+        let Some(vis) = self.vision else {
+            return Err(LlmError::NoModel);
+        };
+        let reply = match crate::screen_read::describe_images(
+            &*vis.provider,
+            images,
+            question,
+            cancel,
+        )
+        .await
+        {
+            Ok(Some(reply)) => reply,
+            Ok(None) => return Ok(false),
+            Err(e) => return Err(e),
+        };
+        if let Some(u) = reply.usage {
+            usage.add(&u);
+        }
+        let described = reply.full.trim().to_string();
+        // An empty read is no read — a text-only retry without the
+        // block would silently drop the attachments it exists to carry.
+        if described.is_empty() {
+            return Err(LlmError::NoModel);
+        }
+        self.described = Some(described);
+        Ok(true)
+    }
+}
+
+/// Every `ImageJpeg` part in `history` becomes a text marker — a
+/// text-only retry can't carry bytes the model already rejected, and
+/// an explicit marker keeps "an image was attached here" honest
+/// without the pixels.
+fn text_only_history(history: &[ChatMessage]) -> Vec<ChatMessage> {
+    history
+        .iter()
+        .map(|m| ChatMessage {
+            role: m.role,
+            content: m
+                .content
+                .iter()
+                .map(|part| match part {
+                    ContentPart::ImageJpeg(_) => {
+                        ContentPart::Text("[image attachment]".to_string())
+                    }
+                    part => part.clone(),
+                })
+                .collect(),
+        })
+        .collect()
+}
+
+/// Any image parts in the history tail — a text-only model rejects
+/// them the same way it rejects the current turn's attachments.
+fn history_has_images(history: &[ChatMessage]) -> bool {
+    history
+        .iter()
+        .any(|m| m.content.iter().any(|p| matches!(p, ContentPart::ImageJpeg(_))))
+}
+
 /// One candidate's full attempt: stream, and on a
-/// `MultimodalUnsupported` rejection retry ONCE text-only. Emits
-/// `ask:chunk`/`ask:state{streaming}` but never `done`/`error`/`idle` —
-/// the chain owns the run's protocol; this owns one provider's messages.
+/// `MultimodalUnsupported` rejection retry ONCE text-only — the user's
+/// attachments vision-described into `<attached_images>` when the
+/// reader is configured, a screen frame dropped, history images
+/// marked. Emits `ask:chunk`/`ask:state{streaming}` but never
+/// `done`/`error`/`idle` — the chain owns the run's protocol; this
+/// owns one provider's messages.
 #[allow(clippy::too_many_arguments)]
 async fn stream_candidate(
     provider: &dyn Provider,
@@ -1215,6 +1318,8 @@ async fn stream_candidate(
     user_images: &[Vec<u8>],
     frame: Option<&Frame>,
     screen: Option<&str>,
+    image_fallback: &mut ImageFallback<'_>,
+    usage: &mut TokenUsage,
     cancel: &CancellationToken,
     language: &str,
     instruction: Option<&str>,
@@ -1227,6 +1332,7 @@ async fn stream_candidate(
         user_images,
         frame,
         screen,
+        None,
         language,
         instruction,
     );
@@ -1236,24 +1342,55 @@ async fn stream_candidate(
             StreamOutcome::Done(reply) => return CandidateOutcome::Done(reply),
             StreamOutcome::Cancelled => return CandidateOutcome::Cancelled,
             StreamOutcome::Failed(e) => {
-                // A vision-incapable model may retry ONCE without the
-                // screen frame — but NEVER without the user's own
-                // attachments: a text-only retry would silently drop
-                // them, so image-bearing sends hand off to the next
-                // candidate instead.
-                if !retried && user_images.is_empty() && frame.is_some() && e.is_multimodal() {
-                    retried = true;
-                    msgs = build_messages(
-                        history,
-                        listen_history,
-                        text,
-                        user_images,
-                        None,
-                        screen,
-                        language,
-                        instruction,
-                    );
-                    continue;
+                // A vision-incapable model may retry ONCE text-only —
+                // but the user's own attachments are never silently
+                // dropped: the vision reader describes them into an
+                // `<attached_images>` block first (one read per run —
+                // later candidates reuse it). No reader or a failed
+                // read hands off to the next candidate unchanged.
+                if !retried && e.is_multimodal() {
+                    if !user_images.is_empty() {
+                        match image_fallback
+                            .describe(user_images, text, usage, cancel)
+                            .await
+                        {
+                            Ok(true) => {
+                                retried = true;
+                                msgs = build_messages(
+                                    &text_only_history(history),
+                                    listen_history,
+                                    text,
+                                    &[],
+                                    None,
+                                    screen,
+                                    image_fallback.described.as_deref(),
+                                    language,
+                                    instruction,
+                                );
+                                continue;
+                            }
+                            Ok(false) => return CandidateOutcome::Cancelled,
+                            Err(_) => {}
+                        }
+                    } else if frame.is_some() || history_has_images(history) {
+                        // No new attachments: the droppable material is
+                        // the frame, plus any persisted history images a
+                        // text-only model would reject — those degrade
+                        // to `[image attachment]` markers.
+                        retried = true;
+                        msgs = build_messages(
+                            &text_only_history(history),
+                            listen_history,
+                            text,
+                            &[],
+                            None,
+                            screen,
+                            None,
+                            language,
+                            instruction,
+                        );
+                        continue;
+                    }
                 }
                 return CandidateOutcome::Failed(e);
             }
@@ -1314,6 +1451,9 @@ async fn stream_once(
 /// else with the screen reader's `<screen_context>` description when
 /// a vision provider read it; text-only otherwise (and on the
 /// frame-dropping retry — the description, when present, survives it).
+/// On the attachment-describe retry the caller passes `attached` — the
+/// vision reader's `<attached_images>` text — and no image parts, so a
+/// text-only model sees the images' content without their bytes.
 /// The system message is
 /// `live_system_prompt_with(language, instruction)` — the armed
 /// `instruct` preset's text appended after the language directive.
@@ -1325,6 +1465,7 @@ fn build_messages(
     images: &[Vec<u8>],
     frame: Option<&Frame>,
     screen: Option<&str>,
+    attached: Option<&str>,
     language: &str,
     instruction: Option<&str>,
 ) -> Vec<ChatMessage> {
@@ -1334,7 +1475,7 @@ fn build_messages(
         live_system_prompt_with(language, instruction),
     ));
     msgs.extend(history.iter().cloned());
-    let request = live_user_prompt(text, listen_history, screen);
+    let request = live_user_prompt(text, listen_history, screen, attached);
     let mut user = ChatMessage::user_with_images(request, images.to_vec());
     if let Some(frame) = frame {
         user.content.push(ContentPart::ImageJpeg(frame.jpeg.clone()));
@@ -1758,6 +1899,7 @@ mod tests {
             &[],
             None,
             None,
+            None,
             "en",
             None,
         );
@@ -1789,6 +1931,7 @@ mod tests {
             &images,
             Some(&test_frame()),
             None,
+            None,
             "en",
             None,
         );
@@ -1805,7 +1948,7 @@ mod tests {
     #[test]
     fn build_messages_without_images_keeps_single_text_part() {
         let messages =
-            build_messages(&[], "", "q", &[], None, None, "en", None);
+            build_messages(&[], "", "q", &[], None, None, None, "en", None);
         assert_eq!(messages[1].content.len(), 1);
         assert_request_text(&messages[1], "q");
     }
@@ -2642,6 +2785,541 @@ mod tests {
         let msgs = ask_messages(&db);
         assert_eq!(msgs.len(), 1);
         assert_eq!(msgs[0].attachments.len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The multimodal fallback: a candidate that rejects image input
+    /// triggers ONE vision read over the user's attachments, then the
+    /// SAME provider retries text-only with the `<attached_images>`
+    /// block — the images are described, never silently dropped.
+    #[tokio::test]
+    async fn send_chain_multimodal_rejection_describes_attachments_via_vision() {
+        let dir = tmp_dir();
+        let db = Db::at(dir.join("marvis.db")).unwrap();
+        let att_root = dir.join("attachments");
+        let vision = MockProvider::new(vec![Behavior::Tokens(vec![
+            "a terminal showing a build error".into(),
+        ])]);
+        let chat = MockProvider::new(vec![
+            Behavior::Fail(LlmError::MultimodalUnsupported),
+            Behavior::Tokens(vec!["answer".into()]),
+        ]);
+        let vision_calls = vision.calls();
+        let chat_calls = chat.calls();
+        let (events, emit) = recorder();
+        let reader = screen_read::ScreenReader::new();
+        let ring = Mutex::new(RingBuffer::new(4, 1 << 20));
+        let input = input(&reader, &ring);
+        let cancel = CancellationToken::new();
+
+        let full = send_chain(
+            vec![candidate("openai", chat)],
+            Some(candidate("gemini", vision)),
+            &db,
+            &emit,
+            &input,
+            &cancel,
+            ChainOpts {
+                text: "what broke?",
+                language: "en",
+                attachments: vec![AskAttachmentInput {
+                    name: "shot.png".into(),
+                    jpeg_base64: jpeg_b64(),
+                }],
+                attachments_root: Some(&att_root),
+                ..ChainOpts::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(full, "answer");
+
+        // The vision read got the attachment and the question (one
+        // user message, no system prompt — an intermediate read).
+        let vcalls = vision_calls.lock();
+        assert_eq!(vcalls.len(), 1);
+        assert!(has_image(&vcalls[0][0]));
+        let vtext = match &vcalls[0][0].content[0] {
+            ContentPart::Text(t) => t.clone(),
+            _ => panic!("vision prompt must start with text"),
+        };
+        assert!(vtext.contains("<user_question>"));
+        assert!(vtext.contains("what broke?"));
+        drop(vcalls);
+
+        // The retried call: no image parts, the description riding
+        // <attached_images>; then the title sidecar.
+        let ccalls = chat_calls.lock();
+        assert_eq!(ccalls.len(), 3);
+        assert!(has_image(&ccalls[0][1])); // the rejected attempt got the real bytes
+        let retry = &ccalls[1][1];
+        assert!(!has_image(retry));
+        assert_eq!(
+            retry.content,
+            vec![ContentPart::Text(
+                "what broke?\n\n<attached_images>\na terminal showing a build error\n</attached_images>"
+                    .to_string()
+            )]
+        );
+        drop(ccalls);
+
+        // The card saw one coherent run — the describe produced no
+        // events of its own, and `ask:done` names the answering chain
+        // provider.
+        let got = events.lock().clone();
+        assert!(got.iter().any(|(n, p)| n == EV_DONE
+            && p["provider"] == "openai"
+            && p["full"] == "answer"));
+        assert!(got.iter().all(|(n, _)| n != EV_ERROR));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// One vision read per RUN: when the first candidate's text-only
+    /// retry also fails and the next candidate rejects images too, the
+    /// memoized description is reused — the reader is not re-billed.
+    #[tokio::test]
+    async fn send_chain_attachment_describe_is_reused_across_candidates() {
+        let dir = tmp_dir();
+        let db = Db::at(dir.join("marvis.db")).unwrap();
+        let att_root = dir.join("attachments");
+        let vision = MockProvider::new(vec![Behavior::Tokens(vec!["the image".into()])]);
+        let first = MockProvider::new(vec![
+            Behavior::Fail(LlmError::MultimodalUnsupported),
+            Behavior::Fail(LlmError::Http {
+                status: 500,
+                message: "boom".into(),
+            }),
+        ]);
+        let second = MockProvider::new(vec![
+            Behavior::Fail(LlmError::MultimodalUnsupported),
+            Behavior::Tokens(vec!["ok".into()]),
+        ]);
+        let vision_calls = vision.calls();
+        let second_calls = second.calls();
+        let (_events, emit) = recorder();
+        let reader = screen_read::ScreenReader::new();
+        let ring = Mutex::new(RingBuffer::new(4, 1 << 20));
+        let input = input(&reader, &ring);
+        let cancel = CancellationToken::new();
+
+        let full = send_chain(
+            vec![candidate("openai", first), candidate("gemini", second)],
+            Some(candidate("gemini", vision)),
+            &db,
+            &emit,
+            &input,
+            &cancel,
+            ChainOpts {
+                text: "q",
+                language: "en",
+                attachments: vec![AskAttachmentInput {
+                    name: "p.jpg".into(),
+                    jpeg_base64: jpeg_b64(),
+                }],
+                attachments_root: Some(&att_root),
+                ..ChainOpts::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(full, "ok");
+
+        assert_eq!(vision_calls.lock().len(), 1);
+        let second = second_calls.lock();
+        // image attempt → described retry → (no title sidecar: the
+        // session was titled... actually untitled — sidecar follows)
+        assert!(has_image(&second[0][1]));
+        let retry = &second[1][1];
+        assert!(!has_image(retry));
+        match &retry.content[0] {
+            ContentPart::Text(t) => assert!(t.contains("<attached_images>\nthe image")),
+            _ => panic!("retry must be text-only"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// No vision reader configured → the describe can't run, so the
+    /// chain falls back to handing the real bytes to the next
+    /// candidate (the pre-fallback behavior).
+    #[tokio::test]
+    async fn send_chain_describe_failure_keeps_images_for_next_candidate() {
+        let dir = tmp_dir();
+        let db = Db::at(dir.join("marvis.db")).unwrap();
+        let att_root = dir.join("attachments");
+        let vision = MockProvider::new(vec![Behavior::Fail(LlmError::Http {
+            status: 500,
+            message: "vision down".into(),
+        })]);
+        let first = MockProvider::new(vec![Behavior::Fail(LlmError::MultimodalUnsupported)]);
+        let second = MockProvider::new(vec![Behavior::Tokens(vec!["ok".into()])]);
+        let vision_calls = vision.calls();
+        let second_calls = second.calls();
+        let (_events, emit) = recorder();
+        let reader = screen_read::ScreenReader::new();
+        let ring = Mutex::new(RingBuffer::new(4, 1 << 20));
+        let input = input(&reader, &ring);
+        let cancel = CancellationToken::new();
+
+        let full = send_chain(
+            vec![candidate("openai", first), candidate("gemini", second)],
+            Some(candidate("gemini", vision)),
+            &db,
+            &emit,
+            &input,
+            &cancel,
+            ChainOpts {
+                text: "q",
+                language: "en",
+                attachments: vec![AskAttachmentInput {
+                    name: "p.jpg".into(),
+                    jpeg_base64: jpeg_b64(),
+                }],
+                attachments_root: Some(&att_root),
+                ..ChainOpts::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(full, "ok");
+
+        assert_eq!(vision_calls.lock().len(), 1);
+        // The next candidate still got the real image — a failed read
+        // must not silently strip the attachment.
+        let second = second_calls.lock();
+        assert_eq!(second.len(), 2); // answer + title sidecar
+        assert!(has_image(&second[0][1]));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Cancel mid-describe stops the run — same semantics as a
+    /// cancelled screen read: the user asked to stop, so no retry or
+    /// failover may open a new request.
+    #[tokio::test]
+    async fn send_chain_cancel_during_attachment_describe_stops_the_run() {
+        let dir = tmp_dir();
+        let db = Db::at(dir.join("marvis.db")).unwrap();
+        let att_root = dir.join("attachments");
+        let vision = MockProvider::new(vec![Behavior::Hang]);
+        let chat = MockProvider::new(vec![
+            Behavior::Fail(LlmError::MultimodalUnsupported),
+            Behavior::Tokens(vec!["never".into()]),
+        ]);
+        let chat_calls = chat.calls();
+        let (events, emit) = recorder();
+        let reader = screen_read::ScreenReader::new();
+        let ring = Mutex::new(RingBuffer::new(4, 1 << 20));
+        let input = input(&reader, &ring);
+        let cancel = CancellationToken::new();
+
+        let c2 = cancel.clone();
+        let cancels = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            c2.cancel();
+        });
+        let err = send_chain(
+            vec![candidate("openai", chat)],
+            Some(candidate("gemini", vision)),
+            &db,
+            &emit,
+            &input,
+            &cancel,
+            ChainOpts {
+                text: "q",
+                language: "en",
+                attachments: vec![AskAttachmentInput {
+                    name: "p.jpg".into(),
+                    jpeg_base64: jpeg_b64(),
+                }],
+                attachments_root: Some(&att_root),
+                ..ChainOpts::default()
+            },
+        )
+        .await
+        .unwrap_err();
+        cancels.await.unwrap();
+        assert_eq!(err.to_string(), "http 0: cancelled");
+        // The image attempt ran once, the describe hung, the retry
+        // never opened a second request.
+        assert_eq!(chat_calls.lock().len(), 1);
+        assert!(events
+            .lock()
+            .iter()
+            .all(|(n, _)| n != EV_DONE && n != EV_CHUNK));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// All attachments ride ONE vision call in pick order — the text
+    /// model sees the combined description, not per-image turns.
+    #[tokio::test]
+    async fn send_chain_describe_sends_all_attachments_in_one_read() {
+        let dir = tmp_dir();
+        let db = Db::at(dir.join("marvis.db")).unwrap();
+        let att_root = dir.join("attachments");
+        let vision = MockProvider::new(vec![Behavior::Tokens(vec![
+            "Image 1: a cat.\nImage 2: a dog.".into(),
+        ])]);
+        let chat = MockProvider::new(vec![
+            Behavior::Fail(LlmError::MultimodalUnsupported),
+            Behavior::Tokens(vec!["both".into()]),
+        ]);
+        let vision_calls = vision.calls();
+        let chat_calls = chat.calls();
+        let (_events, emit) = recorder();
+        let reader = screen_read::ScreenReader::new();
+        let ring = Mutex::new(RingBuffer::new(4, 1 << 20));
+        let input = input(&reader, &ring);
+        let cancel = CancellationToken::new();
+
+        let img1 = {
+            use base64::Engine;
+            base64::engine::general_purpose::STANDARD.encode([0xFF, 0xD8, 0xFF, 0x01, 0xD9])
+        };
+        let img2 = {
+            use base64::Engine;
+            base64::engine::general_purpose::STANDARD.encode([0xFF, 0xD8, 0xFF, 0x02, 0xD9])
+        };
+        let full = send_chain(
+            vec![candidate("openai", chat)],
+            Some(candidate("gemini", vision)),
+            &db,
+            &emit,
+            &input,
+            &cancel,
+            ChainOpts {
+                text: "compare them",
+                language: "en",
+                attachments: vec![
+                    AskAttachmentInput {
+                        name: "one.png".into(),
+                        jpeg_base64: img1,
+                    },
+                    AskAttachmentInput {
+                        name: "two.png".into(),
+                        jpeg_base64: img2,
+                    },
+                ],
+                attachments_root: Some(&att_root),
+                ..ChainOpts::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(full, "both");
+
+        let vcalls = vision_calls.lock();
+        assert_eq!(vcalls.len(), 1);
+        let parts = &vcalls[0][0].content;
+        let jpegs: Vec<&[u8]> = parts
+            .iter()
+            .filter_map(|p| match p {
+                ContentPart::ImageJpeg(b) => Some(b.as_slice()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            jpegs,
+            vec![
+                &[0xFF, 0xD8, 0xFF, 0x01, 0xD9][..],
+                &[0xFF, 0xD8, 0xFF, 0x02, 0xD9][..]
+            ]
+        );
+        drop(vcalls);
+
+        let ccalls = chat_calls.lock();
+        match &ccalls[1][1].content[0] {
+            ContentPart::Text(t) => {
+                assert!(t.contains("Image 1: a cat."));
+                assert!(t.contains("Image 2: a dog."));
+            }
+            _ => panic!("retry must be text-only"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A persisted image in HISTORY would fail a text-only retry the
+    /// same way — on the described retry those parts degrade to
+    /// explicit `[image attachment]` markers, not silent drops.
+    #[tokio::test]
+    async fn send_chain_described_retry_marks_history_images() {
+        let dir = tmp_dir();
+        let db = Db::at(dir.join("marvis.db")).unwrap();
+        let att_root = dir.join("attachments");
+        let reader = screen_read::ScreenReader::new();
+        let ring = Mutex::new(RingBuffer::new(4, 1 << 20));
+        let input = input(&reader, &ring);
+        let cancel = CancellationToken::new();
+
+        // Turn 1: an image-capable provider answers the image send.
+        send_chain(
+            vec![candidate("openai", MockProvider::new(vec![
+                Behavior::Tokens(vec!["first".into()]),
+            ]))],
+            None,
+            &db,
+            &recorder().1,
+            &input,
+            &cancel,
+            ChainOpts {
+                text: "first question",
+                language: "en",
+                attachments: vec![AskAttachmentInput {
+                    name: "p.jpg".into(),
+                    jpeg_base64: jpeg_b64(),
+                }],
+                attachments_root: Some(&att_root),
+                ..ChainOpts::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        // Turn 2: a text-only provider rejects — the retry strips the
+        // persisted image to a marker and carries the new description.
+        let vision = MockProvider::new(vec![Behavior::Tokens(vec!["a chart".into()])]);
+        let chat = MockProvider::new(vec![
+            Behavior::Fail(LlmError::MultimodalUnsupported),
+            Behavior::Tokens(vec!["second".into()]),
+        ]);
+        let chat_calls = chat.calls();
+        send_chain(
+            vec![candidate("openai", chat)],
+            Some(candidate("gemini", vision)),
+            &db,
+            &recorder().1,
+            &input,
+            &cancel,
+            ChainOpts {
+                text: "second question",
+                language: "en",
+                attachments: vec![AskAttachmentInput {
+                    name: "q.jpg".into(),
+                    jpeg_base64: jpeg_b64(),
+                }],
+                attachments_root: Some(&att_root),
+                ..ChainOpts::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        let ccalls = chat_calls.lock();
+        let retry_msgs = &ccalls[1];
+        // Every message in the retried call is image-free; the
+        // persisted turn's image became a marker.
+        assert!(retry_msgs.iter().all(|m| !has_image(m)));
+        let hist_user = &retry_msgs[1];
+        assert!(hist_user.content.iter().any(|p| matches!(
+            p,
+            ContentPart::Text(t) if t == "[image attachment]"
+        )));
+        let cur = &retry_msgs[retry_msgs.len() - 1];
+        match &cur.content[0] {
+            ContentPart::Text(t) => assert!(t.contains("<attached_images>\na chart")),
+            _ => panic!("retry must be text-only"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The describe's spend folds into `ask:done` usage — same as the
+    /// screen read's — so a vision-assisted turn reports its full cost.
+    #[tokio::test]
+    async fn send_chain_attachment_describe_usage_folds_into_done() {
+        let dir = tmp_dir();
+        let db = Db::at(dir.join("marvis.db")).unwrap();
+        let att_root = dir.join("attachments");
+        let vision = MockProvider::new(vec![Behavior::TokensUsage(
+            vec!["the image".into()],
+            TokenUsage {
+                input: Some(40),
+                output: Some(10),
+            },
+        )]);
+        let chat = MockProvider::new(vec![
+            Behavior::Fail(LlmError::MultimodalUnsupported),
+            Behavior::TokensUsage(
+                vec!["answer".into()],
+                TokenUsage {
+                    input: Some(5),
+                    output: Some(7),
+                },
+            ),
+        ]);
+        let (events, emit) = recorder();
+        let reader = screen_read::ScreenReader::new();
+        let ring = Mutex::new(RingBuffer::new(4, 1 << 20));
+        let input = input(&reader, &ring);
+        let cancel = CancellationToken::new();
+
+        send_chain(
+            vec![candidate("openai", chat)],
+            Some(candidate("gemini", vision)),
+            &db,
+            &emit,
+            &input,
+            &cancel,
+            ChainOpts {
+                text: "q",
+                language: "en",
+                attachments: vec![AskAttachmentInput {
+                    name: "p.jpg".into(),
+                    jpeg_base64: jpeg_b64(),
+                }],
+                attachments_root: Some(&att_root),
+                ..ChainOpts::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        let got = events.lock().clone();
+        let done = got.iter().find(|(n, _)| n == EV_DONE).unwrap();
+        assert_eq!(done.1["usage"]["input"], 45);
+        assert_eq!(done.1["usage"]["output"], 17);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An empty vision answer is no read — text-only retrying with
+    /// nothing would silently drop the images, so the rejection hands
+    /// off instead.
+    #[tokio::test]
+    async fn send_chain_empty_attachment_describe_hands_off() {
+        let dir = tmp_dir();
+        let db = Db::at(dir.join("marvis.db")).unwrap();
+        let att_root = dir.join("attachments");
+        let vision = MockProvider::new(vec![Behavior::Tokens(vec![])]);
+        let first = MockProvider::new(vec![Behavior::Fail(LlmError::MultimodalUnsupported)]);
+        let second = MockProvider::new(vec![Behavior::Tokens(vec!["ok".into()])]);
+        let second_calls = second.calls();
+        let (_events, emit) = recorder();
+        let reader = screen_read::ScreenReader::new();
+        let ring = Mutex::new(RingBuffer::new(4, 1 << 20));
+        let input = input(&reader, &ring);
+        let cancel = CancellationToken::new();
+
+        let full = send_chain(
+            vec![candidate("openai", first), candidate("gemini", second)],
+            Some(candidate("gemini", vision)),
+            &db,
+            &emit,
+            &input,
+            &cancel,
+            ChainOpts {
+                text: "q",
+                language: "en",
+                attachments: vec![AskAttachmentInput {
+                    name: "p.jpg".into(),
+                    jpeg_base64: jpeg_b64(),
+                }],
+                attachments_root: Some(&att_root),
+                ..ChainOpts::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(full, "ok");
+        // The failover candidate got the real bytes, not a stripped
+        // text-only request.
+        assert!(has_image(&second_calls.lock()[0][1]));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

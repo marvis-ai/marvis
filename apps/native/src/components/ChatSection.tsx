@@ -66,6 +66,10 @@ interface AskStatePayload {
   /** Present on `loading` when the user turn carries images — the
    *  persisted `message_attachments` metadata (ask.rs). */
   attachments?: MessageAttachment[];
+  /** The run's generation — every `ask:*` packet carries it (ask.rs
+   *  emit fold); `liveRun` drops packets a killed run emitted before
+   *  the backend's `abort` landed. */
+  run?: number;
 }
 
 /** Meta fields surface in the ⋯ menu, not inline; absent while the
@@ -194,6 +198,24 @@ export const ChatSection = ({ onBack }: { onBack: () => void }) => {
    *  commits rather than appending onto the stale list's tail (the
    *  previous reply's row would keep them permanently). */
   const chunkBufRef = useRef<string | null>(null);
+  /** The run (`run` on every `ask:*` packet — ask.rs `generation`) the
+   *  visible tail belongs to. `newChat` moves it into `deadRuns`: the
+   *  backend abort kills the stream but can't recall packets already
+   *  in the IPC pipe, so the dead run's late deliveries are dropped
+   *  here instead of re-painting the cleared list. */
+  const runRef = useRef<number | null>(null);
+  const deadRunsRef = useRef(new Set<number>());
+
+  /** Live-packet gate: runless payloads (the service's own `idle`
+   *  settle after `abort`) always pass; a dead run's packet drops.
+   *  Surviving packets teach `runRef` the live run — a mid-stream
+   *  mount may have missed the `loading`. */
+  const liveRun = (run: number | undefined): boolean => {
+    if (run == null) return true;
+    if (deadRunsRef.current.has(run)) return false;
+    runRef.current = run;
+    return true;
+  };
 
   // Mount resync: active `ask` session → persisted history; then
   // `ask_current` folds an in-flight run's tail on top. Best-effort —
@@ -214,6 +236,11 @@ export const ChatSection = ({ onBack }: { onBack: () => void }) => {
           }
         }
         const cur = await askCurrent();
+        // Seed the run filter — a mid-stream mount then "New chat" must
+        // drop the live run's in-flight packets like any other.
+        if (!cancelled && cur.run != null) {
+          runRef.current = cur.run;
+        }
         if (!cancelled && cur.state !== 'idle') {
           setMsgs((prev) =>
             setTail(
@@ -247,6 +274,7 @@ export const ChatSection = ({ onBack }: { onBack: () => void }) => {
   const presets = usePresets();
 
   useTauriEvent<AskStatePayload>(EV_ASK_STATE, (p) => {
+    if (!liveRun(p.run)) return;
     if (p.state === 'loading') {
       setError(null);
       pinnedRef.current = true;
@@ -255,6 +283,7 @@ export const ChatSection = ({ onBack }: { onBack: () => void }) => {
       // now-active session rather than folding onto the old one's rows.
       // Chunks arriving mid-refetch buffer until the fold commits.
       chunkBufRef.current = '';
+      const run = p.run;
       void (async () => {
         let base: ChatMsg[] | null = null;
         try {
@@ -271,6 +300,9 @@ export const ChatSection = ({ onBack }: { onBack: () => void }) => {
         }
         const buffered = chunkBufRef.current ?? '';
         chunkBufRef.current = null;
+        // `newChat` may have landed mid-refetch — the dead run's fold
+        // must not paint its pair into the fresh list.
+        if (!liveRun(run)) return;
         setMsgs((prev) => {
           const next = applyLoading(
             base ?? prev,
@@ -313,7 +345,8 @@ export const ChatSection = ({ onBack }: { onBack: () => void }) => {
     }
     setPhase(p.state);
   });
-  useTauriEvent<{ text: string }>(EV_ASK_CHUNK, (p) => {
+  useTauriEvent<{ text: string; run?: number }>(EV_ASK_CHUNK, (p) => {
+    if (!liveRun(p.run)) return;
     if (chunkBufRef.current !== null) {
       chunkBufRef.current += p.text;
       return;
@@ -325,7 +358,9 @@ export const ChatSection = ({ onBack }: { onBack: () => void }) => {
     provider?: string;
     model?: string;
     usage?: { input?: number | null; output?: number | null } | null;
+    run?: number;
   }>(EV_ASK_DONE, (p) => {
+    if (!liveRun(p.run)) return;
     // `full` is authoritative — covers a dropped/duplicated chunk;
     // provider/model/usage name who ACTUALLY answered under failover.
     setMsgs((prev) =>
@@ -338,9 +373,10 @@ export const ChatSection = ({ onBack }: { onBack: () => void }) => {
       }),
     );
   });
-  useTauriEvent<{ message: string; needs_setup?: boolean }>(
+  useTauriEvent<{ message: string; needs_setup?: boolean; run?: number }>(
     EV_ASK_ERROR,
     (p) => {
+      if (!liveRun(p.run)) return;
       setError({ message: p.message, needsSetup: p.needs_setup === true });
     },
   );
@@ -362,6 +398,13 @@ export const ChatSection = ({ onBack }: { onBack: () => void }) => {
   };
 
   const newChat = () => {
+    // `session_end_active` aborts the in-flight run with its session —
+    // mark its generation dead so packets it already emitted drop here
+    // instead of re-painting the cleared list.
+    if (runRef.current != null) {
+      deadRunsRef.current.add(runRef.current);
+      runRef.current = null;
+    }
     void sessionEndActive('ask').catch(() => {});
     sessionRef.current = null;
     setMsgs([]);

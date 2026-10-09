@@ -24,7 +24,9 @@
 //! while the user's own attachments are first described by the
 //! `[vision]` reader into an `<attached_images>` block — never
 //! silently discarded. [`AskService::close`] aborts any in-flight
-//! stream via a [`CancellationToken`].
+//! stream via a [`CancellationToken`]; [`AskService::abort`] is the same
+//! cancel without the card collapse, shared by `session_end_active`/
+//! `session_resume` — an ended session's run ends with it.
 //!
 //! Event protocol (emitted to the `bar` window via `app.emit_to`):
 //! - `ask:state` `{"state": "loading"|"streaming"|"idle"}` — `streaming`
@@ -40,6 +42,10 @@
 //!   that actually answered plus the run's reported token spend.
 //! - `ask:error` `{"message": ..., "needs_setup": bool?}` on failure —
 //!   `needs_setup` when the chain was empty (no usable provider at all).
+//!
+//! Every `ask:*` payload carries `"run"` — the run's `generation` — so
+//! the webview can drop packets an aborted run emitted before the
+//! cancel landed (an emit already in the IPC pipe can't be recalled).
 //!
 //! Broadcast (to the `bar` window, the toast's only consumer):
 //! `capture:permission-needed` when a ring frame exists but screen
@@ -230,8 +236,12 @@ pub struct AskService {
     /// an error that fired before the webview was listening (pre-flight
     /// errors land ~0ms after the card starts opening).
     last_error: Mutex<Option<serde_json::Value>>,
-    /// Bumped per `send`: a stale (cancelled) task's trailing events are
-    /// dropped instead of clobbering a newer run's state/UI.
+    /// Bumped per `send` and per [`Self::abort`]: a stale (cancelled)
+    /// task's trailing events are dropped instead of clobbering a newer
+    /// run's state/UI — and, after an abort, instead of painting into a
+    /// chat that already detached from the dead run. The value also
+    /// tags every `ask:*` payload as `run`, the webview's dead-packet
+    /// filter.
     generation: AtomicU64,
 }
 
@@ -263,7 +273,9 @@ impl AskService {
     /// The `ask_current` resync payload: live `state` + the run's
     /// question/reply tail + the last `ask:error` (`null` normally —
     /// kept so a pre-flight error that beat the webview's `listen()`
-    /// still renders on mount).
+    /// still renders on mount). `run` is the current generation — it
+    /// seeds the webview's dead-packet filter so a mid-stream mount's
+    /// `session_end_active` still recognizes whose packets to drop.
     pub fn current_payload(&self) -> serde_json::Value {
         json!({
             "state": self.state().as_str(),
@@ -271,6 +283,7 @@ impl AskService {
             "response": self.current_response(),
             "error": self.last_error.lock().clone(),
             "attachments": self.current_attachments.lock().clone(),
+            "run": self.generation.load(Ordering::SeqCst),
         })
     }
 
@@ -364,19 +377,46 @@ impl AskService {
         );
     }
 
-    /// `ask_close`: cancel the in-flight stream (its `select!` arm emits
-    /// the final `ask:state{idle}`), mint a fresh token for the next run,
-    /// reset state, collapse the card. Emits nothing itself.
+    /// `ask_close`: abort the in-flight run, then collapse the card.
     ///
     /// Order matters: replace the token BEFORE flipping state to Idle —
     /// a `send` gated on `Idle` must never clone the cancelled token.
     pub fn close(&self, app: &AppHandle, pool: &Mutex<WindowPool>) {
+        self.abort(app);
+        pool.lock().set_chat_open(app, false);
+    }
+
+    /// The cancel half of [`Self::close`], shared by
+    /// `session_end_active`/`session_resume` ("New chat" / resume while
+    /// a run is in-flight): a run belongs to the session being ended,
+    /// so ending the session must end its stream too — the `ask:*`
+    /// packets carry no session binding and would otherwise keep
+    /// painting into the webview's fresh conversation.
+    ///
+    /// Cancels the token (the stream's `select!` arm ends the chain —
+    /// the persisted user row stays, the partial reply does not), mints
+    /// a fresh one, flips state to Idle, and bumps the generation under
+    /// the same `state` lock — the emit fold's guarded check can't
+    /// interleave, so the dead task's trailing emits (a failover
+    /// `loading` re-emit, its terminal `idle`) are ALL dropped. Since
+    /// that terminal emit is suppressed, `abort` emits
+    /// `ask:state{idle}` itself — but only when a run was actually
+    /// live, so ending an idle session emits nothing.
+    pub fn abort(&self, app: &AppHandle) {
         self.cancel.lock().cancel();
         *self.cancel.lock() = CancellationToken::new();
-        *self.state.lock() = AskState::Idle;
+        let was_live = {
+            let mut state = self.state.lock();
+            let was_live = *state != AskState::Idle;
+            *state = AskState::Idle;
+            self.generation.fetch_add(1, Ordering::SeqCst);
+            was_live
+        };
         *self.last_error.lock() = None;
         *self.current_attachments.lock() = Vec::new();
-        pool.lock().set_chat_open(app, false);
+        if was_live {
+            let _ = app.emit_to(BAR_LABEL, EV_STATE, json!({"state": "idle"}));
+        }
     }
 
     /// Shared pre-flight + spawn behind `send`/`send_screen_only`/`retry`.
@@ -509,7 +549,7 @@ impl AskService {
             // Outgoing events also fold into Rust-side state — but only
             // while this run is the current generation; a cancelled
             // task's trailing emits must not clobber a newer send.
-            let emit = move |name: &str, payload: serde_json::Value| {
+            let emit = move |name: &str, mut payload: serde_json::Value| {
                 {
                     // The generation check and the `ask:state` fold share
                     // this critical section: a stale task either lands
@@ -529,6 +569,11 @@ impl AskService {
                         };
                     }
                 }
+                // The generation rides every `ask:*` packet as `run`:
+                // an emit already in the IPC pipe when `abort` lands
+                // can't be recalled, so the webview drops a dead run's
+                // late deliveries itself.
+                payload["run"] = gen.into();
                 svc.observe(name, &payload);
                 let _ = app.emit_to(BAR_LABEL, name, payload);
             };
@@ -576,15 +621,20 @@ impl AskService {
     /// starts opening, so the `ask_current` resync is the only reliable
     /// delivery to the still-mounting webview.
     fn pre_spawn_error(&self, app: &AppHandle, text: &str, payload: serde_json::Value) {
+        // `run`-tagged like the spawned task's emits — `kick` already
+        // bumped the generation for this run before delegating.
+        let run = self.generation.load(Ordering::SeqCst);
         let _ = app.emit_to(
             BAR_LABEL,
             EV_STATE,
-            json!({"state": "loading", "question": text}),
+            json!({"state": "loading", "question": text, "run": run}),
         );
+        let mut payload = payload;
+        payload["run"] = run.into();
         self.observe(EV_ERROR, &payload);
         let _ = app.emit_to(BAR_LABEL, EV_ERROR, payload);
         *self.state.lock() = AskState::Idle;
-        let _ = app.emit_to(BAR_LABEL, EV_STATE, json!({"state": "idle"}));
+        let _ = app.emit_to(BAR_LABEL, EV_STATE, json!({"state": "idle", "run": run}));
     }
 
     /// Fold one outgoing event into Rust-side state: `ask:state` is

@@ -362,6 +362,9 @@ export interface AskCurrent {
   /** The in-flight user turn's persisted attachments — mirrors the
    * `loading` event's `attachments` key for resync. */
   attachments: MessageAttachment[];
+  /** The live run's generation — seeds the chat's dead-packet filter
+   *  (`run` on every `ask:*` event). */
+  run?: number;
 }
 
 /** The live ask tail — a re-expanded chat resyncs from this. */

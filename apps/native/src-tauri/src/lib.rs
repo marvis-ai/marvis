@@ -1188,6 +1188,23 @@ mod tests {
         assert!(source.contains("session_resume,"));
     }
 
+    /// Ending the open ask session mid-run must kill its stream — the
+    /// `ask:*` packets carry no session binding and would otherwise
+    /// keep painting into whatever conversation the webview shows
+    /// next. Both session-boundary commands route through
+    /// `AskService::abort` (the `ask_close` cancel minus the card
+    /// collapse), and the emit fold `run`-tags every `ask:*` packet so
+    /// the webview can drop the dead run's in-flight deliveries.
+    #[test]
+    fn session_boundaries_abort_the_in_flight_ask_run() {
+        let source = include_str!("commands/sessions.rs");
+        assert_eq!(source.matches("state.ask.abort(&app)").count(), 2);
+        let ask = include_str!("ask/mod.rs");
+        assert!(ask.contains("pub fn abort(&self, app: &AppHandle)"));
+        assert!(ask.contains("self.abort(app)")); // `close` shares it
+        assert!(ask.contains("payload[\"run\"]"));
+    }
+
     /// The preset surface: `presets_list` plus the palette commands
     /// registered (open/select/close plus the `/`-session plumbing —
     /// key forward, query push, visibility probe), and the palette

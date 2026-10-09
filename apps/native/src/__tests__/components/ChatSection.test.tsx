@@ -19,6 +19,7 @@ const listeners = new Map<string, (event: { payload: unknown }) => void>();
 let sessionRows: Message[] = [];
 let currentQuestion = '';
 let currentAttachments: Message['attachments'] = [];
+let endActiveCalls = 0;
 mock.module('@tauri-apps/api/core', () => ({
   convertFileSrc: (path: string) => `asset://localhost/${path}`,
   invoke: (command: string) => {
@@ -38,6 +39,9 @@ mock.module('@tauri-apps/api/core', () => ({
         ]);
       case 'session_get':
         return Promise.resolve(sessionRows);
+      case 'session_end_active':
+        endActiveCalls += 1;
+        return Promise.resolve(true);
       case 'ask_current':
         return Promise.resolve({
           state: 'idle',
@@ -45,6 +49,7 @@ mock.module('@tauri-apps/api/core', () => ({
           response: '',
           error: null,
           attachments: currentAttachments,
+          run: 1,
         });
       case 'presets_list':
         return Promise.resolve([]);
@@ -94,6 +99,7 @@ beforeEach(() => {
   sessionRows = [];
   currentQuestion = '';
   currentAttachments = [];
+  endActiveCalls = 0;
   listeners.clear();
   host = document.createElement('div');
   document.body.appendChild(host);
@@ -177,4 +183,56 @@ test('an empty service fold never strips a row of its attachments', async () => 
   const imgs = [...host.querySelectorAll('img')];
   expect(imgs).toHaveLength(1);
   expect(imgs[0].alt).toBe('notes.png');
+});
+
+const newChatButton = () =>
+  [...host.querySelectorAll('button')].find(
+    (b) => b.textContent === 'New chat',
+  )!;
+
+test("New chat mid-stream drops the ended run's in-flight packets", async () => {
+  // The stream emits continuously — packets already in the IPC pipe
+  // when `session_end_active` aborts the run must not re-paint the
+  // cleared list (the reported bug).
+  await act(async () => root.render(<ChatSection onBack={() => {}} />));
+  const emitState = listeners.get('ask:state')!;
+  const emitChunk = listeners.get('ask:chunk')!;
+  const emitDone = listeners.get('ask:done')!;
+  await act(async () =>
+    emitState({ payload: { state: 'loading', question: 'q', run: 1 } }),
+  );
+  await act(async () => emitChunk({ payload: { text: 'hel', run: 1 } }));
+  expect(host.textContent).toContain('hel');
+
+  await act(async () => newChatButton().click());
+  expect(endActiveCalls).toBe(1);
+
+  // Late run-1 packets — emitted before the abort landed — all drop.
+  await act(async () => emitChunk({ payload: { text: 'lo world', run: 1 } }));
+  await act(async () => emitDone({ payload: { full: 'hello world', run: 1 } }));
+  await act(async () => emitState({ payload: { state: 'idle', run: 1 } }));
+  expect(host.textContent).not.toContain('hello world');
+  expect(host.textContent).toContain('Ask Marvis');
+
+  // A NEW run is unaffected — suppression is scoped to the dead one.
+  await act(async () =>
+    emitState({ payload: { state: 'loading', question: 'next', run: 2 } }),
+  );
+  await act(async () => emitChunk({ payload: { text: 'fresh', run: 2 } }));
+  expect(host.textContent).toContain('fresh');
+});
+
+test('New chat during a loading refetch drops the dead fold', async () => {
+  // The `loading` fold is async (session refetch): clicking New chat
+  // while it is in flight must not let it commit the dead run's pair.
+  await act(async () => root.render(<ChatSection onBack={() => {}} />));
+  const emitState = listeners.get('ask:state')!;
+  // Sync act: the fold starts and suspends on the session read.
+  act(() =>
+    emitState({ payload: { state: 'loading', question: 'q', run: 1 } }),
+  );
+  await act(async () => newChatButton().click());
+  // The fold resumed during the click's flush — dead run → dropped.
+  expect(host.textContent).not.toContain('q');
+  expect(host.textContent).toContain('Ask Marvis');
 });

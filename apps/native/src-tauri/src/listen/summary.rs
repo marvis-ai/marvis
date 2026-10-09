@@ -156,6 +156,29 @@ impl SummarySchedule {
             false
         }
     }
+
+    /// A worker that died mid-run left `running` set — clear both flags so
+    /// the next boundary can schedule again. A fresh run summarizes the
+    /// full transcript, so a dropped `pending` mark is covered by it.
+    fn reset(&mut self) {
+        *self = Self::default();
+    }
+}
+
+/// Resets the schedule if the worker exits without `finish()` — a panic
+/// mid-run would otherwise leave `running` set forever, silently ending
+/// summaries for the rest of the session. Disarmed on normal exit.
+struct SummaryResetGuard<'a> {
+    schedule: &'a Mutex<SummarySchedule>,
+    armed: bool,
+}
+
+impl Drop for SummaryResetGuard<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            self.schedule.lock().reset();
+        }
+    }
 }
 
 fn schedule_summary(context: &Arc<SessionContext>) {
@@ -163,39 +186,46 @@ fn schedule_summary(context: &Arc<SessionContext>) {
         return;
     }
     let context = context.clone();
-    std::thread::spawn(move || loop {
-        let result = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .ok()
-            .and_then(|runtime| {
-                runtime
-                    .block_on(async {
-                        tokio::time::timeout(
-                            SUMMARY_TIMEOUT,
-                            generate_summary(
-                                &context.db,
-                                context.session_id,
-                                &context.config,
-                                &context.keystore,
-                            ),
-                        )
-                        .await
-                    })
-                    .ok()
-                    .and_then(Result::ok)
-            });
-        if let Some(summary) = result {
-            (context.emit)(ListenEvent::Summary(ListenSummaryEvent {
-                session_id: context.session_id,
-                summary,
-            }));
+    std::thread::spawn(move || {
+        let mut reset = SummaryResetGuard {
+            schedule: &context.summary_schedule,
+            armed: true,
+        };
+        loop {
+            let result = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .ok()
+                .and_then(|runtime| {
+                    runtime
+                        .block_on(async {
+                            tokio::time::timeout(
+                                SUMMARY_TIMEOUT,
+                                generate_summary(
+                                    &context.db,
+                                    context.session_id,
+                                    &context.config,
+                                    &context.keystore,
+                                ),
+                            )
+                            .await
+                        })
+                        .ok()
+                        .and_then(Result::ok)
+                });
+            if let Some(summary) = result {
+                (context.emit)(ListenEvent::Summary(ListenSummaryEvent {
+                    session_id: context.session_id,
+                    summary,
+                }));
+            }
+            // Finish and claim any pending work under one lock, so a new
+            // boundary cannot start a second worker in between these steps.
+            if !context.summary_schedule.lock().finish() {
+                break;
+            }
         }
-        // Finish and claim any pending work under one lock, so a new
-        // boundary cannot start a second worker in between these steps.
-        if !context.summary_schedule.lock().finish() {
-            break;
-        }
+        reset.armed = false;
     });
 }
 
@@ -315,5 +345,18 @@ mod tests {
         assert!(schedule.finish());
         assert!(!schedule.finish());
         assert!(schedule.request()); // idle can start a new worker
+    }
+
+    /// A worker that panics before `finish()` drops its reset guard — the
+    /// stale `running` flag must not wedge the scheduler, and the pending
+    /// mark is covered by the fresh run that the next boundary starts.
+    #[test]
+    fn crashed_worker_resets_so_the_next_boundary_reschedules() {
+        let mut schedule = SummarySchedule::default();
+        assert!(schedule.request());
+        assert!(!schedule.request()); // pending work while it ran
+        schedule.reset();
+        assert!(schedule.request()); // a fresh worker can start
+        assert!(!schedule.finish());
     }
 }

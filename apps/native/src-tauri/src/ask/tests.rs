@@ -2956,5 +2956,6 @@ async fn retry_fresh_screenshot_replaces_old_shot_and_keeps_other_images() {
     assert_eq!(images.len(), 2);
     assert_eq!(images[0], vec![2]);
     assert_ne!(images[1], vec![1]);
+    drop(db);
     std::fs::remove_dir_all(dir).unwrap();
 }

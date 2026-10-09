@@ -206,9 +206,20 @@ export const ListenSection = ({
     };
   }, [viewing?.id]);
 
-  // The speaker filter and session-local names are display-only; a new
-  // session or a new viewed document clears them.
+  /** The session whose transcript is on screen — the viewed doc's id,
+   *  else the live capture's `sessionRef`. `status.session_id` can't
+   *  anchor it: `listen_stop` flips it to null while the same
+   *  session's turns are still displayed (before the finished doc
+   *  lands), so it fires without the identity ever changing. */
+  const displayedSessionRef = useRef<number | null>(null);
+  // The speaker filter and session-local names are display-only; they
+  // clear when the displayed session changes — leaving it or opening a
+  // different one. Stopping only re-surfaces the same session as its
+  // finished document, so its names carry over.
   useEffect(() => {
+    const displayed = viewing ? viewing.id : sessionRef.current;
+    if (displayed === displayedSessionRef.current) return;
+    displayedSessionRef.current = displayed;
     setFilterKey(null);
     setSpeakerOverrides(new Map());
   }, [viewing?.id, status.session_id]);

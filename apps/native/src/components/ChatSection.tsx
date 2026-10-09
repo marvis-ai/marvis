@@ -108,8 +108,11 @@ const applyLoading = (
     return [...prev.slice(0, -1), { role: 'assistant', content: '' }];
   }
   if (last?.role === 'user' && last.content === q) {
-    // Resync: the persisted user row already rendered — attach the tail.
-    return [...prev, { role: 'assistant', content: '' }];
+    // Resync: the persisted user row already rendered — merge any
+    // attachments that landed after the row painted (a retry's fresh
+    // screenshot), then attach the tail.
+    const user = attachments ? { ...last, attachments } : last;
+    return [...prev.slice(0, -1), user, { role: 'assistant', content: '' }];
   }
   return [
     ...prev,

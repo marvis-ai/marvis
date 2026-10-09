@@ -454,10 +454,11 @@ impl AskService {
         let text = text.to_string();
         // The `resolve_screen` inputs — computed here so the spawned
         // task owns plain values/`Arc`s (`deps` is a borrow that dies
-        // with this call). `explicit` marks asks that *demand* a fresh
-        // read (Cmd+Enter, screen-only, intent keyword); `needs_screen`
-        // additionally counts ambient recording (a plain ask still gets
-        // the cached context, it just doesn't force a read).
+        // with this call). `explicit` marks asks that *demand* the
+        // screen NOW (Cmd+Enter, screen-only, intent keyword) — the
+        // captured frame attaches as a user image; `needs_screen`
+        // additionally counts ambient recording (a plain ask still
+        // gets the cached context, it just doesn't force a capture).
         let screen_explicit =
             with_screen || screen_required || screen_read::looks_like_screen_intent(&text);
         let needs_screen = screen_explicit || deps.capture_running;
@@ -655,10 +656,11 @@ pub(crate) struct ChainOpts<'a> {
 /// deleted — the stream's spend (vision read included) lands on the
 /// replacement row, which `ask:done` also reports.
 ///
-/// `screen_input` feeds [`resolve_screen`], which runs AFTER the
-/// `loading` emit so the card shows busy during an inline read. Its
-/// `Err` ends the run: `"cancelled"` → `idle` only (no failover may
-/// open a new request), anything else → `ask:error` + `idle`.
+/// `screen_input` feeds [`resolve_screen`], which runs BEFORE the
+/// `loading` emit so an explicit ask's captured frame can persist as a
+/// user attachment and ride the payload's `attachments` list. Its
+/// `Err` ends the run as `loading` → `ask:error` → `idle` (the row is
+/// already painted so the question survives the toast).
 pub(crate) async fn send_chain(
     candidates: Vec<ProviderCandidate>,
     vision: Option<ProviderCandidate>,
@@ -727,13 +729,13 @@ pub(crate) async fn send_chain(
     // user row, and history ends BEFORE it (a missing tail — shouldn't
     // happen, `retry` resolved the question from that row — degrades
     // to a normal send).
-    let (history_rows, re_asked, regen_atts) = if regenerate {
+    let (history_rows, re_asked, regen_row_id, regen_atts) = if regenerate {
         match regenerate_tail_rows(db, session_id) {
-            Some((rows, atts)) => (rows, true, atts),
-            None => (message_rows(db, session_id), false, Vec::new()),
+            Some((rows, mid, atts)) => (rows, true, Some(mid), atts),
+            None => (message_rows(db, session_id), false, None, Vec::new()),
         }
     } else {
-        (message_rows(db, session_id), false, Vec::new())
+        (message_rows(db, session_id), false, None, Vec::new())
     };
     // History turns replay their persisted attachments as image parts;
     // a regenerate's turn images come from the re-asked row's managed
@@ -770,53 +772,50 @@ pub(crate) async fn send_chain(
     // The run's user-turn attachments — the `loading` payload advertises
     // them so the card/resync renders the persisted message correctly.
     let mut run_attachments: Vec<MessageAttachment> = regen_atts;
-    if !re_asked {
-        let message_id = persist_user_message(db, session_id, text, preset_id);
-        if !pending.is_empty() {
-            // Attachments need the user row to link to — a storage
-            // hiccup that ate the row is a hard failure for an
-            // attachment-bearing send, not a degrade to text.
-            let Some(mid) = message_id else {
-                return Err(attachment_error(
-                    emit,
-                    "Attachments couldn't be saved — the message wasn't recorded".into(),
-                ));
-            };
-            match persist_attachments(db, &attachments_root, mid, pending).await {
-                Ok((images, meta)) => {
-                    user_images = images;
-                    run_attachments = meta;
+    // The user row's id — persisted fresh for sends, resolved for
+    // regens (the re-asked row's). `None` when storage hiccuped.
+    let message_id = if re_asked {
+        regen_row_id
+    } else {
+        persist_user_message(db, session_id, text, preset_id)
+    };
+    if !re_asked && !pending.is_empty() {
+        // Attachments need the user row to link to — a storage
+        // hiccup that ate the row is a hard failure for an
+        // attachment-bearing send, not a degrade to text.
+        let Some(mid) = message_id else {
+            return Err(attachment_error(
+                emit,
+                "Attachments couldn't be saved — the message wasn't recorded".into(),
+            ));
+        };
+        match persist_attachments(db, &attachments_root, mid, pending).await {
+            Ok((images, meta)) => {
+                user_images = images;
+                run_attachments = meta;
+            }
+            Err(message) => {
+                // The row claims images it never got — remove it so
+                // history never silently loses the attachments.
+                if let Err(e) = db.message_delete(mid) {
+                    log::warn!("ask: attachment-failure row cleanup failed: {e}");
                 }
-                Err(message) => {
-                    // The row claims images it never got — remove it so
-                    // history never silently loses the attachments.
-                    if let Err(e) = db.message_delete(mid) {
-                        log::warn!("ask: attachment-failure row cleanup failed: {e}");
-                    }
-                    return Err(attachment_error(emit, message));
-                }
+                return Err(attachment_error(emit, message));
             }
         }
     }
-    let mut loading = json!({"state": "loading", "question": text, "preset": preset_id});
-    if !run_attachments.is_empty() {
-        loading["attachments"] = json!(run_attachments);
-    }
-    emit(EV_STATE, loading.clone());
 
-    // The screen-material truth table (spec §Ask flow): cached context /
-    // ring frame / inline one-shot describe / raw frame / none. A failed
-    // REQUIRED read ends the run as ask:error; a cancel stops it cold.
-    let resolved = match resolve_screen(screen_input, vision.as_ref(), emit, cancel).await {
+    // The screen-material truth table (spec §Ask flow) — resolves
+    // BEFORE the `loading` emit so an explicit ask's captured frame
+    // lands in the payload's attachment list (the only pre-chain wait
+    // left is the one-shot capture). A failed REQUIRED read ends the
+    // run as ask:error.
+    let resolved = match resolve_screen(screen_input, vision.as_ref(), emit).await {
         Ok(r) => r,
-        Err(msg) if msg == "cancelled" => {
-            emit(EV_STATE, json!({"state": "idle"}));
-            return Err(LlmError::Http {
-                status: 0,
-                message: "cancelled".into(),
-            });
-        }
         Err(msg) => {
+            // The persisted row never painted — `loading` first so the
+            // card still shows the question under the error toast.
+            emit(EV_STATE, make_loading(text, preset_id, &run_attachments));
             emit(EV_ERROR, json!({ "message": msg }));
             emit(EV_STATE, json!({"state": "idle"}));
             return Err(LlmError::Http {
@@ -825,15 +824,53 @@ pub(crate) async fn send_chain(
             });
         }
     };
-    let (frame, screen) = match resolved.0 {
-        Some(ScreenMaterial::Text(t)) => (None, Some(t)),
-        Some(ScreenMaterial::Frame(f)) => (Some(f), None),
-        None => (None, None),
+    let (frame, screen, shot) = match resolved {
+        Some(ScreenMaterial::Text(t)) => (None, Some(t), None),
+        Some(ScreenMaterial::Frame(f)) if screen_input.explicit => (None, None, Some(f)),
+        Some(ScreenMaterial::Frame(f)) => (Some(f), None, None),
+        None => (None, None, None),
     };
-    // The turn's spend = vision reads (screen + any attachment
-    // describe) + the answering attempt (a failed candidate's usage is
+    // An explicit screen ask's frame joins the run like a user-picked
+    // image: persisted on the user row (history + retries reload it),
+    // advertised on `loading`, and sent as pixels — the attachment
+    // fallback's vision describe covers text-only providers. A persist
+    // hiccup sends the pixels unpersisted rather than blinding the ask.
+    if let Some(shot) = shot {
+        let jpeg = shot.jpeg;
+        match message_id {
+            Some(mid) => {
+                match persist_attachments(
+                    db,
+                    &attachments_root,
+                    mid,
+                    vec![PendingImage {
+                        name: "screenshot.jpg".into(),
+                        jpeg: jpeg.clone(),
+                    }],
+                )
+                .await
+                {
+                    Ok((images, meta)) => {
+                        user_images.extend(images);
+                        run_attachments.extend(meta);
+                    }
+                    Err(message) => {
+                        log::warn!("ask: screenshot persist failed ({message}); sending unpersisted");
+                        user_images.push(jpeg);
+                    }
+                }
+            }
+            None => user_images.push(jpeg),
+        }
+    }
+    // `loading` announces the run's full attachment list — composer
+    // picks plus any just-persisted screenshot.
+    let loading = make_loading(text, preset_id, &run_attachments);
+    emit(EV_STATE, loading.clone());
+    // The turn's spend = the answering attempt plus any attachment
+    // describe a text-only retry arms (a failed candidate's usage is
     // unknowable — errors carry none).
-    let mut usage = resolved.1;
+    let mut usage = TokenUsage::default();
     // The multimodal fallback: when a chat candidate rejects image
     // input, the vision reader describes the user's attachments ONCE —
     // every later candidate's text-only retry reuses the block.
@@ -1006,6 +1043,12 @@ async fn persist_attachments(
     .await
     .map_err(|e| e.to_string())
     .and_then(|r| r.map_err(|e| format!("Couldn't save an attachment: {e}")))?;
+    // Positions continue past the row's existing attachments — a
+    // retry's fresh screenshot appends rather than colliding at 0.
+    let offset = db
+        .attachments_for(message_id)
+        .map(|a| a.len() as i64)
+        .unwrap_or(0);
     let rows: Vec<NewAttachment> = names
         .iter()
         .zip(&paths)
@@ -1016,7 +1059,7 @@ async fn persist_attachments(
             path: path.to_string_lossy().into_owned(),
             mime: "image/jpeg".to_string(),
             bytes: jpeg.len() as i64,
-            position: i as i64,
+            position: offset + i as i64,
         })
         .collect();
     match db.attachments_add(message_id, &rows) {
@@ -1028,6 +1071,20 @@ async fn persist_attachments(
             Err(format!("Couldn't record an attachment: {e}"))
         }
     }
+}
+
+/// The `loading` payload — `attachments` rides along only when the
+/// turn carries persisted images (composer picks or a screenshot).
+fn make_loading(
+    text: &str,
+    preset_id: Option<&str>,
+    run_attachments: &[MessageAttachment],
+) -> serde_json::Value {
+    let mut loading = json!({"state": "loading", "question": text, "preset": preset_id});
+    if !run_attachments.is_empty() {
+        loading["attachments"] = json!(run_attachments);
+    }
+    loading
 }
 
 /// The `resolve_screen` Err arm's shape for pre-chain attachment
@@ -1044,12 +1101,13 @@ fn attachment_error(
     }
 }
 
-/// What the ask chain attaches: the truth table's three outcomes.
+/// What the ask chain attaches: the truth table's outcomes.
 pub(crate) enum ScreenMaterial {
-    /// Cached or inline-read description → `<screen_context>` text.
+    /// The reader's cached description → `<screen_context>` text.
     Text(String),
-    /// Raw JPEG frame → image part (no vision configured, or the
-    /// inline read failed).
+    /// Raw JPEG frame — an explicit ask's becomes a persisted user
+    /// attachment (same pipeline as composer picks); an ambient one
+    /// rides the turn directly when no vision reader is configured.
     Frame(Frame),
 }
 
@@ -1062,9 +1120,9 @@ pub(crate) struct ScreenInput<'a> {
     /// `state.capture` is live — ring frames are fresh.
     pub capture_running: bool,
     /// `with_screen`/`screen_required`/intent — the user asked about
-    /// the screen: while recording this forces a fresh inline read of
-    /// the newest ring frame (never just the cache), and no material
-    /// at all errors rather than answering blind.
+    /// the screen: while recording this attaches the newest ring frame
+    /// (never just the cache), and no material at all errors rather
+    /// than answering blind.
     pub explicit: bool,
     /// explicit || capture_running — the OFF branch's shot gate.
     pub needs_screen: bool,
@@ -1085,9 +1143,10 @@ fn unix_now() -> i64 {
 }
 
 /// The screen-material truth table (spec §Ask flow):
-/// recording ON  → cached context (vision) / ring frame (no vision);
-/// recording OFF + intent → one-shot → inline describe or raw attach;
-/// OFF + no intent → None. `Err` = required shot failed → ask:error.
+/// recording ON + intent → the newest ring frame (a user attachment);
+/// recording ON ambient → cached context (vision) / ring frame;
+/// OFF + intent → one-shot frame (a user attachment);
+/// OFF + no intent → None. `Err` = required capture failed → ask:error.
 /// `emit` is the ask task's gen-guarded sender — reused for the
 /// `capture:permission-needed` broadcast (it targets the bar window,
 /// which is the toast's only consumer).
@@ -1095,11 +1154,11 @@ pub(crate) async fn resolve_screen(
     input: &ScreenInput<'_>,
     vision: Option<&ProviderCandidate>,
     emit: &(dyn Fn(&str, serde_json::Value) + Send + Sync),
-    cancel: &CancellationToken,
-) -> Result<(Option<ScreenMaterial>, TokenUsage), String> {
-    let mut usage = TokenUsage::default();
+) -> Result<Option<ScreenMaterial>, String> {
     if input.capture_running {
-        let material = if let Some(vis) = vision {
+        let material = if vision.is_some() {
+            // The reader's cached context — annotate age when it's
+            // older than two read ticks.
             let cached = || {
                 input.reader.context().map(|c| {
                     let age = unix_now() - c.ts;
@@ -1112,42 +1171,31 @@ pub(crate) async fn resolve_screen(
                 })
             };
             if input.explicit {
-                // Intent / Cmd+Enter means "the screen NOW" — read the
-                // newest ring frame inline (the ring respects the picked
-                // scope; a fullscreen one-shot would not). A failed read
-                // or revoked permission falls back to the cache.
-                // The ring guard isn't Send — drop it before the await.
-                let latest = input.ring.lock().latest();
-                let fresh = match latest {
+                // Intent / Cmd+Enter means "the screen NOW" — attach
+                // the newest ring frame (the ring respects the picked
+                // scope; a fullscreen one-shot would not). An empty
+                // ring or revoked permission falls back to the cache.
+                match input.ring.lock().latest() {
                     Some(f) if (input.screen_permission)() => {
-                        match crate::screen_read::describe_screen(&*vis.provider, &f, cancel).await
-                        {
-                            Ok(Some(reply)) => {
-                                if let Some(u) = &reply.usage {
-                                    usage.add(u);
-                                }
-                                Some(ScreenMaterial::Text(reply.full))
-                            }
-                            _ => None,
-                        }
+                        Some(ScreenMaterial::Frame(f))
                     }
                     Some(_) => {
                         emit(
                             "capture:permission-needed",
                             json!({ "permission": "screen" }),
                         );
-                        None
+                        cached()
                     }
-                    None => None,
-                };
-                fresh.or_else(cached)
+                    None => cached(),
+                }
             } else {
                 cached()
             }
         } else {
-            // No vision reader: attach the freshest ring frame.
-            // Permission revoked mid-session → drop the stale frame and
-            // warn the UI.
+            // No vision reader: the freshest ring frame carries the
+            // screen — attached for explicit asks, ambient context
+            // otherwise. Permission revoked mid-session → drop the
+            // stale frame and warn the UI.
             let frame = input.ring.lock().latest();
             if frame.is_some() && !(input.screen_permission)() {
                 emit(
@@ -1165,10 +1213,10 @@ pub(crate) async fn resolve_screen(
         if material.is_none() && input.explicit {
             return Err("No screen material captured — check screen permission".into());
         }
-        return Ok((material, usage));
+        return Ok(material);
     }
     if !input.needs_screen {
-        return Ok((None, usage));
+        return Ok(None);
     }
     // One-shot: SCScreenshotManager is a sync Cocoa call — keep it off
     // the async executor.
@@ -1196,22 +1244,9 @@ pub(crate) async fn resolve_screen(
         frame.height,
         frame.jpeg.len()
     );
-    if let Some(vis) = vision {
-        let read = crate::screen_read::describe_screen(&*vis.provider, &frame, cancel).await;
-        match read {
-            Ok(Some(reply)) => {
-                if let Some(u) = reply.usage {
-                    usage.add(&u);
-                }
-                return Ok((Some(ScreenMaterial::Text(reply.full)), usage));
-            }
-            Ok(None) => return Err("cancelled".into()),
-            Err(e) => {
-                log::warn!("ask: inline read failed ({e}); attach frame");
-            }
-        }
-    }
-    Ok((Some(ScreenMaterial::Frame(frame)), usage))
+    // Always explicit here (`needs_screen && !capture_running`):
+    // send_chain persists the frame as a user attachment.
+    Ok(Some(ScreenMaterial::Frame(frame)))
 }
 
 /// The run's multimodal fallback — the `[vision]` provider describes
@@ -1613,25 +1648,26 @@ fn rows_to_history_at(
 }
 
 /// `regenerate` inputs: history ROWS before the session's last user
-/// turn — the row being re-asked — plus that row's attachments (their
-/// files re-read by the caller as the turn's images). Every later row
-/// (the rejected reply) is deleted so a reload never replays it.
-/// `None` when the session has no user turn to re-ask or the lookup
-/// failed.
+/// turn — the row being re-asked — plus that row's id and attachments
+/// (their files re-read by the caller as the turn's images; the id is
+/// where a retry's fresh screenshot attaches). Every later row (the
+/// rejected reply) is deleted so a reload never replays it. `None`
+/// when the session has no user turn to re-ask or the lookup failed.
 fn regenerate_tail_rows(
     db: &Db,
     session_id: Option<i64>,
-) -> Option<(Vec<crate::storage::Message>, Vec<MessageAttachment>)> {
+) -> Option<(Vec<crate::storage::Message>, i64, Vec<MessageAttachment>)> {
     let sid = session_id?;
     let rows = db.messages_for(sid).ok()?;
     let cut = rows.iter().rposition(|r| r.role == "user")?;
+    let re_asked_id = rows[cut].id;
     let re_asked_attachments = rows[cut].attachments.clone();
     for row in &rows[cut + 1..] {
         if let Err(e) = db.message_delete(row.id) {
             log::warn!("ask: failed to drop rejected reply {}: {e}", row.id);
         }
     }
-    Some((rows[..cut].to_vec(), re_asked_attachments))
+    Some((rows[..cut].to_vec(), re_asked_id, re_asked_attachments))
 }
 
 /// The new user row, next to its session; returns its id for the
@@ -1984,13 +2020,15 @@ mod tests {
 
     /// Recording off + intent: `resolve_screen` takes the one-shot path
     /// and the stubbed `shot` succeeds — the send_chain tests' "a frame
-    /// is available" wiring.
+    /// is available" wiring. `explicit` mirrors `kick`'s computation
+    /// (needs_screen without a running capture is always an intent ask).
     fn input_with_frame<'a>(
         reader: &'a screen_read::ScreenReader,
         ring: &'a Mutex<RingBuffer>,
     ) -> ScreenInput<'a> {
         let mut i = input(reader, ring);
         i.needs_screen = true;
+        i.explicit = true;
         i
     }
 
@@ -2019,6 +2057,7 @@ mod tests {
     async fn send_chain_streams_ordered_chunks_and_persists_both_messages() {
         let dir = tmp_dir();
         let db = Db::at(dir.join("marvis.db")).unwrap();
+        let att_root = dir.join("attachments");
         let provider = MockProvider::new(vec![Behavior::Tokens(vec![
             "Hello".into(),
             " ".into(),
@@ -2041,12 +2080,18 @@ mod tests {
             ChainOpts {
                 text: "what is this?",
                 language: "en",
+                attachments_root: Some(&att_root),
                 ..ChainOpts::default()
             },
         )
         .await
         .unwrap();
         assert_eq!(full, "Hello world");
+
+        // The one-shot frame attached as a user image — `loading`
+        // advertises it (id/path are generated, so read them back).
+        let shot = ask_messages(&db)[0].attachments.clone();
+        assert_eq!(shot.len(), 1);
 
         // Protocol order: loading → streaming-on-first-token → ordered
         // chunks → done{full, provider, model} → idle.
@@ -2056,7 +2101,7 @@ mod tests {
             vec![
                 ev(
                     EV_STATE,
-                    json!({"state": "loading", "question": "what is this?", "preset": null})
+                    json!({"state": "loading", "question": "what is this?", "preset": null, "attachments": shot})
                 ),
                 ev(EV_STATE, json!({"state": "streaming"})),
                 ev(EV_CHUNK, json!({"text": "Hello"})),
@@ -2306,6 +2351,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// An AMBIENT ring frame (no explicit screen ask) isn't a user
+    /// attachment — a rejecting provider gets the drop-frame retry.
     #[tokio::test]
     async fn send_chain_multimodal_error_retries_text_only_once() {
         let dir = tmp_dir();
@@ -2318,7 +2365,9 @@ mod tests {
         let (events, emit) = recorder();
         let reader = screen_read::ScreenReader::new();
         let ring = Mutex::new(RingBuffer::new(4, 1 << 20));
-        let input = input_with_frame(&reader, &ring);
+        ring.lock().push(test_frame());
+        let mut input = input(&reader, &ring);
+        input.capture_running = true;
         let cancel = CancellationToken::new();
 
         let full = send_chain(
@@ -2371,7 +2420,9 @@ mod tests {
         let (events, emit) = recorder();
         let reader = screen_read::ScreenReader::new();
         let ring = Mutex::new(RingBuffer::new(4, 1 << 20));
-        let input = input_with_frame(&reader, &ring);
+        ring.lock().push(test_frame());
+        let mut input = input(&reader, &ring);
+        input.capture_running = true;
         let cancel = CancellationToken::new();
 
         let err = send_chain(
@@ -2416,6 +2467,7 @@ mod tests {
     async fn send_chain_cancel_mid_stream_persists_user_only() {
         let dir = tmp_dir();
         let db = Db::at(dir.join("marvis.db")).unwrap();
+        let att_root = dir.join("attachments");
         let provider = MockProvider::new(vec![Behavior::Hang]);
         let (events, emit) = recorder();
         let reader = screen_read::ScreenReader::new();
@@ -2440,6 +2492,7 @@ mod tests {
             ChainOpts {
                 text: "q",
                 language: "en",
+                attachments_root: Some(&att_root),
                 ..ChainOpts::default()
             },
         )
@@ -2448,6 +2501,11 @@ mod tests {
         cancels.await.unwrap();
         assert_eq!(err.to_string(), "http 0: cancelled");
 
+        // The screenshot persisted on the user row before the stream —
+        // `loading` already carried it.
+        let shot = ask_messages(&db)[0].attachments.clone();
+        assert_eq!(shot.len(), 1);
+
         // loading → idle only: no streaming/chunk/done/error.
         let got = events.lock().clone();
         assert_eq!(
@@ -2455,7 +2513,7 @@ mod tests {
             vec![
                 ev(
                     EV_STATE,
-                    json!({"state": "loading", "question": "q", "preset": null})
+                    json!({"state": "loading", "question": "q", "preset": null, "attachments": shot})
                 ),
                 ev(EV_STATE, json!({"state": "idle"})),
             ]
@@ -2508,6 +2566,7 @@ mod tests {
     async fn send_chain_exhausted_single_candidate_emits_error_and_idle() {
         let dir = tmp_dir();
         let db = Db::at(dir.join("marvis.db")).unwrap();
+        let att_root = dir.join("attachments");
         let provider = MockProvider::new(vec![Behavior::Fail(LlmError::Auth)]);
         let calls = provider.calls();
         let (events, emit) = recorder();
@@ -2526,6 +2585,7 @@ mod tests {
             ChainOpts {
                 text: "q",
                 language: "en",
+                attachments_root: Some(&att_root),
                 ..ChainOpts::default()
             },
         )
@@ -2533,15 +2593,16 @@ mod tests {
         .unwrap_err();
         assert!(matches!(err, LlmError::Auth));
 
-        // Auth is not multimodal — no retry even with a frame attached.
+        // Auth is not multimodal — no retry even with a shot attached.
         assert_eq!(calls.lock().len(), 1);
+        let shot = ask_messages(&db)[0].attachments.clone();
         let got = events.lock().clone();
         assert_eq!(
             got,
             vec![
                 ev(
                     EV_STATE,
-                    json!({"state": "loading", "question": "q", "preset": null})
+                    json!({"state": "loading", "question": "q", "preset": null, "attachments": shot})
                 ),
                 ev(EV_ERROR, json!({"message": LlmError::Auth.to_string()})),
                 ev(EV_STATE, json!({"state": "idle"})),
@@ -3454,6 +3515,71 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A retry re-shoots the screen — the fresh frame appends to the
+    /// re-asked row (its own position, after the first send's), not a
+    /// new message.
+    #[tokio::test]
+    async fn send_chain_regen_re_shot_appends_to_the_user_row() {
+        let dir = tmp_dir();
+        let db = Db::at(dir.join("marvis.db")).unwrap();
+        let att_root = dir.join("attachments");
+        let reader = screen_read::ScreenReader::new();
+        let ring = Mutex::new(RingBuffer::new(4, 1 << 20));
+        let input = input_with_frame(&reader, &ring);
+        let cancel = CancellationToken::new();
+
+        // Turn 1: an explicit screen ask — the shot attaches.
+        send_chain(
+            vec![candidate("openai", MockProvider::new(vec![
+                Behavior::Tokens(vec!["first".into()]),
+            ]))],
+            None,
+            &db,
+            &recorder().1,
+            &input,
+            &cancel,
+            ChainOpts {
+                text: "what broke?",
+                language: "en",
+                attachments_root: Some(&att_root),
+                ..ChainOpts::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        // The retry takes another shot — the row now carries both
+        // frames, positions continuing past the first.
+        send_chain(
+            vec![candidate("openai", MockProvider::new(vec![
+                Behavior::Tokens(vec!["again".into()]),
+            ]))],
+            None,
+            &db,
+            &recorder().1,
+            &input,
+            &cancel,
+            ChainOpts {
+                text: "what broke?",
+                language: "en",
+                regenerate: true,
+                attachments_root: Some(&att_root),
+                ..ChainOpts::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        let msgs = ask_messages(&db);
+        assert_eq!(msgs.len(), 2);
+        let atts = &msgs[0].attachments;
+        assert_eq!(atts.len(), 2);
+        assert_eq!(atts[0].position, 0);
+        assert_eq!(atts[1].position, 1);
+        assert!(atts.iter().all(|a| std::path::Path::new(&a.path).exists()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// A managed file gone missing is a user-facing attachment error,
     /// never a silently degraded prompt.
     #[tokio::test]
@@ -3565,16 +3691,16 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The whole point of the screen reader: the vision provider gets
-    /// the frame, the chain answers over its text description — image
-    /// never reaches a chat provider.
+    /// A screenshot on a chat ask attaches like a user-picked image:
+    /// persisted on the row, advertised on `loading`, sent as pixels —
+    /// vision runs NO inline read (it only enters through the
+    /// text-only retry's attachment describe).
     #[tokio::test]
-    async fn send_chain_vision_reader_describes_the_frame_for_the_chain() {
+    async fn send_chain_screen_shot_attaches_like_a_user_image() {
         let dir = tmp_dir();
         let db = Db::at(dir.join("marvis.db")).unwrap();
-        let vision = MockProvider::new(vec![Behavior::Tokens(vec![
-            "a terminal with an error".into()
-        ])]);
+        let att_root = dir.join("attachments");
+        let vision = MockProvider::new(vec![Behavior::Tokens(vec!["unused".into()])]);
         let chat = MockProvider::new(vec![Behavior::Tokens(vec!["answer".into()])]);
         let vision_calls = vision.calls();
         let chat_calls = chat.calls();
@@ -3594,6 +3720,7 @@ mod tests {
             ChainOpts {
                 text: "what broke?",
                 language: "en",
+                attachments_root: Some(&att_root),
                 ..ChainOpts::default()
             },
         )
@@ -3601,59 +3728,46 @@ mod tests {
         .unwrap();
         assert_eq!(full, "answer");
 
-        // The reader got the frame (one user message, no system prompt);
-        // the chain got text only — the question plus the description
-        // in a <screen_context> block.
-        let vcalls = vision_calls.lock();
-        assert_eq!(vcalls.len(), 1);
-        assert!(has_image(&vcalls[0][0]));
-        drop(vcalls);
+        // The chain got the raw screenshot as an image part.
         let ccalls = chat_calls.lock();
         assert_eq!(ccalls.len(), 2); // answer + title sidecar
-        let user = &ccalls[0][1];
-        assert!(!has_image(user));
-        assert_eq!(
-            user.content,
-            vec![ContentPart::Text(
-                "what broke?\n\n<screen_context>\na terminal with an error\n</screen_context>"
-                    .to_string()
-            )]
-        );
+        assert!(has_image(&ccalls[0][1]));
         drop(ccalls);
+        assert_eq!(vision_calls.lock().len(), 0);
 
-        // The reader's tokens are intermediate — only the reply reached
-        // the card, and `ask:done` names the chain provider that spoke.
-        let got = events.lock().clone();
+        // The user row carries the managed file — name, bytes, on disk.
+        let msgs = ask_messages(&db);
+        assert_eq!(msgs[0].attachments.len(), 1);
+        assert_eq!(msgs[0].attachments[0].name, "screenshot.jpg");
+        let shot_path = msgs[0].attachments[0].path.clone();
+        assert!(std::path::Path::new(&shot_path).exists());
+
+        // `loading` advertised the attachment so the live row renders it.
+        let loading = &events.lock()[0];
+        assert_eq!(loading.0, EV_STATE);
         assert_eq!(
-            got,
-            vec![
-                ev(
-                    EV_STATE,
-                    json!({"state": "loading", "question": "what broke?", "preset": null})
-                ),
-                ev(EV_STATE, json!({"state": "streaming"})),
-                ev(EV_CHUNK, json!({"text": "answer"})),
-                ev(
-                    EV_DONE,
-                    json!({"full": "answer", "provider": "openai", "model": "mock-model", "usage": null})
-                ),
-                ev(EV_STATE, json!({"state": "idle"})),
-            ]
+            loading.1["attachments"][0]["name"],
+            json!("screenshot.jpg")
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// A failed read must not eat the frame: the chain falls back to
-    /// attaching the image, same as before the reader existed.
+    /// The attached screenshot rides the SAME fallback as composer
+    /// picks: a rejecting provider triggers the vision describe, then a
+    /// text-only retry carrying `<attached_images>`.
     #[tokio::test]
-    async fn send_chain_vision_failure_falls_back_to_attaching_the_frame() {
+    async fn send_chain_text_only_provider_gets_shot_via_attachment_fallback() {
         let dir = tmp_dir();
         let db = Db::at(dir.join("marvis.db")).unwrap();
-        let vision = MockProvider::new(vec![Behavior::Fail(LlmError::Http {
-            status: 500,
-            message: "boom".into(),
-        })]);
-        let chat = MockProvider::new(vec![Behavior::Tokens(vec!["ok".into()])]);
+        let att_root = dir.join("attachments");
+        let vision = MockProvider::new(vec![Behavior::Tokens(vec![
+            "a terminal with an error".into(),
+        ])]);
+        let chat = MockProvider::new(vec![
+            Behavior::Fail(LlmError::MultimodalUnsupported),
+            Behavior::Tokens(vec!["answer".into()]),
+        ]);
+        let vision_calls = vision.calls();
         let chat_calls = chat.calls();
         let (_events, emit) = recorder();
         let reader = screen_read::ScreenReader::new();
@@ -3669,18 +3783,29 @@ mod tests {
             &input,
             &cancel,
             ChainOpts {
-                text: "q",
+                text: "what broke?",
                 language: "en",
+                attachments_root: Some(&att_root),
                 ..ChainOpts::default()
             },
         )
         .await
         .unwrap();
-        assert_eq!(full, "ok");
+        assert_eq!(full, "answer");
 
+        // Vision described the screenshot once; the retry carried the
+        // block instead of pixels — and the row kept the attachment.
+        assert_eq!(vision_calls.lock().len(), 1);
         let ccalls = chat_calls.lock();
-        assert_eq!(ccalls.len(), 2); // answer + title sidecar
-        assert!(has_image(&ccalls[0][1]));
+        let user = &ccalls[1][1];
+        assert!(!has_image(user));
+        let ContentPart::Text(t) = &user.content[0] else {
+            panic!("retry must be text-only")
+        };
+        assert!(t.contains("<attached_images>"));
+        assert!(t.contains("a terminal with an error"));
+        drop(ccalls);
+        assert_eq!(ask_messages(&db)[0].attachments.len(), 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -3721,64 +3846,11 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Cancel mid-read stops the run before the chain starts — the user
-    /// asked to stop, so no provider may open a new request.
-    #[tokio::test]
-    async fn send_chain_cancel_during_vision_read_stops_the_run() {
-        let dir = tmp_dir();
-        let db = Db::at(dir.join("marvis.db")).unwrap();
-        let vision = MockProvider::new(vec![Behavior::Hang]);
-        let chat = MockProvider::new(vec![Behavior::Tokens(vec!["nope".into()])]);
-        let chat_calls = chat.calls();
-        let (events, emit) = recorder();
-        let reader = screen_read::ScreenReader::new();
-        let ring = Mutex::new(RingBuffer::new(4, 1 << 20));
-        let input = input_with_frame(&reader, &ring);
-        let cancel = CancellationToken::new();
-
-        let c2 = cancel.clone();
-        let cancels = tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(20)).await;
-            c2.cancel();
-        });
-        let err = send_chain(
-            vec![candidate("openai", chat)],
-            Some(candidate("gemini", vision)),
-            &db,
-            &emit,
-            &input,
-            &cancel,
-            ChainOpts {
-                text: "q",
-                language: "en",
-                ..ChainOpts::default()
-            },
-        )
-        .await
-        .unwrap_err();
-        cancels.await.unwrap();
-        assert_eq!(err.to_string(), "http 0: cancelled");
-        assert_eq!(chat_calls.lock().len(), 0);
-
-        // loading → idle only: the read produced no events of its own.
-        let got = events.lock().clone();
-        assert_eq!(
-            got,
-            vec![
-                ev(
-                    EV_STATE,
-                    json!({"state": "loading", "question": "q", "preset": null})
-                ),
-                ev(EV_STATE, json!({"state": "idle"})),
-            ]
-        );
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
     #[tokio::test]
     async fn send_chain_sends_prior_turns_as_text_only_history() {
         let dir = tmp_dir();
         let db = Db::at(dir.join("marvis.db")).unwrap();
+        let att_root = dir.join("attachments");
         let sid = db.session_get_or_create_active("ask").unwrap();
         db.message_add(sid, "user", "first q").unwrap();
         db.message_add(sid, "assistant", "first a").unwrap();
@@ -3800,6 +3872,7 @@ mod tests {
             ChainOpts {
                 text: "follow-up",
                 language: "en",
+                attachments_root: Some(&att_root),
                 ..ChainOpts::default()
             },
         )
@@ -4420,7 +4493,7 @@ mod tests {
         input.capture_running = true;
         let (_ev, emit) = recorder();
         let vis = candidate("vis", MockProvider::new(vec![]));
-        let (mat, _u) = resolve_screen(&input, Some(&vis), &emit, &CancellationToken::new())
+        let mat = resolve_screen(&input, Some(&vis), &emit)
             .await
             .unwrap();
         let Some(ScreenMaterial::Text(t)) = mat else {
@@ -4437,7 +4510,7 @@ mod tests {
         let mut input = input(&reader, &ring);
         input.capture_running = true;
         let (_ev, emit) = recorder();
-        let (mat, _u) = resolve_screen(&input, None, &emit, &CancellationToken::new())
+        let mat = resolve_screen(&input, None, &emit)
             .await
             .unwrap();
         assert!(matches!(mat, Some(ScreenMaterial::Frame(_))));
@@ -4449,30 +4522,33 @@ mod tests {
         let ring = Mutex::new(RingBuffer::new(4, 1 << 20));
         let input = input(&reader, &ring);
         let (_ev, emit) = recorder();
-        let (mat, _u) = resolve_screen(&input, None, &emit, &CancellationToken::new())
+        let mat = resolve_screen(&input, None, &emit)
             .await
             .unwrap();
         assert!(mat.is_none(), "no intent + no recording → nothing attached");
     }
 
     #[tokio::test]
-    async fn recording_off_intent_shot_describes_inline() {
+    async fn recording_off_intent_shot_returns_the_frame() {
         let reader = screen_read::ScreenReader::new();
         let ring = Mutex::new(RingBuffer::new(4, 1 << 20));
         let mut input = input(&reader, &ring);
         input.needs_screen = true;
         let (_ev, emit) = recorder();
-        let vis = candidate(
-            "vis",
-            MockProvider::new(vec![Behavior::Tokens(vec!["screen text".into()])]),
-        );
-        let (mat, _u) = resolve_screen(&input, Some(&vis), &emit, &CancellationToken::new())
+        // The shot becomes a user attachment — resolve returns the raw
+        // frame, never an inline describe (the attachment fallback owns
+        // vision reads for providers that can't take pixels).
+        let vision = MockProvider::new(vec![Behavior::Tokens(vec!["screen text".into()])]);
+        let vision_calls = vision.calls();
+        let vis = candidate("vis", vision);
+        let mat = resolve_screen(&input, Some(&vis), &emit)
             .await
             .unwrap();
-        let Some(ScreenMaterial::Text(t)) = mat else {
-            panic!("expected inline read text");
+        let Some(ScreenMaterial::Frame(f)) = mat else {
+            panic!("expected the one-shot frame");
         };
-        assert_eq!(t, "screen text");
+        assert_eq!(f.jpeg, vec![1, 2, 3]);
+        assert_eq!(vision_calls.lock().len(), 0);
     }
 
     #[tokio::test]
@@ -4484,7 +4560,7 @@ mod tests {
         input.explicit = true;
         input.shot = || Err(anyhow::anyhow!("denied"));
         let (_ev, emit) = recorder();
-        let result = resolve_screen(&input, None, &emit, &CancellationToken::new()).await;
+        let result = resolve_screen(&input, None, &emit).await;
         assert!(result.is_err());
     }
 
@@ -4499,7 +4575,7 @@ mod tests {
         input.capture_running = true;
         input.screen_permission = || false;
         let (events, emit) = recorder();
-        let (mat, _u) = resolve_screen(&input, None, &emit, &CancellationToken::new())
+        let mat = resolve_screen(&input, None, &emit)
             .await
             .unwrap();
         assert!(mat.is_none(), "revoked permission drops the stale frame");
@@ -4519,7 +4595,7 @@ mod tests {
         input.needs_screen = true;
         input.shot = || Err(anyhow::anyhow!("x"));
         let (_ev, emit) = recorder();
-        let result = resolve_screen(&input, None, &emit, &CancellationToken::new()).await;
+        let result = resolve_screen(&input, None, &emit).await;
         assert!(result.is_err(), "failed intent shot must error");
     }
 
@@ -4533,17 +4609,19 @@ mod tests {
         input.capture_running = true;
         let (_ev, emit) = recorder();
         let vis = candidate("vis", MockProvider::new(vec![]));
-        let (mat, _u) = resolve_screen(&input, Some(&vis), &emit, &CancellationToken::new())
+        let mat = resolve_screen(&input, Some(&vis), &emit)
             .await
             .unwrap();
         assert!(mat.is_none());
     }
 
-    /// Recording on + intent (keyword or Cmd+Enter) reads the newest
-    /// ring frame inline — "read my screen" means NOW, not whenever
-    /// the background reader last settled.
+    /// Recording on + intent (keyword or Cmd+Enter) attaches the newest
+    /// ring frame — "read my screen" means NOW, not whenever the
+    /// background reader last settled. The frame rides the user-image
+    /// pipeline (pixels, or the vision describe on a text-only retry);
+    /// the stale cache is NOT the answer.
     #[tokio::test]
-    async fn recording_on_intent_reads_newest_ring_frame() {
+    async fn recording_on_intent_attaches_newest_ring_frame() {
         let reader = screen_read::ScreenReader::new();
         reader.seed_context("stale cached read");
         let ring = Mutex::new(RingBuffer::new(4, 1 << 20));
@@ -4552,41 +4630,34 @@ mod tests {
         input.capture_running = true;
         input.explicit = true;
         let (_ev, emit) = recorder();
-        let vis = candidate(
-            "vis",
-            MockProvider::new(vec![Behavior::Tokens(vec!["fresh".into()])]),
-        );
-        let (mat, _u) = resolve_screen(&input, Some(&vis), &emit, &CancellationToken::new())
+        let vis = candidate("vis", MockProvider::new(vec![]));
+        let mat = resolve_screen(&input, Some(&vis), &emit)
             .await
             .unwrap();
         match mat {
-            Some(ScreenMaterial::Text(t)) => assert_eq!(t, "fresh"),
-            _ => panic!("intent ask must produce the fresh inline read"),
+            Some(ScreenMaterial::Frame(f)) => assert_eq!(f.jpeg, vec![1, 2, 3]),
+            _ => panic!("intent ask must attach the fresh ring frame"),
         }
     }
 
-    /// The fresh read failing must not sink the ask — the cached
-    /// context is the documented fallback (stale beats empty).
+    /// Intent + empty ring falls back to the cached context — stale
+    /// beats nothing, the same degrade the failed-read path used.
     #[tokio::test]
-    async fn recording_on_intent_read_failure_falls_back_to_cache() {
+    async fn recording_on_intent_empty_ring_falls_back_to_cache() {
         let reader = screen_read::ScreenReader::new();
         reader.seed_context("cached read");
         let ring = Mutex::new(RingBuffer::new(4, 1 << 20));
-        ring.lock().push(test_frame());
         let mut input = input(&reader, &ring);
         input.capture_running = true;
         input.explicit = true;
         let (_ev, emit) = recorder();
-        let vis = candidate(
-            "vis",
-            MockProvider::new(vec![Behavior::Fail(LlmError::Auth)]),
-        );
-        let (mat, _u) = resolve_screen(&input, Some(&vis), &emit, &CancellationToken::new())
+        let vis = candidate("vis", MockProvider::new(vec![]));
+        let mat = resolve_screen(&input, Some(&vis), &emit)
             .await
             .unwrap();
         match mat {
             Some(ScreenMaterial::Text(t)) => assert_eq!(t, "cached read"),
-            _ => panic!("failed fresh read must fall back to cache"),
+            _ => panic!("empty ring must fall back to cache"),
         }
     }
 
@@ -4601,7 +4672,7 @@ mod tests {
         input.explicit = true;
         let (_ev, emit) = recorder();
         let vis = candidate("vis", MockProvider::new(vec![]));
-        let result = resolve_screen(&input, Some(&vis), &emit, &CancellationToken::new()).await;
+        let result = resolve_screen(&input, Some(&vis), &emit).await;
         assert!(result.is_err(), "intent ask with no material must error");
     }
 
@@ -4616,7 +4687,7 @@ mod tests {
         input.capture_running = true;
         input.explicit = true;
         let (_ev, emit) = recorder();
-        let result = resolve_screen(&input, None, &emit, &CancellationToken::new()).await;
+        let result = resolve_screen(&input, None, &emit).await;
         assert!(result.is_err(), "required + empty ON material must error");
     }
 
@@ -4632,7 +4703,7 @@ mod tests {
         input.shot = || Err(anyhow::anyhow!("x"));
         input.screen_permission = || false;
         let (events, emit) = recorder();
-        let result = resolve_screen(&input, None, &emit, &CancellationToken::new()).await;
+        let result = resolve_screen(&input, None, &emit).await;
         assert!(result.is_err());
         assert!(events
             .lock()

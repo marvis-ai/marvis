@@ -41,10 +41,10 @@ import {
 } from 'react';
 import {
   HistoryIcon,
+  ImagesIcon,
   MicAudioLinesIcon,
   MicIcon,
   MonitorDotIcon,
-  SettingsIcon,
   ShineBorder,
   WandSparklesIcon,
   XIcon,
@@ -153,6 +153,7 @@ const Bar = () => {
     () => window.matchMedia('(prefers-reduced-motion: reduce)').matches,
   );
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const attachPickerRef = useRef<HTMLInputElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
   const cardRef = useRef<HTMLDivElement>(null);
   /** Serializes mic-button start/stop across both speech modes — a new
@@ -1050,16 +1051,37 @@ const Bar = () => {
               disarmPreset();
               return true;
             }}
-            attachments={
-              gate === 'main'
-                ? {
-                    onPick: () => setOpen(true),
-                    onFiles: (files) => void addFiles(files),
-                    dropActive,
-                  }
-                : undefined
-            }
+            dropActive={gate === 'main' && dropActive}
           />
+          {/* Image attach — same row idiom as the wand: the hidden
+            picker lives beside it; `onPick`'s wake-the-pill role is
+            `setOpen` (a no-op for the already-open card). */}
+          {showInputRow && (
+            <>
+              <BarButton
+                label='Attach images'
+                title='Attach images'
+                disabled={gate !== 'main'}
+                onPress={() => {
+                  setOpen(true);
+                  attachPickerRef.current?.click();
+                }}>
+                <ImagesIcon className='size-5' />
+              </BarButton>
+              <input
+                ref={attachPickerRef}
+                type='file'
+                accept='image/jpeg,image/png,image/webp'
+                multiple
+                className='sr-only'
+                onChange={(event) => {
+                  void addFiles(Array.from(event.currentTarget.files ?? []));
+                  // Same-file repicks must fire `change` again.
+                  event.currentTarget.value = '';
+                }}
+              />
+            </>
+          )}
           {/* Preset palette — the styled glass overlay beside the bar;
             picks arrive as bar:preset-pick. */}
           {showInputRow && (
@@ -1159,20 +1181,6 @@ const Bar = () => {
                   className='animate-capture-ping absolute -top-0.5 -right-0.5 size-1.5 rounded-full bg-accent/50'
                 />
               )}
-            </BarButton>
-          )}
-
-          {/* Only rendered in the pill's input row — the idle capsule
-            has no room for a fourth control and the card header
-            carries its own Settings (tray menu + Cmd/Ctrl+, reach it
-            anyway). */}
-          {controls.includes('settings') && (
-            <BarButton
-              label='Settings'
-              title='Settings (⌘,)'
-              disabled={gate !== 'main'}
-              onPress={() => void windowShowSettings().catch(() => {})}>
-              <SettingsIcon className='size-5' />
             </BarButton>
           )}
         </div>

@@ -5,8 +5,7 @@ import {
   type RefObject,
   type SyntheticEvent,
 } from 'react';
-import { PaperclipIcon } from '@marvis/ui';
-import { cn, ICON_BTN } from '@/lib/classes';
+import { cn } from '@/lib/classes';
 import { PALETTE_KEYS } from '@/lib/presets';
 import { RichText } from '@/components/shared/RichText';
 
@@ -14,17 +13,6 @@ import { RichText } from '@/components/shared/RichText';
  *  overlay — font, size, leading, and padding must stay identical or
  *  the overlay drifts off the (invisible) real caret. */
 const METRICS = 'text-[14px] leading-5';
-
-/** Attachment wiring owned by `Bar`: `onPick` is the generic
- *  "composer interaction" signal (same wake-the-pill role as
- *  `onFocus`), `onFiles` receives raw files from the hidden picker —
- *  validation/normalization happens in `image-attachments`, not here —
- *  and `dropActive` rings the field while a drag hovers the form. */
-export interface AskInputAttachmentProps {
-  onPick: () => void;
-  onFiles: (files: File[]) => void;
-  dropActive: boolean;
-}
 
 /** The Ask field — a growing textarea shared by the input pill and the
  *  card header, with a mirrored highlight overlay: the textarea's text
@@ -57,7 +45,7 @@ export const AskInput = ({
   onFocus,
   onSubmit,
   onDisarm,
-  attachments,
+  dropActive,
 }: {
   ref: RefObject<HTMLTextAreaElement | null>;
   value: string;
@@ -74,11 +62,10 @@ export const AskInput = ({
   onFocus: () => void;
   onSubmit: (withScreen: boolean) => void;
   onDisarm: () => boolean;
-  /** Picker/drop wiring — absent where the field can't take images. */
-  attachments?: AskInputAttachmentProps;
+  /** A file drag hovers the form — ring the field as the drop target. */
+  dropActive?: boolean;
 }) => {
   const overlayRef = useRef<HTMLDivElement>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
   /* `color: transparent` would hide the CJK marked-text preview too,
    * so composition briefly restores the real color and hides the
    * overlay — a transient unstyled flash, but the preview stays
@@ -95,7 +82,7 @@ export const AskInput = ({
         visible
           ? 'max-w-full'
           : 'pointer-events-none -mx-0.75 max-w-0 opacity-0',
-        attachments?.dropActive && 'rounded-lg shadow-(--focus-ring)',
+        dropActive && 'rounded-lg shadow-(--focus-ring)',
       )}>
       <div className='relative min-w-0 flex-1'>
         <div
@@ -165,37 +152,6 @@ export const AskInput = ({
           )}
         />
       </div>
-      {attachments && (
-        <>
-          <button
-            type='button'
-            aria-label='Attach images'
-            title='Attach images'
-            onClick={(event) => {
-              event.stopPropagation();
-              attachments.onPick();
-              fileInputRef.current?.click();
-            }}
-            className={cn(ICON_BTN, 'size-6 self-center')}>
-            <PaperclipIcon
-              aria-hidden
-              className='size-3.5'
-            />
-          </button>
-          <input
-            ref={fileInputRef}
-            type='file'
-            accept='image/jpeg,image/png,image/webp'
-            multiple
-            className='sr-only'
-            onChange={(event) => {
-              attachments.onFiles(Array.from(event.currentTarget.files ?? []));
-              // Same-file repicks must fire `change` again.
-              event.currentTarget.value = '';
-            }}
-          />
-        </>
-      )}
     </div>
   );
 };

@@ -27,12 +27,12 @@
  */
 import { useEffect, useState } from 'react';
 import { Input, ToggleGroup, ToggleGroupItem } from '@marvis/ui';
-import { configSet, modelListAvailable } from '../../lib/commands';
+import { configSet, modelListAvailable } from '@/lib/commands';
 import {
   VISION_DEFAULT_MODEL,
   VISION_PROVIDERS,
   providerLabel,
-} from '../../lib/providers';
+} from '@/lib/providers';
 import {
   FIELD,
   LBL,
@@ -43,7 +43,7 @@ import {
   PROV_NOTE,
   SUB,
   cn,
-} from '../../lib/classes';
+} from '@/lib/classes';
 import type { PrefsData } from './types';
 
 /** ToggleGroupItem onto the overlay palette: bordered pills; hover and

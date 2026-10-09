@@ -1,19 +1,20 @@
 /**
  * About — the supplied wordmark (never redrawn), one-line pitch, and
- * metadata rows. Version resolves from the bundle via `getVersion()`
- * with the Cargo.toml value as fallback. "Re-run setup" re-opens the
+ * metadata rows. Version comes from `getVersion()`, which reads
+ * `CARGO_PKG_VERSION` — Cargo.toml is the single source (tauri.conf.json
+ * sets no `version`). "Re-run setup" re-opens the
  * same window in onboarding mode through `window_show_onboarding`
  * (backend emits `prefs:mode`, the shell remounts — the wizard resets
  * to step 1 per spec).
  */
 import { useEffect, useState } from 'react';
 import { getVersion } from '@tauri-apps/api/app';
-import { windowShowOnboarding } from '../../lib/commands';
-import { BTN_LG, BTN_OUTLINE, PRF_ROWS, cn } from '../../lib/classes';
+import { windowShowOnboarding } from '@/lib/commands';
+import { BTN_LG, BTN_OUTLINE, PRF_ROWS, cn } from '@/lib/classes';
 import { PrefRow, Tag } from './bits';
 
 export const AboutTab = () => {
-  const [version, setVersion] = useState('0.1.0');
+  const [version, setVersion] = useState('…');
 
   useEffect(() => {
     void getVersion()
@@ -34,7 +35,7 @@ export const AboutTab = () => {
 
       <div className={PRF_ROWS}>
         <PrefRow label='Version'>
-          <Tag>{version}</Tag>
+          <Tag>v{version}</Tag>
         </PrefRow>
         <PrefRow label='License'>
           <Tag>Apache-2.0</Tag>

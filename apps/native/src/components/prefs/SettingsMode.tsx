@@ -22,7 +22,7 @@ import { PrivacyTab } from './PrivacyTab';
 import { PresetsTab } from './PresetsTab';
 import { ProvidersTab } from './ProvidersTab';
 import { RecordingTab } from './RecordingTab';
-import { cn } from '../../lib/classes';
+import { cn } from '@/lib/classes';
 import type { PrefsData } from './types';
 
 const TABS = [

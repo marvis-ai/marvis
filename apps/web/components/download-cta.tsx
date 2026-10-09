@@ -1,5 +1,5 @@
 import { surfaceBg } from './styles';
-import { GITHUB_RELEASES, GITHUB_REPO } from '@/lib/constants';
+import { APP_VERSION, GITHUB_RELEASES, GITHUB_REPO } from '@/lib/constants';
 
 export const DownloadCta = () => (
   <section
@@ -35,6 +35,11 @@ export const DownloadCta = () => (
           View source on GitHub
         </a>
       </div>
+      <p
+        className='meta'
+        style={{ marginTop: 'var(--space-4)' }}>
+        Latest release · v{APP_VERSION}
+      </p>
     </div>
   </section>
 );

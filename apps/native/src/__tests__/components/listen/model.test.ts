@@ -12,7 +12,7 @@ import {
   transcriptCopyText,
   transcriptMarkdown,
   type Turn,
-} from '../../../components/listen/model';
+} from '@/components/listen/model';
 
 const turn = (ts: number, over: Partial<Turn> = {}): Turn => ({
   speaker: 'them',

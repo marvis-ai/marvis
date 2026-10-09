@@ -11,7 +11,7 @@ import {
   slashQuery,
   slashToken,
   stripSlashToken,
-} from '../../lib/presets';
+} from '@/lib/presets';
 
 const P = (id: string, name: string, text = ''): Preset => ({
   id,

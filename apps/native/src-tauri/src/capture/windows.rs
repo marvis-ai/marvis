@@ -122,6 +122,7 @@ fn set_own_windows_protected(protected: bool) {
 
 /// What a capture session targets: a resolved monitor or window handle —
 /// the WGC equivalent of an `SCContentFilter`.
+#[derive(Clone)]
 pub enum Source {
     Monitor(Monitor),
     Window(Window),

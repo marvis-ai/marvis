@@ -5,9 +5,9 @@ import {
   modelGetSelected,
   providersReorder,
   providerSetEnabled,
-} from '../../lib/commands';
-import { orderedProviders } from '../../lib/providers';
-import { H2, SUB } from '../../lib/classes';
+} from '@/lib/commands';
+import { orderedProviders } from '@/lib/providers';
+import { H2, SUB } from '@/lib/classes';
 import { ProviderCard } from './ProviderCard';
 import { VisionSection } from './VisionSection';
 import { VoiceSetup } from './VoiceSetup';

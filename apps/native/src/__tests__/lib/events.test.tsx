@@ -31,7 +31,7 @@ mock.module('@tauri-apps/api/event', () => ({
   },
 }));
 
-const { useTauriEvent } = await import('../../lib/events');
+const { useTauriEvent } = await import('@/lib/events');
 
 let root: Root;
 let host: HTMLElement;

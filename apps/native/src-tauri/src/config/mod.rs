@@ -37,6 +37,8 @@ pub struct Config {
     pub vision: VisionPrefs,
     /// User-defined prompt presets — see [`PromptPrefs`].
     pub prompts: PromptPrefs,
+    /// Consent-gated identity memory — see [`MemoryPrefs`].
+    pub memory: MemoryPrefs,
 }
 
 impl Default for Config {
@@ -51,6 +53,7 @@ impl Default for Config {
             compat: CompatPrefs::default(),
             vision: VisionPrefs::default(),
             prompts: PromptPrefs::default(),
+            memory: MemoryPrefs::default(),
         }
     }
 }
@@ -114,6 +117,18 @@ impl Config {
         self.vision
             .models
             .retain(|id, m| vision(id) && !m.is_empty());
+
+        // A hand-edited `[memory]` keeps a known provider id (the
+        // settings pick restores) but can't stay enabled without a
+        // model — extraction would have nothing to call.
+        self.memory.provider = self.memory.provider.trim().to_string();
+        self.memory.model = self.memory.model.trim().to_string();
+        if !known(&self.memory.provider) {
+            self.memory.provider.clear();
+        }
+        if self.memory.provider.is_empty() || self.memory.model.is_empty() {
+            self.memory.enabled = false;
+        }
 
         // A hand-edited `[[prompts.custom]]` keeps its valid rows —
         // malformed rows and duplicate ids drop.
@@ -182,4 +197,3 @@ fn load_or_default(path: &Path) -> Config {
 pub fn save(config: &Config) -> anyhow::Result<()> {
     config.save_to(paths::config_file())
 }
-

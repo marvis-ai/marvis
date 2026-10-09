@@ -287,6 +287,73 @@ pub(crate) fn apply_prompts_config(
     }
 }
 
+/// Identity/preference memory (`[memory]`) — off by default, and the
+/// toggle is the consent boundary: until `enabled` the app never sends
+/// new ask text anywhere for fact extraction. The provider/model are a
+/// dedicated pick — NOT part of the ask failover chain (`providers.order`
+/// doesn't apply) — so a chain provider going away never silently
+/// changes where memory reads go.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MemoryPrefs {
+    /// Master consent gate. `false` → no extraction runs; the stored
+    /// profile still injects into asks.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub enabled: bool,
+    /// `llm::ProviderKind` id (`"openai"`, `"ollama"`, ...). `""` = unset.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub provider: String,
+    /// Model id on that provider. `""` = unset.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub model: String,
+}
+
+/// Apply the `memory.*` config keys. `enabled` validates the FULL write
+/// (provider + model already stored) because enabling is the consent
+/// boundary — a half-configured extraction would either silently do
+/// nothing or surprise the user.
+pub(crate) fn apply_memory_config(
+    memory: &mut MemoryPrefs,
+    key: &str,
+    value: &serde_json::Value,
+) -> Result<bool, String> {
+    match key {
+        "memory.enabled" => {
+            let enabled = value.as_bool().ok_or("memory.enabled expects a boolean")?;
+            if enabled && (memory.provider.is_empty() || memory.model.is_empty()) {
+                return Err(
+                    "memory.provider and memory.model must be set before enabling memory".into(),
+                );
+            }
+            memory.enabled = enabled;
+            Ok(true)
+        }
+        "memory.provider" => {
+            let provider = value
+                .as_str()
+                .ok_or("memory.provider expects a string")?
+                .trim();
+            if !provider.is_empty() && ProviderKind::from_str(provider).is_none() {
+                return Err(format!("unknown memory provider {provider:?}"));
+            }
+            memory.provider = provider.to_string();
+            Ok(true)
+        }
+        "memory.model" => {
+            let model = value
+                .as_str()
+                .ok_or("memory.model expects a string")?
+                .trim();
+            if model.chars().count() > 128 {
+                return Err("memory.model must be 128 characters or fewer".into());
+            }
+            memory.model = model.to_string();
+            Ok(true)
+        }
+        _ => Ok(false),
+    }
+}
+
 /// Provider enable/order/model memory (`[providers]`). The ordered list
 /// IS the failover chain: asks try providers front-to-back, skipping
 /// `disabled` entries and any provider that isn't usable (no key where
@@ -414,7 +481,9 @@ pub fn default_hotkeys() -> BTreeMap<String, String> {
 /// build doesn't know (stale `move_up`/`next_step`/`screen_only`/
 /// `show_settings` keys from older configs would otherwise sit in the
 /// file forever — nothing binds them).
-pub(super) fn merge_default_hotkeys<'de, D>(deserializer: D) -> Result<BTreeMap<String, String>, D::Error>
+pub(super) fn merge_default_hotkeys<'de, D>(
+    deserializer: D,
+) -> Result<BTreeMap<String, String>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
@@ -426,4 +495,3 @@ where
     }
     Ok(map)
 }
-

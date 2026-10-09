@@ -41,10 +41,10 @@ import {
 } from 'react';
 import {
   HistoryIcon,
+  ImagesIcon,
   MicAudioLinesIcon,
   MicIcon,
   MonitorDotIcon,
-  SettingsIcon,
   ShineBorder,
   WandSparklesIcon,
   XIcon,
@@ -81,11 +81,16 @@ import {
   useTauriEvent,
 } from '@/lib/events';
 import { barControls, hasActiveWork } from '@/lib/bar-state';
+import {
+  normalizeImageFile,
+  type PendingAskImage,
+} from '@/lib/image-attachments';
 import { useBarActivity } from '@/hooks/useBarActivity';
 import { useCardGeometry } from '@/hooks/useCardGeometry';
 import { useDictation } from '@/hooks/useDictation';
 import { useGate } from '@/hooks/useGate';
 import { usePresets } from '@/hooks/usePresets';
+import { AskAttachments } from '@/components/bar/AskAttachments';
 import { AskInput } from '@/components/bar/AskInput';
 import { BarButton } from '@/components/bar/BarButton';
 import { BootErrorRow } from '@/components/bar/BootErrorRow';
@@ -128,12 +133,27 @@ const Bar = () => {
     setTextState(value);
   };
   const [open, setOpen] = useState(false);
+  /** Composer image attachments — normalized JPEGs awaiting the next
+   *  send. The ref mirror is the race-safe read for `addFiles`'s async
+   *  loop (same pattern as `textRef`), and `dropActive` drives the
+   *  field ring while a file drag hovers the form. */
+  const [pendingImages, setPendingImagesState] = useState<PendingAskImage[]>(
+    [],
+  );
+  const pendingImagesRef = useRef<PendingAskImage[]>([]);
+  const setPendingImages = (value: PendingAskImage[]) => {
+    pendingImagesRef.current = value;
+    setPendingImagesState(value);
+  };
+  const [attachmentError, setAttachmentError] = useState<string | null>(null);
+  const [dropActive, setDropActive] = useState(false);
   /** The launch wordmark plays once per webview mount. Reduced-motion
    *  users skip it entirely — the capsule just opens on the icon row. */
   const [introDone, setIntroDone] = useState(
     () => window.matchMedia('(prefers-reduced-motion: reduce)').matches,
   );
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const attachPickerRef = useRef<HTMLInputElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
   const cardRef = useRef<HTMLDivElement>(null);
   /** Serializes mic-button start/stop across both speech modes — a new
@@ -552,6 +572,36 @@ const Bar = () => {
     }
   };
 
+  /** Normalize picked/dropped files into the pending strip. Each file
+   *  is checked against the pending count as it lands (`next.length`)
+   *  so a multi-file drop stops adding at four. Rejections are
+   *  per-file — valid siblings still attach, and the first failure's
+   *  reason surfaces beside the chips. Attaching wakes the input row —
+   *  same affordance as typing a character. */
+  const addFiles = async (files: File[]) => {
+    if (files.length === 0) return;
+    if (gate === 'main') setOpen(true);
+    setAttachmentError(null);
+    const next = [...pendingImagesRef.current];
+    let failure: string | null = null;
+    for (const file of files) {
+      try {
+        next.push(await normalizeImageFile(file, next.length));
+      } catch (error) {
+        failure ??=
+          error instanceof Error ? error.message : 'Could not add image';
+      }
+    }
+    setPendingImages(next);
+    if (failure) setAttachmentError(failure);
+  };
+
+  const removePendingImage = (index: number) => {
+    // Removing a chip resolves a count rejection — drop the stale note.
+    setAttachmentError(null);
+    setPendingImages(pendingImagesRef.current.filter((_, i) => i !== index));
+  };
+
   /** Send a question — the field's text by default, or an explicit one
    *  (`question`, e.g. a summary follow-up chip — the field's draft is
    *  untouched then). Field text reads off `textRef` so the Enter
@@ -620,12 +670,25 @@ const Bar = () => {
           .then((s) => s.session_id)
           .catch(() => null)) ?? undefined;
     }
+    // Pending images ride along with the question — strip the
+    // previewUrl so only the normalized payload crosses IPC. They
+    // clear once the send is actually initiated; a rejected invoke
+    // keeps them so a retry doesn't silently lose user attachments.
+    const attachments = pendingImagesRef.current.map(
+      ({ name, jpegBase64 }) => ({ name, jpegBase64 }),
+    );
     void askSend(t, {
       withScreen,
       listenId,
       presetId: preset?.id,
       presetLang,
-    }).catch(() => raise('Send failed'));
+      attachments,
+    })
+      .then(() => {
+        setPendingImages([]);
+        setAttachmentError(null);
+      })
+      .catch(() => raise('Send failed'));
   };
 
   // Submit = ask (a follow-up while the card is open). The backend
@@ -686,6 +749,21 @@ const Bar = () => {
           // divider is always its top edge.
           'border-t',
         )
+      : showInputRow
+        ? 'px-2.75'
+        : 'justify-center px-1.75',
+  );
+  /** The composer form's own chrome — a column so the pending-image
+   *  strip can sit above the row in card mode; the row layout itself
+   *  moves to the inner div (`innerRowCls`). */
+  const formCls = cn(
+    'flex min-h-0 w-full flex-none flex-col',
+    cardOpen && 'border-t border-border',
+  );
+  const innerRowCls = cn(
+    'flex min-w-0 flex-1 items-center gap-1.5',
+    cardOpen
+      ? 'min-h-16 px-2.75'
       : showInputRow
         ? 'px-2.75'
         : 'justify-center px-1.75',
@@ -831,211 +909,281 @@ const Bar = () => {
           e.preventDefault();
           submitAsk();
         }}
-        className={rowCls}
+        /* Image drops land on the composer. `preventDefault` on
+           dragover is what allows the DOM drop event at all, and
+           `stopPropagation` keeps the drop from reaching Tauri's
+           window-level file handling (or the deep drag region). */
+        onDragOver={(e) => {
+          // Only file drags earn the ring — text/element drags pass through.
+          if (!e.dataTransfer?.types.includes('Files')) return;
+          e.preventDefault();
+          e.stopPropagation();
+          e.dataTransfer.dropEffect = 'copy';
+          setDropActive(true);
+        }}
+        onDragEnter={(e) => {
+          if (!e.dataTransfer?.types.includes('Files')) return;
+          e.preventDefault();
+          setDropActive(true);
+        }}
+        onDragLeave={(e) => {
+          if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
+            setDropActive(false);
+          }
+        }}
+        onDrop={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          setDropActive(false);
+          // Every dropped file reaches the validator — a non-image
+          // drop must surface the type error, not vanish silently.
+          void addFiles(Array.from(e.dataTransfer?.files ?? []));
+        }}
+        className={formCls}
         data-tauri-drag-region='deep'>
-        {/* Absent while the card is open — the section header owns
-            Back/Close, so the footer's row is input + dictation only. */}
-        {controls.includes('iris') && (
-          <IrisButton
-            active={
-              listenState === 'listening' ||
-              listenState === 'paused' ||
-              dictation.state === 'listening'
-            }
-            label={open ? 'Back to capsule' : 'Ask Marvis'}
-            onPress={() => (open ? collapse() : setOpen(true))}
-            disabled={gate !== 'main'}
+        {/* Card mode: the pending strip rides above the row inside the
+            bordered composer block. */}
+        {cardOpen && (
+          <AskAttachments
+            images={pendingImages}
+            error={attachmentError}
+            onRemove={removePendingImage}
           />
         )}
-        {/* The armed preset's badges — the name in accent, then its
+        <div className={innerRowCls}>
+          {/* Absent while the card is open — the section header owns
+            Back/Close, so the footer's row is input + dictation only. */}
+          {controls.includes('iris') && (
+            <IrisButton
+              active={
+                listenState === 'listening' ||
+                listenState === 'paused' ||
+                dictation.state === 'listening'
+              }
+              label={open ? 'Back to capsule' : 'Ask Marvis'}
+              onPress={() => (open ? collapse() : setOpen(true))}
+              disabled={gate !== 'main'}
+            />
+          )}
+          {/* The armed preset's badges — the name in accent, then its
             editable `{lang}` param in neutral when the text carries
             one. One-shot: ✕/Esc/caret-0 Backspace-Delete disarms, a
             fired send clears them. */}
-        {showInputRow && armedPreset && (
-          <span className='flex flex-none items-center gap-1 self-center rounded-full bg-accent-soft px-2 py-0.75 text-[11.5px] font-medium text-accent-text'>
-            {armedPreset.name}
-            <button
-              type='button'
-              aria-label={`Remove ${armedPreset.name} preset`}
-              onClick={disarmPreset}
-              className='-mr-0.5 rounded-full p-px text-accent-text/70 transition-colors duration-(--motion-fast) hover:text-accent-text focus-visible:outline-2 focus-visible:outline-accent'>
-              <XIcon className='size-3' />
-            </button>
-          </span>
-        )}
-        {showInputRow && armedPreset && langParam !== null && (
-          <span className='flex flex-none items-center self-center'>
-            {editingLang ? (
-              <input
-                autoFocus
-                size={Math.max(4, langParam.length + 1)}
-                value={langParam}
-                aria-label='Preset language'
-                onChange={(e) => setLangParam(e.target.value)}
-                onBlur={() => {
-                  setEditingLang(false);
-                }}
-                onKeyDown={(e) => {
-                  e.stopPropagation();
-                  if (e.key === 'Enter') {
-                    e.preventDefault();
-                    setEditingLang(false);
-                    inputRef.current?.focus();
-                  } else if (e.key === 'Escape') {
-                    e.preventDefault();
-                    if (langRevert.current !== null) {
-                      setLangParam(langRevert.current);
-                    }
-                    setEditingLang(false);
-                    inputRef.current?.focus();
-                  }
-                }}
-                className='rounded-full bg-fg-soft px-2 py-0.75 text-[11.5px] font-medium text-foreground outline-none focus:shadow-(--focus-ring)'
-              />
-            ) : (
+          {showInputRow && armedPreset && (
+            <span className='flex flex-none items-center gap-1 self-center rounded-full bg-accent-soft px-2 py-0.75 text-[11.5px] font-medium text-accent-text'>
+              {armedPreset.name}
               <button
                 type='button'
-                title='Language for {lang} — click to change'
-                onClick={() => {
-                  langRevert.current = langParam;
-                  setEditingLang(true);
-                }}
-                className='rounded-full bg-fg-soft px-2 py-0.75 text-[11.5px] font-medium text-foreground transition-colors duration-(--motion-fast) hover:bg-[color-mix(in_oklch,var(--fg)_14%,transparent)] focus-visible:outline-2 focus-visible:outline-accent'>
-                {langParam}
+                aria-label={`Remove ${armedPreset.name} preset`}
+                onClick={disarmPreset}
+                className='-mr-0.5 rounded-full p-px text-accent-text/70 transition-colors duration-(--motion-fast) hover:text-accent-text focus-visible:outline-2 focus-visible:outline-accent'>
+                <XIcon className='size-3' />
               </button>
-            )}
-          </span>
-        )}
-        <AskInput
-          ref={inputRef}
-          value={text}
-          cardOpen={cardOpen}
-          visible={showInputRow}
-          paletteOpen={paletteOpen}
-          onPaletteKey={(key) => void presetsPaletteKey(key).catch(() => {})}
-          onChange={onFieldChange}
-          onSelect={dictation.handleSelect}
-          onFocus={() => gate === 'main' && setOpen(true)}
-          onSubmit={submitAsk}
-          onDisarm={() => {
-            if (!armedPresetRef.current) return false;
-            dictation.discard();
-            disarmPreset();
-            return true;
-          }}
-        />
-        {/* Preset palette — the styled glass overlay beside the bar;
+            </span>
+          )}
+          {showInputRow && armedPreset && langParam !== null && (
+            <span className='flex flex-none items-center self-center'>
+              {editingLang ? (
+                <input
+                  autoFocus
+                  size={Math.max(4, langParam.length + 1)}
+                  value={langParam}
+                  aria-label='Preset language'
+                  onChange={(e) => setLangParam(e.target.value)}
+                  onBlur={() => {
+                    setEditingLang(false);
+                  }}
+                  onKeyDown={(e) => {
+                    e.stopPropagation();
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      setEditingLang(false);
+                      inputRef.current?.focus();
+                    } else if (e.key === 'Escape') {
+                      e.preventDefault();
+                      if (langRevert.current !== null) {
+                        setLangParam(langRevert.current);
+                      }
+                      setEditingLang(false);
+                      inputRef.current?.focus();
+                    }
+                  }}
+                  className='rounded-full bg-fg-soft px-2 py-0.75 text-[11.5px] font-medium text-foreground outline-none focus:shadow-(--focus-ring)'
+                />
+              ) : (
+                <button
+                  type='button'
+                  title='Language for {lang} — click to change'
+                  onClick={() => {
+                    langRevert.current = langParam;
+                    setEditingLang(true);
+                  }}
+                  className='rounded-full bg-fg-soft px-2 py-0.75 text-[11.5px] font-medium text-foreground transition-colors duration-(--motion-fast) hover:bg-[color-mix(in_oklch,var(--fg)_14%,transparent)] focus-visible:outline-2 focus-visible:outline-accent'>
+                  {langParam}
+                </button>
+              )}
+            </span>
+          )}
+          {/* Pill mode: no vertical room above the row — the same strip
+            goes inline as a horizontal scroll sliver. */}
+          {!cardOpen && showInputRow && (
+            <AskAttachments
+              inline
+              images={pendingImages}
+              error={attachmentError}
+              onRemove={removePendingImage}
+            />
+          )}
+          <AskInput
+            ref={inputRef}
+            value={text}
+            cardOpen={cardOpen}
+            visible={showInputRow}
+            paletteOpen={paletteOpen}
+            onPaletteKey={(key) => void presetsPaletteKey(key).catch(() => {})}
+            onChange={onFieldChange}
+            onSelect={dictation.handleSelect}
+            onFocus={() => gate === 'main' && setOpen(true)}
+            onSubmit={submitAsk}
+            onDisarm={() => {
+              if (!armedPresetRef.current) return false;
+              dictation.discard();
+              disarmPreset();
+              return true;
+            }}
+            dropActive={gate === 'main' && dropActive}
+          />
+          {/* Image attach — same row idiom as the wand: the hidden
+            picker lives beside it; `onPick`'s wake-the-pill role is
+            `setOpen` (a no-op for the already-open card). */}
+          {showInputRow && (
+            <>
+              <BarButton
+                label='Attach images'
+                title='Attach images'
+                disabled={gate !== 'main'}
+                onPress={() => {
+                  setOpen(true);
+                  attachPickerRef.current?.click();
+                }}>
+                <ImagesIcon className='size-5' />
+              </BarButton>
+              <input
+                ref={attachPickerRef}
+                type='file'
+                accept='image/jpeg,image/png,image/webp'
+                multiple
+                className='sr-only'
+                onChange={(event) => {
+                  void addFiles(Array.from(event.currentTarget.files ?? []));
+                  // Same-file repicks must fire `change` again.
+                  event.currentTarget.value = '';
+                }}
+              />
+            </>
+          )}
+          {/* Preset palette — the styled glass overlay beside the bar;
             picks arrive as bar:preset-pick. */}
-        {showInputRow && (
-          <BarButton
-            label='Prompt presets'
-            disabled={gate !== 'main'}
-            onPress={() => openPalette(true)}>
-            <WandSparklesIcon className='size-5' />
-          </BarButton>
-        )}
-        {/* Collapsed-only recorders (`barControls(false)`): the screen
+          {showInputRow && (
+            <BarButton
+              label='Prompt presets'
+              disabled={gate !== 'main'}
+              onPress={() => openPalette(true)}>
+              <WandSparklesIcon className='size-5' />
+            </BarButton>
+          )}
+          {/* Collapsed-only recorders (`barControls(false)`): the screen
             capture toggle and meeting Listen. The expanded row renders
             neither — it gets dictation + settings instead. */}
-        {controls.includes('capture') && (
-          <BarButton
-            label={captureLabel}
-            title={captureRunning ? captureTarget?.label : undefined}
-            pressed={captureRunning}
-            disabled={gate !== 'main'}
-            onPress={toggleCapture}
-            className={cn(
-              'relative',
-              captureRunning && 'bg-accent-soft text-accent',
-            )}>
-            <MonitorDotIcon className='size-5' />
-            {/* Recording badge — the shell pulse deliberately ignores
+          {controls.includes('capture') && (
+            <BarButton
+              label={captureLabel}
+              title={captureRunning ? captureTarget?.label : undefined}
+              pressed={captureRunning}
+              disabled={gate !== 'main'}
+              onPress={toggleCapture}
+              className={cn(
+                'relative',
+                captureRunning && 'bg-accent-soft text-accent',
+              )}>
+              <MonitorDotIcon className='size-5' />
+              {/* Recording badge — the shell pulse deliberately ignores
                 capture (it runs by default, so it would pulse
                 permanently); this corner ping carries the signal. */}
-            {captureRunning && (
-              <span
-                aria-hidden
-                className='animate-capture-ping absolute -top-0.5 -right-0.5 size-1.5 rounded-full bg-accent/50'
-              />
-            )}
-          </BarButton>
-        )}
-        {controls.includes('listen') && (
-          <BarButton
-            label={micLabel}
-            pressed={micLive}
-            disabled={gate !== 'main'}
-            onPress={pressMic}
-            className={cn('relative', micLive && 'bg-accent-soft text-accent')}>
-            <MicAudioLinesIcon className='size-5' />
-            {/* Same corner-ping idiom as the capture badge — a live
+              {captureRunning && (
+                <span
+                  aria-hidden
+                  className='animate-capture-ping absolute -top-0.5 -right-0.5 size-1.5 rounded-full bg-accent/50'
+                />
+              )}
+            </BarButton>
+          )}
+          {controls.includes('listen') && (
+            <BarButton
+              label={micLabel}
+              pressed={micLive}
+              disabled={gate !== 'main'}
+              onPress={pressMic}
+              className={cn(
+                'relative',
+                micLive && 'bg-accent-soft text-accent',
+              )}>
+              <MicAudioLinesIcon className='size-5' />
+              {/* Same corner-ping idiom as the capture badge — a live
                 session keeps recording after the card collapses, so
                 the idle pill must still show it. */}
-            {listenState === 'listening' && (
-              <span
-                aria-hidden
-                className='animate-capture-ping absolute -top-0.5 -right-0.5 size-1.5 rounded-full bg-accent/50'
-              />
-            )}
-          </BarButton>
-        )}
-        {/* Collapsed-only history opener — the card opens on the
+              {listenState === 'listening' && (
+                <span
+                  aria-hidden
+                  className='animate-capture-ping absolute -top-0.5 -right-0.5 size-1.5 rounded-full bg-accent/50'
+                />
+              )}
+            </BarButton>
+          )}
+          {/* Collapsed-only history opener — the card opens on the
             session list. */}
-        {controls.includes('history') && (
-          <BarButton
-            label='History'
-            disabled={gate !== 'main'}
-            onPress={() => {
-              setPinned('history');
-              void windowSetChatOpen(true).catch(() => {});
-            }}>
-            <HistoryIcon className='size-5' />
-          </BarButton>
-        )}
-        {/* Expanded-only dictation (`barControls(true)`) — the same
+          {controls.includes('history') && (
+            <BarButton
+              label='History'
+              disabled={gate !== 'main'}
+              onPress={() => {
+                setPinned('history');
+                void windowSetChatOpen(true).catch(() => {});
+              }}>
+              <HistoryIcon className='size-5' />
+            </BarButton>
+          )}
+          {/* Expanded-only dictation (`barControls(true)`) — the same
             `pressMic` route, landing on its `showInputRow` branch. */}
-        {showInputRow && dictation.state === 'listening' && (
-          <DictationWaveform />
-        )}
+          {showInputRow && dictation.state === 'listening' && (
+            <DictationWaveform />
+          )}
 
-        {controls.includes('dictation') && (
-          <BarButton
-            label={
-              dictation.state === 'listening' ? 'Stop dictation' : 'Dictate'
-            }
-            title={
-              micLive ? 'Dictate — a listen session owns the mic' : undefined
-            }
-            pressed={dictation.state === 'listening'}
-            disabled={gate !== 'main' || micLive}
-            onPress={pressMic}
-            className={cn(
-              'relative',
-              dictation.state === 'listening' && 'bg-accent-soft text-accent',
-            )}>
-            <MicIcon className='size-5' />
-            {dictation.state === 'listening' && (
-              <span
-                aria-hidden
-                className='animate-capture-ping absolute -top-0.5 -right-0.5 size-1.5 rounded-full bg-accent/50'
-              />
-            )}
-          </BarButton>
-        )}
-
-        {/* Only rendered in the pill's input row — the idle capsule
-            has no room for a fourth control and the card header
-            carries its own Settings (tray menu + Cmd/Ctrl+, reach it
-            anyway). */}
-        {controls.includes('settings') && (
-          <BarButton
-            label='Settings'
-            title='Settings (⌘,)'
-            disabled={gate !== 'main'}
-            onPress={() => void windowShowSettings().catch(() => {})}>
-            <SettingsIcon className='size-5' />
-          </BarButton>
-        )}
+          {controls.includes('dictation') && (
+            <BarButton
+              label={
+                dictation.state === 'listening' ? 'Stop dictation' : 'Dictate'
+              }
+              title={
+                micLive ? 'Dictate — a listen session owns the mic' : undefined
+              }
+              pressed={dictation.state === 'listening'}
+              disabled={gate !== 'main' || micLive}
+              onPress={pressMic}
+              className={cn(
+                'relative',
+                dictation.state === 'listening' && 'bg-accent-soft text-accent',
+              )}>
+              <MicIcon className='size-5' />
+              {dictation.state === 'listening' && (
+                <span
+                  aria-hidden
+                  className='animate-capture-ping absolute -top-0.5 -right-0.5 size-1.5 rounded-full bg-accent/50'
+                />
+              )}
+            </BarButton>
+          )}
+        </div>
       </form>
     );
   };

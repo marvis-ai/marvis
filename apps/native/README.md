@@ -250,13 +250,15 @@ apps/native/
 │   │   └── prefs/              # Settings tabs (General/Bar/Providers/Hotkeys/
 │   │                           #   Privacy/About), Onboarding wizard, VoiceSetup,
 │   │                           #   VisionSection, ProviderCard, shared bits/types
-│   └── lib/
-│       ├── commands.ts         # typed invoke() wrappers — the command surface
-│       ├── events.ts           # event-name constants + useTauriEvent hook
-│       ├── classes.ts          # shared Tailwind class bundles (BTN_*, CHIP…)
-│       ├── providers.ts        # provider catalog metadata for the UI
-│       ├── format.ts / theme.ts# formatting helpers; accent/appearance applier
-│       └── vite-env.d.ts
+│   ├── lib/
+│   │   ├── commands.ts         # typed invoke() wrappers — the command surface
+│   │   ├── events.ts           # event-name constants + useTauriEvent hook
+│   │   ├── classes.ts          # shared Tailwind class bundles (BTN_*, CHIP…)
+│   │   ├── providers.ts        # provider catalog metadata for the UI
+│   │   ├── format.ts / theme.ts# formatting helpers; accent/appearance applier
+│   │   └── vite-env.d.ts
+│   └── __tests__/              # all webview tests (bun test + happy-dom);
+│                               #   mirrors the components/ + lib/ layout
 └── src-tauri/                  # Rust core
     ├── src/
     │   ├── lib.rs              # AppState, commands, gate, dispatch closures

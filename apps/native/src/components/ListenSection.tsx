@@ -94,6 +94,11 @@ export const ListenSection = ({
   const [copiedAll, setCopiedAll] = useState(false);
   const [exported, setExported] = useState(false);
   const [filterKey, setFilterKey] = useState<string | null>(null);
+  /** Session-local display names keyed by `speakerKey` — cleared on a
+   *  session/document switch, never persisted. */
+  const [speakerOverrides, setSpeakerOverrides] = useState<Map<string, string>>(
+    () => new Map(),
+  );
   const audioRef = useRef<HTMLAudioElement>(null);
   const [audioReady, setAudioReady] = useState(false);
   const [audioDuration, setAudioDuration] = useState(0);
@@ -201,11 +206,22 @@ export const ListenSection = ({
     };
   }, [viewing?.id]);
 
-  // The speaker filter is display-only; a new session or a new viewed
-  // document clears it.
+  // The speaker filter and session-local names are display-only; a new
+  // session or a new viewed document clears them.
   useEffect(() => {
     setFilterKey(null);
+    setSpeakerOverrides(new Map());
   }, [viewing?.id, status.session_id]);
+
+  const renameSpeaker = (key: string, label: string) => {
+    setSpeakerOverrides((previous) => {
+      const next = new Map(previous);
+      const trimmed = label.trim();
+      if (trimmed === '') next.delete(key);
+      else next.set(key, Array.from(trimmed).slice(0, 40).join(''));
+      return next;
+    });
+  };
 
   useTauriEvent<ListenStatePayload>(EV_LISTEN_STATE, (next) => {
     if (viewingRef.current) return;
@@ -334,11 +350,14 @@ export const ListenSection = ({
       });
   };
 
-  const blocks = useMemo(() => buildBlocks(turns), [turns]);
+  const blocks = useMemo(
+    () => buildBlocks(turns, speakerOverrides),
+    [turns, speakerOverrides],
+  );
   const speakers = useMemo(() => {
     const seen = new Map<
       string,
-      { key: string; name: string; color: string }
+      { key: string; name: string; color: string; canRename: boolean }
     >();
     for (const block of blocks) {
       if (!seen.has(block.key)) {
@@ -346,6 +365,7 @@ export const ListenSection = ({
           key: block.key,
           name: block.name,
           color: block.color,
+          canRename: block.canRename,
         });
       }
     }
@@ -554,6 +574,7 @@ export const ListenSection = ({
         copied={copiedAll}
         exported={exported}
         onPick={setFilterKey}
+        onRename={renameSpeaker}
         onCopy={copyAll}
         onCopyMarkdown={copyMarkdown}
         onSaveMarkdown={saveMarkdown}
@@ -574,6 +595,7 @@ export const ListenSection = ({
               startedAt={startedAt}
               activeBlock={activeBlock}
               onSeekBlock={canSeekAudio ? seekBlock : undefined}
+              onRename={renameSpeaker}
             />
             {turns.length === 0 && !summary && (!error || !live) && (
               <EmptyState

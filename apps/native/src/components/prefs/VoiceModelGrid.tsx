@@ -1,3 +1,4 @@
+import { Badge } from '@marvis/ui';
 import {
   BTN_DANGER,
   BTN_LG,
@@ -7,14 +8,13 @@ import {
   NUM,
   PROV_NOTE,
   cn,
-} from '../../lib/classes';
+} from '@/lib/classes';
 
 export interface VoiceModelEntry {
   id: string;
   label: string;
   description: string;
   bytes: number;
-  source: string;
 }
 
 export interface VoiceModelGridProps {
@@ -63,6 +63,13 @@ export const VoiceModelGrid = ({
             <div>
               <div className='text-[12.5px] font-semibold'>
                 {entry.label}
+                {installed && (
+                  <Badge
+                    variant='secondary'
+                    className='ml-1.5 h-4 px-1.5 align-middle text-[9.5px] font-semibold'>
+                    Installed
+                  </Badge>
+                )}
                 {selected && (
                   <span className='ml-1.5 text-[10px] text-accent-text'>
                     Selected
@@ -71,14 +78,10 @@ export const VoiceModelGrid = ({
               </div>
               <p className={PROV_NOTE}>{entry.description}</p>
             </div>
-            <span
-              className={cn(NUM, 'text-[10.5px] text-muted-foreground')}>
+            <span className={cn(NUM, 'text-[10.5px] text-muted-foreground')}>
               {formatBytes(entry.bytes)}
             </span>
           </div>
-          <p className={PROV_NOTE}>
-            {entry.source} {installed ? 'Installed' : 'Not installed'}
-          </p>
           {currentProgress && (
             <div className='mt-2'>
               <div className='flex justify-between text-[10px] text-muted-foreground'>

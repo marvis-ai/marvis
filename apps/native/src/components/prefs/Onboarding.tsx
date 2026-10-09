@@ -1,16 +1,19 @@
 /**
- * Onboarding — the five-step wizard, no sidebar (DESIGN.md §6). One
+ * Onboarding — the six-step wizard, no sidebar (DESIGN.md §6). One
  * mount = one run: the shell remounts this subtree on every mode switch,
  * which is how "re-run setup" lands on step 1.
  *
- * Step 2 drives the same `permissions_request_screen` command the bar's
- * gate card uses, so state can never split between surfaces. Step 3's
- * BYOK picker reuses the catalog the Providers tab renders; saving a
- * compatible provider persists `compat.name` + `compat.base_url` first
- * (validation resolves the endpoint server-side), then validates, then
- * stores the key in `keys.json`. A successful save also promotes the
- * provider to the head of `providers.order` — the wizard's pick should
- * be the one that answers — and clears its disabled flag.
+ * Step 2's language pick doubles as the STT recommendation — English
+ * seeds Whisper, every other language seeds Sherpa's SenseVoice — and
+ * the voice step can still override. Step 3 drives the same
+ * `permissions_request_screen` command the bar's gate card uses, so
+ * state can never split between surfaces. Step 4's BYOK picker reuses
+ * the catalog the Providers tab renders; saving a compatible provider
+ * persists `compat.name` + `compat.base_url` first (validation resolves
+ * the endpoint server-side), then validates, then stores the key in
+ * `keys.json`. A successful save also promotes the provider to the head
+ * of `providers.order` — the wizard's pick should be the one that
+ * answers — and clears its disabled flag.
  * Completion is `app.onboarding_done` — written by "Open settings" only,
  * so quitting mid-wizard replays onboarding on next launch. The backend
  * reveals the bar on that write.
@@ -30,6 +33,7 @@ import {
   windowShowSettings,
 } from '../../lib/commands';
 import { providerFor, PROVIDERS } from '../../lib/providers';
+import { LANGUAGES, recommendedSttProvider } from '../../lib/languages';
 import { VoiceSetup } from './VoiceSetup';
 import {
   BTN_LG,
@@ -50,6 +54,7 @@ import type { PrefsData } from './types';
 
 const STEP_LABELS = [
   'welcome',
+  'main language',
   'screen access',
   'bring your own key',
   'voice',
@@ -62,6 +67,15 @@ const H1 = 'mb-2 text-[21px] font-bold tracking-[-0.02em]';
 const LEDE = 'max-w-[44ch] text-[13px] leading-[1.6] text-muted-foreground';
 const ACTIONS = 'mt-5.5 flex items-center gap-2.5';
 const MARK = 'mb-3.5 size-11';
+
+/* The pill picker shared by the language + BYOK steps. */
+const chipCls = (active: boolean) =>
+  cn(
+    'rounded-full border bg-transparent px-3 py-1.5 text-xs font-[550] transition-[border-color,color,background] duration-(--motion-fast) ease-(--ease) motion-reduce:transition-none',
+    active
+      ? 'border-primary bg-primary text-primary-foreground'
+      : 'border-border text-foreground hover:border-[color-mix(in_oklch,var(--fg)_30%,var(--border))]',
+  );
 
 export const Onboarding = ({ data }: { data: PrefsData }) => {
   const [step, setStep] = useState(0);
@@ -107,27 +121,34 @@ export const Onboarding = ({ data }: { data: PrefsData }) => {
           className='mx-auto max-w-120 animate-fade-in'>
           {step === 0 && <WelcomeStep onNext={() => setStep(1)} />}
           {step === 1 && (
-            <ScreenStep
+            <LanguageStep
+              data={data}
               onNext={() => setStep(2)}
               onBack={() => setStep(0)}
             />
           )}
           {step === 2 && (
-            <ByokStep
-              data={data}
+            <ScreenStep
               onNext={() => setStep(3)}
               onBack={() => setStep(1)}
             />
           )}
           {step === 3 && (
-            <VoiceStep
+            <ByokStep
               data={data}
-              onSkip={() => setStep(4)}
-              onContinue={() => setStep(4)}
+              onNext={() => setStep(4)}
               onBack={() => setStep(2)}
             />
           )}
-          {step === 4 && <DoneStep onDone={() => void finish()} />}
+          {step === 4 && (
+            <VoiceStep
+              data={data}
+              onSkip={() => setStep(5)}
+              onContinue={() => setStep(5)}
+              onBack={() => setStep(3)}
+            />
+          )}
+          {step === 5 && <DoneStep onDone={() => void finish()} />}
         </div>
       </div>
     </div>
@@ -148,7 +169,12 @@ const VoiceStep = ({
   <>
     <h1 className={H1}>Set up voice</h1>
     <p className={cn(LEDE, 'mb-4')}>
-      Voice is optional. Configure it now, or set it up later in Settings.
+      Voice is optional.{' '}
+      {recommendedSttProvider(data.config?.app.main_language ?? 'en') ===
+      'whisper'
+        ? 'For English, Whisper is the recommended local engine — pre-selected below.'
+        : 'For your language, SenseVoice (Sherpa) is the recommended local engine — pre-selected below.'}{' '}
+      Configure it now, or set it up later in Settings.
     </p>
     <VoiceSetup
       data={data}
@@ -197,7 +223,81 @@ const WelcomeStep = ({ onNext }: { onNext: () => void }) => (
   </>
 );
 
-/* ── step 2 · screen access ───────────────────────────────────── */
+/* ── step 2 · main language ───────────────────────────────────── */
+
+const LanguageStep = ({
+  data,
+  onNext,
+  onBack,
+}: {
+  data: PrefsData;
+  onNext: () => void;
+  onBack: () => void;
+}) => {
+  const [lang, setLang] = useState(data.config?.app.main_language ?? 'en');
+  const [busy, setBusy] = useState(false);
+
+  const cont = async () => {
+    setBusy(true);
+    try {
+      // The language pick doubles as the STT recommendation — English
+      // seeds Whisper, every other language seeds SenseVoice (Sherpa).
+      // The backend re-pairs `stt_model` to a valid catalog default, and
+      // the voice step can still override the provider.
+      let c = await configSet('app.main_language', lang);
+      c = await configSet('models.stt_provider', recommendedSttProvider(lang));
+      data.setConfig(c);
+    } catch {
+      // non-fatal — defaults hold; the voice step shows whatever landed
+    } finally {
+      setBusy(false);
+      onNext();
+    }
+  };
+
+  return (
+    <>
+      <h1 className={H1}>Main language</h1>
+      <p className={LEDE}>
+        Chat replies, meeting summaries, and dictation default to this language.
+      </p>
+      <div className='mt-3.5 flex flex-wrap gap-1.5'>
+        {LANGUAGES.map((l) => (
+          <button
+            key={l.id}
+            type='button'
+            className={chipCls(lang === l.id)}
+            onClick={() => setLang(l.id)}>
+            {l.label}
+          </button>
+        ))}
+      </div>
+      <p className={PROV_NOTE}>
+        {lang === 'en'
+          ? 'Voice transcription will default to local Whisper — best on English. Switchable in the voice step.'
+          : 'Voice transcription will default to SenseVoice (Sherpa) — the multilingual engine. Switchable in the voice step.'}
+      </p>
+      <div className={ACTIONS}>
+        <button
+          type='button'
+          className={cn(BTN_LG, BTN_OUTLINE)}
+          onClick={onBack}
+          disabled={busy}>
+          Back
+        </button>
+        <button
+          type='button'
+          className={cn(BTN_LG, BTN_PRIMARY)}
+          onClick={() => void cont()}
+          disabled={busy}>
+          Continue
+        </button>
+      </div>
+    </>
+  );
+};
+
+/* ── step 3 · screen access ───────────────────────────────────── */
 
 const ScreenStep = ({
   onNext,
@@ -267,7 +367,7 @@ const ScreenStep = ({
   );
 };
 
-/* ── step 3 · bring your own key ──────────────────────────────── */
+/* ── step 4 · bring your own key ──────────────────────────────── */
 
 const ByokStep = ({
   data,
@@ -396,12 +496,7 @@ const ByokStep = ({
           <button
             key={p.id}
             type='button'
-            className={cn(
-              'rounded-full border bg-transparent px-3 py-1.5 text-xs font-[550] transition-[border-color,color,background] duration-(--motion-fast) ease-(--ease) motion-reduce:transition-none',
-              prov === p.id
-                ? 'border-primary bg-primary text-primary-foreground'
-                : 'border-border text-foreground hover:border-[color-mix(in_oklch,var(--fg)_30%,var(--border))]',
-            )}
+            className={chipCls(prov === p.id)}
             onClick={() => switchProv(p.id)}>
             {p.label}
           </button>
@@ -542,7 +637,7 @@ const ByokStep = ({
   );
 };
 
-/* ── step 4 · done ────────────────────────────────────────────── */
+/* ── step 6 · done ────────────────────────────────────────────── */
 
 const DoneStep = ({ onDone }: { onDone: () => void }) => (
   <>

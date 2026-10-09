@@ -45,6 +45,7 @@ export const AskInput = ({
   onFocus,
   onSubmit,
   onDisarm,
+  dropActive,
 }: {
   ref: RefObject<HTMLTextAreaElement | null>;
   value: string;
@@ -61,6 +62,8 @@ export const AskInput = ({
   onFocus: () => void;
   onSubmit: (withScreen: boolean) => void;
   onDisarm: () => boolean;
+  /** A file drag hovers the form — ring the field as the drop target. */
+  dropActive?: boolean;
 }) => {
   const overlayRef = useRef<HTMLDivElement>(null);
   /* `color: transparent` would hide the CJK marked-text preview too,
@@ -71,7 +74,7 @@ export const AskInput = ({
   return (
     <div
       className={cn(
-        'relative min-w-0 flex-1 self-center',
+        'relative flex min-w-0 flex-1 items-center self-center',
         'transition-[max-width_var(--motion-base)_var(--ease),' +
           'opacity_var(--motion-fast)_var(--ease),' +
           'margin-inline_var(--motion-base)_var(--ease)]',
@@ -79,73 +82,76 @@ export const AskInput = ({
         visible
           ? 'max-w-full'
           : 'pointer-events-none -mx-0.75 max-w-0 opacity-0',
+        dropActive && 'rounded-lg shadow-(--focus-ring)',
       )}>
-      <div
-        ref={overlayRef}
-        aria-hidden
-        className={cn(
-          'pointer-events-none absolute inset-0 select-none',
-          'overflow-hidden whitespace-pre-wrap wrap-break-word',
-          METRICS,
-          cardOpen && 'pl-2',
-          composing && 'opacity-0',
-        )}>
-        <RichText text={value} />
+      <div className='relative min-w-0 flex-1'>
+        <div
+          ref={overlayRef}
+          aria-hidden
+          className={cn(
+            'pointer-events-none absolute inset-0 select-none',
+            'overflow-hidden whitespace-pre-wrap wrap-break-word',
+            METRICS,
+            cardOpen && 'pl-2',
+            composing && 'opacity-0',
+          )}>
+          <RichText text={value} />
+        </div>
+        <textarea
+          ref={ref}
+          value={value}
+          rows={1}
+          onKeyDown={(e) => {
+            const composing = e.nativeEvent.isComposing || e.keyCode === 229;
+            if (paletteOpen && !composing && PALETTE_KEYS.includes(e.key)) {
+              // The palette owns this key set — forward it AND consume
+              // the event: preventDefault alone still bubbles to the
+              // window keydown, where Esc would collapse the bar.
+              e.preventDefault();
+              e.stopPropagation();
+              onPaletteKey(e.key);
+              return;
+            }
+            if (e.key === 'Enter' && !e.shiftKey && !composing) {
+              e.preventDefault();
+              onSubmit(e.metaKey || e.ctrlKey);
+            } else if (
+              (e.key === 'Backspace' || e.key === 'Delete') &&
+              !composing &&
+              e.currentTarget.selectionStart === 0 &&
+              e.currentTarget.selectionEnd === 0 &&
+              onDisarm()
+            ) {
+              e.preventDefault();
+            }
+          }}
+          onChange={onChange}
+          onSelect={onSelect}
+          onFocus={onFocus}
+          onScroll={(e) => {
+            const o = overlayRef.current;
+            if (o) o.scrollTop = e.currentTarget.scrollTop;
+          }}
+          onCompositionStart={() => setComposing(true)}
+          onCompositionEnd={() => setComposing(false)}
+          placeholder='Ask Marvis…'
+          aria-label='Ask Marvis'
+          className={cn(
+            // `block` — an inline textarea sits on the wrapper's anonymous
+            // line-box baseline, leaving a strut-descent strip below it
+            // that pushes the text off the pill's vertical center.
+            'field-sizing-content relative block w-full resize-none',
+            'overflow-y-auto border-0 bg-transparent caret-accent',
+            'outline-none select-text placeholder:text-muted-foreground',
+            'focus-visible:shadow-none',
+            METRICS,
+            composing ? 'text-foreground' : 'text-transparent',
+            // Line cap: 2 inside the fixed-height pill (scrolls past),
+            // ~6 in the card — its ResizeObserver reports growth up.
+            cardOpen ? 'max-h-30 pl-2' : 'max-h-10',
+          )}
+        />
       </div>
-      <textarea
-        ref={ref}
-        value={value}
-        rows={1}
-        onKeyDown={(e) => {
-          const composing = e.nativeEvent.isComposing || e.keyCode === 229;
-          if (paletteOpen && !composing && PALETTE_KEYS.includes(e.key)) {
-            // The palette owns this key set — forward it AND consume
-            // the event: preventDefault alone still bubbles to the
-            // window keydown, where Esc would collapse the bar.
-            e.preventDefault();
-            e.stopPropagation();
-            onPaletteKey(e.key);
-            return;
-          }
-          if (e.key === 'Enter' && !e.shiftKey && !composing) {
-            e.preventDefault();
-            onSubmit(e.metaKey || e.ctrlKey);
-          } else if (
-            (e.key === 'Backspace' || e.key === 'Delete') &&
-            !composing &&
-            e.currentTarget.selectionStart === 0 &&
-            e.currentTarget.selectionEnd === 0 &&
-            onDisarm()
-          ) {
-            e.preventDefault();
-          }
-        }}
-        onChange={onChange}
-        onSelect={onSelect}
-        onFocus={onFocus}
-        onScroll={(e) => {
-          const o = overlayRef.current;
-          if (o) o.scrollTop = e.currentTarget.scrollTop;
-        }}
-        onCompositionStart={() => setComposing(true)}
-        onCompositionEnd={() => setComposing(false)}
-        placeholder='Ask Marvis…'
-        aria-label='Ask Marvis'
-        className={cn(
-          // `block` — an inline textarea sits on the wrapper's anonymous
-          // line-box baseline, leaving a strut-descent strip below it
-          // that pushes the text off the pill's vertical center.
-          'field-sizing-content relative block w-full resize-none',
-          'overflow-y-auto border-0 bg-transparent caret-accent',
-          'outline-none select-text placeholder:text-muted-foreground',
-          'focus-visible:shadow-none',
-          METRICS,
-          composing ? 'text-foreground' : 'text-transparent',
-          // Line cap: 2 inside the fixed-height pill (scrolls past),
-          // ~6 in the card — its ResizeObserver reports growth up.
-          cardOpen ? 'max-h-30 pl-2' : 'max-h-10',
-        )}
-      />
     </div>
   );
 };

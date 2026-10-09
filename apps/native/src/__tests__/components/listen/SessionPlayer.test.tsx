@@ -3,7 +3,7 @@ import { expect, test } from 'bun:test';
 import { GlobalWindow } from 'happy-dom';
 import { act, createRef } from 'react';
 import { createRoot } from 'react-dom/client';
-import { SessionPlayer } from './SessionPlayer';
+import { SessionPlayer } from '../../../components/listen/SessionPlayer';
 
 test('playback controls follow metadata, playback, external seeks, slider input, and source changes', async () => {
   const win = new GlobalWindow();
@@ -24,31 +24,43 @@ test('playback controls follow metadata, playback, external seeks, slider input,
   const playing: boolean[] = [];
   let errors = 0;
   const render = async (audioFile: string) => {
-    await act(async () => root.render(
-      <SessionPlayer
-        audioFile={audioFile}
-        audioRef={audioRef}
-        onTime={(time) => times.push(time)}
-        onReady={(duration) => durations.push(duration)}
-        onPlayingChange={(value) => playing.push(value)}
-        onError={() => errors++}
-      />,
-    ));
+    await act(async () =>
+      root.render(
+        <SessionPlayer
+          audioFile={audioFile}
+          audioRef={audioRef}
+          onTime={(time) => times.push(time)}
+          onReady={(duration) => durations.push(duration)}
+          onPlayingChange={(value) => playing.push(value)}
+          onError={() => errors++}
+        />,
+      ),
+    );
   };
   const fire = async (target: Element, type: string) => {
-    await act(async () => target.dispatchEvent(new win.Event(type, { bubbles: true }) as unknown as Event));
+    await act(async () =>
+      target.dispatchEvent(
+        new win.Event(type, { bubbles: true }) as unknown as Event,
+      ),
+    );
   };
   try {
     await render('first.wav');
     const audio = audioRef.current!;
     expect(host.querySelector('input')).toBeNull();
-    Object.defineProperty(audio, 'duration', { configurable: true, value: 125 });
+    Object.defineProperty(audio, 'duration', {
+      configurable: true,
+      value: 125,
+    });
     await fire(audio, 'loadedmetadata');
     expect(durations[durations.length - 1]).toBe(125);
     const slider = host.querySelector('input')!;
     expect(slider.max).toBe('125');
     expect(host.textContent).toContain('2:05');
-    Object.defineProperty(audio, 'duration', { configurable: true, value: 130 });
+    Object.defineProperty(audio, 'duration', {
+      configurable: true,
+      value: 130,
+    });
     await fire(audio, 'durationchange');
     expect(slider.max).toBe('130');
     audio.currentTime = 20;
@@ -59,7 +71,10 @@ test('playback controls follow metadata, playback, external seeks, slider input,
     await fire(audio, 'seeking');
     expect(slider.value).toBe('30');
     // Use the native setter so React sees an actual user value change.
-    Object.getOwnPropertyDescriptor(win.HTMLInputElement.prototype, 'value')!.set!.call(slider, '45');
+    Object.getOwnPropertyDescriptor(
+      win.HTMLInputElement.prototype,
+      'value',
+    )!.set!.call(slider, '45');
     await fire(slider, 'input');
     expect(audio.currentTime).toBe(45);
     expect(times[times.length - 1]).toBe(45);

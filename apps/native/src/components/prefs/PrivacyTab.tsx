@@ -6,7 +6,7 @@
  * deletes.
  */
 import { useRef, useState } from 'react';
-import { sessionDelete, sessionList } from '../../lib/commands';
+import { sessionDelete, sessionList } from '@/lib/commands';
 import {
   BTN_DANGER,
   BTN_LG,
@@ -17,7 +17,7 @@ import {
   PRF_ROWS,
   SUB,
   cn,
-} from '../../lib/classes';
+} from '@/lib/classes';
 import { PrefRow } from './bits';
 
 const CONFIRM_MS = 4000;
@@ -51,17 +51,23 @@ export const PrivacyTab = () => {
     <>
       <h2 className={H2}>Privacy &amp; data</h2>
       <p className={SUB}>
-        Three files on disk, nothing in a cloud. Windows are content-protected —
+        One folder on disk, nothing in a cloud. Windows are content-protected —
         they don't appear in screenshots or screen share.
       </p>
 
       <div className='mb-3.5 overflow-x-auto rounded-[10px] border border-border bg-[color-mix(in_oklch,var(--bg)_60%,var(--surface))] px-3.5 py-3 font-mono text-[11.5px] leading-[1.9] whitespace-pre text-foreground [&_em]:not-italic [&_em]:text-muted-foreground'>
-        {'~/.marvis/\n├── config.toml   '}
+        {'~/.marvis/\n├── config.toml      '}
         <em>0644 — models, hotkeys, bar position</em>
-        {'\n├── keys.json     '}
+        {'\n├── keys.json        '}
         <em>0600 — provider keys, plaintext, this Mac only</em>
-        {'\n└── marvis.db     '}
+        {'\n├── marvis.db        '}
         <em>sessions + messages, sqlite</em>
+        {'\n├── voiceprint.bin   '}
+        <em>enrolled speaker embedding</em>
+        {'\n├── audios/          '}
+        <em>retained listen recordings (recording_*.wav)</em>
+        {'\n└── attachments/     '}
+        <em>ask composer images, normalized JPEGs</em>
       </div>
 
       <div className='my-3.5 grid grid-cols-3 gap-2.5'>

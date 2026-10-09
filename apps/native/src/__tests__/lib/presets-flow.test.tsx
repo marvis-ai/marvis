@@ -2,7 +2,7 @@
 import { afterEach, beforeEach, expect, mock, test } from 'bun:test';
 import { GlobalWindow } from 'happy-dom';
 import { act, useState } from 'react';
-import type { Config, Preset } from './commands';
+import type { Config, Preset } from '@/lib/commands';
 
 const win = new GlobalWindow();
 Object.assign(globalThis, {
@@ -44,7 +44,9 @@ mock.module('@tauri-apps/api/event', () => ({
   listen: (_name: string, handler: (event: { payload: unknown }) => void) => {
     const emit = () => handler({ payload: {} });
     listeners.add(emit);
-    return Promise.resolve(() => { listeners.delete(emit); });
+    return Promise.resolve(() => {
+      listeners.delete(emit);
+    });
   },
 }));
 const { usePresets } = await import('@/hooks/usePresets');
@@ -53,13 +55,21 @@ const { PresetsTab } = await import('@/components/prefs/PresetsTab');
 const first: Preset = { id: 'u:first', name: ' First ', text: 'Be brief.' };
 const second: Preset = { id: 'u:second', name: 'Second', text: 'Explain.' };
 // Only the configuration fields consumed by this flow are needed.
-const config = (custom: Preset[]) => ({ prompts: { custom } } as Config);
+const config = (custom: Preset[]) => ({ prompts: { custom } }) as Config;
 const Settings = () => {
   const [current, setConfig] = useState(config([first, second]));
-  return <PresetsTab data={{
-    config: current, setConfig, status: null, selected: null,
-    setStatus: () => {}, setSelected: () => {},
-  }} />;
+  return (
+    <PresetsTab
+      data={{
+        config: current,
+        setConfig,
+        status: null,
+        selected: null,
+        setStatus: () => {},
+        setSelected: () => {},
+      }}
+    />
+  );
 };
 let host: HTMLDivElement;
 let root: ReturnType<typeof createRoot>;
@@ -75,24 +85,35 @@ afterEach(async () => {
   host.remove();
 });
 const click = async (label: string) => {
-  const button = [...host.querySelectorAll('button')].find((b) =>
-    b.getAttribute('aria-label') === label || b.textContent?.trim() === label,
+  const button = [...host.querySelectorAll('button')].find(
+    (b) =>
+      b.getAttribute('aria-label') === label || b.textContent?.trim() === label,
   );
   expect(button).toBeDefined();
   await act(async () => button!.click());
 };
 const confirm = async (index: number) => {
-  await act(async () => writes[index].result.resolve(config(writes[index].list)));
+  await act(async () =>
+    writes[index].result.resolve(config(writes[index].list)),
+  );
 };
 
 test('a slower mount fetch cannot replace the latest config refresh', async () => {
   const mount = deferred<Preset[]>();
   const refresh = deferred<Preset[]>();
   let calls = 0;
-  fetchList = () => ++calls === 1 ? mount.promise : refresh.promise;
-  const Probe = () => <div>{usePresets().map((p) => p.name).join(',')}</div>;
+  fetchList = () => (++calls === 1 ? mount.promise : refresh.promise);
+  const Probe = () => (
+    <div>
+      {usePresets()
+        .map((p) => p.name)
+        .join(',')}
+    </div>
+  );
   await act(async () => root.render(<Probe />));
-  await act(async () => { for (const emit of listeners) emit(); });
+  await act(async () => {
+    for (const emit of listeners) emit();
+  });
   expect(calls).toBe(2);
   await act(async () => refresh.resolve([second]));
   expect(host.textContent).toBe('Second');

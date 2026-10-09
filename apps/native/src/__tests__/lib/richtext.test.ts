@@ -1,6 +1,6 @@
 /// <reference types="bun-types" />
 import { describe, expect, test } from 'bun:test';
-import { tokenizeInline } from './richtext';
+import { tokenizeInline } from '@/lib/richtext';
 
 /** Flatten to [role, text] pairs so assertions read like the input. */
 const parts = (src: string) =>

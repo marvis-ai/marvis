@@ -88,6 +88,17 @@ const SCHEMA: &str = "
         updated_at INTEGER NOT NULL,
         FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
     );
+
+    CREATE TABLE IF NOT EXISTS message_attachments (
+        id         INTEGER PRIMARY KEY,
+        message_id INTEGER NOT NULL,
+        name       TEXT NOT NULL,
+        path       TEXT NOT NULL,
+        mime       TEXT NOT NULL,
+        bytes      INTEGER NOT NULL,
+        position   INTEGER NOT NULL,
+        FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE
+    );
 ";
 
 /// A row of `sessions`. `kind` maps to the `type` column (`type` is a Rust
@@ -110,6 +121,36 @@ pub struct Session {
     pub last_active_at: i64,
 }
 
+/// A row of `message_attachments` — metadata for one managed image.
+/// `path` points at the normalized JPEG under `~/.marvis/attachments`
+/// (a generated name — the original `name` is display metadata only).
+/// `Serialize` — it rides `Message` rows out of `session_get` and the
+/// `ask:state{loading}` payload.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct MessageAttachment {
+    pub id: i64,
+    pub message_id: i64,
+    /// The original filename — alt text/tooltip; never a path.
+    pub name: String,
+    pub path: String,
+    pub mime: String,
+    pub bytes: i64,
+    /// Position within the message — the provider image-part order.
+    pub position: i64,
+}
+
+/// The not-yet-persisted half of a [`MessageAttachment`] — what
+/// [`Db::attachments_add`] writes. `position` is the caller's pick
+/// order (the composer's chip order).
+#[derive(Debug, Clone, PartialEq)]
+pub struct NewAttachment {
+    pub name: String,
+    pub path: String,
+    pub mime: String,
+    pub bytes: i64,
+    pub position: i64,
+}
+
 /// A row of `messages`. `Serialize` for the `session_get` command.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct Message {
@@ -117,6 +158,9 @@ pub struct Message {
     pub session_id: i64,
     pub role: String,
     pub content: String,
+    /// Attached images — user rows only; empty when the turn is
+    /// text-only or predates the column.
+    pub attachments: Vec<MessageAttachment>,
     /// Assistant-row provenance + spend — NULL on user turns and on rows
     /// written before the columns existed.
     pub provider: Option<String>,
@@ -464,9 +508,11 @@ impl Db {
     }
 
     /// Delete a session; its child records cascade away via their FKs and
-    /// the retained recording (if any) is unlinked best-effort.
+    /// the managed files (the retained recording, if any, and every
+    /// attachment image) are unlinked best-effort. Attachment paths are
+    /// collected BEFORE the cascade deletes their rows.
     pub fn session_delete(&self, id: i64) -> anyhow::Result<()> {
-        let audio_file = {
+        let (audio_file, attachments) = {
             let conn = self.conn.lock();
             let audio_file: Option<String> = conn
                 .query_row(
@@ -476,10 +522,21 @@ impl Db {
                 )
                 .optional()?
                 .flatten();
+            let mut stmt = conn.prepare(
+                "SELECT a.path FROM message_attachments a
+                 JOIN messages m ON m.id = a.message_id
+                 WHERE m.session_id = ?1",
+            )?;
+            let attachments = stmt
+                .query_map([id], |row| row.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
             conn.execute("DELETE FROM sessions WHERE id = ?1", [id])?;
-            audio_file
+            (audio_file, attachments)
         };
         if let Some(path) = audio_file {
+            let _ = std::fs::remove_file(path);
+        }
+        for path in attachments {
             let _ = std::fs::remove_file(path);
         }
         Ok(())
@@ -530,15 +587,93 @@ impl Db {
     }
 
     /// Remove one message row — `ask_retry` drops the rejected reply
-    /// this way before streaming the replacement.
+    /// this way before streaming the replacement. Its managed
+    /// attachment files unlink best-effort after the cascade.
     pub fn message_delete(&self, id: i64) -> anyhow::Result<()> {
-        self.conn
-            .lock()
-            .execute("DELETE FROM messages WHERE id = ?1", [id])?;
+        let paths = {
+            let conn = self.conn.lock();
+            let mut stmt =
+                conn.prepare("SELECT path FROM message_attachments WHERE message_id = ?1")?;
+            let paths = stmt
+                .query_map([id], |row| row.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            conn.execute("DELETE FROM messages WHERE id = ?1", [id])?;
+            paths
+        };
+        for path in paths {
+            let _ = std::fs::remove_file(path);
+        }
         Ok(())
     }
 
+    /// Persist attachment metadata for a message; returns the inserted
+    /// rows (with ids) in `position` order — the `loading` payload and
+    /// provider history both read that order back.
+    pub fn attachments_add(
+        &self,
+        message_id: i64,
+        rows: &[NewAttachment],
+    ) -> anyhow::Result<Vec<MessageAttachment>> {
+        let conn = self.conn.lock();
+        for row in rows {
+            conn.execute(
+                "INSERT INTO message_attachments (message_id, name, path, mime, bytes, position)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    message_id,
+                    row.name,
+                    row.path,
+                    row.mime,
+                    row.bytes,
+                    row.position
+                ],
+            )?;
+        }
+        let mut stmt = conn.prepare(
+            "SELECT id, message_id, name, path, mime, bytes, position
+             FROM message_attachments
+             WHERE message_id = ?1 ORDER BY position ASC, id ASC",
+        )?;
+        let rows = stmt.query_map([message_id], |row| {
+            Ok(MessageAttachment {
+                id: row.get(0)?,
+                message_id: row.get(1)?,
+                name: row.get(2)?,
+                path: row.get(3)?,
+                mime: row.get(4)?,
+                bytes: row.get(5)?,
+                position: row.get(6)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// A message's attachments in `position` order.
+    #[allow(dead_code)] // test convenience — prod reads them on `Message`
+    pub fn attachments_for(&self, message_id: i64) -> anyhow::Result<Vec<MessageAttachment>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT id, message_id, name, path, mime, bytes, position
+             FROM message_attachments
+             WHERE message_id = ?1 ORDER BY position ASC, id ASC",
+        )?;
+        let rows = stmt.query_map([message_id], |row| {
+            Ok(MessageAttachment {
+                id: row.get(0)?,
+                message_id: row.get(1)?,
+                name: row.get(2)?,
+                path: row.get(3)?,
+                mime: row.get(4)?,
+                bytes: row.get(5)?,
+                position: row.get(6)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
     /// A session's messages, oldest first; `id` breaks same-second ties.
+    /// Each row carries its attachments (one follow-up query, grouped by
+    /// `message_id` — the chat UI and provider history read them here).
     pub fn messages_for(&self, session_id: i64) -> anyhow::Result<Vec<Message>> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
@@ -546,21 +681,52 @@ impl Db {
              FROM messages
              WHERE session_id = ?1 ORDER BY ts ASC, id ASC",
         )?;
-        let rows = stmt.query_map([session_id], |row| {
-            Ok(Message {
+        let mut rows: Vec<Message> = stmt
+            .query_map([session_id], |row| {
+                Ok(Message {
+                    id: row.get(0)?,
+                    session_id: row.get(1)?,
+                    role: row.get(2)?,
+                    content: row.get(3)?,
+                    provider: row.get(4)?,
+                    model: row.get(5)?,
+                    tokens_in: row.get(6)?,
+                    tokens_out: row.get(7)?,
+                    preset: row.get(8)?,
+                    ts: row.get(9)?,
+                    attachments: Vec::new(),
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        if rows.is_empty() {
+            return Ok(rows);
+        }
+        let mut by_id: std::collections::HashMap<i64, &mut Message> =
+            rows.iter_mut().map(|m| (m.id, m)).collect();
+        let mut stmt = conn.prepare(
+            "SELECT a.id, a.message_id, a.name, a.path, a.mime, a.bytes, a.position
+             FROM message_attachments a
+             JOIN messages m ON m.id = a.message_id
+             WHERE m.session_id = ?1
+             ORDER BY a.position ASC, a.id ASC",
+        )?;
+        let attachments = stmt.query_map([session_id], |row| {
+            Ok(MessageAttachment {
                 id: row.get(0)?,
-                session_id: row.get(1)?,
-                role: row.get(2)?,
-                content: row.get(3)?,
-                provider: row.get(4)?,
-                model: row.get(5)?,
-                tokens_in: row.get(6)?,
-                tokens_out: row.get(7)?,
-                preset: row.get(8)?,
-                ts: row.get(9)?,
+                message_id: row.get(1)?,
+                name: row.get(2)?,
+                path: row.get(3)?,
+                mime: row.get(4)?,
+                bytes: row.get(5)?,
+                position: row.get(6)?,
             })
         })?;
-        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        for attachment in attachments.collect::<rusqlite::Result<Vec<_>>>()? {
+            if let Some(msg) = by_id.get_mut(&attachment.message_id) {
+                msg.attachments.push(attachment);
+            }
+        }
+        Ok(rows)
     }
 
     /// Append a finalized listen turn; returns the new row id.
@@ -895,7 +1061,7 @@ fn now() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU32, Ordering};
 
     /// Unique temp dir per test; `Db::at` creates it (parent-dirs path).
@@ -1008,6 +1174,79 @@ mod tests {
         db.session_delete(sid).unwrap();
         assert!(db.messages_for(sid).unwrap().is_empty());
         assert!(db.session_list().unwrap().iter().all(|s| s.id != sid));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Attach a real managed-looking file to `message_id` under `dir`.
+    fn attach(db: &Db, dir: &Path, message_id: i64, name: &str, position: i64) -> PathBuf {
+        let path = dir.join("attachments").join(format!("att-{name}.jpg"));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"jpeg").unwrap();
+        db.attachments_add(
+            message_id,
+            &[NewAttachment {
+                name: name.to_string(),
+                path: path.to_string_lossy().into_owned(),
+                mime: "image/jpeg".to_string(),
+                bytes: 4,
+                position,
+            }],
+        )
+        .unwrap();
+        path
+    }
+
+    #[test]
+    fn attachments_round_trip_ordered_on_the_message() {
+        let dir = tmp_dir();
+        let db = Db::at(dir.join("marvis.db")).unwrap();
+        let sid = db.session_get_or_create_active("ask").unwrap();
+        let mid = db.message_add(sid, "user", "see attached").unwrap();
+
+        // Stored out of order — `position`, not insertion, orders them.
+        attach(&db, &dir, mid, "b", 1);
+        attach(&db, &dir, mid, "a", 0);
+        let plain = db.message_add(sid, "assistant", "ok").unwrap();
+        assert_eq!(db.attachments_for(plain).unwrap().len(), 0);
+
+        let msgs = db.messages_for(sid).unwrap();
+        assert_eq!(msgs[0].attachments.len(), 2);
+        assert_eq!(msgs[0].attachments[0].name, "a");
+        assert_eq!(msgs[0].attachments[0].position, 0);
+        assert_eq!(msgs[0].attachments[0].mime, "image/jpeg");
+        assert_eq!(msgs[0].attachments[1].name, "b");
+        assert!(msgs[1].attachments.is_empty());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn message_delete_removes_managed_attachment_files() {
+        let dir = tmp_dir();
+        let db = Db::at(dir.join("marvis.db")).unwrap();
+        let sid = db.session_get_or_create_active("ask").unwrap();
+        let mid = db.message_add(sid, "user", "pic").unwrap();
+        let path = attach(&db, &dir, mid, "p", 0);
+
+        db.message_delete(mid).unwrap();
+        assert!(!path.exists());
+        assert!(db.attachments_for(mid).unwrap().is_empty());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn session_delete_removes_attachment_files() {
+        let dir = tmp_dir();
+        let db = Db::at(dir.join("marvis.db")).unwrap();
+        let sid = db.session_get_or_create_active("ask").unwrap();
+        let mid = db.message_add(sid, "user", "pic").unwrap();
+        let path = attach(&db, &dir, mid, "p", 0);
+
+        db.session_delete(sid).unwrap();
+        assert!(!path.exists());
+        assert!(db.messages_for(sid).unwrap().is_empty());
 
         let _ = std::fs::remove_dir_all(&dir);
     }

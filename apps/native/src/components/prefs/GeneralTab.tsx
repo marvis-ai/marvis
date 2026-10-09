@@ -6,17 +6,9 @@
  */
 import { configSet } from '@/lib/commands';
 import { H2, MODEL_SEL, PRF_ROWS, cn } from '@/lib/classes';
+import { LANGUAGES } from '@/lib/languages';
 import { PrefRow, Seg } from './bits';
 import type { PrefsData } from './types';
-
-const LANGUAGES = [
-  { id: 'en', label: 'English' },
-  { id: 'zh', label: '中文' },
-  { id: 'ja', label: '日本語' },
-  { id: 'ko', label: '한국어' },
-  { id: 'fr', label: 'Français' },
-  { id: 'es', label: 'Español' },
-] as const;
 
 export const GeneralTab = ({ data }: { data: PrefsData }) => {
   const cfg = data.config;

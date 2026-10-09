@@ -13,7 +13,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::capture::Frame;
 use crate::llm::{ChatMessage, LlmError, Provider, StreamReply};
-use crate::prompts::screen_prompt;
+use crate::prompts::{attachment_prompt, screen_prompt};
 
 /// A cached screen description + unix-seconds stamp — asks annotate age
 /// so stale context is never silently presented as current.
@@ -80,6 +80,56 @@ pub(crate) async fn describe_screen(
             }
             Err(e) => {
                 log::warn!("screen_read: vision read failed: {e}");
+                Err(e)
+            }
+        },
+    }
+}
+
+/// The user's attached images → one text description — the same
+/// silent intermediate read as [`describe_screen`], used by the ask
+/// chain when the answering model rejects image input. All images ride
+/// one request in pick order, with the question quoted so the read
+/// focuses on what the ask needs. `Ok(None)` = cancelled; `Err` =
+/// provider failure (the caller hands off to the next candidate).
+pub(crate) async fn describe_images(
+    provider: &dyn Provider,
+    images: &[Vec<u8>],
+    question: &str,
+    cancel: &CancellationToken,
+) -> Result<Option<StreamReply>, LlmError> {
+    log::info!("screen_read: attachment describe — {} image(s)", images.len());
+    let prompt = if question.trim().is_empty() {
+        attachment_prompt().to_string()
+    } else {
+        format!(
+            "{}\n\n<user_question>\n{}\n</user_question>",
+            attachment_prompt(),
+            question
+        )
+    };
+    let msgs = vec![ChatMessage::user_with_images(prompt, images.to_vec())];
+    let mut sink = |_: &str| {};
+    tokio::select! {
+        _ = cancel.cancelled() => {
+            log::info!("screen_read: attachment describe cancelled");
+            Ok(None)
+        }
+        r = provider.stream_chat(&msgs, &mut sink) => match r {
+            Ok(reply) => {
+                let first = reply.full.trim().lines().next().unwrap_or("");
+                match &reply.usage {
+                    Some(u) => log::info!(
+                        "screen_read: attachment description ({u:?}): {first}"
+                    ),
+                    None => log::info!(
+                        "screen_read: attachment description: {first}"
+                    ),
+                }
+                Ok(Some(reply))
+            }
+            Err(e) => {
+                log::warn!("screen_read: attachment describe failed: {e}");
                 Err(e)
             }
         },

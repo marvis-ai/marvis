@@ -15,6 +15,7 @@
  * total window height via `window_adjust_height`.
  */
 import { Suspense, lazy, useEffect, useRef, useState } from 'react';
+import { convertFileSrc } from '@tauri-apps/api/core';
 import { CheckIcon, CopyIcon, MessageSquareTextIcon } from '@marvis/ui';
 import {
   askCurrent,
@@ -23,6 +24,7 @@ import {
   sessionGet,
   sessionList,
   type Message,
+  type MessageAttachment,
 } from '@/lib/commands';
 import {
   EV_ASK_CHUNK,
@@ -61,6 +63,9 @@ interface AskStatePayload {
   /** Present on `send_chain`'s `loading` — the armed preset id
    *  (ask.rs); absent on `pre_spawn_error`'s `loading` emit. */
   preset?: string | null;
+  /** Present on `loading` when the user turn carries images — the
+   *  persisted `message_attachments` metadata (ask.rs). */
+  attachments?: MessageAttachment[];
 }
 
 /** Meta fields surface in the ⋯ menu, not inline; absent while the
@@ -74,6 +79,9 @@ interface ChatMsg extends ChatMsgMeta {
   /** The armed `instruct` preset id — user rows only; the meta row
    *  renders it as `· {name}` (falls back to the raw id). */
   preset?: string | null;
+  /** Attached images — user rows only; persisted rows carry metadata,
+   *  live `loading` rows get it from the payload. */
+  attachments?: MessageAttachment[];
 }
 
 /** Distance from the bottom that still counts as pinned for autoscroll. */
@@ -88,6 +96,7 @@ const applyLoading = (
   prev: ChatMsg[],
   q: string,
   preset?: string | null,
+  attachments?: MessageAttachment[],
 ): ChatMsg[] => {
   const last = prev[prev.length - 1];
   if (
@@ -99,12 +108,20 @@ const applyLoading = (
     return [...prev.slice(0, -1), { role: 'assistant', content: '' }];
   }
   if (last?.role === 'user' && last.content === q) {
-    // Resync: the persisted user row already rendered — attach the tail.
-    return [...prev, { role: 'assistant', content: '' }];
+    // Resync: the persisted user row already rendered — merge any
+    // attachments that landed after the row painted (a retry's fresh
+    // screenshot), then attach the tail. An empty payload list is "not
+    // yet known" (the run's emit hasn't landed), never "none" — don't
+    // wipe attachments the row already carries.
+    const user =
+      attachments != null && attachments.length > 0
+        ? { ...last, attachments }
+        : last;
+    return [...prev.slice(0, -1), user, { role: 'assistant', content: '' }];
   }
   return [
     ...prev,
-    { role: 'user', content: q, ts: nowSecs(), preset },
+    { role: 'user', content: q, ts: nowSecs(), preset, attachments },
     { role: 'assistant', content: '' },
   ];
 };
@@ -145,6 +162,7 @@ const rowsToMsgs = (rows: Message[]): ChatMsg[] =>
       content: r.content,
       ts: r.ts,
       preset: r.preset,
+      attachments: r.attachments,
       provider: r.provider,
       model: r.model,
       tokensIn: r.tokens_in,
@@ -198,7 +216,10 @@ export const ChatSection = ({ onBack }: { onBack: () => void }) => {
         const cur = await askCurrent();
         if (!cancelled && cur.state !== 'idle') {
           setMsgs((prev) =>
-            setTail(applyLoading(prev, cur.question), cur.response),
+            setTail(
+              applyLoading(prev, cur.question, null, cur.attachments),
+              cur.response,
+            ),
           );
           setPhase(cur.state);
         }
@@ -251,10 +272,44 @@ export const ChatSection = ({ onBack }: { onBack: () => void }) => {
         const buffered = chunkBufRef.current ?? '';
         chunkBufRef.current = null;
         setMsgs((prev) => {
-          const next = applyLoading(base ?? prev, p.question ?? '', p.preset);
+          const next = applyLoading(
+            base ?? prev,
+            p.question ?? '',
+            p.preset,
+            p.attachments,
+          );
           return buffered ? appendTail(next, buffered) : next;
         });
       })();
+    } else if (p.state === 'streaming' || p.state === 'idle') {
+      // `loading` emits once — a send that opens the card mounts this
+      // listener while the ~1s capture runs, so the emit can beat it
+      // (a mount-resync that races the attachment persist then paints
+      // the user row bare). The service-side fold always has the run's
+      // attachments by now — merge them onto the painted row, matched
+      // to the run's question so a same-text earlier row stays put.
+      void askCurrent()
+        .then((cur) => {
+          if (cur.attachments.length === 0) return;
+          setMsgs((prev) => {
+            let idx = -1;
+            for (let i = prev.length - 1; i >= 0; i--) {
+              if (prev[i].role === 'user' && prev[i].content === cur.question) {
+                idx = i;
+                break;
+              }
+            }
+            if (idx < 0 || (prev[idx].attachments?.length ?? 0) > 0) {
+              return prev;
+            }
+            const next = [...prev];
+            next[idx] = { ...next[idx], attachments: cur.attachments };
+            return next;
+          });
+        })
+        .catch(() => {
+          /* heal is best-effort */
+        });
     }
     setPhase(p.state);
   });
@@ -372,6 +427,18 @@ export const ChatSection = ({ onBack }: { onBack: () => void }) => {
               <div
                 key={i}
                 className='group/row flex flex-col items-end gap-1'>
+                {m.attachments != null && m.attachments.length > 0 && (
+                  <div className='flex max-w-[85%] flex-wrap justify-end gap-1.5'>
+                    {m.attachments.map((a) => (
+                      <img
+                        key={a.id}
+                        src={convertFileSrc(a.path)}
+                        alt={a.name}
+                        className='h-16 w-auto max-w-40 rounded-xl border border-border/60 object-cover'
+                      />
+                    ))}
+                  </div>
+                )}
                 <p
                   className={cn(
                     'max-w-[85%] rounded-2xl rounded-br-sm bg-accent/10 px-4 py-2',

@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import type { Preset } from './commands';
+import type { Preset } from '@/lib/commands';
 import {
   expandTemplate,
   hasLangParam,
@@ -11,7 +11,7 @@ import {
   slashQuery,
   slashToken,
   stripSlashToken,
-} from './presets';
+} from '../../lib/presets';
 
 const P = (id: string, name: string, text = ''): Preset => ({
   id,

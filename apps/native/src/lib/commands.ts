@@ -172,12 +172,30 @@ export interface Session {
   last_active_at: number;
 }
 
+/** A managed image attached to a `messages` row (storage.rs
+ *  `MessageAttachment`) — `path` points under `~/.marvis/attachments`
+ *  and renders via `convertFileSrc`; `name` is the original filename
+ *  (alt text). Empty on text-only turns and rows written before
+ *  attachments existed. */
+export interface MessageAttachment {
+  id: number;
+  message_id: number;
+  name: string;
+  path: string;
+  mime: string;
+  bytes: number;
+  /** Order within the message — the provider image-part order. */
+  position: number;
+}
+
 /** `session_get` row (storage.rs `Message`). */
 export interface Message {
   id: number;
   session_id: number;
   role: string;
   content: string;
+  /** Attached images — user rows only. */
+  attachments: MessageAttachment[];
   /** Answering-provider metadata — assistant rows only; `null` on rows
    * written before the columns existed and on user rows. */
   provider: string | null;
@@ -261,6 +279,14 @@ export const providerSetEnabled = (provider: string, enabled: boolean) =>
 // ask
 // ---------------------------------------------------------------------------
 
+/** One normalized image heading to `ask_send` — `jpegBase64` is the
+ *  webview-normalized JPEG (no `data:` prefix); `name` is the original
+ *  filename kept as display metadata only. */
+export interface AskImageInput {
+  name: string;
+  jpegBase64: string;
+}
+
 /** `ask_send` options — every field optional; see `askSend`. */
 export interface AskSendOpts {
   /** The bar's Cmd/Ctrl+Enter — the explicit attach flag; a screen read
@@ -274,6 +300,9 @@ export interface AskSendOpts {
   /** The `{lang}` badge's edited value (`undefined` → the configured
    *  main language). */
   presetLang?: string;
+  /** Normalized image attachments — already JPEG-encoded via
+   *  `image-attachments.ts`; max four, each ≤20 MiB pre-normalization. */
+  attachments?: AskImageInput[];
 }
 
 /** Fire-and-forget: returns after pre-flight; tokens stream as `ask:*`. */
@@ -284,6 +313,7 @@ export const askSend = (text: string, opts: AskSendOpts = {}) =>
     listenId: opts.listenId,
     presetId: opts.presetId,
     presetLang: opts.presetLang,
+    attachments: opts.attachments ?? [],
   });
 
 /** The bar's camera affordance — a screen-only ask (fixed prompt,
@@ -304,6 +334,9 @@ export interface AskCurrent {
   /** Last `ask:error` payload or `null` — re-delivers a pre-flight
    * error that fired before this webview's `listen()` was up. */
   error: { message: string; needs_setup?: boolean } | null;
+  /** The in-flight user turn's persisted attachments — mirrors the
+   * `loading` event's `attachments` key for resync. */
+  attachments: MessageAttachment[];
 }
 
 /** The live ask tail — a re-expanded chat resyncs from this. */
@@ -386,7 +419,6 @@ export interface VoiceModelCatalogEntry {
   label: string;
   description: string;
   bytes: number;
-  source: string;
 }
 
 export interface WhisperInstalledModel {
@@ -436,7 +468,6 @@ export interface SherpaInstalledModel {
   label: string;
   description: string;
   bytes: number;
-  source: string;
   /** What the model is for — only `stt` entries may be selected as the
    * transcription model; `speaker-embedding` feeds diarization and
    * `punctuation` restores casing/punctuation in sherpa transcripts. */

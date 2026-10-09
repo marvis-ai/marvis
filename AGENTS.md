@@ -213,3 +213,12 @@ below is the existing contract — extend it, don't fork it.
 - ✅ `import { sherpaStatus } from '@/lib/commands'` / `import { cn } from '@/lib/classes'`
 - ❌ `import { sherpaStatus } from '../../lib/commands'`
 - Same-directory sibling imports stay `./` (`./types`, `./AuxModelCard`)
+
+### 21. Webview Tests: `src/__tests__/` Only
+
+- **All** Vite/React webview tests in `apps/native` live under
+  `src/__tests__/` — never colocate `*.test.ts(x)` beside source files
+- Mirror the source layout: `__tests__/lib/x.test.ts` covers `lib/x.ts`,
+  `__tests__/components/...` covers `components/...`
+- Run with `bun test` (Bun's test runner; `happy-dom` provides the DOM)
+- Rust tests are unaffected — they stay in `src-tauri` under `cargo test`

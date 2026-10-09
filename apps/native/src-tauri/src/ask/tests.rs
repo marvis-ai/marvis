@@ -6,7 +6,7 @@ use super::title::*;
     use std::future::Future;
     use std::path::PathBuf;
     use std::pin::Pin;
-    use std::sync::atomic::AtomicU32;
+    use std::sync::atomic::{AtomicBool, AtomicU32};
     use std::time::Duration;
 
     /// Scripted provider: each `stream_chat` call pops the next behaviour
@@ -2991,4 +2991,118 @@ async fn retry_fresh_screenshot_replaces_old_shot_and_keeps_other_images() {
     assert_ne!(images[1], vec![1]);
     drop(db);
     std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// A successful send schedules background extraction on the hook —
+/// the ask answer is unchanged and `changed` fires once the fact lands.
+#[tokio::test]
+async fn successful_send_schedules_memory_without_changing_ask_result() {
+    let dir = tmp_dir();
+    let db = Arc::new(Db::at(dir.join("marvis.db")).unwrap());
+    let reader = screen_read::ScreenReader::new();
+    let ring = Mutex::new(RingBuffer::new(8, 1024));
+    let input = input(&reader, &ring);
+    let (_events, emit) = recorder();
+    let changed = Arc::new(AtomicBool::new(false));
+    let memory_provider = MockProvider::new(vec![Behavior::Tokens(vec![
+        r#"{"facts":[{"category":"identity","attribute":"name","value":"The user's name is Allen.","confidence":0.98,"basis":"explicit"}]}"#.into(),
+    ])]);
+    let hook = MemoryHook::new(
+        MemoryService::new(),
+        Arc::clone(&db),
+        Box::new(memory_provider),
+        Arc::new({
+            let changed = Arc::clone(&changed);
+            move || changed.store(true, Ordering::SeqCst)
+        }),
+    );
+
+    let result = send_chain(
+        vec![candidate(
+            "mock",
+            MockProvider::new(vec![Behavior::Tokens(vec!["answer".into()])]),
+        )],
+        None,
+        db.as_ref(),
+        &emit,
+        &input,
+        &CancellationToken::new(),
+        ChainOpts {
+            text: "My name is Allen.",
+            language: "en",
+            memory: Some(hook),
+            ..ChainOpts::default()
+        },
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(result, "answer");
+    for _ in 0..20 {
+        if changed.load(Ordering::SeqCst) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert!(changed.load(Ordering::SeqCst));
+    assert_eq!(db.memory_profile().unwrap()[0].attribute, "name");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// A failed send never schedules extraction — no provider call, no
+/// callback, no row.
+#[tokio::test]
+async fn failed_send_never_schedules_memory_extraction() {
+    let dir = tmp_dir();
+    let db = Arc::new(Db::at(dir.join("marvis.db")).unwrap());
+    let reader = screen_read::ScreenReader::new();
+    let ring = Mutex::new(RingBuffer::new(8, 1024));
+    let input = input(&reader, &ring);
+    let (_events, emit) = recorder();
+    let changed = Arc::new(AtomicBool::new(false));
+    let memory_provider = MockProvider::new(vec![Behavior::Tokens(vec![
+        r#"{"facts":[]}"#.into(),
+    ])]);
+    let memory_calls = memory_provider.calls();
+    let hook = MemoryHook::new(
+        MemoryService::new(),
+        Arc::clone(&db),
+        Box::new(memory_provider),
+        Arc::new({
+            let changed = Arc::clone(&changed);
+            move || changed.store(true, Ordering::SeqCst)
+        }),
+    );
+
+    // A deterministic offline `reqwest::Error` for LlmError::Network.
+    let network = reqwest::Client::new()
+        .get("://invalid-url")
+        .send()
+        .await
+        .unwrap_err();
+    let result = send_chain(
+        vec![candidate(
+            "mock",
+            MockProvider::new(vec![Behavior::Fail(LlmError::Network(network))]),
+        )],
+        None,
+        db.as_ref(),
+        &emit,
+        &input,
+        &CancellationToken::new(),
+        ChainOpts {
+            text: "My name is Allen.",
+            language: "en",
+            memory: Some(hook),
+            ..ChainOpts::default()
+        },
+    )
+    .await;
+
+    assert!(result.is_err());
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert!(!changed.load(Ordering::SeqCst));
+    assert_eq!(memory_calls.lock().len(), 0);
+    assert!(db.memory_profile().unwrap().is_empty());
+    let _ = std::fs::remove_dir_all(dir);
 }

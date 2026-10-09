@@ -423,7 +423,7 @@ impl AskService {
         // fall back TO, so the card links straight to settings. The
         // screen reader (`[vision]`), the armed preset's resolution, and
         // its `{lang}` substitution all read under the same lock.
-        let (candidates, vision, language, instruction, preset_hit) = {
+        let (candidates, vision, language, instruction, preset_hit, memory) = {
             let cfg = deps.config.lock();
             let ks = deps.keystore.lock();
             let resolved = preset.as_deref().and_then(|id| {
@@ -445,12 +445,30 @@ impl AskService {
                 .as_ref()
                 .filter(|p| !crate::presets::is_template(p))
                 .map(|p| p.text.replace("{lang}", &lang_arg));
+            // The memory hook resolves under the same snapshot — its
+            // `[memory]` pick is independent of the chain above (order
+            // and disabled switches don't apply), and the `changed`
+            // callback only broadcasts `memory:changed` — fire-and-forget,
+            // never a lock held into the emit.
+            let changed: Arc<dyn Fn() + Send + Sync> = {
+                let app = app.clone();
+                Arc::new(move || {
+                    let _ = app.emit(crate::memory::EV_MEMORY_CHANGED, json!({}));
+                })
+            };
             (
                 crate::provider_candidates(&cfg, &ks),
                 crate::vision_candidate(&cfg, &ks),
                 cfg.app.main_language.clone(),
                 instruction,
                 resolved.is_some(),
+                crate::memory::prepare_hook(
+                    &cfg,
+                    &ks,
+                    Arc::clone(&deps.db),
+                    Arc::clone(&deps.memory),
+                    changed,
+                ),
             )
         };
         if candidates.is_empty() {
@@ -541,6 +559,7 @@ impl AskService {
                     preset_id: preset_id.as_deref(),
                     attachments,
                     attachments_root: None,
+                    memory,
                 },
             )
             .await;

@@ -34,6 +34,10 @@ pub(crate) struct ChainOpts<'a> {
     /// `paths::attachments_dir()`; tests pass a tmp dir so runs never
     /// touch the real `~/.marvis`.
     pub attachments_root: Option<&'a Path>,
+    /// The consent-gated extraction job — `Some` only when
+    /// `[memory].enabled` resolved a usable dedicated provider in
+    /// `kick`. Scheduled once, on success only.
+    pub memory: Option<MemoryHook>,
 }
 
 /// The testable core: persist → walk the failover chain → persist,
@@ -100,6 +104,7 @@ pub(crate) async fn send_chain(
         preset_id,
         attachments,
         attachments_root,
+        memory,
     } = opts;
     // Contract guard: a crafted invoke past the composer cap is an
     // attachment error — no row persists, no provider is called.
@@ -372,6 +377,14 @@ pub(crate) async fn send_chain(
                     }),
                 );
                 emit(EV_STATE, json!({"state": "idle"}));
+                // Memory extraction runs on success only — the raw user
+                // text (never the reply, screen, or attachments) is the
+                // whole source, and the scheduled job owns the ids of
+                // the turn it came from. Fire-and-forget: the answer
+                // never waits on it and its failure only warns.
+                if let Some(hook) = memory {
+                    hook.schedule(text.to_string(), session_id, message_id);
+                }
                 // The sidecar runs after `idle` so the stream's end never
                 // waits on it; its spend isn't part of the turn's usage
                 // (done/persisted already).

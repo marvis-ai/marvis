@@ -52,7 +52,7 @@
       "version": "0.1.4",
       "dependencies": {
         "@next/third-parties": "^16.4.0",
-        "@opennextjs/cloudflare": "1.20.6",
+        "@opennextjs/cloudflare": "1.20.9",
         "next": "16.4.0",
         "next-themes": "^0.4.6",
         "react": "19.3.0",
@@ -121,6 +121,9 @@
     "sharp",
     "unrs-resolver",
   ],
+  "patchedDependencies": {
+    "@opennextjs/cloudflare@1.20.9": "patches/@opennextjs%2Fcloudflare@1.20.9.patch",
+  },
   "packages": {
     "@alloc/quick-lru": ["@alloc/quick-lru@5.3.0", "https://registry.npmmirror.com/@alloc/quick-lru/-/quick-lru-5.3.0.tgz", {}, "sha512-U4+70Pc5ZS9osnCBCE5Jha/ciHM+Yp+CNMNC/7HvYbNRk1Ldd+f7qO65W5qfhu/TCv+/ozljlXXe9Nj8419DMA=="],
 
@@ -584,9 +587,9 @@
 
     "@nolyfill/is-core-module": ["@nolyfill/is-core-module@1.0.39", "https://registry.npmmirror.com/@nolyfill/is-core-module/-/is-core-module-1.0.39.tgz", {}, "sha512-nn5ozdjYQpUCZlWGuxcJY/KpxkWQs4DcbMCmKojjyrYDEAGy4Ce19NN4v5MduafTwJlbKc99UA8YhSVqq9yPZA=="],
 
-    "@opennextjs/aws": ["@opennextjs/aws@4.1.4", "https://registry.npmmirror.com/@opennextjs/aws/-/aws-4.1.4.tgz", { "dependencies": { "@ast-grep/napi": "^0.40.5", "@aws-sdk/client-cloudfront": "3.984.0", "@aws-sdk/client-dynamodb": "3.984.0", "@aws-sdk/client-lambda": "3.984.0", "@aws-sdk/client-s3": "3.984.0", "@aws-sdk/client-sqs": "3.984.0", "@node-minify/core": "^8.0.6", "@node-minify/terser": "^8.0.6", "@tsconfig/node18": "^1.0.3", "aws4fetch": "^1.0.20", "chalk": "^5.6.2", "cookie": "^1.0.2", "esbuild": "0.25.4", "express": "^5.1.0", "path-to-regexp": "^6.3.0", "urlpattern-polyfill": "^10.1.0", "yaml": "^2.8.1" }, "peerDependencies": { "next": ">=15.5.24 <16 || >=16.3.3" }, "bin": { "open-next": "dist/index.js" } }, "sha512-L5Yle38qg6p1DY3yS8FXO2840pXW5XlAR6XM71TtIYs0Kh7eQE/a+j4T/DR+VgUQSxbAWw3J2Wnar08xPhOS+w=="],
+    "@opennextjs/aws": ["@opennextjs/aws@4.1.8", "https://registry.npmmirror.com/@opennextjs/aws/-/aws-4.1.8.tgz", { "dependencies": { "@ast-grep/napi": "^0.40.5", "@aws-sdk/client-cloudfront": "3.984.0", "@aws-sdk/client-dynamodb": "3.984.0", "@aws-sdk/client-lambda": "3.984.0", "@aws-sdk/client-s3": "3.984.0", "@aws-sdk/client-sqs": "3.984.0", "@node-minify/core": "^8.0.6", "@node-minify/terser": "^8.0.6", "@tsconfig/node18": "^1.0.3", "aws4fetch": "^1.0.20", "chalk": "^5.6.2", "cookie": "^1.0.2", "esbuild": "0.25.4", "express": "^5.1.0", "path-to-regexp": "^6.3.0", "urlpattern-polyfill": "^10.1.0", "yaml": "^2.8.1" }, "peerDependencies": { "next": ">=15.5.27 <16 || >=16.3.8" }, "bin": { "open-next": "dist/index.js" } }, "sha512-6B6QztQccicKymlDQnvd7zIYEbzxWz3jLtMKgxN19JLQUea9jVgookSzJrRLrN68mvb/pphT/0TEMT/5Ghegcw=="],
 
-    "@opennextjs/cloudflare": ["@opennextjs/cloudflare@1.20.6", "https://registry.npmmirror.com/@opennextjs/cloudflare/-/cloudflare-1.20.6.tgz", { "dependencies": { "@ast-grep/napi": "^0.40.5", "@dotenvx/dotenvx": "1.31.0", "@opennextjs/aws": "4.1.4", "ci-info": "^4.2.0", "cloudflare": "^4.4.1", "comment-json": "^4.5.1", "enquirer": "^2.4.1", "glob": "^12.0.0", "ts-tqdm": "^0.8.6", "yargs": "^18.0.0" }, "peerDependencies": { "next": ">=15.5.24 <16 || >=16.3.3", "rclone.js": "^0.6.6", "wrangler": "^4.125.0" }, "optionalPeers": ["rclone.js"], "bin": { "opennextjs-cloudflare": "dist/cli/index.js" } }, "sha512-Jxa+Uv72uBMp4JHNMDFuZ5C0ypcnQUmpsp0+aNGfSw6ssb2Hqosk2ebadyvYyh7BkDwcxMkHXGdyJen3Sq0UAw=="],
+    "@opennextjs/cloudflare": ["@opennextjs/cloudflare@1.20.9", "https://registry.npmmirror.com/@opennextjs/cloudflare/-/cloudflare-1.20.9.tgz", { "dependencies": { "@ast-grep/napi": "^0.40.5", "@dotenvx/dotenvx": "1.31.0", "@opennextjs/aws": "4.1.8", "ci-info": "^4.2.0", "cloudflare": "^4.4.1", "comment-json": "^4.5.1", "enquirer": "^2.4.1", "glob": "^12.0.0", "ts-tqdm": "^0.8.6", "yargs": "^18.0.0" }, "peerDependencies": { "next": ">=15.5.27 <16 || >=16.3.8", "rclone.js": "^0.6.6", "wrangler": "^4.125.0" }, "optionalPeers": ["rclone.js"], "bin": { "opennextjs-cloudflare": "dist/cli/index.js" } }, "sha512-VR5CxACoggcWmiD4NG0Rk+bdvEJoiFfe5FH4/t+G+D7bU1yXPSGpj+oAVxKFPZv3WSdJwq1H//ZjDsHEJMFaOA=="],
 
     "@oxc-project/types": ["@oxc-project/types@0.150.0", "https://registry.npmmirror.com/@oxc-project/types/-/types-0.150.0.tgz", {}, "sha512-rDS5/31E9HfPl/CIzGrn0DOlvBbXFseQ5URJ9sYMfstbKLD/c6Gm9vmRzRGDdAXyOIL4zmO37lc9RIwYqVruZw=="],
 

@@ -110,8 +110,13 @@ const applyLoading = (
   if (last?.role === 'user' && last.content === q) {
     // Resync: the persisted user row already rendered — merge any
     // attachments that landed after the row painted (a retry's fresh
-    // screenshot), then attach the tail.
-    const user = attachments ? { ...last, attachments } : last;
+    // screenshot), then attach the tail. An empty payload list is "not
+    // yet known" (the run's emit hasn't landed), never "none" — don't
+    // wipe attachments the row already carries.
+    const user =
+      attachments != null && attachments.length > 0
+        ? { ...last, attachments }
+        : last;
     return [...prev.slice(0, -1), user, { role: 'assistant', content: '' }];
   }
   return [
@@ -276,6 +281,35 @@ export const ChatSection = ({ onBack }: { onBack: () => void }) => {
           return buffered ? appendTail(next, buffered) : next;
         });
       })();
+    } else if (p.state === 'streaming' || p.state === 'idle') {
+      // `loading` emits once — a send that opens the card mounts this
+      // listener while the ~1s capture runs, so the emit can beat it
+      // (a mount-resync that races the attachment persist then paints
+      // the user row bare). The service-side fold always has the run's
+      // attachments by now — merge them onto the painted row, matched
+      // to the run's question so a same-text earlier row stays put.
+      void askCurrent()
+        .then((cur) => {
+          if (cur.attachments.length === 0) return;
+          setMsgs((prev) => {
+            let idx = -1;
+            for (let i = prev.length - 1; i >= 0; i--) {
+              if (prev[i].role === 'user' && prev[i].content === cur.question) {
+                idx = i;
+                break;
+              }
+            }
+            if (idx < 0 || (prev[idx].attachments?.length ?? 0) > 0) {
+              return prev;
+            }
+            const next = [...prev];
+            next[idx] = { ...next[idx], attachments: cur.attachments };
+            return next;
+          });
+        })
+        .catch(() => {
+          /* heal is best-effort */
+        });
     }
     setPhase(p.state);
   });

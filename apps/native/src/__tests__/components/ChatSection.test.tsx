@@ -17,6 +17,8 @@ const { createRoot } = await import('react-dom/client');
  *  payload to the hook's callback exactly once. */
 const listeners = new Map<string, (event: { payload: unknown }) => void>();
 let sessionRows: Message[] = [];
+let currentQuestion = '';
+let currentAttachments: Message['attachments'] = [];
 mock.module('@tauri-apps/api/core', () => ({
   convertFileSrc: (path: string) => `asset://localhost/${path}`,
   invoke: (command: string) => {
@@ -39,10 +41,10 @@ mock.module('@tauri-apps/api/core', () => ({
       case 'ask_current':
         return Promise.resolve({
           state: 'idle',
-          question: '',
+          question: currentQuestion,
           response: '',
           error: null,
-          attachments: [],
+          attachments: currentAttachments,
         });
       case 'presets_list':
         return Promise.resolve([]);
@@ -90,6 +92,8 @@ let host: HTMLDivElement;
 let root: ReturnType<typeof createRoot>;
 beforeEach(() => {
   sessionRows = [];
+  currentQuestion = '';
+  currentAttachments = [];
   listeners.clear();
   host = document.createElement('div');
   document.body.appendChild(host);
@@ -136,6 +140,39 @@ test('a loading payload with attachments renders them on the live user row', asy
       },
     }),
   );
+
+  const imgs = [...host.querySelectorAll('img')];
+  expect(imgs).toHaveLength(1);
+  expect(imgs[0].alt).toBe('notes.png');
+});
+
+test('a loading emit that beat the listener heals from the service fold on streaming', async () => {
+  // The card opened mid-capture: the `loading` emit was missed and the
+  // mount-resync raced the persist, so the user row painted bare. The
+  // service-side `current_attachments` fold still has the metadata —
+  // the `streaming` heal merges it onto the matching row.
+  sessionRows = [userRow({ attachments: [] })];
+  currentQuestion = 'what is this?';
+  currentAttachments = [attachment];
+  await act(async () => root.render(<ChatSection onBack={() => {}} />));
+  expect(host.querySelectorAll('img')).toHaveLength(0);
+  const emit = listeners.get('ask:state');
+  expect(emit).toBeDefined();
+  await act(async () => emit!({ payload: { state: 'streaming' } }));
+
+  const imgs = [...host.querySelectorAll('img')];
+  expect(imgs).toHaveLength(1);
+  expect(imgs[0].alt).toBe('notes.png');
+});
+
+test('an empty service fold never strips a row of its attachments', async () => {
+  // `ask_current` answers `[]` before the run's emit lands — that's
+  // "not yet known", not "none": the painted row keeps its own
+  // attachments.
+  sessionRows = [userRow()];
+  await act(async () => root.render(<ChatSection onBack={() => {}} />));
+  const emit = listeners.get('ask:state');
+  await act(async () => emit!({ payload: { state: 'streaming' } }));
 
   const imgs = [...host.querySelectorAll('img')];
   expect(imgs).toHaveLength(1);

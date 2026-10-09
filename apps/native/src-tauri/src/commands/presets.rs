@@ -24,7 +24,10 @@ pub(crate) fn presets_list(state: State<'_, AppState>) -> Vec<presets::Preset> {
 /// (`palette:query` streams the filter, `palette:key` forwards nav
 /// keys). Gate-guarded like `ask_send` — a crafted invoke during
 /// onboarding must not pop chrome over the wizard.
-#[tauri::command(async)]
+// Main-thread command — `show_palette` runs window ops end to end, and
+// the unfocused `/` open's `orderFront:` asserts off the main thread
+// (SIGTRAP). Never mark `(async)`.
+#[tauri::command]
 pub(crate) fn presets_palette_open(
     app: AppHandle,
     anchor_x: Option<f64>,

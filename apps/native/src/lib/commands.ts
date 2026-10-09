@@ -351,6 +351,10 @@ export const askRetry = () => invoke<void>('ask_retry');
 
 export const askClose = () => invoke<void>('ask_close');
 
+/** The composer's stop — cancels the in-flight run without collapsing
+ *  the card (`ask_close` is the same cancel plus the collapse). */
+export const askStop = () => invoke<void>('ask_stop');
+
 /** `ask_current` return — the in-flight run's resync payload. */
 export interface AskCurrent {
   state: 'idle' | 'loading' | 'streaming';
@@ -362,9 +366,12 @@ export interface AskCurrent {
   /** The in-flight user turn's persisted attachments — mirrors the
    * `loading` event's `attachments` key for resync. */
   attachments: MessageAttachment[];
-  /** The live run's generation — seeds the chat's dead-packet filter
-   *  (`run` on every `ask:*` event). */
+  /** The live run's generation — the newest-run bound for stale
+   *  packets (`run` on every `ask:*` event). */
   run?: number;
+  /** The session the live run writes into — the resync folds its tail
+   *  only onto a view showing that session. */
+  session_id?: number | null;
 }
 
 /** The live ask tail — a re-expanded chat resyncs from this. */

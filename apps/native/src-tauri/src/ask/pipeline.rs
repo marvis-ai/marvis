@@ -155,6 +155,16 @@ pub(crate) async fn send_chain(
         },
         _ => open_ask_session(db),
     };
+    // Every emit past session resolution carries the run's session —
+    // the webview drops packets bound to a conversation it isn't
+    // showing: New Chat / resume leave the run streaming into ITS
+    // session, so only a view on that session renders them.
+    let emit = &|name: &str, mut payload: serde_json::Value| {
+        if let Some(sid) = session_id {
+            payload["session_id"] = sid.into();
+        }
+        emit(name, payload);
+    };
     // Order matters: history is read BEFORE the new user row persists —
     // the new turn is appended separately so it can carry the frame. A
     // regenerate skips the write: its question is the session's last

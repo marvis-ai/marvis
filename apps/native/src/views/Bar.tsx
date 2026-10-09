@@ -46,6 +46,7 @@ import {
   MicIcon,
   MonitorDotIcon,
   ShineBorder,
+  SquareIcon,
   WandSparklesIcon,
   XIcon,
   cn,
@@ -53,6 +54,7 @@ import {
 import {
   askClose,
   askSend,
+  askStop,
   barContextMenu,
   capturePickBegin,
   captureStop,
@@ -293,6 +295,14 @@ const Bar = () => {
     listen: listenState,
     dictation: dictation.state,
   });
+  /** A run in flight (loading or streaming) — the composer swaps its
+   *  right-side affordances for the stop button and sends are
+   *  suppressed (the backend drops them anyway — stop first, then
+   *  send). The ref mirror is the deferred-callback read — a submit
+   *  queued behind a dictation settle must see the latest state. */
+  const askBusy = askState !== 'idle';
+  const askBusyRef = useRef(askBusy);
+  askBusyRef.current = askBusy;
 
   // The boot splash (index.html) is a sibling of #root — outside React —
   // so it needs imperative removal once the intro has finished, was
@@ -615,6 +625,10 @@ const Bar = () => {
     question?: string,
     { skipSlashResolution = false } = {},
   ) => {
+    // A run is in flight — the backend drops a busy send anyway, and
+    // swallowing it here would still have cleared the composer's
+    // text. Keep the draft; the stop button is the way to interrupt.
+    if (askBusyRef.current) return;
     let preset = armedPresetRef.current;
     let slashInput: string | undefined;
     if (question === undefined && !skipSlashResolution) {
@@ -1053,10 +1067,22 @@ const Bar = () => {
             }}
             dropActive={gate === 'main' && dropActive}
           />
+          {/* A live run swaps the composer's right-side affordances
+            (attach / presets / dictation) for the stop — `ask_stop`
+            cancels the stream without collapsing the card. Leaving
+            the view never ends the run, so no navigation implies it. */}
+          {showInputRow && askBusy && (
+            <BarButton
+              label='Stop generating'
+              title='Stop generating'
+              onPress={() => void askStop().catch(() => {})}>
+              <SquareIcon className='size-4 fill-current' />
+            </BarButton>
+          )}
           {/* Image attach — same row idiom as the wand: the hidden
             picker lives beside it; `onPick`'s wake-the-pill role is
             `setOpen` (a no-op for the already-open card). */}
-          {showInputRow && (
+          {showInputRow && !askBusy && (
             <>
               <BarButton
                 label='Attach images'
@@ -1084,7 +1110,7 @@ const Bar = () => {
           )}
           {/* Preset palette — the styled glass overlay beside the bar;
             picks arrive as bar:preset-pick. */}
-          {showInputRow && (
+          {showInputRow && !askBusy && (
             <BarButton
               label='Prompt presets'
               disabled={gate !== 'main'}
@@ -1159,7 +1185,7 @@ const Bar = () => {
             <DictationWaveform />
           )}
 
-          {controls.includes('dictation') && (
+          {controls.includes('dictation') && !askBusy && (
             <BarButton
               label={
                 dictation.state === 'listening' ? 'Stop dictation' : 'Dictate'
@@ -1278,7 +1304,6 @@ const Bar = () => {
         )}
         {section === 'history' && (
           <HistorySection
-            askBusy={askState !== 'idle'}
             onOpenChat={() => setPinned('chat')}
             onOpenListen={(v) => {
               setListenViewing(v);

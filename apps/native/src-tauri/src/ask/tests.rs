@@ -115,6 +115,15 @@ use super::title::*;
         (name.to_string(), payload)
     }
 
+    /// Expected-event builder for session-bound packets: `send_chain`
+    /// `session_id`-tags every emit once the run's session resolves —
+    /// the webview's wrong-conversation filter reads it — and every
+    /// test session minted here is id 1.
+    fn bound(name: &str, mut payload: serde_json::Value) -> (String, serde_json::Value) {
+        payload["session_id"] = json!(1);
+        (name.to_string(), payload)
+    }
+
     /// Unique temp dir per test; `Db::at` creates it.
     fn tmp_dir() -> PathBuf {
         static N: AtomicU32 = AtomicU32::new(0);
@@ -331,19 +340,19 @@ use super::title::*;
         assert_eq!(
             got,
             vec![
-                ev(
+                bound(
                     EV_STATE,
                     json!({"state": "loading", "question": "what is this?", "preset": null, "attempt": 0, "regenerate": false, "attachments": shot})
                 ),
-                ev(EV_STATE, json!({"state": "streaming"})),
-                ev(EV_CHUNK, json!({"text": "Hello"})),
-                ev(EV_CHUNK, json!({"text": " "})),
-                ev(EV_CHUNK, json!({"text": "world"})),
-                ev(
+                bound(EV_STATE, json!({"state": "streaming"})),
+                bound(EV_CHUNK, json!({"text": "Hello"})),
+                bound(EV_CHUNK, json!({"text": " "})),
+                bound(EV_CHUNK, json!({"text": "world"})),
+                bound(
                     EV_DONE,
                     json!({"full": "Hello world", "provider": "openai", "model": "mock-model", "usage": null})
                 ),
-                ev(EV_STATE, json!({"state": "idle"})),
+                bound(EV_STATE, json!({"state": "idle"})),
             ]
         );
 
@@ -410,7 +419,7 @@ use super::title::*;
         // The `loading` emit announces the armed id to the card.
         assert_eq!(
             events.lock()[0],
-            ev(
+            bound(
                 EV_STATE,
                 json!({"state": "loading", "question": "hi", "preset": "b:concise", "attempt": 0, "regenerate": false})
             )
@@ -465,21 +474,21 @@ use super::title::*;
         assert_eq!(
             got,
             vec![
-                ev(
+                bound(
                     EV_STATE,
                     json!({"state": "loading", "question": "q", "preset": null, "attempt": 0, "regenerate": false})
                 ),
-                ev(
+                bound(
                     EV_STATE,
                     json!({"state": "loading", "question": "q", "preset": null, "attempt": 1, "regenerate": false})
                 ),
-                ev(EV_STATE, json!({"state": "streaming"})),
-                ev(EV_CHUNK, json!({"text": "ok"})),
-                ev(
+                bound(EV_STATE, json!({"state": "streaming"})),
+                bound(EV_CHUNK, json!({"text": "ok"})),
+                bound(
                     EV_DONE,
                     json!({"full": "ok", "provider": "gemini", "model": "mock-model", "usage": null})
                 ),
-                ev(EV_STATE, json!({"state": "idle"})),
+                bound(EV_STATE, json!({"state": "idle"})),
             ]
         );
         // One assistant row, from the provider that answered.
@@ -525,16 +534,16 @@ use super::title::*;
         assert_eq!(
             events.lock().clone(),
             vec![
-                ev(
+                bound(
                     EV_STATE,
                     json!({"state": "loading", "question": "q", "preset": null, "attempt": 0, "regenerate": false})
                 ),
-                ev(
+                bound(
                     EV_STATE,
                     json!({"state": "loading", "question": "q", "preset": null, "attempt": 1, "regenerate": false})
                 ),
-                ev(EV_ERROR, json!({"message": "http 500: boom"})),
-                ev(EV_STATE, json!({"state": "idle"})),
+                bound(EV_ERROR, json!({"message": "http 500: boom"})),
+                bound(EV_STATE, json!({"state": "idle"})),
             ]
         );
         assert_eq!(ask_messages(&db).len(), 1); // user row only
@@ -678,15 +687,15 @@ use super::title::*;
         assert_eq!(
             got,
             vec![
-                ev(
+                bound(
                     EV_STATE,
                     json!({"state": "loading", "question": "q", "preset": null, "attempt": 0, "regenerate": false})
                 ),
-                ev(
+                bound(
                     EV_ERROR,
                     json!({"message": LlmError::MultimodalUnsupported.to_string()})
                 ),
-                ev(EV_STATE, json!({"state": "idle"})),
+                bound(EV_STATE, json!({"state": "idle"})),
             ]
         );
         assert_eq!(ask_messages(&db).len(), 1); // user row only
@@ -742,11 +751,11 @@ use super::title::*;
         assert_eq!(
             got,
             vec![
-                ev(
+                bound(
                     EV_STATE,
                     json!({"state": "loading", "question": "q", "preset": null, "attempt": 0, "regenerate": false, "attachments": shot})
                 ),
-                ev(EV_STATE, json!({"state": "idle"})),
+                bound(EV_STATE, json!({"state": "idle"})),
             ]
         );
 
@@ -831,12 +840,12 @@ use super::title::*;
         assert_eq!(
             got,
             vec![
-                ev(
+                bound(
                     EV_STATE,
                     json!({"state": "loading", "question": "q", "preset": null, "attempt": 0, "regenerate": false, "attachments": shot})
                 ),
-                ev(EV_ERROR, json!({"message": LlmError::Auth.to_string()})),
-                ev(EV_STATE, json!({"state": "idle"})),
+                bound(EV_ERROR, json!({"message": LlmError::Auth.to_string()})),
+                bound(EV_STATE, json!({"state": "idle"})),
             ]
         );
         assert_eq!(ask_messages(&db).len(), 1); // user row only

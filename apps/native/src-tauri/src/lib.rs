@@ -1031,6 +1031,7 @@ pub fn run() {
             ask_send,
             ask_retry,
             ask_close,
+            ask_stop,
             ask_send_screen_only,
             ask_current,
             listen_start,
@@ -1188,21 +1189,30 @@ mod tests {
         assert!(source.contains("session_resume,"));
     }
 
-    /// Ending the open ask session mid-run must kill its stream — the
-    /// `ask:*` packets carry no session binding and would otherwise
-    /// keep painting into whatever conversation the webview shows
-    /// next. Both session-boundary commands route through
+    /// The composer's stop button plus the packet identity that keeps a
+    /// stream out of the wrong conversation: `ask_stop` cancels through
     /// `AskService::abort` (the `ask_close` cancel minus the card
-    /// collapse), and the emit fold `run`-tags every `ask:*` packet so
-    /// the webview can drop the dead run's in-flight deliveries.
+    /// collapse) while session boundaries deliberately DON'T — a
+    /// detached run keeps writing to its own session. The emit fold
+    /// `run`-tags every `ask:*` packet (in-flight deliveries of a
+    /// killed run drop) and `send_chain` `session_id`-tags them (a
+    /// detached run's packets drop on any view that isn't showing that
+    /// session).
     #[test]
-    fn session_boundaries_abort_the_in_flight_ask_run() {
-        let source = include_str!("commands/sessions.rs");
-        assert_eq!(source.matches("state.ask.abort(&app)").count(), 2);
+    fn ask_stop_and_packet_tagging_are_in_the_contract() {
+        let lib = include_str!("lib.rs");
+        assert!(lib.contains(concat!("ask", "_stop,")));
+        let commands = include_str!("commands/ask.rs");
+        assert!(commands.contains("pub(crate) fn ask_stop("));
+        assert!(commands.contains("state.ask.abort(&app)"));
+        let sessions = include_str!("commands/sessions.rs");
+        assert!(!sessions.contains("state.ask.abort"));
         let ask = include_str!("ask/mod.rs");
         assert!(ask.contains("pub fn abort(&self, app: &AppHandle)"));
         assert!(ask.contains("self.abort(app)")); // `close` shares it
         assert!(ask.contains("payload[\"run\"]"));
+        let pipeline = include_str!("ask/pipeline.rs");
+        assert!(pipeline.contains("payload[\"session_id\"]"));
     }
 
     /// The preset surface: `presets_list` plus the palette commands

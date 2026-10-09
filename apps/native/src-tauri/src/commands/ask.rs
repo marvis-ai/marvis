@@ -61,6 +61,15 @@ pub(crate) fn ask_close(app: AppHandle) {
     state.ask.close(&app, &state.pool);
 }
 
+/// The composer's stop button: cancel the in-flight run WITHOUT
+/// collapsing the card (`ask_close` is this plus the collapse). No
+/// gate guard — cancelling a run is safe and idempotent anywhere.
+#[tauri::command]
+pub(crate) fn ask_stop(app: AppHandle) {
+    let state = app.state::<AppState>();
+    state.ask.abort(&app);
+}
+
 /// The bar's camera affordance — a screen-only ask (fixed prompt,
 /// frame required). Same gate guard as `ask_send`.
 #[tauri::command]
@@ -82,4 +91,3 @@ pub(crate) fn ask_send_screen_only(app: AppHandle) {
 pub(crate) fn ask_current(state: State<'_, AppState>) -> serde_json::Value {
     state.ask.current_payload()
 }
-

@@ -26,8 +26,9 @@
 //! `[vision]` reader into an `<attached_images>` block — never
 //! silently discarded. [`AskService::close`] aborts any in-flight
 //! stream via a [`CancellationToken`]; [`AskService::abort`] is the same
-//! cancel without the card collapse, shared by `session_end_active`/
-//! `session_resume` — an ended session's run ends with it.
+//! cancel without the card collapse — the composer's `ask_stop` button
+//! uses it. Session boundaries do NOT abort: New Chat / resume only
+//! detach the view — the run keeps streaming into its own session.
 //!
 //! Event protocol (emitted to the `bar` window via `app.emit_to`):
 //! - `ask:state` `{"state": "loading"|"streaming"|"idle"}` — `streaming`
@@ -51,7 +52,10 @@
 //!
 //! Every `ask:*` payload carries `"run"` — the run's `generation` — so
 //! the webview can drop packets an aborted run emitted before the
-//! cancel landed (an emit already in the IPC pipe can't be recalled).
+//! cancel landed (an emit already in the IPC pipe can't be recalled),
+//! and `"session_id"` — the session the run writes into — so a run that
+//! outlives its view (New Chat / resume don't kill it) never paints
+//! into a conversation that isn't showing that session.
 //!
 //! Broadcast (to the `bar` window, the toast's only consumer):
 //! `capture:permission-needed` when a ring frame exists but screen
@@ -238,6 +242,12 @@ pub struct AskService {
     /// of `ask:state{loading}`) — `ask_current` resyncs them so a
     /// re-expanded card renders the message's images.
     current_attachments: Mutex<Vec<MessageAttachment>>,
+    /// The session the in-flight run writes into (folded out of
+    /// `loading` like `current_attachments`) — `ask_current` reports
+    /// it so the webview folds the live tail only onto the session it
+    /// is showing: a run survives its session being ended/switched and
+    /// keeps streaming into it in the background.
+    current_session: Mutex<Option<i64>>,
     /// The last `ask:error` payload — kept so `ask_current` can resync
     /// an error that fired before the webview was listening (pre-flight
     /// errors land ~0ms after the card starts opening).
@@ -259,6 +269,7 @@ impl AskService {
             current_response: Mutex::new(String::new()),
             current_question: Mutex::new(String::new()),
             current_attachments: Mutex::new(Vec::new()),
+            current_session: Mutex::new(None),
             last_error: Mutex::new(None),
             generation: AtomicU64::new(0),
         }
@@ -289,6 +300,7 @@ impl AskService {
             "response": self.current_response(),
             "error": self.last_error.lock().clone(),
             "attachments": self.current_attachments.lock().clone(),
+            "session_id": *self.current_session.lock(),
             "run": self.generation.load(Ordering::SeqCst),
         })
     }
@@ -392,12 +404,11 @@ impl AskService {
         pool.lock().set_chat_open(app, false);
     }
 
-    /// The cancel half of [`Self::close`], shared by
-    /// `session_end_active`/`session_resume` ("New chat" / resume while
-    /// a run is in-flight): a run belongs to the session being ended,
-    /// so ending the session must end its stream too — the `ask:*`
-    /// packets carry no session binding and would otherwise keep
-    /// painting into the webview's fresh conversation.
+    /// The cancel half of [`Self::close`] — `ask_stop`'s whole job:
+    /// the composer's stop button cancels the in-flight run WITHOUT
+    /// collapsing the card. (Session boundaries deliberately do NOT
+    /// come here — leaving/switching a conversation only detaches the
+    /// view; the run keeps streaming into its own `session_id`.)
     ///
     /// Cancels the token (the stream's `select!` arm ends the chain —
     /// the persisted user row stays, the partial reply does not), mints
@@ -407,21 +418,29 @@ impl AskService {
     /// `loading` re-emit, its terminal `idle`) are ALL dropped. Since
     /// that terminal emit is suppressed, `abort` emits
     /// `ask:state{idle}` itself — but only when a run was actually
-    /// live, so ending an idle session emits nothing.
+    /// live, and tagged with the killed run's `run`/`session_id` so
+    /// the webview retires exactly its in-flight packets.
     pub fn abort(&self, app: &AppHandle) {
         self.cancel.lock().cancel();
         *self.cancel.lock() = CancellationToken::new();
-        let was_live = {
+        let (was_live, run) = {
             let mut state = self.state.lock();
             let was_live = *state != AskState::Idle;
             *state = AskState::Idle;
-            self.generation.fetch_add(1, Ordering::SeqCst);
-            was_live
+            // `fetch_add` returns the killed run's generation — the
+            // `idle` emit below retires exactly that run's packets.
+            let run = self.generation.fetch_add(1, Ordering::SeqCst);
+            (was_live, run)
         };
         *self.last_error.lock() = None;
         *self.current_attachments.lock() = Vec::new();
+        let session_id = std::mem::take(&mut *self.current_session.lock());
         if was_live {
-            let _ = app.emit_to(BAR_LABEL, EV_STATE, json!({"state": "idle"}));
+            let _ = app.emit_to(
+                BAR_LABEL,
+                EV_STATE,
+                json!({"state": "idle", "run": run, "session_id": session_id}),
+            );
         }
     }
 
@@ -452,9 +471,11 @@ impl AskService {
         };
         *self.current_question.lock() = text.to_string();
         // Run boundary: the `ask_current` resync tail must not leak the
-        // previous run's reply, attachments, or error into this one.
+        // previous run's reply, attachments, session, or error into
+        // this one.
         *self.current_response.lock() = String::new();
         *self.current_attachments.lock() = Vec::new();
+        *self.current_session.lock() = None;
         *self.last_error.lock() = None;
         // A send arriving with the card closed starts a NEW conversation —
         // the pill input isn't a follow-up field. Read before the flag flips.
@@ -685,6 +706,9 @@ impl AskService {
             *self.last_error.lock() = Some(payload.clone());
         } else if name == EV_STATE && payload["state"].as_str() == Some("loading") {
             *self.last_error.lock() = None;
+            if let Some(sid) = payload.get("session_id").and_then(|s| s.as_i64()) {
+                *self.current_session.lock() = Some(sid);
+            }
             if let Some(atts) = payload.get("attachments") {
                 if let Ok(atts) =
                     serde_json::from_value::<Vec<MessageAttachment>>(atts.clone())

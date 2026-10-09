@@ -38,15 +38,12 @@ pub(crate) fn session_delete(state: State<'_, AppState>, id: i64) -> Result<(), 
 /// "New chat": end the active session of `kind` (`"ask"`) so the next
 /// send starts a fresh conversation. `true` when one was ended, `false`
 /// when none was open (no junk row created). An in-flight ask run is
-/// aborted with its session — the `ask:*` packets carry no session
-/// binding, so a live stream would otherwise keep painting into the
-/// fresh chat the webview just cleared.
+/// NOT killed: it keeps writing to this session's rows (the run's
+/// `session_id` is bound at send) while its `ask:*` packets carry that
+/// id, so the webview's cleared view drops them — leaving the
+/// conversation detaches the view, never the stream.
 #[tauri::command]
-pub(crate) fn session_end_active(app: AppHandle, kind: String) -> Result<bool, String> {
-    let state = app.state::<AppState>();
-    if kind == "ask" {
-        state.ask.abort(&app);
-    }
+pub(crate) fn session_end_active(state: State<'_, AppState>, kind: String) -> Result<bool, String> {
     match state
         .db
         .session_active_id(&kind)
@@ -63,18 +60,14 @@ pub(crate) fn session_end_active(app: AppHandle, kind: String) -> Result<bool, S
 /// Resume a past chat: ends the open `ask` session and reopens `id`
 /// (`session_reopen` kind-guards — non-ask ids change nothing and
 /// return false). The next `ask_send` appends to the reopened session.
-/// A resumed-out session's in-flight run is aborted the same way
-/// `session_end_active` aborts it — the webview's `askBusy` row gate
-/// can't be the only guard against a crafted/racing invoke.
+/// No run is aborted: resuming the session a live run still writes to
+/// re-attaches its tail via `ask_current`; resuming a different one
+/// leaves that run streaming into its own session, `session_id`-tagged
+/// packets filtered out of this view.
 #[tauri::command]
-pub(crate) fn session_resume(app: AppHandle, id: i64) -> Result<bool, String> {
-    let state = app.state::<AppState>();
-    let reopened = state
+pub(crate) fn session_resume(state: State<'_, AppState>, id: i64) -> Result<bool, String> {
+    state
         .db
         .session_reopen(id, "ask")
-        .map_err(|e| e.to_string())?;
-    if reopened {
-        state.ask.abort(&app);
-    }
-    Ok(reopened)
+        .map_err(|e| e.to_string())
 }

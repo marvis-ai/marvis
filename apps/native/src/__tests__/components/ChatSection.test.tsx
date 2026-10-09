@@ -18,38 +18,51 @@ const { createRoot } = await import('react-dom/client');
 const listeners = new Map<string, (event: { payload: unknown }) => void>();
 let sessionRows: Message[] = [];
 let currentQuestion = '';
+let currentResponse = '';
 let currentAttachments: Message['attachments'] = [];
+let currentState: 'idle' | 'loading' | 'streaming' = 'idle';
+let currentSessionId: number | null = 7;
 let endActiveCalls = 0;
+/** The session `session_list` reports as open — `session_end_active`
+ *  clears it, and a test that "sends" a fresh turn sets it to the
+ *  minted session's id. */
+const ACTIVE_SESSION = {
+  id: 7,
+  kind: 'ask',
+  title: null,
+  audio_file: null,
+  stt: null,
+  started_at: 1,
+  ended_at: null,
+  last_active_at: 1,
+};
+let activeSession: typeof ACTIVE_SESSION | null = ACTIVE_SESSION;
 mock.module('@tauri-apps/api/core', () => ({
   convertFileSrc: (path: string) => `asset://localhost/${path}`,
   invoke: (command: string) => {
     switch (command) {
       case 'session_list':
-        return Promise.resolve([
-          {
-            id: 7,
-            kind: 'ask',
-            title: null,
-            audio_file: null,
-            stt: null,
-            started_at: 1,
-            ended_at: null,
-            last_active_at: 1,
-          },
-        ]);
+        // Deferred read — a `loading` fold's refetch must observe
+        // the session state at flush time (a `session_end_active`
+        // may have landed mid-flight).
+        return Promise.resolve().then(() =>
+          activeSession ? [activeSession] : [],
+        );
       case 'session_get':
         return Promise.resolve(sessionRows);
       case 'session_end_active':
         endActiveCalls += 1;
+        activeSession = null;
         return Promise.resolve(true);
       case 'ask_current':
         return Promise.resolve({
-          state: 'idle',
+          state: currentState,
           question: currentQuestion,
-          response: '',
+          response: currentResponse,
           error: null,
           attachments: currentAttachments,
           run: 1,
+          session_id: currentSessionId,
         });
       case 'presets_list':
         return Promise.resolve([]);
@@ -98,8 +111,12 @@ let root: ReturnType<typeof createRoot>;
 beforeEach(() => {
   sessionRows = [];
   currentQuestion = '';
+  currentResponse = '';
   currentAttachments = [];
+  currentState = 'idle';
+  currentSessionId = 7;
   endActiveCalls = 0;
+  activeSession = ACTIVE_SESSION;
   listeners.clear();
   host = document.createElement('div');
   document.body.appendChild(host);
@@ -190,51 +207,157 @@ const newChatButton = () =>
     (b) => b.textContent === 'New chat',
   )!;
 
-test("New chat mid-stream drops the ended run's in-flight packets", async () => {
-  // The stream emits continuously — packets already in the IPC pipe
-  // when `session_end_active` aborts the run must not re-paint the
-  // cleared list (the reported bug).
+test('New chat mid-stream drops the detached run\u2019s packets — it keeps streaming, just not here', async () => {
+  // New Chat does NOT kill the run — it keeps streaming into the
+  // ended session, every packet tagged `session_id: 7`. Packets
+  // already in the IPC pipe or still arriving must never paint into
+  // the cleared view (the reported bug).
   await act(async () => root.render(<ChatSection onBack={() => {}} />));
   const emitState = listeners.get('ask:state')!;
   const emitChunk = listeners.get('ask:chunk')!;
   const emitDone = listeners.get('ask:done')!;
   await act(async () =>
-    emitState({ payload: { state: 'loading', question: 'q', run: 1 } }),
+    emitState({
+      payload: { state: 'loading', question: 'q', run: 1, session_id: 7 },
+    }),
   );
-  await act(async () => emitChunk({ payload: { text: 'hel', run: 1 } }));
+  await act(async () =>
+    emitChunk({ payload: { text: 'hel', run: 1, session_id: 7 } }),
+  );
   expect(host.textContent).toContain('hel');
 
   await act(async () => newChatButton().click());
   expect(endActiveCalls).toBe(1);
 
-  // Late run-1 packets — emitted before the abort landed — all drop.
-  await act(async () => emitChunk({ payload: { text: 'lo world', run: 1 } }));
-  await act(async () => emitDone({ payload: { full: 'hello world', run: 1 } }));
-  await act(async () => emitState({ payload: { state: 'idle', run: 1 } }));
+  // The detached run keeps emitting — a failover `loading` re-emit,
+  // chunks, `done`, its terminal `idle`: all drop on the session gate.
+  await act(async () =>
+    emitState({
+      payload: {
+        state: 'loading',
+        question: 'q',
+        run: 1,
+        session_id: 7,
+        attempt: 1,
+      },
+    }),
+  );
+  await act(async () =>
+    emitChunk({ payload: { text: 'lo world', run: 1, session_id: 7 } }),
+  );
+  await act(async () =>
+    emitDone({ payload: { full: 'hello world', run: 1, session_id: 7 } }),
+  );
+  await act(async () =>
+    emitState({ payload: { state: 'idle', run: 1, session_id: 7 } }),
+  );
   expect(host.textContent).not.toContain('hello world');
   expect(host.textContent).toContain('Ask Marvis');
 
-  // A NEW run is unaffected — suppression is scoped to the dead one.
+  // A new send mints a fresh session — its run renders normally.
+  activeSession = { ...ACTIVE_SESSION, id: 8 };
   await act(async () =>
-    emitState({ payload: { state: 'loading', question: 'next', run: 2 } }),
+    emitState({
+      payload: { state: 'loading', question: 'next', run: 2, session_id: 8 },
+    }),
   );
-  await act(async () => emitChunk({ payload: { text: 'fresh', run: 2 } }));
+  await act(async () =>
+    emitChunk({ payload: { text: 'fresh', run: 2, session_id: 8 } }),
+  );
   expect(host.textContent).toContain('fresh');
 });
 
-test('New chat during a loading refetch drops the dead fold', async () => {
+test('New chat during a loading refetch drops the detached fold', async () => {
   // The `loading` fold is async (session refetch): clicking New chat
-  // while it is in flight must not let it commit the dead run's pair.
+  // while it is in flight must not let it commit the detached run's
+  // pair — by the time the fold resumes, the emit's session no longer
+  // matches the view.
   await act(async () => root.render(<ChatSection onBack={() => {}} />));
   const emitState = listeners.get('ask:state')!;
   // Sync act: the fold starts and suspends on the session read.
   act(() =>
-    emitState({ payload: { state: 'loading', question: 'q', run: 1 } }),
+    emitState({
+      payload: { state: 'loading', question: 'q', run: 1, session_id: 7 },
+    }),
   );
   await act(async () => newChatButton().click());
-  // The fold resumed during the click's flush — dead run → dropped.
+  // The fold resumed during the click's flush — session 7 ended, so
+  // the emit's `session_id` fails the gate.
   expect(host.textContent).not.toContain('q');
   expect(host.textContent).toContain('Ask Marvis');
+});
+
+test("a stopped run's strays drop once its tagged idle retires it", async () => {
+  // The composer's stop (`ask_stop` → `abort`) cancels mid-stream and
+  // emits `idle` tagged with the killed run — packets the task already
+  // emitted must not paint post-mortem, in the SAME session view.
+  await act(async () => root.render(<ChatSection onBack={() => {}} />));
+  const emitState = listeners.get('ask:state')!;
+  const emitChunk = listeners.get('ask:chunk')!;
+  const emitDone = listeners.get('ask:done')!;
+  await act(async () =>
+    emitState({
+      payload: { state: 'loading', question: 'q', run: 5, session_id: 7 },
+    }),
+  );
+  await act(async () =>
+    emitChunk({ payload: { text: 'he', run: 5, session_id: 7 } }),
+  );
+  expect(host.textContent).toContain('he');
+
+  // `abort`'s own `idle` emit — tagged with the killed run.
+  await act(async () =>
+    emitState({ payload: { state: 'idle', run: 5, session_id: 7 } }),
+  );
+  // Strays the task emitted before the cancel landed.
+  await act(async () =>
+    emitChunk({ payload: { text: 'llo', run: 5, session_id: 7 } }),
+  );
+  await act(async () =>
+    emitDone({ payload: { full: 'hello', run: 5, session_id: 7 } }),
+  );
+  const text = host.textContent ?? '';
+  expect(text).toContain('he');
+  expect(text).not.toContain('llo');
+  expect(text).not.toContain('hello');
+});
+
+test("mount resync re-attaches a live run's tail on its own session", async () => {
+  // Leaving and resuming the session a run is streaming into re-shows
+  // the live tail — the stream was never killed.
+  sessionRows = [userRow()];
+  currentState = 'streaming';
+  currentSessionId = 7;
+  currentQuestion = 'what is this?';
+  currentResponse = 'partial';
+  await act(async () => root.render(<ChatSection onBack={() => {}} />));
+  expect(host.textContent).toContain('partial');
+
+  // And its live packets keep flowing — the session still matches.
+  const emitChunk = listeners.get('ask:chunk')!;
+  await act(async () =>
+    emitChunk({ payload: { text: ' more', run: 1, session_id: 7 } }),
+  );
+  expect(host.textContent).toContain('partial more');
+});
+
+test("mount resync does NOT fold a live run's tail onto another chat", async () => {
+  // The run writes to session 99 while this view shows 7 — neither
+  // the resync tail nor its live packets may paint here.
+  sessionRows = [userRow()];
+  currentState = 'streaming';
+  currentSessionId = 99;
+  currentQuestion = 'foreign q';
+  currentResponse = 'foreign';
+  await act(async () => root.render(<ChatSection onBack={() => {}} />));
+  expect(host.textContent).toContain('what is this?');
+  expect(host.textContent).not.toContain('foreign');
+
+  const emitChunk = listeners.get('ask:chunk')!;
+  await act(async () =>
+    emitChunk({ payload: { text: 'foreign tail', run: 4, session_id: 99 } }),
+  );
+  expect(host.textContent).not.toContain('foreign tail');
 });
 
 test('a same-text re-send appends a second pair instead of hiding the first', async () => {

@@ -19,7 +19,6 @@ import {
 } from '@/lib/commands';
 import { EV_MEMORY_CHANGED, useTauriEvent } from '@/lib/events';
 import { orderedProviders, providerLabel } from '@/lib/providers';
-import { sessionDateLabel } from '@/components/listen/model';
 import {
   BTN_DANGER,
   BTN_OUTLINE,
@@ -345,16 +344,7 @@ export const MemoryTab = ({ data }: { data: PrefsData }) => {
             <PrefRow
               key={f.id}
               label={f.attribute}
-              sub={
-                <>
-                  {f.value}
-                  <span className='mt-1 block font-mono text-[10.5px]'>
-                    {f.category} · {f.source} · {f.basis} ·{' '}
-                    {Math.round(f.confidence * 100)}% · updated{' '}
-                    {sessionDateLabel(f.updated_at)}
-                  </span>
-                </>
-              }>
+              sub={f.value}>
               <button
                 type='button'
                 aria-label={`Edit ${f.attribute}`}

@@ -258,7 +258,7 @@ export const MemoryTab = ({ data }: { data: PrefsData }) => {
 
       <div className={cn(PROV_CARD, 'mt-3.5 border-border')}>
         <div className='flex items-center gap-2'>
-          <span className={LBL}>Provider</span>
+          <span className={cn(LBL, 'w-14')}>Provider</span>
           <select
             className={MODEL_SEL}
             value={provider}
@@ -276,7 +276,7 @@ export const MemoryTab = ({ data }: { data: PrefsData }) => {
           </select>
         </div>
         <div className='mt-2.5 flex items-center gap-2'>
-          <span className={LBL}>Model</span>
+          <span className={cn(LBL, 'w-14')}>Model</span>
           <select
             className={MODEL_SEL}
             value={model}
@@ -296,7 +296,7 @@ export const MemoryTab = ({ data }: { data: PrefsData }) => {
           </select>
           <button
             type='button'
-            className={cn(BTN_SM, BTN_OUTLINE)}
+            className={cn(BTN_SM, BTN_PRIMARY)}
             disabled={saving || !provider || !model}
             onClick={() => void saveSelection()}>
             Save model

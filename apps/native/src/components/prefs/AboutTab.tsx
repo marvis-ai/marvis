@@ -8,8 +8,8 @@
  */
 import { useEffect, useState } from 'react';
 import { getVersion } from '@tauri-apps/api/app';
-import { windowShowOnboarding } from '../../lib/commands';
-import { BTN_LG, BTN_OUTLINE, PRF_ROWS, cn } from '../../lib/classes';
+import { windowShowOnboarding } from '@/lib/commands';
+import { BTN_LG, BTN_OUTLINE, PRF_ROWS, cn } from '@/lib/classes';
 import { PrefRow, Tag } from './bits';
 
 export const AboutTab = () => {

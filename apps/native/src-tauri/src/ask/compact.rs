@@ -10,13 +10,15 @@ use super::{
 
 const COMPACTION_SYSTEM_PROMPT: &str = include_str!("../../prompts/marvis-compaction.md");
 
-/// The owned uncovered prefix of a session that should be folded into its
-/// continuity digest. The eventual watermark is chosen by the renderer from
-/// the last source row actually represented in `<new_messages>`. The source
-/// rows are copied so a detached task never borrows the send's history or
-/// stack frame.
+/// The owned uncovered prefix of one session incarnation that should be folded
+/// into its continuity digest. `session_token` prevents the detached job from
+/// being applied to a later session that reuses the same integer id. The
+/// eventual watermark is chosen by the renderer from the last source row
+/// actually represented in `<new_messages>`. The source rows are copied so a
+/// detached task never borrows the send's history or stack frame.
 pub(crate) struct CompactionPlan {
     pub(crate) session_id: i64,
+    pub(crate) session_token: String,
     pub(crate) expected_through: Option<i64>,
     pub(crate) previous: Option<String>,
     pub(crate) source_rows: Vec<Message>,
@@ -26,6 +28,7 @@ pub(crate) struct CompactionPlan {
 /// stored digest. The live provider tail remains outside the plan.
 pub(crate) fn compaction_plan(
     session_id: i64,
+    session_token: String,
     history_rows: &[Message],
     previous: Option<String>,
     expected_through: Option<i64>,
@@ -42,6 +45,7 @@ pub(crate) fn compaction_plan(
     }
     Some(CompactionPlan {
         session_id,
+        session_token,
         expected_through,
         previous,
         source_rows,
@@ -199,12 +203,15 @@ impl CompactService {
         plan: CompactionPlan,
     ) -> anyhow::Result<()> {
         let _permit = self.gate.lock().await;
-        let Some((stored_digest, stored_through)) = db.session_compaction(plan.session_id)? else {
+        let Some((stored_token, stored_digest, stored_through)) =
+            db.session_compaction(plan.session_id)?
+        else {
             // The owning session may have been deleted while this detached job
             // was waiting. Do not send its source rows to the provider.
             return Ok(());
         };
-        if stored_through != plan.expected_through
+        if stored_token != plan.session_token
+            || stored_through != plan.expected_through
             || stored_digest.as_deref() != plan.previous.as_deref()
         {
             return Ok(());
@@ -223,6 +230,7 @@ impl CompactService {
         let digest = normalize_compaction_reply(&reply.full)?;
         if !db.session_compact_write(
             plan.session_id,
+            &plan.session_token,
             plan.expected_through,
             &digest,
             new_through,

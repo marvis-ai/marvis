@@ -92,37 +92,138 @@ fn session_audio_file_reads_recording_path() {
 }
 
 #[test]
-fn session_compaction_roundtrips_and_uses_watermark_cas() {
+fn session_compaction_roundtrips_and_uses_token_and_watermark_cas() {
     let dir = tmp_dir();
     let db = Db::at(dir.join("marvis.db")).unwrap();
     let sid = db.session_get_or_create_active("ask").unwrap();
+    let token = db.session_compaction(sid).unwrap().unwrap().0;
 
-    assert_eq!(db.session_compaction(sid).unwrap(), Some((None, None)));
+    assert_eq!(
+        db.session_compaction(sid).unwrap(),
+        Some((token.clone(), None, None))
+    );
     assert!(db
-        .session_compact_write(sid, None, "first digest", 10)
+        .session_compact_write(sid, &token, None, "first digest", 10)
         .unwrap());
     assert_eq!(
         db.session_compaction(sid).unwrap(),
-        Some((Some("first digest".to_string()), Some(10)))
+        Some((token.clone(), Some("first digest".to_string()), Some(10)))
     );
     assert!(!db
-        .session_compact_write(sid, None, "stale digest", 20)
+        .session_compact_write(sid, "wrong-token", Some(10), "stale digest", 20)
+        .unwrap());
+    assert!(!db
+        .session_compact_write(sid, &token, None, "stale digest", 20)
         .unwrap());
     assert!(db
-        .session_compact_write(sid, Some(10), "second digest", 20)
+        .session_compact_write(sid, &token, Some(10), "second digest", 20)
         .unwrap());
     assert_eq!(
         db.session_compaction(sid).unwrap(),
-        Some((Some("second digest".to_string()), Some(20)))
+        Some((token, Some("second digest".to_string()), Some(20)))
     );
 
     db.session_compact_clear(sid).unwrap();
-    assert_eq!(db.session_compaction(sid).unwrap(), Some((None, None)));
+    let cleared = db.session_compaction(sid).unwrap().unwrap();
+    assert_eq!(cleared.1, None);
+    assert_eq!(cleared.2, None);
     assert_eq!(db.session_compaction(i64::MAX).unwrap(), None);
     assert!(!db
-        .session_compact_write(i64::MAX, None, "missing digest", 1)
+        .session_compact_write(i64::MAX, "missing-token", None, "missing digest", 1)
         .unwrap());
     db.session_compact_clear(i64::MAX).unwrap();
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn session_incarnation_token_changes_when_highest_id_is_recreated() {
+    let dir = tmp_dir();
+    let db = Db::at(dir.join("marvis.db")).unwrap();
+    let first_id = db.session_get_or_create_active("ask").unwrap();
+    let first_token = db.session_compaction(first_id).unwrap().unwrap().0;
+
+    db.session_delete(first_id).unwrap();
+    let recreated_id = db.session_get_or_create_active("ask").unwrap();
+    assert_eq!(recreated_id, first_id);
+    let recreated_token = db.session_compaction(recreated_id).unwrap().unwrap().0;
+    assert_ne!(recreated_token, first_token);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn session_compaction_write_and_clear_preserve_last_active_at() {
+    let dir = tmp_dir();
+    let db = Db::at(dir.join("marvis.db")).unwrap();
+    let sid = db.session_get_or_create_active("ask").unwrap();
+    let token = db.session_compaction(sid).unwrap().unwrap().0;
+    let last_active_at = db
+        .session_list()
+        .unwrap()
+        .into_iter()
+        .find(|session| session.id == sid)
+        .unwrap()
+        .last_active_at;
+
+    assert!(db
+        .session_compact_write(sid, &token, None, "digest", 10)
+        .unwrap());
+    assert_eq!(
+        db.session_list()
+            .unwrap()
+            .into_iter()
+            .find(|session| session.id == sid)
+            .unwrap()
+            .last_active_at,
+        last_active_at
+    );
+
+    db.session_compact_clear(sid).unwrap();
+    assert_eq!(
+        db.session_list()
+            .unwrap()
+            .into_iter()
+            .find(|session| session.id == sid)
+            .unwrap()
+            .last_active_at,
+        last_active_at
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn session_migration_backfills_token_without_changing_existing_data() {
+    let dir = tmp_dir();
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("marvis.db");
+    {
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        conn.execute_batch(
+            "INSERT INTO sessions
+                (id, type, compact, compact_through, started_at, last_active_at)
+             VALUES (1, 'ask', 'existing digest', 7, 1, 1);
+             INSERT INTO sessions
+                (id, type, session_token, started_at, last_active_at)
+             VALUES (2, 'ask', 'keep-this-token', 2, 2);
+             INSERT INTO messages (session_id, role, content, ts)
+             VALUES (1, 'user', 'preserve this row', 1);",
+        )
+        .unwrap();
+    }
+
+    let db = Db::at(&path).unwrap();
+    let first = db.session_compaction(1).unwrap().unwrap();
+    assert_eq!(first.0.len(), 32);
+    assert_eq!(first.1.as_deref(), Some("existing digest"));
+    assert_eq!(first.2, Some(7));
+    assert_eq!(db.messages_for(1).unwrap()[0].content, "preserve this row");
+    assert_eq!(
+        db.session_compaction(2).unwrap().unwrap().0,
+        "keep-this-token"
+    );
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -550,10 +651,13 @@ fn session_compaction_migrates_legacy_schema() {
     }
 
     let db = Db::at(&path).unwrap();
-    assert_eq!(db.session_compaction(1).unwrap(), Some((None, None)));
-    assert!(db.session_compact_write(1, None, "legacy-safe", 1).unwrap());
+    let token = db.session_compaction(1).unwrap().unwrap().0;
+    assert_eq!(token.len(), 32);
+    assert!(db
+        .session_compact_write(1, &token, None, "legacy-safe", 1)
+        .unwrap());
     assert_eq!(
-        db.session_compaction(1).unwrap().unwrap().0.as_deref(),
+        db.session_compaction(1).unwrap().unwrap().1.as_deref(),
         Some("legacy-safe")
     );
     assert_eq!(db.messages_for(1).unwrap()[0].content, "old question");

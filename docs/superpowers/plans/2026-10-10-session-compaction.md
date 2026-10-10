@@ -4,7 +4,17 @@
 
 **Goal:** Preserve long-session Ask context by incrementally summarizing message rows that fall outside the 20-message provider tail, persisting the digest per session, and injecting it as untrusted system context.
 
-**Architecture:** Add nullable `compact` and `compact_through` columns to `sessions`. Before each Ask provider call, load the session digest and inject it after the existing user profile; after a successful answer, schedule a detached compaction job when at least ten newly dropped rows are available. The job uses the provider that answered, serializes compaction work, rechecks the watermark, and writes with a compare-and-set update so stale or concurrent jobs cannot overwrite a newer digest.
+**Architecture:** Add a persisted `session_token` incarnation column plus nullable
+`compact` and `compact_through` columns to `sessions`. Marvis-created rows use
+SQLite `hex(randomblob(16))`; the idempotent open-time migration adds the token
+column and backfills NULL legacy/current-test rows without changing existing
+tokens or data. Before each Ask provider call, load the session token and digest
+and inject the bounded digest after the existing user profile; after a successful
+answer, schedule a detached compaction job when at least ten newly dropped rows
+are available. The job uses the provider that answered, serializes compaction
+work, rechecks token/digest/watermark, and writes with a token- and watermark-
+bound compare-and-set so stale or recreated-session jobs cannot overwrite a
+newer incarnation.
 
 **Tech Stack:** Rust/Tauri 2, Tokio async runtime, `rusqlite` SQLite storage, existing `Provider`/`ChatMessage` abstractions, existing Ask test harness with scripted providers, Markdown prompts embedded with `include_str!`.
 
@@ -28,11 +38,11 @@
 
 | File | Responsibility in this change |
 | --- | --- |
-| `apps/native/src-tauri/src/storage/mod.rs` | Add the two nullable session columns to the fresh schema and document their lifecycle. |
-| `apps/native/src-tauri/src/storage/migrate.rs` | Add the two columns to existing `sessions` tables idempotently. |
-| `apps/native/src-tauri/src/storage/types.rs` | Expose compaction fields on `Session`. |
-| `apps/native/src-tauri/src/storage/sessions.rs` | Read, CAS-write, and clear the session digest. |
-| `apps/native/src-tauri/src/storage/tests.rs` | Verify schema, migration, CAS, and clear behavior. |
+| `apps/native/src-tauri/src/storage/mod.rs` | Add the session incarnation token and two nullable compaction columns to the fresh schema and document their lifecycle. |
+| `apps/native/src-tauri/src/storage/migrate.rs` | Add the token/compaction columns idempotently and backfill NULL tokens with SQLite random blobs. |
+| `apps/native/src-tauri/src/storage/types.rs` | Keep compaction prompt fields out of the serialized `Session` payload. |
+| `apps/native/src-tauri/src/storage/sessions.rs` | Mint tokens for new rows; read token-bound state; CAS-write and clear the session digest. |
+| `apps/native/src-tauri/src/storage/tests.rs` | Verify schema, token migration/recreation, token/watermark CAS, timestamp preservation, and clear behavior. |
 | `apps/native/src-tauri/src/ask/compact.rs` | Own compaction plan math, bounded row rendering, reply validation, detached hook, and serialized service. |
 | `apps/native/src-tauri/prompts/marvis-compaction.md` | Define the plain-text continuity-digest contract. |
 | `apps/native/src-tauri/src/ask/mod.rs` | Register the module, define compaction constants, and wire `CompactService` through `Deps`/`AppState` construction. |
@@ -67,11 +77,12 @@ impl Db {
     pub fn session_compaction(
         &self,
         session_id: i64,
-    ) -> anyhow::Result<Option<(Option<String>, Option<i64>)>>;
+    ) -> anyhow::Result<Option<(String, Option<String>, Option<i64>)>>;
 
     pub fn session_compact_write(
         &self,
         session_id: i64,
+        session_token: &str,
         expected_through: Option<i64>,
         compact: &str,
         new_through: i64,
@@ -81,53 +92,56 @@ impl Db {
 }
 ```
 
-`Session` gains `pub compact: Option<String>` and
-`pub compact_through: Option<i64>`. Annotate both fields with
-`#[serde(skip_serializing)]` so the existing `session_list` webview payload
-does not gain unused prompt-storage fields, and do not add a separate table.
+The persisted `session_token` is an internal storage value returned only by
+`session_compaction`; it is not added to the webview `Session` serialization.
+The existing `Session` compaction fields remain storage-only and are likewise
+kept out of the payload. Do not add a separate table.
 
 - [ ] **Step 1: Add failing storage tests for the fresh schema and CAS contract.**
 
 Append tests that create a temporary `Db`, create an Ask session, and assert
-that the new accessors behave as follows:
+that the new accessors behave as follows. The token is captured once and is
+required for every detached write:
 
 ```rust
 #[test]
-fn session_compaction_roundtrips_and_uses_watermark_cas() {
+fn session_compaction_roundtrips_and_uses_token_and_watermark_cas() {
     let dir = tmp_dir();
     let db = Db::at(dir.join("marvis.db")).unwrap();
     let sid = db.session_get_or_create_active("ask").unwrap();
+    let token = db.session_compaction(sid).unwrap().unwrap().0;
 
-    assert_eq!(db.session_compaction(sid).unwrap(), Some((None, None)));
-    assert!(db
-        .session_compact_write(sid, None, "first digest", 10)
-        .unwrap());
     assert_eq!(
         db.session_compaction(sid).unwrap(),
-        Some((Some("first digest".to_string()), Some(10)))
+        Some((token.clone(), None, None))
     );
+    assert!(db
+        .session_compact_write(sid, &token, None, "first digest", 10)
+        .unwrap());
     assert!(!db
-        .session_compact_write(sid, None, "stale digest", 20)
+        .session_compact_write(sid, "wrong-token", Some(10), "stale digest", 20)
         .unwrap());
     assert!(db
-        .session_compact_write(sid, Some(10), "second digest", 20)
+        .session_compact_write(sid, &token, Some(10), "second digest", 20)
         .unwrap());
     assert_eq!(
         db.session_compaction(sid).unwrap(),
-        Some((Some("second digest".to_string()), Some(20)))
+        Some((token, Some("second digest".to_string()), Some(20)))
     );
 
     db.session_compact_clear(sid).unwrap();
-    assert_eq!(db.session_compaction(sid).unwrap(), Some((None, None)));
+    let cleared = db.session_compaction(sid).unwrap().unwrap();
+    assert_eq!((cleared.1, cleared.2), (None, None));
     let _ = std::fs::remove_dir_all(&dir);
 }
 ```
 
 Also assert that `session_compaction` returns `None` for a missing session,
-that `session_compact_write` returns `false` for it, and that clearing a missing
-session is a successful no-op. An existing session with no digest returns
-`Some((None, None))`, so a detached job can distinguish deletion before it
-contacts the provider.
+that a wrong token or watermark makes `session_compact_write` return `false`,
+that clearing a missing session is a successful no-op, and that write/clear do
+not change `last_active_at`. An existing session with no digest returns
+`Some((token, None, None))`, so a detached job can distinguish deletion before
+it contacts the provider.
 
 - [ ] **Step 2: Run the focused storage tests and verify they fail for the missing columns/accessors.**
 
@@ -143,64 +157,81 @@ than a malformed test.
 
 - [ ] **Step 3: Add the columns to the fresh schema and the migration.**
 
-In `SCHEMA`, add the nullable columns to `sessions` after `listen_id`:
+In `SCHEMA`, add the nullable token/compaction columns to `sessions` after
+`listen_id`:
 
 ```sql
 listen_id       INTEGER,
+session_token   TEXT,
 compact         TEXT,
 compact_through INTEGER,
 started_at      INTEGER NOT NULL,
 ```
 
-In `migrate`, within the existing `if table_exists("sessions")` block, use the
-already captured column list and add each missing column independently:
+New rows from both `session_get_or_create_active` and
+`ask_session_for_listen` set `session_token = hex(randomblob(16))`. In
+`migrate`, within the existing `if table_exists("sessions")` block, use the
+already captured column list and add each missing column independently, then
+backfill all NULL tokens:
 
 ```rust
+if !columns.iter().any(|column| column == "session_token") {
+    conn.execute_batch("ALTER TABLE sessions ADD COLUMN session_token TEXT")?;
+}
 if !columns.iter().any(|column| column == "compact") {
     conn.execute_batch("ALTER TABLE sessions ADD COLUMN compact TEXT")?;
 }
 if !columns.iter().any(|column| column == "compact_through") {
-    conn.execute_batch(
-        "ALTER TABLE sessions ADD COLUMN compact_through INTEGER",
-    )?;
+    conn.execute_batch("ALTER TABLE sessions ADD COLUMN compact_through INTEGER")?;
 }
+conn.execute(
+    "UPDATE sessions SET session_token = hex(randomblob(16))
+     WHERE session_token IS NULL",
+    [],
+)?;
 ```
 
 Do not add a migration marker: these are idempotent shape checks, like the
-existing `audio_file`, `stt`, and `listen_id` additions.
+existing `audio_file`, `stt`, and `listen_id` additions. Existing non-NULL
+tokens and all legacy message/compaction data must remain unchanged; the
+open-time backfill also repairs raw current-schema test inserts.
 
 - [ ] **Step 4: Add the fields and map them in `session_list`.**
 
-Extend `Session` in `storage/types.rs` with the two optional fields. Extend the
-`session_list` SELECT in `storage/sessions.rs` to select `s.compact` and
-`s.compact_through`, then map the shifted `started_at`, `ended_at`, and
-`last_active_at` indexes correctly. The list query must continue to use the
-existing title fallback and ordering.
+Keep `session_token` out of `Session` and the `session_list` SELECT so the
+incarnation value cannot enter the webview payload. The compaction columns may
+remain internal storage fields (or otherwise skipped from serialization), and
+the token is exposed only through the internal `session_compaction` accessor.
+The list query must continue to use the existing title fallback and ordering.
 
 - [ ] **Step 5: Implement the three storage accessors with NULL-safe CAS.**
 
 `session_compaction` should return `None` when the session id does not exist,
-while an existing session with no digest returns `Some((None, None))`, so the
-compaction service can abort before a provider request. The query is:
+while an existing session with no digest returns
+`Some((session_token, None, None))`, so the compaction service can distinguish
+an empty incarnation from deletion before a provider request. The query is:
 
 ```sql
-SELECT compact, compact_through FROM sessions WHERE id = ?1
+SELECT session_token, compact, compact_through
+FROM sessions WHERE id = ?1
 ```
 
-`session_compact_write` must update only the requested session and only when
-`compact_through` still matches the expected value, including the `NULL` case:
+`session_compact_write` must update only the requested incarnation and only
+when both the token and `compact_through` still match the expected values,
+including the `NULL` case:
 
 ```sql
 UPDATE sessions
 SET compact = ?1, compact_through = ?2
 WHERE id = ?3
-  AND ((compact_through IS NULL AND ?4 IS NULL)
-       OR compact_through = ?4)
+  AND session_token = ?4
+  AND ((compact_through IS NULL AND ?5 IS NULL)
+       OR compact_through = ?5)
 ```
 
 Return `changed_rows > 0`. Do not update `last_active_at`: a detached digest
 must not make a session appear newly active. `session_compact_clear` sets both
-columns to `NULL` without deleting messages or touching activity.
+compaction columns to `NULL` without deleting messages or touching activity.
 
 - [ ] **Step 6: Add the migration regression test and run the focused suite.**
 
@@ -208,10 +239,13 @@ Use the existing `V1_SCHEMA` fixture to create a pre-compaction database,
 insert an Ask session/message, open it through `Db::at`, and assert that:
 
 ```rust
-assert_eq!(db.session_compaction(1).unwrap(), Some((None, None)));
-assert!(db.session_compact_write(1, None, "legacy-safe", 1).unwrap());
+let token = db.session_compaction(1).unwrap().unwrap().0;
+assert_eq!(token.len(), 32);
+assert!(db
+    .session_compact_write(1, &token, None, "legacy-safe", 1)
+    .unwrap());
 assert_eq!(
-    db.session_compaction(1).unwrap().unwrap().0.as_deref(),
+    db.session_compaction(1).unwrap().unwrap().1.as_deref(),
     Some("legacy-safe")
 );
 assert_eq!(db.messages_for(1).unwrap()[0].content, "old question");
@@ -251,6 +285,7 @@ git commit -m "feat: persist per-session compaction digests"
 ```rust
 pub(crate) struct CompactionPlan {
     pub(crate) session_id: i64,
+    pub(crate) session_token: String,
     pub(crate) expected_through: Option<i64>,
     pub(crate) previous: Option<String>,
     pub(crate) source_rows: Vec<Message>,
@@ -258,6 +293,7 @@ pub(crate) struct CompactionPlan {
 
 pub(crate) fn compaction_plan(
     session_id: i64,
+    session_token: String,
     history_rows: &[Message],
     previous: Option<String>,
     expected_through: Option<i64>,
@@ -298,10 +334,10 @@ attachments. Add tests with these exact invariants:
 #[test]
 fn compaction_plan_waits_until_ten_rows_are_outside_history_tail() {
     let rows = test_messages(29); // 9 dropped after HISTORY_TAIL = 20
-    assert!(compaction_plan(7, &rows, None, None).is_none());
+    assert!(compaction_plan(7, "test-token".into(), &rows, None, None).is_none());
 
     let rows = test_messages(30); // 10 dropped
-    let plan = compaction_plan(7, &rows, None, None).unwrap();
+    let plan = compaction_plan(7, "test-token".into(), &rows, None, None).unwrap();
     assert_eq!(plan.session_id, 7);
     assert_eq!(plan.expected_through, None);
     assert_eq!(plan.source_rows.len(), 10);
@@ -312,6 +348,7 @@ fn compaction_plan_only_sends_rows_after_the_stored_watermark() {
     let rows = test_messages(40);
     let plan = compaction_plan(
         7,
+        "test-token".into(),
         &rows,
         Some("old digest".to_string()),
         Some(10),
@@ -353,12 +390,12 @@ const MAX_COMPACT_INPUT_BYTES: usize = 32_000;
 const COMPACT_TIMEOUT: Duration = Duration::from_secs(30);
 ```
 
-Implement `compaction_plan` in `ask/compact.rs`. It must preserve the digest
-string and expected watermark in the returned plan and copy only the uncovered
-`Message` rows. The plan does not choose the write watermark: the bounded row
-renderer returns the id of the last source row actually represented, and the
-service writes that id. Never create a plan for a session with no dropped rows
-or with fewer than ten uncovered rows.
+Implement `compaction_plan` in `ask/compact.rs`. It must preserve the
+incarnation token, digest string, and expected watermark in the returned plan
+and copy only the uncovered `Message` rows. The plan does not choose the write
+watermark: the bounded row renderer returns the id of the last source row
+actually represented, and the service writes that id. Never create a plan for
+a session with no dropped rows or with fewer than ten uncovered rows.
 
 - [ ] **Step 4: Add the compaction system prompt with an explicit output contract.**
 
@@ -456,15 +493,17 @@ pub(crate) fn maybe_schedule(
 
 Inside `compact_once`, acquire the service gate and keep it through the
 provider await. Re-read `db.session_compaction(plan.session_id)` before
-calling the provider. If the session is missing, or the stored watermark or
-raw digest differs from the corresponding values in `plan`, return `Ok(())`
-without a provider call. Otherwise, use the re-read digest plus the owned
-source rows to render the bounded prompt, call
+calling the provider. If the session is missing, or the re-read token, stored
+watermark, or raw digest differs from the corresponding values in `plan`,
+return `Ok(())` without a provider call. Otherwise, use the re-read digest
+plus the owned source rows to render the bounded prompt, call
 `tokio::time::timeout(COMPACT_TIMEOUT, provider.stream_chat(&messages, &mut sink))`
 with a no-op token callback, normalize the reply, and call
-`session_compact_write` with the id returned for the last rendered source row.
-A false CAS result is a harmless stale-job no-op. Map timeout/provider/DB/empty-
-reply conditions into safe `anyhow` errors so the outer task only logs them.
+`session_compact_write` with the plan token and the id returned for the last
+rendered source row. The SQL CAS token check protects the interval after the
+re-read too: deletion/recreation cannot receive the stale write. A false CAS
+result is a harmless stale-job no-op. Map timeout/provider/DB/empty-reply
+conditions into safe `anyhow` errors so the outer task only logs them.
 
 - [ ] **Step 7: Run the compaction-core tests and commit.**
 
@@ -691,6 +730,12 @@ Use a barrier-controlled provider to verify two jobs sharing one
 watermark while a provider call is blocked to prove the stale result is
 rejected by CAS.
 
+The critical incarnation regression must build a plan, delete the highest-id
+session, recreate an Ask session that reuses the integer id, and then schedule
+the old plan. The recreated row's token must differ, the detached provider must
+receive zero calls, and the recreated row must retain a NULL digest/watermark.
+This test is added and run red before the token implementation.
+
 - [ ] **Step 2: Run the integration tests and verify they fail before wiring.**
 
 Run:
@@ -736,8 +781,14 @@ read the session compaction once:
 ```rust
 let (compaction, compact_plan) = match session_id {
     Some(sid) => match db.session_compaction(sid) {
-        Ok(Some((digest, through))) => {
-            let plan = compaction_plan(sid, &history_rows, digest.clone(), through);
+        Ok(Some((session_token, digest, through))) => {
+            let plan = compaction_plan(
+                sid,
+                session_token,
+                &history_rows,
+                digest.clone(),
+                through,
+            );
             (digest, plan)
         }
         Ok(None) => (None, None),
@@ -785,10 +836,18 @@ Use this direct regression shape:
 let sid = db.session_get_or_create_active("ask").unwrap();
 let first = db.message_add(sid, "user", "old question").unwrap();
 let rejected = db.message_add(sid, "assistant", "rejected answer").unwrap();
-db.session_compact_write(sid, None, "digest includes rejected answer", rejected)
-    .unwrap();
+let token = db.session_compaction(sid).unwrap().unwrap().0;
+db.session_compact_write(
+    sid,
+    &token,
+    None,
+    "digest includes rejected answer",
+    rejected,
+)
+.unwrap();
 assert!(regenerate_tail_rows(&db, Some(sid)).is_some());
-assert_eq!(db.session_compaction(sid).unwrap(), Some((None, None)));
+let cleared = db.session_compaction(sid).unwrap().unwrap();
+assert_eq!((cleared.1, cleared.2), (None, None));
 let _ = first;
 ```
 
@@ -875,9 +934,11 @@ specific facts:
 3. Subsequent plans send only rows after the stored watermark.
 4. The current digest is in the system prompt after `<user_profile>` and not
    in the current user message or persisted message rows.
-5. The digest survives restart through `sessions` and is cleared only by
-   session deletion or regenerate invalidation.
-6. A stale CAS job cannot overwrite a newer digest.
+5. The digest survives restart through `sessions`; legacy NULL tokens are
+   backfilled with random blobs, existing tokens/data survive migration, and
+   deletion/recreation gets a new token even when the integer id is reused.
+6. A stale plan is rejected before its provider call when the token changes,
+   and the token-bound CAS also prevents a post-provider stale write.
 7. A failed/timed-out/empty compaction leaves the previous digest unchanged.
 8. Failover uses the provider that actually answered, not the failed candidate.
 9. The Memory LLM never receives the digest and `MemoryHook` behavior remains

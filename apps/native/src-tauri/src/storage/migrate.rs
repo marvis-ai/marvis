@@ -75,12 +75,21 @@ pub(super) fn migrate(conn: &Connection) -> anyhow::Result<()> {
         if !columns.iter().any(|c| c == "listen_id") {
             conn.execute_batch("ALTER TABLE sessions ADD COLUMN listen_id INTEGER")?;
         }
+        if !columns.iter().any(|column| column == "session_token") {
+            conn.execute_batch("ALTER TABLE sessions ADD COLUMN session_token TEXT")?;
+        }
         if !columns.iter().any(|column| column == "compact") {
             conn.execute_batch("ALTER TABLE sessions ADD COLUMN compact TEXT")?;
         }
         if !columns.iter().any(|column| column == "compact_through") {
             conn.execute_batch("ALTER TABLE sessions ADD COLUMN compact_through INTEGER")?;
         }
+        conn.execute(
+            "UPDATE sessions
+             SET session_token = hex(randomblob(16))
+             WHERE session_token IS NULL",
+            [],
+        )?;
     }
     if table_exists("summaries")? {
         let columns = columns("summaries")?;

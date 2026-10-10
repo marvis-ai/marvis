@@ -60,29 +60,44 @@ dies with its session.
 
 ### Data model
 
-Two nullable columns on `sessions` — the digest is 1:1 with its session and
-dies with the row, so no separate table:
+Three session-row columns hold compaction state plus the incarnation guard — the
+state is 1:1 with its session and dies with the row, so no separate table is
+needed:
 
 ```sql
-ALTER TABLE sessions ADD COLUMN compact TEXT;          -- the digest body
+ALTER TABLE sessions ADD COLUMN session_token TEXT;    -- immutable row incarnation
+ALTER TABLE sessions ADD COLUMN compact TEXT;           -- the digest body
 ALTER TABLE sessions ADD COLUMN compact_through INTEGER; -- last rendered source messages.id
 ```
 
-Fresh databases get both columns inline in `SCHEMA`; `migrate` ALTERs existing
-ones, matching the `stt`/`listen_id` column-add pattern. `compact_through` is a
-plain `INTEGER`, not an FK — the covered messages must be deletable without
-touching the digest (regenerate invalidates explicitly instead).
+Fresh databases include `session_token` in `SCHEMA`; every Marvis-created row
+sets it with SQLite `hex(randomblob(16))`. The idempotent `migrate` path adds
+the nullable column to legacy databases and backfills every NULL with a fresh
+random token on each database open. The column remains nullable only so SQLite
+can migrate old rows and tolerate raw legacy/current test inserts; after
+`Db::at` completes, every existing row has a persisted token. Tokens are never
+recomputed from timestamps, session ids, or activity times, and deletion plus
+highest-id recreation therefore creates a different incarnation even when
+SQLite reuses the integer id.
 
-`Session` gains `compact: Option<String>` and `compact_through: Option<i64>`.
+`compact_through` is a plain `INTEGER`, not an FK — covered messages must be
+deletable without touching the digest (regenerate invalidates explicitly
+instead). The internal compaction accessor returns the token; the public
+`Session` webview payload does not include token storage.
+
 Db accessors follow the existing `storage/sessions.rs` style:
 
-- `session_compaction(sid) -> Option<(Option<String>, Option<i64>)>` — digest + watermark for an existing session; `None` means the session was deleted.
-- `session_compact_write(sid, expected_through, text, new_through)` —
-  compare-and-set: writes only when the stored watermark still equals
-  `expected_through`; `new_through` is the last rendered source row id, and
-  the method returns whether it wrote.
-- `session_compact_clear(sid)` — NULLs both columns (regenerate
-  invalidation).
+- `session_compaction(sid) -> Option<(String, Option<String>, Option<i64>)>` —
+  token, digest, and watermark for an existing session; `None` means the
+  session was deleted, while `Some((token, None, None))` is an existing empty
+  session.
+- `session_compact_write(sid, session_token, expected_through, text, new_through)` —
+  compare-and-set: writes only when both the persisted token and stored
+  watermark match the plan snapshot; `new_through` is the last rendered source
+  row id, and the method returns whether it wrote. It never updates
+  `last_active_at`.
+- `session_compact_clear(sid)` — NULLs both digest columns (regenerate
+  invalidation) without changing session activity.
 
 ### Watermark and trigger
 
@@ -152,14 +167,18 @@ if let (Some(hook), Some(plan)) = (compact, compaction_plan) {
 
 `CompactService` mirrors `MemoryService`: a `tokio::sync::Mutex` serializes
 jobs (sessions run serially per the `claim` gate, but a job can outlive its
-run and overlap the next send's job). Inside the gate the job re-reads
-`session_compaction`; if the session is missing, or the stored watermark or
-raw digest no longer equals the plan's CAS snapshot — a regenerate cleared it,
-or a sibling job already covered the range — it discards the job before any
-provider request. Otherwise it renders the bounded rows, calls
-`provider.stream_chat` with a no-op token callback, and CAS-writes the digest
-with the id of the last source row actually rendered. A row omitted by the
-input byte bound remains uncovered for a later plan.
+run and overlap the next send's job). A `CompactionPlan` owns the session id,
+the token captured with the digest/watermark snapshot, and its source rows.
+Inside the gate the job re-reads `session_compaction`; if the session is
+missing, the persisted token differs, or the stored watermark/raw digest no
+longer equals the plan snapshot — a delete/recreate, regenerate, or sibling
+job made the premise stale — it discards the job before any provider request.
+Otherwise it renders the bounded rows, calls `provider.stream_chat` with a
+no-op token callback, and CAS-writes the digest with the plan token and the id
+of the last source row actually rendered. The token is also in the SQL
+`UPDATE ... WHERE` clause, so a deletion that happens after the re-read but
+before the provider result cannot write into a recreated row. A row omitted by
+the input byte bound remains uncovered for a later plan.
 
 The job is spawned after `ask:done`/`idle` emit — the visible answer never
 waits on it, and a `stop` cannot recall it.
@@ -249,11 +268,15 @@ for a kill switch it is a small follow-up.
 
 ### Rust
 
-- `sessions` migration: fresh schema has both columns; an existing database
-  gains them via ALTER without data loss.
+- `sessions` migration: fresh schema has the token and both compaction columns;
+  an existing database gains them via idempotent ALTER, NULL legacy tokens are
+  backfilled with `hex(randomblob(16))`, existing tokens/data are preserved,
+  and raw current-schema inserts are repaired on the next `Db::at`.
+- Session incarnation: deleting the highest-id session and recreating it reuses
+  the integer id but produces a different token.
 - `session_compaction`/`session_compact_write`/`session_compact_clear`:
-  existing-vs-missing session distinction, read-empty, CAS success, CAS failure
-  on watermark mismatch, clear.
+  existing-vs-missing session distinction, token + read-empty state, token and
+  watermark CAS success/failure, clear, and unchanged `last_active_at`.
 - Watermark/trigger math: no digest below threshold, first compaction covers
   the eligible rendered prefix, refresh covers only newly uncovered rows, and
   a later plan selects rows omitted by the 32,000-byte bound.
@@ -281,8 +304,9 @@ bun run build                      # native webview build/type verification
 
 ## Files expected to change
 
-- `apps/native/src-tauri/src/storage/mod.rs`, `migrate.rs`, `types.rs`,
-  `sessions.rs` — columns, `Session` fields, accessors.
+- `apps/native/src-tauri/src/storage/mod.rs`, `migrate.rs`, `sessions.rs` —
+  session incarnation token, compaction columns, migration backfill, and
+  token-bound accessors. `Session` remains token-free at the webview boundary.
 - `apps/native/src-tauri/src/ask/compact.rs` — `CompactService`,
   `CompactHook`, watermark math, prompt assembly, reply validation.
 - `apps/native/src-tauri/prompts/marvis-compaction.md` — the digest system

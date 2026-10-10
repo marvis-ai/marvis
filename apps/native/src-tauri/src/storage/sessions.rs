@@ -38,8 +38,9 @@ impl Db {
             return Ok(id);
         }
         tx.execute(
-            "INSERT INTO sessions (type, title, started_at, ended_at, last_active_at)
-             VALUES (?1, NULL, ?2, NULL, ?2)",
+            "INSERT INTO sessions
+                (type, title, session_token, started_at, ended_at, last_active_at)
+             VALUES (?1, NULL, hex(randomblob(16)), ?2, NULL, ?2)",
             params![kind, now()],
         )?;
         let id = tx.last_insert_rowid();
@@ -70,8 +71,9 @@ impl Db {
             id
         } else {
             tx.execute(
-                "INSERT INTO sessions (type, title, listen_id, started_at, ended_at, last_active_at)
-                 VALUES ('ask', NULL, ?1, ?2, NULL, ?2)",
+                "INSERT INTO sessions
+                    (type, title, listen_id, session_token, started_at, ended_at, last_active_at)
+                 VALUES ('ask', NULL, ?1, hex(randomblob(16)), ?2, NULL, ?2)",
                 params![listen_id, now()],
             )?;
             tx.last_insert_rowid()
@@ -233,30 +235,34 @@ impl Db {
             .flatten())
     }
 
-    /// Read the detached compaction digest and the message watermark for a
-    /// session. `None` means the owning session no longer exists; an existing
-    /// session with an uninitialized digest returns `Some((None, None))`.
+    /// Read the session incarnation token, detached compaction digest, and
+    /// message watermark. `None` means the owning session no longer exists;
+    /// an existing session with an uninitialized digest returns
+    /// `Some((token, None, None))`.
     pub fn session_compaction(
         &self,
         session_id: i64,
-    ) -> anyhow::Result<Option<(Option<String>, Option<i64>)>> {
+    ) -> anyhow::Result<Option<(String, Option<String>, Option<i64>)>> {
         Ok(self
             .conn
             .lock()
             .query_row(
-                "SELECT compact, compact_through FROM sessions WHERE id = ?1",
+                "SELECT session_token, compact, compact_through
+                 FROM sessions WHERE id = ?1",
                 [session_id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .optional()?)
     }
 
-    /// Store a detached compaction digest only when the session's watermark
-    /// still matches the caller's expected value. `NULL` is a valid initial
-    /// watermark and is matched explicitly for SQLite's three-valued logic.
+    /// Store a detached compaction digest only when the session incarnation
+    /// token and watermark still match the caller's expected values. `NULL`
+    /// is a valid initial watermark and is matched explicitly for SQLite's
+    /// three-valued logic.
     pub fn session_compact_write(
         &self,
         session_id: i64,
+        session_token: &str,
         expected_through: Option<i64>,
         compact: &str,
         new_through: i64,
@@ -265,9 +271,16 @@ impl Db {
             "UPDATE sessions
              SET compact = ?1, compact_through = ?2
              WHERE id = ?3
-               AND ((compact_through IS NULL AND ?4 IS NULL)
-                    OR compact_through = ?4)",
-            params![compact, new_through, session_id, expected_through],
+               AND session_token = ?4
+               AND ((compact_through IS NULL AND ?5 IS NULL)
+                    OR compact_through = ?5)",
+            params![
+                compact,
+                new_through,
+                session_id,
+                session_token,
+                expected_through
+            ],
         )? > 0)
     }
 

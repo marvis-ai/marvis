@@ -221,20 +221,30 @@ use crate::storage::Message;
         sid
     }
 
-    fn compaction_state(db: &Db, sid: i64) -> (Option<String>, Option<i64>) {
+    fn compaction_token(db: &Db, sid: i64) -> String {
         db.session_compaction(sid)
             .unwrap()
             .expect("test session should still exist")
+            .0
+    }
+
+    fn compaction_state(db: &Db, sid: i64) -> (Option<String>, Option<i64>) {
+        let (_, digest, through) = db
+            .session_compaction(sid)
+            .unwrap()
+            .expect("test session should still exist");
+        (digest, through)
     }
 
     #[test]
     fn compaction_plan_waits_until_ten_rows_are_outside_history_tail() {
         let rows = test_messages(29); // 9 dropped after HISTORY_TAIL = 20
-        assert!(compaction_plan(7, &rows, None, None).is_none());
+        assert!(compaction_plan(7, "test-token".into(), &rows, None, None).is_none());
 
         let rows = test_messages(30); // 10 dropped
-        let plan = compaction_plan(7, &rows, None, None).unwrap();
+        let plan = compaction_plan(7, "test-token".into(), &rows, None, None).unwrap();
         assert_eq!(plan.session_id, 7);
+        assert_eq!(plan.session_token, "test-token");
         assert_eq!(plan.expected_through, None);
         assert_eq!(plan.source_rows.len(), 10);
     }
@@ -244,6 +254,7 @@ use crate::storage::Message;
         let rows = test_messages(40);
         let plan = compaction_plan(
             7,
+            "test-token".into(),
             &rows,
             Some("old digest".to_string()),
             Some(10),
@@ -264,7 +275,7 @@ use crate::storage::Message;
         for row in &mut rows {
             row.content = "x".repeat(MAX_COMPACT_ROW_CHARS);
         }
-        let plan = compaction_plan(sid, &rows, None, None).unwrap();
+        let plan = compaction_plan(sid, compaction_token(&db, sid), &rows, None, None).unwrap();
         let provider = MockProvider::new(vec![Behavior::Tokens(vec!["digest".into()])]);
 
         CompactHook::new(Arc::clone(&db), CompactService::new())
@@ -280,8 +291,14 @@ use crate::storage::Message;
         let watermark = watermark.expect("the bounded first job should write a watermark");
         assert_eq!(watermark, 31, "watermark must stop at the last rendered row");
 
-        let later = compaction_plan(sid, &rows, Some("digest".into()), Some(watermark))
-            .expect("omitted rows must remain eligible for a later plan");
+        let later = compaction_plan(
+            sid,
+            compaction_token(&db, sid),
+            &rows,
+            Some("digest".into()),
+            Some(watermark),
+        )
+        .expect("omitted rows must remain eligible for a later plan");
         assert_eq!(later.source_rows.first().unwrap().id, watermark + 1);
         assert_eq!(later.source_rows.last().unwrap().id, 50);
 
@@ -293,7 +310,14 @@ use crate::storage::Message;
         let dir = tmp_dir();
         let db = Arc::new(Db::at(dir.join("marvis.db")).unwrap());
         let sid = db.session_get_or_create_active("ask").unwrap();
-        let plan = compaction_plan(sid, &test_messages(30), None, None).unwrap();
+        let plan = compaction_plan(
+            sid,
+            compaction_token(&db, sid),
+            &test_messages(30),
+            None,
+            None,
+        )
+        .unwrap();
         db.session_delete(sid).unwrap();
         let provider = MockProvider::new(vec![Behavior::Tokens(vec!["must not run".into()])]);
         let calls = provider.calls();
@@ -304,6 +328,79 @@ use crate::storage::Message;
 
         assert!(calls.lock().is_empty());
         assert!(db.session_list().unwrap().iter().all(|session| session.id != sid));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn compaction_job_skips_recreated_session_before_provider_call() {
+        let dir = tmp_dir();
+        let db = Arc::new(Db::at(dir.join("marvis.db")).unwrap());
+        let sid = db.session_get_or_create_active("ask").unwrap();
+        let session_token = db
+            .session_compaction(sid)
+            .unwrap()
+            .unwrap()
+            .0;
+        let plan = compaction_plan(
+            sid,
+            session_token.clone(),
+            &test_messages(30),
+            None,
+            None,
+        )
+        .unwrap();
+
+        // Deleting the highest row lets SQLite reuse the id for a new
+        // incarnation, which must not inherit the detached job's write.
+        db.session_delete(sid).unwrap();
+        assert_eq!(db.session_get_or_create_active("ask").unwrap(), sid);
+        let recreated = db.session_compaction(sid).unwrap().unwrap();
+        assert_ne!(recreated.0, session_token);
+
+        let provider = MockProvider::new(vec![Behavior::Tokens(vec!["must not run".into()])]);
+        let calls = provider.calls();
+        CompactHook::new(Arc::clone(&db), CompactService::new())
+            .maybe_schedule(Arc::new(provider), plan);
+        tokio::time::sleep(Duration::from_millis(25)).await;
+
+        assert!(calls.lock().is_empty());
+        assert_eq!(db.session_compaction(sid).unwrap().unwrap().1, None);
+        assert_eq!(db.session_compaction(sid).unwrap().unwrap().2, None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn compaction_job_rejects_recreated_session_after_provider_call() {
+        let dir = tmp_dir();
+        let db = Arc::new(Db::at(dir.join("marvis.db")).unwrap());
+        let sid = db.session_get_or_create_active("ask").unwrap();
+        let token = compaction_token(&db, sid);
+        let rows = test_messages(30);
+        let first_plan = compaction_plan(sid, token.clone(), &rows, None, None).unwrap();
+        let queued_plan = compaction_plan(sid, token.clone(), &rows, None, None).unwrap();
+        let service = CompactService::new();
+        let first = BarrierProvider::new("stale digest");
+        let entered = first.entered();
+        let release = first.release();
+        let first_calls = first.calls();
+        let second = MockProvider::new(vec![Behavior::Tokens(vec!["must not run".into()])]);
+        let second_calls = second.calls();
+
+        CompactHook::new(Arc::clone(&db), Arc::clone(&service))
+            .maybe_schedule(Arc::new(first), first_plan);
+        entered.notified().await;
+        CompactHook::new(Arc::clone(&db), Arc::clone(&service))
+            .maybe_schedule(Arc::new(second), queued_plan);
+
+        db.session_delete(sid).unwrap();
+        assert_eq!(db.session_get_or_create_active("ask").unwrap(), sid);
+        assert_ne!(compaction_token(&db, sid), token);
+        release.notify_one();
+        tokio::time::sleep(Duration::from_millis(25)).await;
+
+        assert_eq!(first_calls.lock().len(), 1);
+        assert!(second_calls.lock().is_empty());
+        assert_eq!(compaction_state(&db, sid), (None, None));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -384,7 +481,7 @@ use crate::storage::Message;
         let db = Arc::new(Db::at(dir.join("marvis.db")).unwrap());
         let sid = db.session_get_or_create_active("ask").unwrap();
         let rows = test_messages(30);
-        let plan = compaction_plan(sid, &rows, None, None).unwrap();
+        let plan = compaction_plan(sid, compaction_token(&db, sid), &rows, None, None).unwrap();
         let provider = MockProvider::new(vec![Behavior::Tokens(vec![" digest ".into()])]);
         let calls = provider.calls();
 
@@ -403,7 +500,7 @@ use crate::storage::Message;
         );
         assert_eq!(calls.lock().len(), 1);
 
-        let stale = compaction_plan(sid, &rows, None, None).unwrap();
+        let stale = compaction_plan(sid, compaction_token(&db, sid), &rows, None, None).unwrap();
         let stale_provider = MockProvider::new(vec![Behavior::Tokens(vec!["wrong".into()])]);
         let stale_calls = stale_provider.calls();
         CompactHook::new(Arc::clone(&db), CompactService::new())
@@ -421,8 +518,9 @@ use crate::storage::Message;
         let db = Arc::new(Db::at(dir.join("marvis.db")).unwrap());
         let sid = db.session_get_or_create_active("ask").unwrap();
         let rows = test_messages(30);
-        let first_plan = compaction_plan(sid, &rows, None, None).unwrap();
-        let second_plan = compaction_plan(sid, &rows, None, None).unwrap();
+        let token = compaction_token(&db, sid);
+        let first_plan = compaction_plan(sid, token.clone(), &rows, None, None).unwrap();
+        let second_plan = compaction_plan(sid, token, &rows, None, None).unwrap();
         let service = CompactService::new();
         let first = BarrierProvider::new("first digest");
         let first_entered = first.entered();
@@ -463,10 +561,12 @@ use crate::storage::Message;
         let dir = tmp_dir();
         let db = Arc::new(Db::at(dir.join("marvis.db")).unwrap());
         let sid = seed_compaction_history(db.as_ref(), 40);
-        db.session_compact_write(sid, None, "old digest", 10)
+        let token = compaction_token(&db, sid);
+        db.session_compact_write(sid, &token, None, "old digest", 10)
             .unwrap();
         let plan = compaction_plan(
             sid,
+            token,
             &test_messages(40),
             Some("old digest".into()),
             Some(10),
@@ -494,7 +594,14 @@ use crate::storage::Message;
         let dir = tmp_dir();
         let db = Arc::new(Db::at(dir.join("marvis.db")).unwrap());
         let sid = db.session_get_or_create_active("ask").unwrap();
-        let plan = compaction_plan(sid, &test_messages(30), None, None).unwrap();
+        let plan = compaction_plan(
+            sid,
+            compaction_token(&db, sid),
+            &test_messages(30),
+            None,
+            None,
+        )
+        .unwrap();
         let provider = MockProvider::new(vec![Behavior::Fail(LlmError::Auth)]);
         let calls = provider.calls();
 
@@ -517,7 +624,8 @@ use crate::storage::Message;
         let dir = tmp_dir();
         let db = Arc::new(Db::at(dir.join("marvis.db")).unwrap());
         let sid = seed_compaction_history(db.as_ref(), 40);
-        db.session_compact_write(sid, None, "old digest", 10)
+        let token = compaction_token(&db, sid);
+        db.session_compact_write(sid, &token, None, "old digest", 10)
             .unwrap();
         let provider = MockProvider::new(vec![
             Behavior::Tokens(vec!["answer".into()]),
@@ -577,7 +685,8 @@ use crate::storage::Message;
         let dir = tmp_dir();
         let db = Arc::new(Db::at(dir.join("marvis.db")).unwrap());
         let sid = seed_compaction_history(db.as_ref(), 40);
-        db.session_compact_write(sid, None, "old digest", 10)
+        let token = compaction_token(&db, sid);
+        db.session_compact_write(sid, &token, None, "old digest", 10)
             .unwrap();
         let failed = MockProvider::new(vec![Behavior::Fail(LlmError::Auth)]);
         let answering = MockProvider::new(vec![
@@ -630,7 +739,8 @@ use crate::storage::Message;
         let dir = tmp_dir();
         let db = Arc::new(Db::at(dir.join("marvis.db")).unwrap());
         let sid = seed_compaction_history(db.as_ref(), 40);
-        db.session_compact_write(sid, None, "old digest", 10)
+        let token = compaction_token(&db, sid);
+        db.session_compact_write(sid, &token, None, "old digest", 10)
             .unwrap();
         let provider = MockProvider::new(vec![
             Behavior::Tokens(vec!["answer".into()]),
@@ -682,8 +792,15 @@ use crate::storage::Message;
         let sid = db.session_get_or_create_active("ask").unwrap();
         db.message_add(sid, "user", "old question").unwrap();
         let rejected = db.message_add(sid, "assistant", "rejected answer").unwrap();
-        db.session_compact_write(sid, None, "digest includes rejected answer", rejected)
-            .unwrap();
+        let token = compaction_token(&db, sid);
+        db.session_compact_write(
+            sid,
+            &token,
+            None,
+            "digest includes rejected answer",
+            rejected,
+        )
+        .unwrap();
 
         assert!(regenerate_tail_rows(&db, Some(sid)).is_some());
         assert_eq!(compaction_state(&db, sid), (None, None));
@@ -697,8 +814,15 @@ use crate::storage::Message;
         let sid = db.session_get_or_create_active("ask").unwrap();
         let first = db.message_add(sid, "user", "old question").unwrap();
         db.message_add(sid, "assistant", "rejected answer").unwrap();
-        db.session_compact_write(sid, None, "digest before rejected answer", first)
-            .unwrap();
+        let token = compaction_token(&db, sid);
+        db.session_compact_write(
+            sid,
+            &token,
+            None,
+            "digest before rejected answer",
+            first,
+        )
+        .unwrap();
 
         assert!(regenerate_tail_rows(&db, Some(sid)).is_some());
         assert_eq!(

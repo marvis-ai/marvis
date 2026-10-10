@@ -183,8 +183,9 @@ pub(crate) async fn send_chain(
     // attachment-loading task.
     let (compaction, compact_plan): (Option<String>, Option<CompactionPlan>) = match session_id {
         Some(sid) => match db.session_compaction(sid) {
-            Ok(Some((digest, through))) => {
-                let plan = compaction_plan(sid, &history_rows, digest.clone(), through);
+            Ok(Some((session_token, digest, through))) => {
+                let plan =
+                    compaction_plan(sid, session_token, &history_rows, digest.clone(), through);
                 (digest, plan)
             }
             Ok(None) => (None, None),

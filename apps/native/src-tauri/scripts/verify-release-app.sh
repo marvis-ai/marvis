@@ -45,11 +45,12 @@ fi
 # included — under which AVCaptureDevice mic access requires the
 # audio-input entitlement; without it requestAccess is denied at the
 # signature level and dictation can never start.
-entitlements="$(mktemp)"
-trap 'rm -f "$entitlements"' EXIT
-codesign -d --entitlements - "$APP_PATH" > "$entitlements" 2>/dev/null \
+entitlements="$(codesign -d --entitlements - "$APP_PATH" 2>/dev/null)" \
   || fail "could not read signed entitlements"
-# XML output distinguishes a boolean true from a string containing "true".
-/usr/libexec/PlistBuddy -x -c 'Print :com.apple.security.device.audio-input' "$entitlements" \
-  | grep -q '^<true/>$' \
+# Current codesign dumps a "[Dict]/[Key]/[Value]/[Bool]" text form; older
+# releases emit plist XML. Match either key spelling plus its value lines,
+# then require a boolean true — a string containing "true" must not pass.
+audio_input="$(grep -A2 -E '^[[:space:]]*(\[Key\] com\.apple\.security\.device\.audio-input|<key>com\.apple\.security\.device\.audio-input</key>)[[:space:]]*$' <<<"$entitlements" || true)"
+{ grep -qE '^[[:space:]]*\[Bool\] true[[:space:]]*$' <<<"$audio_input" \
+  || grep -qE '^[[:space:]]*<true/>[[:space:]]*$' <<<"$audio_input"; } \
   || fail "com.apple.security.device.audio-input entitlement must be true"

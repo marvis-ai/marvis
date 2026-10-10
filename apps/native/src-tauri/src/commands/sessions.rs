@@ -61,7 +61,7 @@ pub(crate) fn session_end_active(state: State<'_, AppState>, kind: String) -> Re
 /// (`session_reopen` kind-guards — non-ask ids change nothing and
 /// return false). The next `ask_send` appends to the reopened session.
 /// No run is aborted: resuming the session a live run still writes to
-/// re-attaches its tail via `ask_current`; resuming a different one
+/// re-attaches its tail via `ask_runs`; resuming a different one
 /// leaves that run streaming into its own session, `session_id`-tagged
 /// packets filtered out of this view.
 #[tauri::command]

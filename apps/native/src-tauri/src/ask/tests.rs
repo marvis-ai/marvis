@@ -2748,21 +2748,72 @@ use super::title::*;
         assert_eq!(AskState::Streaming.as_str(), "streaming");
     }
 
-    /// The cold-open resync contract: `ask:error` rides `ask_current`
-    /// until a `loading` boundary supersedes it — the trailing `idle`
-    /// of the loading→error→idle sequence must NOT clear it, or a
-    /// pre-flight error would be lost before the webview listens.
+    /// The cold-open resync contract: a sessionless `ask:error` rides
+    /// `ask_runs` until a `loading` boundary supersedes it — the
+    /// trailing `idle` of the loading→error→idle sequence must NOT
+    /// clear it, or a pre-flight error would be lost before the
+    /// webview listens.
     #[test]
-    fn observe_keeps_the_last_error_for_resync_until_loading() {
+    fn orphan_error_resyncs_until_a_loading_boundary() {
         let svc = AskService::new();
-        assert!(svc.current_payload()["error"].is_null());
-        svc.observe(EV_ERROR, &json!({"message": "boom", "needs_setup": true}));
-        svc.observe(EV_STATE, &json!({"state": "idle"}));
-        let payload = svc.current_payload();
-        assert_eq!(payload["error"]["message"], "boom");
-        assert_eq!(payload["error"]["needs_setup"], true);
-        svc.observe(EV_STATE, &json!({"state": "loading"}));
-        assert!(svc.current_payload()["error"].is_null());
+        assert!(svc.runs_payload().is_empty());
+        // The service-emits fold — `kick_error`/`pre_spawn_error`
+        // packets have no run to gate against.
+        svc.fold_orphan(EV_ERROR, &json!({"message": "boom", "needs_setup": true}));
+        svc.fold_orphan(EV_STATE, &json!({"state": "idle"}));
+        let payload = svc.runs_payload();
+        let orphan = payload
+            .iter()
+            .find(|p| p["session_id"].is_null())
+            .expect("orphan entry");
+        assert_eq!(orphan["error"]["message"], "boom");
+        assert_eq!(orphan["error"]["needs_setup"], true);
+        svc.fold_orphan(EV_STATE, &json!({"state": "loading"}));
+        assert!(svc.runs_payload().is_empty());
+    }
+
+    /// The multi-chat contract: runs key on their own session — a
+    /// send into a live session is refused while every other session
+    /// proceeds; stop retires exactly one run; an idle entry never
+    /// blocks that session's next send.
+    #[test]
+    fn claim_folds_and_retires_per_session() {
+        let svc = AskService::new();
+        let c7 = svc.claim(Some(7), "q7", 1).expect("fresh session runs");
+        let c9 = svc.claim(Some(9), "q9", 2).expect("a second session runs too");
+        // The same-session busy rule: a second send while 7 streams is
+        // refused — 9's run is untouched by it.
+        assert!(svc.claim(Some(7), "q7b", 3).is_none());
+        assert!(svc.fold_emit(Some(7), 1, EV_STATE, &json!({"state": "streaming"})));
+        let payload = svc.runs_payload();
+        let s7 = payload.iter().find(|p| p["session_id"] == 7).unwrap();
+        let s9 = payload.iter().find(|p| p["session_id"] == 9).unwrap();
+        assert_eq!(s7["state"], "streaming");
+        assert_eq!(s9["state"], "loading");
+        // A stale-generation emit drops — a superseded run can't
+        // clobber the current one's fold.
+        assert!(!svc.fold_emit(Some(7), 99, EV_STATE, &json!({"state": "idle"})));
+        // Stop retires exactly that session: its token cancels, its
+        // trailing emits drop, the other run streams on.
+        svc.retire(Some(7));
+        assert!(c7.is_cancelled());
+        assert!(!c9.is_cancelled());
+        assert!(!svc.fold_emit(Some(7), 1, EV_STATE, &json!({"state": "idle"})));
+        // An idle entry never blocks the next send on its session.
+        svc.fold_emit(Some(9), 2, EV_STATE, &json!({"state": "idle"}));
+        assert!(svc.claim(Some(9), "q9b", 4).is_some());
+        // A sessionless run (resolution hiccup) registers under `None`
+        // and gates + folds the same way — `retire_all` is its only
+        // out since `ask_stop` addresses a session id.
+        let cn = svc.claim(None, "q?", 5).expect("a sessionless run");
+        assert!(svc.claim(None, "q?2", 6).is_none());
+        assert!(svc.fold_emit(None, 5, EV_STATE, &json!({"state": "idle"})));
+        let cn2 = svc.claim(None, "q?2", 6).expect("an idle slot frees");
+        svc.retire(None);
+        // Retire cancels the CURRENT entry — the replaced idle run's
+        // token was never cancelled (its task had already finished).
+        assert!(cn2.is_cancelled());
+        assert!(!cn.is_cancelled());
     }
 
     // ------------------------------------------------------------------

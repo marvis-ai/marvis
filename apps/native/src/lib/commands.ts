@@ -330,9 +330,11 @@ export interface AskSendOpts {
   attachments?: AskImageInput[];
 }
 
-/** Fire-and-forget: returns after pre-flight; tokens stream as `ask:*`. */
+/** Fire-and-forget: returns after pre-flight; tokens stream as `ask:*`.
+ *  Resolves `false` when the send was refused — that session already
+ *  has a live run — so the composer can keep the draft. */
 export const askSend = (text: string, opts: AskSendOpts = {}) =>
-  invoke<void>('ask_send', {
+  invoke<boolean>('ask_send', {
     text,
     withScreen: opts.withScreen ?? false,
     listenId: opts.listenId,
@@ -351,12 +353,20 @@ export const askRetry = () => invoke<void>('ask_retry');
 
 export const askClose = () => invoke<void>('ask_close');
 
-/** The composer's stop — cancels the in-flight run without collapsing
- *  the card (`ask_close` is the same cancel plus the collapse). */
-export const askStop = () => invoke<void>('ask_stop');
+/** The composer's stop — cancels ONE session's in-flight run; every
+ *  other session's run streams on. (`ask_close` is collapse-only.) */
+export const askStop = (sessionId: number) =>
+  invoke<void>('ask_stop', { sessionId });
 
-/** `ask_current` return — the in-flight run's resync payload. */
-export interface AskCurrent {
+/** `ask_runs` row — one run's resync snapshot, keyed by the session it
+ *  writes into. */
+export interface AskRunSnapshot {
+  /** The session the run belongs to — `null` on the sessionless
+   *  pre-flight orphan (errors that fire before a session exists). */
+  session_id: number | null;
+  /** The run's generation — the newest-run bound for stale packets
+   *  (`run` on every `ask:*` event). */
+  run?: number;
   state: 'idle' | 'loading' | 'streaming';
   question: string;
   response: string;
@@ -366,16 +376,11 @@ export interface AskCurrent {
   /** The in-flight user turn's persisted attachments — mirrors the
    * `loading` event's `attachments` key for resync. */
   attachments: MessageAttachment[];
-  /** The live run's generation — the newest-run bound for stale
-   *  packets (`run` on every `ask:*` event). */
-  run?: number;
-  /** The session the live run writes into — the resync folds its tail
-   *  only onto a view showing that session. */
-  session_id?: number | null;
 }
 
-/** The live ask tail — a re-expanded chat resyncs from this. */
-export const askCurrent = () => invoke<AskCurrent>('ask_current');
+/** Every run's tail — a remounting chat folds its own session's entry;
+ *  the activity mirror folds them all. */
+export const askRuns = () => invoke<AskRunSnapshot[]>('ask_runs');
 
 // ---------------------------------------------------------------------------
 // presets

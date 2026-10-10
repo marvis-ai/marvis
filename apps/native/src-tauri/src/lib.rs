@@ -338,15 +338,15 @@ fn enter_main(app: &AppHandle) {
     }
 }
 
-/// `Main` exit (onboarding reset / permission revoked): cancel the
-/// in-flight ask and collapse the card, stop dictation, stop + drop
-/// capture, hide the alert toast.
+/// `Main` exit (onboarding reset / permission revoked): collapse the
+/// card, stop dictation, stop + drop capture, hide the alert toast.
 fn leave_main(app: &AppHandle) {
     let state = app.state::<AppState>();
-    // Cancel any in-flight ask — an unbounded stream left running would
-    // hold `AskState::Streaming` past a leave/re-enter and wedge every
-    // future send on the busy-check until it resolves on its own.
-    // Listen is independent of card visibility; only `listen_stop` stops it.
+    // A gate exit is teardown, not a view leave — retire every live
+    // run (each tagged `idle` still emits so mirrors and packet
+    // filters settle), then collapse. Listen is independent of card
+    // visibility; only `listen_stop` stops it.
+    state.ask.retire_all(app);
     state.ask.close(app, &state.pool);
     // Dictation is bound to the ask input that leaving Main hides — an
     // invisible session must not keep the microphone. (Its epoch also
@@ -1033,7 +1033,7 @@ pub fn run() {
             ask_close,
             ask_stop,
             ask_send_screen_only,
-            ask_current,
+            ask_runs,
             listen_start,
             listen_stop,
             listen_pause,
@@ -1190,26 +1190,27 @@ mod tests {
     }
 
     /// The composer's stop button plus the packet identity that keeps a
-    /// stream out of the wrong conversation: `ask_stop` cancels through
-    /// `AskService::abort` (the `ask_close` cancel minus the card
-    /// collapse) while session boundaries deliberately DON'T — a
-    /// detached run keeps writing to its own session. The emit fold
-    /// `run`-tags every `ask:*` packet (in-flight deliveries of a
-    /// killed run drop) and `send_chain` `session_id`-tags them (a
-    /// detached run's packets drop on any view that isn't showing that
-    /// session).
+    /// stream out of the wrong conversation: `ask_stop` cancels ONE
+    /// session's run through `AskService::stop` while session
+    /// boundaries deliberately DON'T — a detached run keeps writing to
+    /// its own session. The emit fold `run`-tags every `ask:*` packet
+    /// (in-flight deliveries of a killed run drop) and `send_chain`
+    /// `session_id`-tags them (a detached run's packets drop on any
+    /// view that isn't showing that session). `ask_runs` is the
+    /// per-session resync replacing the single-run `ask_current`.
     #[test]
     fn ask_stop_and_packet_tagging_are_in_the_contract() {
         let lib = include_str!("lib.rs");
         assert!(lib.contains(concat!("ask", "_stop,")));
+        assert!(lib.contains(concat!("ask", "_runs,")));
         let commands = include_str!("commands/ask.rs");
         assert!(commands.contains("pub(crate) fn ask_stop("));
-        assert!(commands.contains("state.ask.abort(&app)"));
+        assert!(commands.contains("state.ask.stop(&app, session_id)"));
+        assert!(commands.contains("pub(crate) fn ask_runs("));
         let sessions = include_str!("commands/sessions.rs");
-        assert!(!sessions.contains("state.ask.abort"));
+        assert!(!sessions.contains("state.ask.stop"));
         let ask = include_str!("ask/mod.rs");
-        assert!(ask.contains("pub fn abort(&self, app: &AppHandle)"));
-        assert!(ask.contains("self.abort(app)")); // `close` shares it
+        assert!(ask.contains("pub fn stop(&self, app: &AppHandle, session_id: i64)"));
         assert!(ask.contains("payload[\"run\"]"));
         let pipeline = include_str!("ask/pipeline.rs");
         assert!(pipeline.contains("payload[\"session_id\"]"));

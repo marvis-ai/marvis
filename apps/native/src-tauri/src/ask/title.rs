@@ -4,7 +4,7 @@ use super::*;
 /// `MemoryHook`: it owns the `Db` share and the `sessions:changed`
 /// emit because the spawned task outlives the run (the answering
 /// provider is only known at schedule time, so it's a `schedule`
-/// argument). Unlike the old awaited call, `abort` can't recall it —
+/// argument). Unlike the old awaited call, `stop` can't recall it —
 /// a "New chat" mid-title still names the ended session.
 pub(super) struct TitleSidecar {
     db: Arc<Db>,
@@ -47,7 +47,7 @@ impl TitleSidecar {
 /// the provider that answered — [title prompt, question] — under a
 /// total deadline (`stream_chat` bounds only the connect; a hung call
 /// would leak the task). No cancel arm — the task deliberately
-/// survives `abort`. Failure is silent: the row keeps its
+/// survives `stop`. Failure is silent: the row keeps its
 /// first-question fallback and the next send retries. Only the first
 /// `TITLE_QUESTION_CAP` scalars of `question` are sent. On a landed
 /// write, `titled` pings `sessions:changed` — an open history list

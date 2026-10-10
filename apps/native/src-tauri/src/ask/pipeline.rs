@@ -17,8 +17,18 @@ use super::title::*;
 #[derive(Default)]
 pub(crate) struct ChainOpts<'a> {
     pub text: &'a str,
+    /// The session this run writes into — pre-resolved by `kick` so the
+    /// run registers under it before spawning. `None` falls back to
+    /// resolving here from `fresh_session`/`listen_id` (the direct
+    /// `send_chain` tests' path).
+    pub session_id: Option<i64>,
+    /// Fallback-resolution input only (see `session_id`): the send
+    /// found the card closed, so the open ask session ends and a fresh
+    /// one mints.
     pub fresh_session: bool,
     pub regenerate: bool,
+    /// Fallback-resolution input AND meeting-context source: the doc
+    /// this send is bound to.
     pub listen_id: Option<i64>,
     pub language: &'a str,
     /// Resolved `instruct` preset text — appended to the system prompt.
@@ -78,7 +88,7 @@ pub(crate) struct ChainOpts<'a> {
 /// Exhausting the chain returns the last provider error, or
 /// [`LlmError::NoModel`] for an empty chain. Success returns right after
 /// `idle` — the title attempt runs detached, so its failure can't touch
-/// the answer and `abort` can't recall it; title usage is excluded from
+/// the answer and `stop` can't recall it; title usage is excluded from
 /// the reported turn usage.
 ///
 /// `regenerate` (ask_retry): the run re-asks the session's last user
@@ -102,6 +112,7 @@ pub(crate) async fn send_chain(
 ) -> Result<String, LlmError> {
     let ChainOpts {
         text,
+        session_id,
         fresh_session,
         regenerate,
         listen_id,
@@ -131,30 +142,14 @@ pub(crate) async fn send_chain(
     let attachments_root: PathBuf = attachments_root
         .map(Path::to_path_buf)
         .unwrap_or_else(crate::paths::attachments_dir);
-    // A send that arrived with the card closed is a new conversation:
-    // end the still-open ask session so get_or_create mints a fresh row.
-    // A linked send resolves its own session below instead.
-    if fresh_session && listen_id.is_none() {
-        if let Ok(Some(id)) = db.session_active_id("ask") {
-            if let Err(error) = db.session_end(id) {
-                log::warn!("ask: session_end before fresh send failed: {error}");
-            }
-        }
-    }
-    // Session resolution: a linked send lands in the listen doc's own
-    // ask session (`ask_session_for_listen` reopens it or mints one);
-    // a regenerate keeps the active session — its question IS that
-    // session's last user row; anything else is the open ask session.
-    let session_id = match (regenerate, listen_id) {
-        (false, Some(lid)) => match db.ask_session_for_listen(lid) {
-            Ok(id) => Some(id),
-            Err(error) => {
-                log::warn!("ask: linked session resolve failed: {error}");
-                None
-            }
-        },
-        _ => open_ask_session(db),
-    };
+    // The run's session — `kick` resolves it up-front (the busy gate
+    // registers the run under it before spawn); `None` resolves here
+    // instead, the direct-test path: `fresh_session` ends the open
+    // conversation, a linked send lands in the listen doc's own ask
+    // session, a regenerate keeps the active session — its question IS
+    // that session's last user row.
+    let session_id =
+        session_id.or_else(|| resolve_session(db, fresh_session, regenerate, listen_id));
     // Every emit past session resolution carries the run's session —
     // the webview drops packets bound to a conversation it isn't
     // showing: New Chat / resume leave the run streaming into ITS
@@ -407,7 +402,7 @@ pub(crate) async fn send_chain(
                 }
                 // The title sidecar is detached like the memory hook —
                 // `idle` already went out, the run never waits on it,
-                // and an `abort` after this point can't recall it (an
+                // and a `stop` after this point can't recall it (an
                 // ended session still gets named).
                 if let Some(sidecar) = title {
                     sidecar.schedule(

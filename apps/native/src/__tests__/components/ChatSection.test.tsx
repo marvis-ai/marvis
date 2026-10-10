@@ -54,16 +54,25 @@ mock.module('@tauri-apps/api/core', () => ({
         endActiveCalls += 1;
         activeSession = null;
         return Promise.resolve(true);
-      case 'ask_current':
-        return Promise.resolve({
-          state: currentState,
-          question: currentQuestion,
-          response: currentResponse,
-          error: null,
-          attachments: currentAttachments,
-          run: 1,
-          session_id: currentSessionId,
-        });
+      case 'ask_runs':
+        // `ask_runs` returns one entry per run — the mock plays ONE
+        // run whose session `currentSessionId` names (finished runs
+        // keep their entry until the next send supersedes it).
+        return Promise.resolve(
+          currentSessionId != null
+            ? [
+                {
+                  session_id: currentSessionId,
+                  run: 1,
+                  state: currentState,
+                  question: currentQuestion,
+                  response: currentResponse,
+                  error: null,
+                  attachments: currentAttachments,
+                },
+              ]
+            : [],
+        );
       case 'presets_list':
         return Promise.resolve([]);
       default:
@@ -189,7 +198,7 @@ test('a loading emit that beat the listener heals from the service fold on strea
 });
 
 test('an empty service fold never strips a row of its attachments', async () => {
-  // `ask_current` answers `[]` before the run's emit lands — that's
+  // `ask_runs` answers `[]` attachments before the run's emit lands — that's
   // "not yet known", not "none": the painted row keeps its own
   // attachments.
   sessionRows = [userRow()];
@@ -456,4 +465,92 @@ test('a regenerate folds in place — one pair, rejected reply dropped', async (
   expect(text).toContain('a2');
   expect(text).not.toContain('a1');
   expect(host.querySelectorAll('.rounded-br-sm')).toHaveLength(1);
+});
+
+test('a detached run with a NEWER generation does not freeze the visible stream', async () => {
+  // The multi-chat case: session 9's run (run 3) keeps streaming while
+  // the view sits on session 8's still-live run (run 2). A packet from
+  // the foreign run must drop on the session gate WITHOUT advancing
+  // the stale bound — if `liveRun` ran first, run 3 would poison it
+  // and every remaining run-2 packet would read as stale.
+  await act(async () => root.render(<ChatSection onBack={() => {}} />));
+  const emitState = listeners.get('ask:state')!;
+  const emitChunk = listeners.get('ask:chunk')!;
+  const emitDone = listeners.get('ask:done')!;
+
+  // The visible run on session 8 (this view's session, per the
+  // `session_list` mock's ACTIVE_SESSION... the test flips it below).
+  activeSession = { ...ACTIVE_SESSION, id: 8 };
+  await act(async () =>
+    emitState({
+      payload: { state: 'loading', question: 'q8', run: 2, session_id: 8 },
+    }),
+  );
+  await act(async () =>
+    emitChunk({ payload: { text: 'par', run: 2, session_id: 8 } }),
+  );
+  expect(host.textContent).toContain('par');
+
+  // The detached run's packets — loading re-emit, chunks, done —
+  // carry a NEWER generation but a foreign session.
+  await act(async () =>
+    emitState({
+      payload: {
+        state: 'loading',
+        question: 'q9',
+        run: 3,
+        session_id: 9,
+        attempt: 1,
+      },
+    }),
+  );
+  await act(async () =>
+    emitChunk({ payload: { text: 'foreign', run: 3, session_id: 9 } }),
+  );
+  await act(async () =>
+    emitDone({ payload: { full: 'foreign full', run: 3, session_id: 9 } }),
+  );
+
+  // The visible run's remaining packets — OLDER generation — must
+  // still fold: the bound belongs to this session's runs only.
+  await act(async () =>
+    emitChunk({ payload: { text: 'tial', run: 2, session_id: 8 } }),
+  );
+  await act(async () =>
+    emitDone({ payload: { full: 'partial', run: 2, session_id: 8 } }),
+  );
+
+  const text = host.textContent ?? '';
+  expect(text).toContain('partial');
+  expect(text).not.toContain('foreign');
+  expect(text).not.toContain('q9');
+});
+
+test('onSessionChange reports the viewed session for the composer busy check', async () => {
+  // The bar marks the composer busy only on THIS conversation's run —
+  // it can only know the session if the view reports it: the mounted
+  // session, the null of a fresh New Chat, and the minted session a
+  // send folds onto.
+  const seen: (number | null)[] = [];
+  await act(async () =>
+    root.render(
+      <ChatSection
+        onBack={() => {}}
+        onSessionChange={(s) => seen.push(s)}
+      />,
+    ),
+  );
+  expect(seen).toContain(7);
+
+  await act(async () => newChatButton().click());
+  expect(seen[seen.length - 1]).toBeNull();
+
+  activeSession = { ...ACTIVE_SESSION, id: 8 };
+  const emitState = listeners.get('ask:state')!;
+  await act(async () =>
+    emitState({
+      payload: { state: 'loading', question: 'q', run: 2, session_id: 8 },
+    }),
+  );
+  expect(seen[seen.length - 1]).toBe(8);
 });

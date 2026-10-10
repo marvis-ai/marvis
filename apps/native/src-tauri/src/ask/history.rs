@@ -57,6 +57,40 @@ pub(super) fn load_listen_context(db: &Db, listen_id: Option<i64>) -> String {
     }
 }
 
+/// Where this send's rows land — resolved by `kick` BEFORE the run
+/// registers (the busy gate keys on it), with `send_chain` keeping it
+/// as a fallback for direct tests. A `fresh` send (the card was
+/// closed) ends the still-open ask session so get_or_create mints a
+/// new one. `listen_id` binds to the listen doc's own ask session —
+/// one chat per doc, reopened or minted. A `regenerate` keeps the
+/// active session — its question IS that session's last user row.
+/// `None` means the lookup itself failed — the run still streams, it
+/// just has nowhere to persist.
+pub(super) fn resolve_session(
+    db: &Db,
+    fresh_session: bool,
+    regenerate: bool,
+    listen_id: Option<i64>,
+) -> Option<i64> {
+    if fresh_session && listen_id.is_none() {
+        if let Ok(Some(id)) = db.session_active_id("ask") {
+            if let Err(error) = db.session_end(id) {
+                log::warn!("ask: session_end before fresh send failed: {error}");
+            }
+        }
+    }
+    match (regenerate, listen_id) {
+        (false, Some(lid)) => match db.ask_session_for_listen(lid) {
+            Ok(id) => Some(id),
+            Err(error) => {
+                log::warn!("ask: linked session resolve failed: {error}");
+                None
+            }
+        },
+        _ => open_ask_session(db),
+    }
+}
+
 /// The active `ask` session id, or `None` when the lookup itself fails —
 /// history and the assistant row then have nowhere to go.
 pub(super) fn open_ask_session(db: &Db) -> Option<i64> {
@@ -216,4 +250,3 @@ pub(super) fn persist_assistant_message(
         log::warn!("ask: failed to persist assistant message: {e}");
     }
 }
-

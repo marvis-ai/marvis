@@ -4,7 +4,7 @@
  * mount, then the `ask:*` live protocol drives the in-flight run's tail.
  *
  * `ask:state{loading}` is a RUN boundary, not an append: it fires once
- * per run AND once per failover retry (and `ask_current` resyncs a live
+ * per run AND once per failover retry (and `ask_runs` resyncs a live
  * run whose user row is already persisted). The emit says WHICH it is
  * — `attempt`/`regenerate` on the payload — so `applyLoading` folds
  * without text-matching: retry/regenerate of the tail pair → reset its
@@ -26,8 +26,8 @@ import { Suspense, lazy, useEffect, useRef, useState } from 'react';
 import { convertFileSrc } from '@tauri-apps/api/core';
 import { CheckIcon, CopyIcon, MessageSquareTextIcon } from '@marvis/ui';
 import {
-  askCurrent,
   askRetry,
+  askRuns,
   sessionEndActive,
   sessionGet,
   sessionList,
@@ -80,7 +80,7 @@ interface AskStatePayload {
   /** The session the run writes into (pipeline's emit wrap) — a run
    *  survives its session being ended/switched, so packets bound to a
    *  conversation this view isn't showing drop (`sameSession`). */
-  session_id?: number;
+  session_id?: number | null;
   /** `loading` only — the 0-based failover index (ask.rs
    *  `make_loading`): `> 0` marks a retry re-emit WITHIN the run, so
    *  a same-text re-send (attempt 0 of a fresh run) appends a second
@@ -172,7 +172,7 @@ const applyLoading = (
     // The pair isn't painted — fall through and paint it.
   } else if (sameRun) {
     // A fresh run boundary whose pair the mount resync already
-    // painted (the emit was in the IPC pipe behind `ask_current`) —
+    // painted (the emit was in the IPC pipe behind `ask_runs`) —
     // merge its attachments onto the run's user row; never double
     // the pair.
     if (pairTail) {
@@ -242,8 +242,16 @@ const rowsToMsgs = (rows: Message[]): ChatMsg[] =>
 
 /** Show the active chat's saved and streaming messages, with interactive
  *  inline formatting for user text and Markdown for assistant replies.
- *  The header's Back action delegates to `onBack`. */
-export const ChatSection = ({ onBack }: { onBack: () => void }) => {
+ *  The header's Back action delegates to `onBack`; `onSessionChange`
+ *  reports the session this view is bound to so the composer can busy
+ *  only when THIS conversation's run is live. */
+export const ChatSection = ({
+  onBack,
+  onSessionChange,
+}: {
+  onBack: () => void;
+  onSessionChange?: (session: number | null) => void;
+}) => {
   const [msgs, setMsgs] = useState<ChatMsg[]>([]);
   const [phase, setPhase] = useState<AskPhase>('idle');
   const [error, setError] = useState<{
@@ -263,17 +271,22 @@ export const ChatSection = ({ onBack }: { onBack: () => void }) => {
   /** Chunks landing while a `loading` refetch is in flight — the send
    *  may have switched sessions, so they buffer until `applyLoading`
    *  commits rather than appending onto the stale list's tail (the
-   *  previous reply's row would keep them permanently). */
-  const chunkBufRef = useRef<string | null>(null);
+   *  previous reply's row would keep them permanently). Keyed BY run:
+   *  two sessions' runs fold concurrently, and one `loading` must not
+   *  re-arm (clobber) the other's buffer. */
+  const chunkBufRef = useRef(new Map<number, string>());
   /** `run` generations retired by a terminal `idle` — a finished run's
    *  own, or `abort`'s emit on the composer's stop (it tags `idle`
    *  with the killed gen). A retired run's packets already in the IPC
    *  pipe can't be recalled — they drop here instead of painting
    *  post-mortem. */
   const deadRunsRef = useRef(new Set<number>());
-  /** Newest `run` generation seen — they only move forward, so a
-   *  packet OLDER than it is stale by definition (`deadRuns` only
-   *  remembers retirements witnessed by THIS mount). */
+  /** Newest `run` generation seen ON THIS SESSION — they only move
+   *  forward, so a packet OLDER than it is stale by definition
+   *  (`deadRuns` only remembers retirements witnessed by THIS mount).
+   *  Scoped to the viewed session by checking `sameSession` first — a
+   *  detached run's NEWER generation must not poison the bound
+   *  against the visible run's older packets. */
   const runRef = useRef<number | null>(null);
   /** The run the painted tail pair belongs to — `loading` compares
    *  the emit's `run` against this to tell "the pair is already
@@ -298,12 +311,21 @@ export const ChatSection = ({ onBack }: { onBack: () => void }) => {
    *  never kill the stream, so a detached run keeps emitting into its
    *  own session and its `session_id`-tagged packets must drop here
    *  rather than paint into the wrong conversation. Sessionless
-   *  packets (the service's own emits) pass. */
-  const sameSession = (sid: number | undefined): boolean =>
+   *  packets (the service's own emits) pass. Checked BEFORE `liveRun`
+   *  so a foreign run's newer generation can't advance the stale
+   *  bound and freeze the visible run's older-generation packets. */
+  const sameSession = (sid: number | null | undefined): boolean =>
     sid == null || sid === sessionRef.current;
 
+  /** Bind the view to a session and report it up — the composer
+   *  marks itself busy only when THIS conversation's run is live. */
+  const setSession = (id: number | null) => {
+    sessionRef.current = id;
+    onSessionChange?.(id);
+  };
+
   // Mount resync: active `ask` session → persisted history; then
-  // `ask_current` folds an in-flight run's tail on top. Best-effort —
+  // `ask_runs` folds an in-flight run's tail on top. Best-effort —
   // live events drive the card even if the reads fail.
   useEffect(() => {
     let cancelled = false;
@@ -316,25 +338,29 @@ export const ChatSection = ({ onBack }: { onBack: () => void }) => {
         if (active) {
           const rows = await sessionGet(active.id);
           if (!cancelled) {
-            sessionRef.current = active.id;
+            setSession(active.id);
             setMsgs(rowsToMsgs(rows));
           }
+        } else if (!cancelled) {
+          setSession(null);
         }
-        const cur = await askCurrent();
+        const runs = await askRuns();
+        // This view's own run — a detached run (its session was ended,
+        // or another was resumed) keeps streaming into its own rows
+        // and must not paint its tail here; the sessionless orphan
+        // only ever carries a pre-flight error.
+        const cur = runs.find(
+          (r) => r.session_id != null && r.session_id === sessionRef.current,
+        );
+        const orphan = runs.find(
+          (r) => r.session_id == null && r.error != null,
+        );
         // Seed the stale bound — a mid-stream mount then "New chat"
         // must still recognize the live run's packets as current.
-        if (!cancelled && cur.run != null) {
+        if (!cancelled && cur?.run != null) {
           runRef.current = cur.run;
         }
-        // The live tail folds onto this view only when the run's
-        // session IS the one being shown — a detached run (its session
-        // was ended, or another was resumed) keeps streaming into its
-        // own rows and must not paint its partial reply here.
-        if (
-          !cancelled &&
-          cur.state !== 'idle' &&
-          (cur.session_id == null || cur.session_id === sessionRef.current)
-        ) {
+        if (!cancelled && cur != null && cur.state !== 'idle') {
           // The painted tail belongs to the live run — tag it so the
           // run's `loading` emit (in the IPC pipe behind this resync)
           // re-attaches instead of appending a second pair.
@@ -355,11 +381,13 @@ export const ChatSection = ({ onBack }: { onBack: () => void }) => {
         }
         // A pre-flight error's loading→error→idle completes before this
         // mount — `state` is already `idle`, so the error resyncs on its
-        // own (same fold as the live `ask:error` listener).
-        if (!cancelled && cur.error) {
+        // own (same fold as the live `ask:error` listener). It can ride
+        // this session's finished run or the sessionless orphan.
+        const lastError = cur?.error ?? orphan?.error;
+        if (!cancelled && lastError) {
           setError({
-            message: cur.error.message,
-            needsSetup: cur.error.needs_setup === true,
+            message: lastError.message,
+            needsSetup: lastError.needs_setup === true,
           });
         }
       } catch {
@@ -377,13 +405,19 @@ export const ChatSection = ({ onBack }: { onBack: () => void }) => {
   const presets = usePresets();
 
   useTauriEvent<AskStatePayload>(EV_ASK_STATE, (p) => {
-    if (!liveRun(p.run)) return;
     if (p.state === 'loading') {
-      // Chunks arriving before the fold commits buffer until it does —
-      // arming now is safe even for a packet that turns out detached:
-      // the fold drops them together at commit.
-      chunkBufRef.current = '';
+      // A retired run's re-emit (a failover `loading` still in the
+      // pipe when its `idle` landed) drops at the top. `liveRun` does
+      // NOT run here: a detached session's NEWER generation must not
+      // advance the stale bound against the visible run's older
+      // packets — the session check belongs after the refetch, and
+      // the bound advance happens there.
+      if (p.run != null && deadRunsRef.current.has(p.run)) return;
+      // Chunks arriving before the fold commits buffer under THEIR
+      // run until it does — arming now is safe even for a packet that
+      // turns out detached: the fold drops them together at commit.
       const run = p.run;
+      if (run != null) chunkBufRef.current.set(run, '');
       void (async () => {
         let base: ChatMsg[] | null = null;
         try {
@@ -396,21 +430,22 @@ export const ChatSection = ({ onBack }: { onBack: () => void }) => {
             (s) => s.kind === 'ask' && s.ended_at === null,
           );
           if (active && active.id !== sessionRef.current) {
-            sessionRef.current = active.id;
+            setSession(active.id);
             base = rowsToMsgs(await sessionGet(active.id));
           }
         } catch {
           /* resync is best-effort — the fold below still applies */
         }
-        const buffered = chunkBufRef.current ?? '';
-        chunkBufRef.current = null;
-        // Commit gates, re-checked after the async gap: a terminal
-        // `idle` may have retired the run mid-refetch (stop), and the
-        // emit's `session_id` — compared against the JUST-refetched
-        // session — tells whether this run belongs to the conversation
-        // being shown. A detached run's `loading` must not paint its
-        // pair into another chat.
-        if (!liveRun(run) || !sameSession(p.session_id)) return;
+        const buffered = (run != null && chunkBufRef.current.get(run)) || '';
+        if (run != null) chunkBufRef.current.delete(run);
+        // Commit gates, re-checked after the async gap — session FIRST
+        // (the emit's `session_id` against the JUST-refetched session
+        // tells whether this run belongs to the conversation being
+        // shown), then the stale bound: a terminal `idle` may have
+        // retired the run mid-refetch (stop), and a detached run's
+        // `loading` must neither paint its pair into another chat nor
+        // poison the bound.
+        if (!sameSession(p.session_id) || !liveRun(run)) return;
         setError(null);
         pinnedRef.current = true;
         // Read the pre-fold tail run BEFORE retagging — the boundary
@@ -438,20 +473,21 @@ export const ChatSection = ({ onBack }: { onBack: () => void }) => {
       return;
     }
     // `streaming`/`idle` — a detached run's state packets drop on the
-    // session gate; sessionless service emits pass.
-    if (!sameSession(p.session_id)) return;
+    // session gate BEFORE touching the stale bound; sessionless
+    // service emits pass.
+    if (!sameSession(p.session_id) || !liveRun(p.run)) return;
     // `loading` emits once — a send that opens the card mounts this
     // listener while the ~1s capture runs, so the emit can beat it
     // (a mount-resync that races the attachment persist then paints
     // the user row bare). The service-side fold always has the run's
     // attachments by now — merge them onto the painted row, matched
     // to the run's question so a same-text earlier row stays put.
-    void askCurrent()
-      .then((cur) => {
-        if (cur.session_id != null && cur.session_id !== sessionRef.current) {
-          return;
-        }
-        if (cur.attachments.length === 0) return;
+    void askRuns()
+      .then((runs) => {
+        const cur = runs.find(
+          (r) => r.session_id != null && r.session_id === sessionRef.current,
+        );
+        if (cur == null || cur.attachments.length === 0) return;
         setMsgs((prev) => {
           let idx = -1;
           for (let i = prev.length - 1; i >= 0; i--) {
@@ -478,29 +514,34 @@ export const ChatSection = ({ onBack }: { onBack: () => void }) => {
     }
     setPhase(p.state);
   });
-  useTauriEvent<{ text: string; run?: number; session_id?: number }>(
-    EV_ASK_CHUNK,
-    (p) => {
-      if (!liveRun(p.run)) return;
-      if (chunkBufRef.current !== null) {
-        // A `loading` fold owns the session decision — buffer until it
-        // commits or drops them together.
-        chunkBufRef.current += p.text;
-        return;
-      }
-      if (!sameSession(p.session_id)) return;
-      setMsgs((prev) => appendTail(prev, p.text));
-    },
-  );
+  useTauriEvent<{
+    text: string;
+    run?: number;
+    session_id?: number | null;
+  }>(EV_ASK_CHUNK, (p) => {
+    if (p.run != null && chunkBufRef.current.has(p.run)) {
+      // A `loading` fold owns the session decision — buffer under the
+      // chunk's own run until its fold commits or drops it.
+      chunkBufRef.current.set(
+        p.run,
+        (chunkBufRef.current.get(p.run) ?? '') + p.text,
+      );
+      return;
+    }
+    // Session gate first — a detached run's newer generation must not
+    // advance the stale bound against the visible run's packets.
+    if (!sameSession(p.session_id) || !liveRun(p.run)) return;
+    setMsgs((prev) => appendTail(prev, p.text));
+  });
   useTauriEvent<{
     full: string;
     provider?: string;
     model?: string;
     usage?: { input?: number | null; output?: number | null } | null;
     run?: number;
-    session_id?: number;
+    session_id?: number | null;
   }>(EV_ASK_DONE, (p) => {
-    if (!liveRun(p.run) || !sameSession(p.session_id)) return;
+    if (!sameSession(p.session_id) || !liveRun(p.run)) return;
     // `full` is authoritative — covers a dropped/duplicated chunk;
     // provider/model/usage name who ACTUALLY answered under failover.
     setMsgs((prev) =>
@@ -517,9 +558,9 @@ export const ChatSection = ({ onBack }: { onBack: () => void }) => {
     message: string;
     needs_setup?: boolean;
     run?: number;
-    session_id?: number;
+    session_id?: number | null;
   }>(EV_ASK_ERROR, (p) => {
-    if (!liveRun(p.run) || !sameSession(p.session_id)) return;
+    if (!sameSession(p.session_id) || !liveRun(p.run)) return;
     setError({ message: p.message, needsSetup: p.needs_setup === true });
   });
 
@@ -548,7 +589,7 @@ export const ChatSection = ({ onBack }: { onBack: () => void }) => {
     // still covers older strays).
     tailRunRef.current = null;
     void sessionEndActive('ask').catch(() => {});
-    sessionRef.current = null;
+    setSession(null);
     setMsgs([]);
     setError(null);
     setPhase('idle');

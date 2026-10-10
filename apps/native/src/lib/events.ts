@@ -11,12 +11,13 @@ export const EV_APP_STATE = 'app:state';
 /** Broadcast after every keystore mutation; payload = `KeystoreStatus`. */
 export const EV_KEYSTORE_CHANGED = 'keystore:changed';
 /** Ask stream protocol (ask.rs), emitted to the `bar` window only.
- *  Every `ask:*` packet carries `run` — the run's generation, retired
- *  on the terminal `idle` (a finished or `ask_stop`-killed run's
- *  in-flight deliveries drop) — and, past session resolution,
- *  `session_id` — the conversation the run writes into: New Chat /
- *  resume never kill it, so a detached run's packets drop on a view
- *  showing a different session. */
+ *  Runs are per-session and concurrent — every `ask:*` packet carries
+ *  `run` (the run's generation, retired on the terminal `idle`: a
+ *  finished or `ask_stop`-killed run's in-flight deliveries drop)
+ *  and, past session resolution, `session_id` — the conversation the
+ *  run writes into: New Chat / resume never kill it, so a detached
+ *  run's packets drop on a view showing a different session, and the
+ *  composer busies only on ITS conversation's run. */
 // `loading` also carries `question` — the run's submitted text — plus
 // `attachments` (MessageAttachment[]) when the user turn has images,
 // and the run-boundary fields the chat folds on: `attempt` (0-based

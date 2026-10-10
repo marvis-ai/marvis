@@ -11,7 +11,9 @@ use crate::*;
 /// for this send. `presetLang` (optional) is the `{lang}` param
 /// badge's edited value — `None` resolves `{lang}` to the configured
 /// main language. `attachments` (optional) carries the composer's
-/// normalized JPEGs (`{ name, jpegBase64 }`).
+/// normalized JPEGs (`{ name, jpegBase64 }`). Returns `false` only when
+/// the target session's own run is still live and the send was refused
+/// — the composer keeps the draft so a refused send loses nothing.
 #[tauri::command]
 pub(crate) fn ask_send(
     app: AppHandle,
@@ -21,14 +23,14 @@ pub(crate) fn ask_send(
     preset_id: Option<String>,
     preset_lang: Option<String>,
     attachments: Option<Vec<ask::AskAttachmentInput>>,
-) {
+) -> bool {
     let state = app.state::<AppState>();
     // Crafted-invoke guard: the shipped UI gates sends behind `Main`,
     // but a crafted invoke during onboarding would otherwise proceed —
     // DB writes, network, and emits to a window that doesn't exist yet.
     if *state.gate.lock() != Gate::Main {
         log::warn!("ask_send dropped while gate != Main");
-        return;
+        return false;
     }
     state.ask.send(
         &app,
@@ -39,7 +41,7 @@ pub(crate) fn ask_send(
         preset_id,
         preset_lang,
         attachments.unwrap_or_default(),
-    );
+    )
 }
 
 /// Regenerate the last answer — re-runs the active session's last user
@@ -54,20 +56,21 @@ pub(crate) fn ask_retry(app: AppHandle) {
     state.ask.retry(&app, &state.deps());
 }
 
-/// Cancel the in-flight stream and collapse the card.
+/// Collapse the card. Deliberately does NOT cancel anything — a run
+/// keeps streaming into its own session (stop is `ask_stop`'s job).
 #[tauri::command]
 pub(crate) fn ask_close(app: AppHandle) {
     let state = app.state::<AppState>();
     state.ask.close(&app, &state.pool);
 }
 
-/// The composer's stop button: cancel the in-flight run WITHOUT
-/// collapsing the card (`ask_close` is this plus the collapse). No
-/// gate guard — cancelling a run is safe and idempotent anywhere.
+/// The composer's stop button: cancel ONE session's in-flight run —
+/// other sessions' runs stream on untouched. No gate guard —
+/// cancelling a run is safe and idempotent anywhere.
 #[tauri::command]
-pub(crate) fn ask_stop(app: AppHandle) {
+pub(crate) fn ask_stop(app: AppHandle, session_id: i64) {
     let state = app.state::<AppState>();
-    state.ask.abort(&app);
+    state.ask.stop(&app, session_id);
 }
 
 /// The bar's camera affordance — a screen-only ask (fixed prompt,
@@ -82,12 +85,13 @@ pub(crate) fn ask_send_screen_only(app: AppHandle) {
     state.ask.send_screen_only(&app, &state.deps());
 }
 
-/// `{"state": "idle"|"loading"|"streaming", "question": ..., "response":
-/// ..., "error": {...}|null}` — the live tail a re-expanded chat
-/// resyncs from (the persisted session already carries every completed
-/// turn); `error` re-delivers the last `ask:error`, which can fire
-/// before the webview's `listen()` is up (cold-open pre-flight errors).
+/// Every run's snapshot — `[{session_id, run, state, question,
+/// response, error, attachments}]` — the live tails a re-mounted chat
+/// or activity mirror resyncs from (the persisted session already
+/// carries every completed turn). `error` re-delivers the last
+/// `ask:error`, which can fire before the webview's `listen()` is up;
+/// a `null` session_id entry is the sessionless pre-flight orphan.
 #[tauri::command]
-pub(crate) fn ask_current(state: State<'_, AppState>) -> serde_json::Value {
-    state.ask.current_payload()
+pub(crate) fn ask_runs(state: State<'_, AppState>) -> serde_json::Value {
+    json!(state.ask.runs_payload())
 }

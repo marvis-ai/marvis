@@ -36,7 +36,7 @@ import { EmptyState } from '@/components/shared/EmptyState';
 
 /** List chats and meetings, refreshing on session activity and title changes.
  *  Chat rows resume before navigation — resuming a session whose run is
- *  still live re-attaches its stream via `ask_current` (the run keeps
+ *  still live re-attaches its stream via `ask_runs` (the run keeps
  *  writing to it; ending a session never kills the stream).
  *  Failed list, resume, or delete requests leave the current view in place. */
 export const HistorySection = ({

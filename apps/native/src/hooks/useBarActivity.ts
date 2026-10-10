@@ -6,7 +6,7 @@
  * is separate: `useDictation` owns it.
  */
 import { useEffect, useState } from 'react';
-import { askCurrent, captureStatus, listenStatus } from '@/lib/commands';
+import { askRuns, captureStatus, listenStatus } from '@/lib/commands';
 import {
   EV_ASK_STATE,
   EV_CAPTURE_STATE,
@@ -30,9 +30,11 @@ export const useBarActivity = () => {
    *  primary-display path. */
   const [captureTarget, setCaptureTarget] =
     useState<CaptureStatePayload['target']>(null);
-  /** Local mirror of `ask:state` so loading/streaming count as active
-   *  work for the bar pulse. */
-  const [askState, setAskState] = useState<AskActivity>('idle');
+  /** Per-session mirror of `ask:state` — runs are concurrent, so a
+   *  backgrounded session's stream must not mark the composer of the
+   *  conversation in front of the user busy. `askRuns` is the per-
+   *  session map; `askLive` is the any-run-live pulse feed. */
+  const [runs, setRuns] = useState<Record<number, AskActivity>>({});
 
   useEffect(() => {
     void listenStatus()
@@ -55,10 +57,18 @@ export const useBarActivity = () => {
         setCaptureTarget(next.target);
       })
       .catch(() => {});
-    // Same resync for the ask tail — an `ask:state` emit that raced
-    // this webview's listener would otherwise leave the pulse stale.
-    void askCurrent()
-      .then((next) => setAskState(next.state))
+    // Same resync for the ask runs — an `ask:state` emit that raced
+    // this webview's listener would otherwise leave the map stale.
+    void askRuns()
+      .then((next) => {
+        setRuns(
+          Object.fromEntries(
+            next
+              .filter((r) => r.session_id != null)
+              .map((r) => [r.session_id as number, r.state]),
+          ),
+        );
+      })
       .catch(() => {});
   }, []);
 
@@ -89,13 +99,19 @@ export const useBarActivity = () => {
     setCaptureTarget(p.target);
   });
   // A send while in listen mode reasserts chat (`loading` = a run);
-  // every snapshot feeds the active-work pulse.
-  useTauriEvent<{ state: AskActivity }>(EV_ASK_STATE, (p) => {
-    setAskState(p.state);
-    if (p.state === 'loading') {
-      setListenWanted(false);
-    }
-  });
+  // every session's snapshot feeds both its map entry and the pulse.
+  useTauriEvent<{ state: AskActivity; session_id?: number | null }>(
+    EV_ASK_STATE,
+    (p) => {
+      if (p.session_id != null) {
+        const sid = p.session_id;
+        setRuns((prev) => ({ ...prev, [sid]: p.state }));
+      }
+      if (p.state === 'loading') {
+        setListenWanted(false);
+      }
+    },
+  );
 
   return {
     listenWanted,
@@ -106,6 +122,11 @@ export const useBarActivity = () => {
     setCaptureRunning,
     captureTarget,
     setCaptureTarget,
-    askState,
+    /** Session → live state for every run the mirror has seen. */
+    askRuns: runs,
+    /** Whether any session has a live run — the pulse's ask side. */
+    askLive: Object.values(runs).some((s) => s !== 'idle')
+      ? ('streaming' as AskActivity)
+      : ('idle' as AskActivity),
   };
 };

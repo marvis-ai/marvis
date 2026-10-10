@@ -1,6 +1,6 @@
 # Session Compaction — Design
 
-Date: 2026-10-10  
+Date: 2026-10-10<br>
 Scope: `apps/native` — Rust core, existing SQLite store, Ask pipeline.
 
 ## Context
@@ -65,7 +65,7 @@ dies with the row, so no separate table:
 
 ```sql
 ALTER TABLE sessions ADD COLUMN compact TEXT;          -- the digest body
-ALTER TABLE sessions ADD COLUMN compact_through INTEGER; -- last covered messages.id
+ALTER TABLE sessions ADD COLUMN compact_through INTEGER; -- last rendered source messages.id
 ```
 
 Fresh databases get both columns inline in `SCHEMA`; `migrate` ALTERs existing
@@ -76,10 +76,11 @@ touching the digest (regenerate invalidates explicitly instead).
 `Session` gains `compact: Option<String>` and `compact_through: Option<i64>`.
 Db accessors follow the existing `storage/sessions.rs` style:
 
-- `session_compaction(sid) -> (Option<String>, Option<i64>)` — digest + watermark.
+- `session_compaction(sid) -> Option<(Option<String>, Option<i64>)>` — digest + watermark for an existing session; `None` means the session was deleted.
 - `session_compact_write(sid, expected_through, text, new_through)` —
   compare-and-set: writes only when the stored watermark still equals
-  `expected_through`; returns whether it wrote.
+  `expected_through`; `new_through` is the last rendered source row id, and
+  the method returns whether it wrote.
 - `session_compact_clear(sid)` — NULLs both columns (regenerate
   invalidation).
 
@@ -94,8 +95,13 @@ of `dropped` reaches a batch:
 uncovered = dropped rows with id > compact_through   (all dropped rows when
                                                       no digest exists)
 due       = uncovered.count() >= COMPACT_BATCH        -- 10
-watermark = dropped.last().id                         -- covers everything dropped
+render    = oldest uncovered rows that fit the bounded <new_messages> block
+watermark = id of the last source row actually rendered
 ```
+
+Rows that do not fit the input byte bound remain uncovered and are eligible for
+another plan; the watermark never advances past source rows supplied to the
+provider.
 
 Constants: `COMPACT_BATCH = 10`, `MAX_COMPACT_CHARS = 2_000`. First compaction
 lands around message ~30 covering ~10 rows; each later batch re-digests
@@ -105,7 +111,9 @@ never compacts — zero extra calls.
 ### Injection
 
 `send_chain` reads `session_compaction` once per run beside the existing
-`memory_profile` load; a storage hiccup degrades to `None`. The text reaches
+`memory_profile` load; a storage hiccup or a deleted session degrades to
+`None`. The raw stored digest remains available for detached CAS comparison,
+but prompt construction passes only its first 2,000 Unicode scalar values to
 `build_messages` → `live_system_prompt_with_profile`, which gains a `compact`
 parameter and appends the block LAST, after `<user_profile>`, with the same
 untrusted-data treatment:
@@ -134,14 +142,10 @@ On `CandidateOutcome::Done`, after the memory hook and before/after the title
 sidecar (order between the two detached jobs is irrelevant):
 
 ```rust
-if let Some(hook) = compact {
+if let (Some(hook), Some(plan)) = (compact, compaction_plan) {
     hook.maybe_schedule(
-        Arc::clone(&cand.provider),  // the answering provider — TitleSidecar pattern
-        session_id,
-        expected_through,            // watermark read at run start
-        previous_digest,             // chained into the new summary
-        source_rows,                 // the uncovered dropped rows
-        new_watermark,
+        Arc::clone(&cand.provider), // the answering provider
+        plan,                       // owned uncovered source rows + CAS snapshot
     );
 }
 ```
@@ -149,17 +153,21 @@ if let Some(hook) = compact {
 `CompactService` mirrors `MemoryService`: a `tokio::sync::Mutex` serializes
 jobs (sessions run serially per the `claim` gate, but a job can outlive its
 run and overlap the next send's job). Inside the gate the job re-reads
-`session_compaction`; if the stored watermark no longer equals
-`expected_through` — a regenerate cleared it, or a sibling job already covered
-the range — it discards its result. Otherwise it calls
-`provider.stream_chat` with a no-op token callback and CAS-writes the digest.
+`session_compaction`; if the session is missing, or the stored watermark or
+raw digest no longer equals the plan's CAS snapshot — a regenerate cleared it,
+or a sibling job already covered the range — it discards the job before any
+provider request. Otherwise it renders the bounded rows, calls
+`provider.stream_chat` with a no-op token callback, and CAS-writes the digest
+with the id of the last source row actually rendered. A row omitted by the
+input byte bound remains uncovered for a later plan.
 
 The job is spawned after `ask:done`/`idle` emit — the visible answer never
 waits on it, and a `stop` cannot recall it.
 
 ### Compaction prompt
 
-Externalized in `src-tauri/prompts/marvis-compaction.md` via `include_str!`,
+Externalized in `src-tauri/prompts/marvis-compaction.md`, embedded from
+`src/ask/compact.rs` with `include_str!("../../prompts/marvis-compaction.md")`,
 matching `marvis-extraction.md`. The system prompt instructs: produce a
 continuity digest of the conversation — the task/goal, decisions made and
 their rationale, established facts and constraints, corrections that
@@ -171,10 +179,13 @@ The user message carries `<previous_summary>` (when a digest exists — the
 `summary_context` chaining pattern) and `<new_messages>`, the uncovered rows
 rendered `role: content`, one per line:
 
-- user rows append `[attached image: name]` markers for each attachment so
-  references to earlier images stay resolvable;
-- each row is capped at 1,000 chars and the block at ~32,000 UTF-8 bytes —
-  enough for a batch without letting a pasted giant dominate the call.
+- user rows append sanitized `[attached image: name]` markers for each
+  attachment so references to earlier images stay resolvable; control
+  characters/newlines and `[]<>` structural delimiters are removed from names,
+  and each name contribution is capped;
+- each complete rendered row is capped at 1,000 Unicode scalar values and the
+  block at 32,000 UTF-8 bytes — enough for a batch without letting a pasted
+  giant dominate the call. Rows that do not fit remain uncovered.
 
 The reply is plain text: trimmed, must be non-empty, and hard-capped at
 `MAX_COMPACT_CHARS` on a char boundary before the CAS write. Empty or failed
@@ -241,9 +252,11 @@ for a kill switch it is a small follow-up.
 - `sessions` migration: fresh schema has both columns; an existing database
   gains them via ALTER without data loss.
 - `session_compaction`/`session_compact_write`/`session_compact_clear`:
-  read-empty, CAS success, CAS failure on watermark mismatch, clear.
+  existing-vs-missing session distinction, read-empty, CAS success, CAS failure
+  on watermark mismatch, clear.
 - Watermark/trigger math: no digest below threshold, first compaction covers
-  the whole dropped prefix, refresh covers only newly uncovered rows.
+  the eligible rendered prefix, refresh covers only newly uncovered rows, and
+  a later plan selects rows omitted by the 32,000-byte bound.
 - Regenerate: deleting rows beyond the watermark leaves the digest; deleting
   rows inside it clears both columns.
 - Prompt: `previous_summary` chaining, attachment markers, per-row and total
@@ -251,8 +264,10 @@ for a kill switch it is a small follow-up.
 - `build_messages`/`live_system_prompt_with_profile`: block present only
   with a digest, ordered after `<user_profile>`, absent-profile sessions
   byte-identical to before.
-- Job serialization: a second scheduled job observes the first job's write
-  and skips; a job chaining a cleared watermark discards its result.
+- Job serialization: barrier-controlled provider jobs sharing one service
+  serialize across provider awaits; a second scheduled job observes the first
+  job's write and skips, and a job whose watermark is cleared while blocked
+  discards its result.
 - Provider failure leaves the stored digest unchanged.
 
 ### Verification commands

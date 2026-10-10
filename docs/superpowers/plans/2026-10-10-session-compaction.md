@@ -67,7 +67,7 @@ impl Db {
     pub fn session_compaction(
         &self,
         session_id: i64,
-    ) -> anyhow::Result<(Option<String>, Option<i64>)>;
+    ) -> anyhow::Result<Option<(Option<String>, Option<i64>)>>;
 
     pub fn session_compact_write(
         &self,
@@ -98,13 +98,13 @@ fn session_compaction_roundtrips_and_uses_watermark_cas() {
     let db = Db::at(dir.join("marvis.db")).unwrap();
     let sid = db.session_get_or_create_active("ask").unwrap();
 
-    assert_eq!(db.session_compaction(sid).unwrap(), (None, None));
+    assert_eq!(db.session_compaction(sid).unwrap(), Some((None, None)));
     assert!(db
         .session_compact_write(sid, None, "first digest", 10)
         .unwrap());
     assert_eq!(
         db.session_compaction(sid).unwrap(),
-        (Some("first digest".to_string()), Some(10))
+        Some((Some("first digest".to_string()), Some(10)))
     );
     assert!(!db
         .session_compact_write(sid, None, "stale digest", 20)
@@ -114,18 +114,20 @@ fn session_compaction_roundtrips_and_uses_watermark_cas() {
         .unwrap());
     assert_eq!(
         db.session_compaction(sid).unwrap(),
-        (Some("second digest".to_string()), Some(20))
+        Some((Some("second digest".to_string()), Some(20)))
     );
 
     db.session_compact_clear(sid).unwrap();
-    assert_eq!(db.session_compaction(sid).unwrap(), (None, None));
+    assert_eq!(db.session_compaction(sid).unwrap(), Some((None, None)));
     let _ = std::fs::remove_dir_all(&dir);
 }
 ```
 
-Also assert that `session_compact_write` returns `false` for a missing session,
-and that clearing a missing session is a successful no-op, matching the
-existing first-wins/session-id accessors' non-panicking behavior.
+Also assert that `session_compaction` returns `None` for a missing session,
+that `session_compact_write` returns `false` for it, and that clearing a missing
+session is a successful no-op. An existing session with no digest returns
+`Some((None, None))`, so a detached job can distinguish deletion before it
+contacts the provider.
 
 - [ ] **Step 2: Run the focused storage tests and verify they fail for the missing columns/accessors.**
 
@@ -177,9 +179,9 @@ existing title fallback and ordering.
 
 - [ ] **Step 5: Implement the three storage accessors with NULL-safe CAS.**
 
-`session_compaction` should return `(None, None)` when the session id does not
-exist, just as `session_audio_file` returns `None` for a missing row. The query
-is:
+`session_compaction` should return `None` when the session id does not exist,
+while an existing session with no digest returns `Some((None, None))`, so the
+compaction service can abort before a provider request. The query is:
 
 ```sql
 SELECT compact, compact_through FROM sessions WHERE id = ?1
@@ -206,9 +208,12 @@ Use the existing `V1_SCHEMA` fixture to create a pre-compaction database,
 insert an Ask session/message, open it through `Db::at`, and assert that:
 
 ```rust
-assert_eq!(db.session_compaction(1).unwrap(), (None, None));
+assert_eq!(db.session_compaction(1).unwrap(), Some((None, None)));
 assert!(db.session_compact_write(1, None, "legacy-safe", 1).unwrap());
-assert_eq!(db.session_compaction(1).unwrap().0.as_deref(), Some("legacy-safe"));
+assert_eq!(
+    db.session_compaction(1).unwrap().unwrap().0.as_deref(),
+    Some("legacy-safe")
+);
 assert_eq!(db.messages_for(1).unwrap()[0].content, "old question");
 ```
 
@@ -249,7 +254,6 @@ pub(crate) struct CompactionPlan {
     pub(crate) expected_through: Option<i64>,
     pub(crate) previous: Option<String>,
     pub(crate) source_rows: Vec<Message>,
-    pub(crate) new_through: i64,
 }
 
 pub(crate) fn compaction_plan(
@@ -300,7 +304,6 @@ fn compaction_plan_waits_until_ten_rows_are_outside_history_tail() {
     let plan = compaction_plan(7, &rows, None, None).unwrap();
     assert_eq!(plan.session_id, 7);
     assert_eq!(plan.expected_through, None);
-    assert_eq!(plan.new_through, 10);
     assert_eq!(plan.source_rows.len(), 10);
 }
 
@@ -316,7 +319,6 @@ fn compaction_plan_only_sends_rows_after_the_stored_watermark() {
     .unwrap();
     assert_eq!(plan.previous.as_deref(), Some("old digest"));
     assert_eq!(plan.expected_through, Some(10));
-    assert_eq!(plan.new_through, 20);
     assert_eq!(plan.source_rows.first().unwrap().id, 11);
     assert_eq!(plan.source_rows.last().unwrap().id, 20);
 }
@@ -352,10 +354,11 @@ const COMPACT_TIMEOUT: Duration = Duration::from_secs(30);
 ```
 
 Implement `compaction_plan` in `ask/compact.rs`. It must preserve the digest
-string and expected watermark in the returned plan, set `new_through` to the
-last dropped row's id, and copy only the uncovered `Message` rows. Never create
-a plan for a session with no dropped rows or with fewer than ten uncovered
-rows.
+string and expected watermark in the returned plan and copy only the uncovered
+`Message` rows. The plan does not choose the write watermark: the bounded row
+renderer returns the id of the last source row actually represented, and the
+service writes that id. Never create a plan for a session with no dropped rows
+or with fewer than ten uncovered rows.
 
 - [ ] **Step 4: Add the compaction system prompt with an explicit output contract.**
 
@@ -386,17 +389,20 @@ In `compact.rs`, embed it with:
 
 ```rust
 const COMPACTION_SYSTEM_PROMPT: &str =
-    include_str!("../prompts/marvis-compaction.md");
+    include_str!("../../prompts/marvis-compaction.md");
 ```
 
 - [ ] **Step 5: Implement bounded source rendering and reply normalization.**
 
-Render each source row as `role: content`, taking at most
-`MAX_COMPACT_ROW_CHARS` Unicode scalar values from `content`. For every
-attachment on the row, append `[attached image: {name}]` using the display
-name only. Build lines oldest-first and stop before the total UTF-8 block would
-exceed `MAX_COMPACT_INPUT_BYTES`; always preserve at least the first row when
-one exists by truncating that row to the remaining byte budget.
+Render each source row as `role: content`, keeping the complete rendered row
+within `MAX_COMPACT_ROW_CHARS` Unicode scalar values. Attachment names are
+filtered for control characters/newlines and `[]<>` structural delimiters,
+then capped before appending `[attached image: {name}]`. Build lines
+oldest-first and return both the bounded block and the id of the last source row
+actually included. Stop before the total UTF-8 block would exceed
+`MAX_COMPACT_INPUT_BYTES`; preserve at least the first row when one exists by
+truncating it to the remaining byte budget. Rows omitted by the byte bound stay
+uncovered for a later plan.
 
 Build the user message with these data blocks, in this order:
 
@@ -411,19 +417,21 @@ assistant: The next step is to add the users table.
 </new_messages>
 ```
 
-Omit `<previous_summary>` when the digest is `None`/blank. Use a `ChatMessage`
-array with the embedded system prompt as `Role::System` and the rendered
-blocks as `Role::User`. Keep the compaction input in `compact.rs` or a private
-helper there; do not reuse the live user prompt, which would incorrectly make
-this context look like the current Ask request.
+Omit `<previous_summary>` when the digest is `None`/blank. Bound a stored
+previous digest to `MAX_COMPACT_CHARS` Unicode scalar values before putting it
+in either prompt; retain the raw value separately for CAS comparison. Use a
+`ChatMessage` array with the embedded system prompt as `Role::System` and the
+rendered blocks as `Role::User`. Keep the compaction input in `compact.rs` or a
+private helper there; do not reuse the live user prompt, which would
+incorrectly make this context look like the current Ask request.
 
 Normalize a provider reply by trimming it, rejecting an empty result, and
 keeping only the first `MAX_COMPACT_CHARS` Unicode scalar values. This cap is
 applied before persistence and never splits UTF-8.
 
-Add tests that assert previous-summary omission/inclusion, attachment markers,
-row truncation, total byte truncation, empty-reply rejection, and the 2,000
-character cap.
+Add tests that assert previous-summary omission/inclusion and bounding,
+attachment-name sanitization, complete-row and total-byte truncation,
+empty-reply rejection, and the 2,000-scalar character cap.
 
 - [ ] **Step 6: Implement the serialized detached service and hook.**
 
@@ -448,15 +456,15 @@ pub(crate) fn maybe_schedule(
 
 Inside `compact_once`, acquire the service gate and keep it through the
 provider await. Re-read `db.session_compaction(plan.session_id)` before
-calling the provider. If the stored watermark differs from
-`plan.expected_through` or the stored digest differs from the corresponding
-values in `plan`, return `Ok(())` without a provider call. Otherwise, use the
-re-read digest plus the owned source rows to construct the prompt, call
+calling the provider. If the session is missing, or the stored watermark or
+raw digest differs from the corresponding values in `plan`, return `Ok(())`
+without a provider call. Otherwise, use the re-read digest plus the owned
+source rows to render the bounded prompt, call
 `tokio::time::timeout(COMPACT_TIMEOUT, provider.stream_chat(&messages, &mut sink))`
 with a no-op token callback, normalize the reply, and call
-`session_compact_write` with the expected watermark. A false CAS result is a
-harmless stale-job no-op. Map timeout/provider/DB/empty-reply conditions into
-safe `anyhow` errors so the outer task only logs them.
+`session_compact_write` with the id returned for the last rendered source row.
+A false CAS result is a harmless stale-job no-op. Map timeout/provider/DB/empty-
+reply conditions into safe `anyhow` errors so the outer task only logs them.
 
 - [ ] **Step 7: Run the compaction-core tests and commit.**
 
@@ -576,7 +584,9 @@ the verbatim messages when they conflict.
 ```
 
 Keep the `None`/blank behavior byte-identical to the current function when
-both optional blocks are absent. Do not put the digest in `live_user_prompt`.
+both optional blocks are absent. Trim and cap a stored digest at 2,000 Unicode
+scalar values before adding it to the system prompt; do not put the digest in
+`live_user_prompt`. Cover both the blank omission and oversized-value cases.
 
 - [ ] **Step 4: Thread the argument through all stream paths.**
 
@@ -669,12 +679,17 @@ send_chain(
 // Poll until the detached second call lands and the DB reflects it.
 ```
 
-Assert that the persisted result has `compact_through = Some(20)` and
+Assert that the persisted result has `compact_through = Some(20)` — the id
+of the last source row rendered for this small batch — and
 `compact = Some("updated digest")`; do not assert synchronously immediately
 after `send_chain` returns because scheduling is intentionally detached.
 
 Also add a provider-failure test with an existing digest. After the detached
 job settles, assert both the old digest and old watermark remain unchanged.
+Use a barrier-controlled provider to verify two jobs sharing one
+`Arc<CompactService>` serialize across provider awaits, and clear the stored
+watermark while a provider call is blocked to prove the stale result is
+rejected by CAS.
 
 - [ ] **Step 2: Run the integration tests and verify they fail before wiring.**
 
@@ -721,10 +736,11 @@ read the session compaction once:
 ```rust
 let (compaction, compact_plan) = match session_id {
     Some(sid) => match db.session_compaction(sid) {
-        Ok((digest, through)) => {
+        Ok(Some((digest, through))) => {
             let plan = compaction_plan(sid, &history_rows, digest.clone(), through);
             (digest, plan)
         }
+        Ok(None) => (None, None),
         Err(error) => {
             log::warn!("ask: session compaction load failed: {error}");
             (None, None)
@@ -772,7 +788,7 @@ let rejected = db.message_add(sid, "assistant", "rejected answer").unwrap();
 db.session_compact_write(sid, None, "digest includes rejected answer", rejected)
     .unwrap();
 assert!(regenerate_tail_rows(&db, Some(sid)).is_some());
-assert_eq!(db.session_compaction(sid).unwrap(), (None, None));
+assert_eq!(db.session_compaction(sid).unwrap(), Some((None, None)));
 let _ = first;
 ```
 

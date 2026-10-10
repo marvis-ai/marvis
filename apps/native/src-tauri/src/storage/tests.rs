@@ -97,13 +97,13 @@ fn session_compaction_roundtrips_and_uses_watermark_cas() {
     let db = Db::at(dir.join("marvis.db")).unwrap();
     let sid = db.session_get_or_create_active("ask").unwrap();
 
-    assert_eq!(db.session_compaction(sid).unwrap(), (None, None));
+    assert_eq!(db.session_compaction(sid).unwrap(), Some((None, None)));
     assert!(db
         .session_compact_write(sid, None, "first digest", 10)
         .unwrap());
     assert_eq!(
         db.session_compaction(sid).unwrap(),
-        (Some("first digest".to_string()), Some(10))
+        Some((Some("first digest".to_string()), Some(10)))
     );
     assert!(!db
         .session_compact_write(sid, None, "stale digest", 20)
@@ -113,12 +113,12 @@ fn session_compaction_roundtrips_and_uses_watermark_cas() {
         .unwrap());
     assert_eq!(
         db.session_compaction(sid).unwrap(),
-        (Some("second digest".to_string()), Some(20))
+        Some((Some("second digest".to_string()), Some(20)))
     );
 
     db.session_compact_clear(sid).unwrap();
-    assert_eq!(db.session_compaction(sid).unwrap(), (None, None));
-    assert_eq!(db.session_compaction(i64::MAX).unwrap(), (None, None));
+    assert_eq!(db.session_compaction(sid).unwrap(), Some((None, None)));
+    assert_eq!(db.session_compaction(i64::MAX).unwrap(), None);
     assert!(!db
         .session_compact_write(i64::MAX, None, "missing digest", 1)
         .unwrap());
@@ -550,10 +550,10 @@ fn session_compaction_migrates_legacy_schema() {
     }
 
     let db = Db::at(&path).unwrap();
-    assert_eq!(db.session_compaction(1).unwrap(), (None, None));
+    assert_eq!(db.session_compaction(1).unwrap(), Some((None, None)));
     assert!(db.session_compact_write(1, None, "legacy-safe", 1).unwrap());
     assert_eq!(
-        db.session_compaction(1).unwrap().0.as_deref(),
+        db.session_compaction(1).unwrap().unwrap().0.as_deref(),
         Some("legacy-safe")
     );
     assert_eq!(db.messages_for(1).unwrap()[0].content, "old question");

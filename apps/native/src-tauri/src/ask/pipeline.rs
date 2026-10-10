@@ -183,10 +183,11 @@ pub(crate) async fn send_chain(
     // attachment-loading task.
     let (compaction, compact_plan): (Option<String>, Option<CompactionPlan>) = match session_id {
         Some(sid) => match db.session_compaction(sid) {
-            Ok((digest, through)) => {
+            Ok(Some((digest, through))) => {
                 let plan = compaction_plan(sid, &history_rows, digest.clone(), through);
                 (digest, plan)
             }
+            Ok(None) => (None, None),
             Err(error) => {
                 log::warn!("ask: session compaction load failed: {error}");
                 (None, None)
@@ -194,6 +195,9 @@ pub(crate) async fn send_chain(
         },
         None => (None, None),
     };
+    // Keep the raw digest in `compaction` for the detached job's CAS snapshot,
+    // but pass only the bounded view to live Ask prompts.
+    let compact_prompt = bounded_compaction(compaction.as_deref());
     // Prior history degrades unreadable images to markers. Current-turn
     // attachments are loaded strictly after the fresh screenshot is resolved.
     let history = {
@@ -385,7 +389,7 @@ pub(crate) async fn send_chain(
             language,
             instruction,
             memory_profile.as_deref(),
-            compaction.as_deref(),
+            compact_prompt.as_deref(),
         )
         .await
         {

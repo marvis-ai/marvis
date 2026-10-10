@@ -234,13 +234,12 @@ impl Db {
     }
 
     /// Read the detached compaction digest and the message watermark for a
-    /// session. A missing session and an uninitialized digest both read as
-    /// `(None, None)`.
-    #[allow(dead_code)] // Task 2 compaction pipeline consumes this accessor.
+    /// session. `None` means the owning session no longer exists; an existing
+    /// session with an uninitialized digest returns `Some((None, None))`.
     pub fn session_compaction(
         &self,
         session_id: i64,
-    ) -> anyhow::Result<(Option<String>, Option<i64>)> {
+    ) -> anyhow::Result<Option<(Option<String>, Option<i64>)>> {
         Ok(self
             .conn
             .lock()
@@ -249,14 +248,12 @@ impl Db {
                 [session_id],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
-            .optional()?
-            .unwrap_or((None, None)))
+            .optional()?)
     }
 
     /// Store a detached compaction digest only when the session's watermark
     /// still matches the caller's expected value. `NULL` is a valid initial
     /// watermark and is matched explicitly for SQLite's three-valued logic.
-    #[allow(dead_code)] // Task 2 compaction pipeline consumes this accessor.
     pub fn session_compact_write(
         &self,
         session_id: i64,
@@ -276,7 +273,6 @@ impl Db {
 
     /// Clear the detached compaction digest and watermark without changing
     /// messages or session activity. Missing sessions are a no-op.
-    #[allow(dead_code)] // Task 2 compaction pipeline consumes this accessor.
     pub fn session_compact_clear(&self, session_id: i64) -> anyhow::Result<()> {
         self.conn.lock().execute(
             "UPDATE sessions SET compact = NULL, compact_through = NULL WHERE id = ?1",

@@ -1,4 +1,5 @@
 use super::compact::*;
+use super::history::regenerate_tail_rows;
 use super::stream::*;
 use super::title::*;
     use super::*;
@@ -135,6 +136,19 @@ use super::title::*;
         ))
     }
 
+    fn seed_compaction_history(db: &Db, count: usize) -> i64 {
+        let sid = db.session_get_or_create_active("ask").unwrap();
+        for i in 0..count {
+            db.message_add(
+                sid,
+                if i % 2 == 0 { "user" } else { "assistant" },
+                &format!("turn {i}"),
+            )
+            .unwrap();
+        }
+        sid
+    }
+
     #[test]
     fn compaction_plan_waits_until_ten_rows_are_outside_history_tail() {
         let rows = test_messages(29); // 9 dropped after HISTORY_TAIL = 20
@@ -267,6 +281,202 @@ use super::title::*;
         assert_eq!(calls.lock().len(), 1);
         assert_eq!(db.session_compaction(sid).unwrap(), (None, None));
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn session_compaction_injects_digest_and_schedules_after_answer() {
+        let dir = tmp_dir();
+        let db = Arc::new(Db::at(dir.join("marvis.db")).unwrap());
+        let sid = seed_compaction_history(db.as_ref(), 40);
+        db.session_compact_write(sid, None, "old digest", 10)
+            .unwrap();
+        let provider = MockProvider::new(vec![
+            Behavior::Tokens(vec!["answer".into()]),
+            Behavior::Tokens(vec!["updated digest".into()]),
+        ]);
+        let calls = provider.calls();
+        let (_events, emit) = recorder();
+        let reader = screen_read::ScreenReader::new();
+        let ring = Mutex::new(RingBuffer::new(4, 1 << 20));
+        let input = input(&reader, &ring);
+        let hook = CompactHook::new(Arc::clone(&db), CompactService::new());
+
+        send_chain(
+            vec![candidate("mock", provider)],
+            None,
+            db.as_ref(),
+            &emit,
+            &input,
+            &CancellationToken::new(),
+            ChainOpts {
+                text: "current question",
+                session_id: Some(sid),
+                language: "en",
+                compact: Some(hook),
+                ..ChainOpts::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        let answer_calls = calls.lock();
+        let system = text_of(&answer_calls[0][0]);
+        assert!(system.contains("old digest"));
+        drop(answer_calls);
+
+        for _ in 0..100 {
+            if db.session_compaction(sid).unwrap()
+                == (Some("updated digest".into()), Some(20))
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(
+            db.session_compaction(sid).unwrap(),
+            (Some("updated digest".into()), Some(20))
+        );
+        let calls = calls.lock();
+        assert_eq!(calls.len(), 2);
+        assert!(text_of(&calls[1][1]).contains("<new_messages>"));
+        assert!(text_of(&calls[1][1]).contains("turn 10"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn session_compaction_uses_answering_candidate_for_detached_job() {
+        let dir = tmp_dir();
+        let db = Arc::new(Db::at(dir.join("marvis.db")).unwrap());
+        let sid = seed_compaction_history(db.as_ref(), 40);
+        db.session_compact_write(sid, None, "old digest", 10)
+            .unwrap();
+        let failed = MockProvider::new(vec![Behavior::Fail(LlmError::Auth)]);
+        let answering = MockProvider::new(vec![
+            Behavior::Tokens(vec!["answer".into()]),
+            Behavior::Tokens(vec!["updated digest".into()]),
+        ]);
+        let failed_calls = failed.calls();
+        let answering_calls = answering.calls();
+        let (_events, emit) = recorder();
+        let reader = screen_read::ScreenReader::new();
+        let ring = Mutex::new(RingBuffer::new(4, 1 << 20));
+        let input = input(&reader, &ring);
+        let hook = CompactHook::new(Arc::clone(&db), CompactService::new());
+
+        send_chain(
+            vec![candidate("failed", failed), candidate("answering", answering)],
+            None,
+            db.as_ref(),
+            &emit,
+            &input,
+            &CancellationToken::new(),
+            ChainOpts {
+                text: "current question",
+                session_id: Some(sid),
+                language: "en",
+                compact: Some(hook),
+                ..ChainOpts::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        for _ in 0..100 {
+            if db.session_compaction(sid).unwrap().0.as_deref() == Some("updated digest") {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(failed_calls.lock().len(), 1);
+        assert_eq!(answering_calls.lock().len(), 2);
+        assert_eq!(
+            db.session_compaction(sid).unwrap(),
+            (Some("updated digest".into()), Some(20))
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn session_compaction_failure_preserves_existing_digest() {
+        let dir = tmp_dir();
+        let db = Arc::new(Db::at(dir.join("marvis.db")).unwrap());
+        let sid = seed_compaction_history(db.as_ref(), 40);
+        db.session_compact_write(sid, None, "old digest", 10)
+            .unwrap();
+        let provider = MockProvider::new(vec![
+            Behavior::Tokens(vec!["answer".into()]),
+            Behavior::Fail(LlmError::Auth),
+        ]);
+        let calls = provider.calls();
+        let (_events, emit) = recorder();
+        let reader = screen_read::ScreenReader::new();
+        let ring = Mutex::new(RingBuffer::new(4, 1 << 20));
+        let input = input(&reader, &ring);
+        let hook = CompactHook::new(Arc::clone(&db), CompactService::new());
+
+        send_chain(
+            vec![candidate("mock", provider)],
+            None,
+            db.as_ref(),
+            &emit,
+            &input,
+            &CancellationToken::new(),
+            ChainOpts {
+                text: "current question",
+                session_id: Some(sid),
+                language: "en",
+                compact: Some(hook),
+                ..ChainOpts::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        for _ in 0..100 {
+            if calls.lock().len() == 2 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(calls.lock().len(), 2);
+        assert_eq!(
+            db.session_compaction(sid).unwrap(),
+            (Some("old digest".into()), Some(10))
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn session_compaction_regenerate_clears_covered_digest() {
+        let dir = tmp_dir();
+        let db = Db::at(dir.join("marvis.db")).unwrap();
+        let sid = db.session_get_or_create_active("ask").unwrap();
+        db.message_add(sid, "user", "old question").unwrap();
+        let rejected = db.message_add(sid, "assistant", "rejected answer").unwrap();
+        db.session_compact_write(sid, None, "digest includes rejected answer", rejected)
+            .unwrap();
+
+        assert!(regenerate_tail_rows(&db, Some(sid)).is_some());
+        assert_eq!(db.session_compaction(sid).unwrap(), (None, None));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn session_compaction_regenerate_preserves_uncovered_digest() {
+        let dir = tmp_dir();
+        let db = Db::at(dir.join("marvis.db")).unwrap();
+        let sid = db.session_get_or_create_active("ask").unwrap();
+        let first = db.message_add(sid, "user", "old question").unwrap();
+        db.message_add(sid, "assistant", "rejected answer").unwrap();
+        db.session_compact_write(sid, None, "digest before rejected answer", first)
+            .unwrap();
+
+        assert!(regenerate_tail_rows(&db, Some(sid)).is_some());
+        assert_eq!(
+            db.session_compaction(sid).unwrap(),
+            (Some("digest before rejected answer".into()), Some(first))
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -208,6 +208,8 @@ pub struct Deps<'a> {
     /// The consent-gated extraction service — Arc'd because the
     /// scheduled `MemoryHook` outlives this borrow.
     pub memory: Arc<MemoryService>,
+    /// Serialized session compaction — detached jobs outlive this borrow.
+    pub compact: Arc<CompactService>,
     /// The live config share — `kick` snapshots it for the chain AND
     /// hands the memory hook a closure re-reading `[memory].enabled`
     /// at extraction time.
@@ -755,6 +757,7 @@ impl AskService {
         let svc = Arc::clone(self);
         let app = app.clone();
         let db = Arc::clone(&deps.db);
+        let compact = CompactHook::new(Arc::clone(&db), Arc::clone(&deps.compact));
         // The title sidecar's emit is dedicated — the spawned task's
         // gen-guarded `emit` would drop it once this run's generation
         // ends (stop/superseded), but a landed title write should
@@ -828,6 +831,7 @@ impl AskService {
                     attachments,
                     attachments_root: None,
                     memory,
+                    compact: Some(compact),
                     title: Some(TitleSidecar::new(Arc::clone(&db), titled)),
                 },
             )

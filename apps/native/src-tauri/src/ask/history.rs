@@ -191,9 +191,24 @@ pub(super) fn regenerate_tail_rows(
     let cut = rows.iter().rposition(|r| r.role == "user")?;
     let re_asked_id = rows[cut].id;
     let re_asked_attachments = rows[cut].attachments.clone();
+    let rejected_is_compacted = match db.session_compaction(sid) {
+        Ok((_, Some(compact_through))) => {
+            rows[cut + 1..].iter().any(|row| row.id <= compact_through)
+        }
+        Ok((_, None)) => false,
+        Err(error) => {
+            log::warn!("ask: session compaction watermark load failed: {error}");
+            false
+        }
+    };
     for row in &rows[cut + 1..] {
         if let Err(e) = db.message_delete(row.id) {
             log::warn!("ask: failed to drop rejected reply {}: {e}", row.id);
+        }
+    }
+    if rejected_is_compacted {
+        if let Err(error) = db.session_compact_clear(sid) {
+            log::warn!("ask: session compaction clear after regenerate failed: {error}");
         }
     }
     Some((rows[..cut].to_vec(), re_asked_id, re_asked_attachments))

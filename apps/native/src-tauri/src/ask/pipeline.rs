@@ -48,6 +48,9 @@ pub(crate) struct ChainOpts<'a> {
     /// `[memory].enabled` resolved a usable dedicated provider in
     /// `kick`. Scheduled once, on success only.
     pub memory: Option<MemoryHook>,
+    /// The detached session compaction job — scheduled only after a
+    /// candidate answers successfully and a plan exists.
+    pub compact: Option<CompactHook>,
     /// The detached title sidecar — spawned on success only, after the
     /// memory hook. `None` skips naming entirely (tests that don't
     /// exercise it).
@@ -122,6 +125,7 @@ pub(crate) async fn send_chain(
         attachments,
         attachments_root,
         memory,
+        compact,
         title,
     } = opts;
     // Contract guard: a crafted invoke past the composer cap is an
@@ -173,6 +177,22 @@ pub(crate) async fn send_chain(
         }
     } else {
         (message_rows(db, session_id), false, None, Vec::new())
+    };
+    // The digest is read while the owned history rows are still available;
+    // `compact_plan` clones its source rows before history moves to the
+    // attachment-loading task.
+    let (compaction, compact_plan): (Option<String>, Option<CompactionPlan>) = match session_id {
+        Some(sid) => match db.session_compaction(sid) {
+            Ok((digest, through)) => {
+                let plan = compaction_plan(sid, &history_rows, digest.clone(), through);
+                (digest, plan)
+            }
+            Err(error) => {
+                log::warn!("ask: session compaction load failed: {error}");
+                (None, None)
+            }
+        },
+        None => (None, None),
     };
     // Prior history degrades unreadable images to markers. Current-turn
     // attachments are loaded strictly after the fresh screenshot is resolved.
@@ -365,7 +385,7 @@ pub(crate) async fn send_chain(
             language,
             instruction,
             memory_profile.as_deref(),
-            None,
+            compaction.as_deref(),
         )
         .await
         {
@@ -411,6 +431,9 @@ pub(crate) async fn send_chain(
                         session_id,
                         text.to_string(),
                     );
+                }
+                if let (Some(hook), Some(plan)) = (compact, compact_plan) {
+                    hook.maybe_schedule(Arc::clone(&cand.provider), plan);
                 }
                 return Ok(reply.full);
             }

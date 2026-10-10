@@ -150,6 +150,9 @@ pub struct AppState {
     /// Serialized memory extraction (`[memory]`-gated) — shared with
     /// every ask send's `MemoryHook` schedule. Owned like `ask`/`listen`.
     memory: Arc<memory::MemoryService>,
+    /// Serialized session compaction — shared with every ask send's
+    /// detached `CompactHook` schedule.
+    compact: Arc<ask::CompactService>,
     listen: Arc<ListenService>,
     dictation: Arc<DictationService>,
     /// Whisper CLI staged beside the executable by `externalBin`.
@@ -203,6 +206,7 @@ impl AppState {
             ring: Arc::clone(&self.ring),
             reader: Arc::clone(&self.screen_reader),
             memory: Arc::clone(&self.memory),
+            compact: Arc::clone(&self.compact),
             config: Arc::clone(&self.config),
             capture_running: self
                 .capture
@@ -263,6 +267,7 @@ impl AppState {
             capture_restart: Mutex::new(None),
             ask: Arc::new(AskService::new()),
             memory: memory::MemoryService::new(),
+            compact: ask::CompactService::new(),
             listen: Arc::new(ListenService::new()),
             dictation: Arc::new(DictationService::new()),
             bundled_whisper: None,
@@ -969,6 +974,7 @@ pub fn run() {
                 capture_restart: Mutex::new(None),
                 ask: Arc::new(AskService::new()),
                 memory: memory::MemoryService::new(),
+                compact: ask::CompactService::new(),
                 listen: Arc::new(ListenService::new()),
                 dictation: Arc::new(DictationService::new()),
                 bundled_whisper,

@@ -72,16 +72,27 @@ pub(crate) async fn listen_start(app: AppHandle) -> Result<listen::ListenStatus,
         .unwrap_or(false);
     let config = state.config.lock().clone();
     let keystore = state.keystore.lock().clone();
+    let db = Arc::clone(&state.db);
+    let bundled_whisper = state.bundled_whisper.clone();
     let app_for_emit = app.clone();
     let emit = Arc::new(move |event| emit_listen_event(&app_for_emit, event));
-    if let Err(error) = state.listen.start(
-        Arc::clone(&state.db),
-        &keystore,
-        &config,
-        mic_allowed,
-        state.bundled_whisper.as_deref(),
-        emit,
-    ) {
+    let app_for_start = app.clone();
+    // `listen.start` opens the system-audio device — the macOS tap's
+    // `AudioDeviceStart` can show a TCC consent prompt, a blocking OS
+    // call that must not run on the async executor (AGENTS rule 15).
+    let started = tauri::async_runtime::spawn_blocking(move || {
+        app_for_start.state::<AppState>().listen.start(
+            db,
+            &keystore,
+            &config,
+            mic_allowed,
+            bundled_whisper.as_deref(),
+            emit,
+        )
+    })
+    .await
+    .map_err(|_| "Could not start listening".to_string())?;
+    if let Err(error) = started {
         // ListenService owns the event contract for failures it emits. In
         // particular, setup failures have already emitted needs_setup:true;
         // re-emitting here would produce a contradictory second event.

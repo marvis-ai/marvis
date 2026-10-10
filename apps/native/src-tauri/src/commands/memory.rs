@@ -29,9 +29,19 @@ fn map_delete(result: anyhow::Result<()>) -> Result<(), String> {
     result.map_err(|_| "Memory could not be deleted".to_string())
 }
 
+/// Reads get the same treatment as mutations — sqlite detail stays
+/// server-side there too.
+fn map_list(result: anyhow::Result<Vec<Memory>>) -> Result<Vec<Memory>, String> {
+    result.map_err(|_| "Memories could not be loaded".to_string())
+}
+
+fn map_history(result: anyhow::Result<Vec<MemoryHistory>>) -> Result<Vec<MemoryHistory>, String> {
+    result.map_err(|_| "Memory history could not be loaded".to_string())
+}
+
 #[tauri::command]
 pub(crate) fn memory_list(state: State<'_, AppState>) -> Result<Vec<Memory>, String> {
-    state.db.memory_profile().map_err(|e| e.to_string())
+    map_list(state.db.memory_profile())
 }
 
 #[tauri::command]
@@ -58,7 +68,7 @@ pub(crate) fn memory_history(
     state: State<'_, AppState>,
     id: i64,
 ) -> Result<Vec<MemoryHistory>, String> {
-    state.db.memory_history(id).map_err(|e| e.to_string())
+    map_history(state.db.memory_history(id))
 }
 
 #[cfg(test)]
@@ -88,6 +98,21 @@ mod tests {
             )))
             .unwrap_err(),
             "Memory could not be deleted"
+        );
+    }
+
+    #[test]
+    fn reads_never_expose_database_text() {
+        assert_eq!(
+            map_list(Err(anyhow::anyhow!(
+                "sqlite: /Users/x/.marvis/marvis.db is locked"
+            )))
+            .unwrap_err(),
+            "Memories could not be loaded"
+        );
+        assert_eq!(
+            map_history(Err(anyhow::anyhow!("sqlite: SQL logic error"))).unwrap_err(),
+            "Memory history could not be loaded"
         );
     }
 }

@@ -69,6 +69,24 @@ fn parser_tolerates_a_bare_fact_array_from_small_models() {
     );
 }
 
+/// `memories` is UNIQUE on `(category, attribute)`, so the dedup key
+/// must be that pair — not the triple. Two values for one key in a
+/// single response can't both apply: first wins, the rest drop.
+#[test]
+fn parser_dedups_on_category_attribute_not_the_value() {
+    let facts = parse_response(
+        r#"{"facts":[
+          {"category":"identity","attribute":"name","value":"Allen","confidence":0.9,"basis":"explicit"},
+          {"category":"identity","attribute":"name","value":"Al","confidence":0.9,"basis":"explicit"},
+          {"category":"preference","attribute":"name","value":"Al","confidence":0.9,"basis":"explicit"}
+        ]}"#,
+    )
+    .unwrap();
+    assert_eq!(facts.len(), 2);
+    assert_eq!(facts[0].value, "Allen");
+    assert_eq!(facts[1].category, "preference");
+}
+
 #[test]
 fn parser_caps_facts_and_profile_is_bounded_untrusted_data() {
     let facts = (0..10)

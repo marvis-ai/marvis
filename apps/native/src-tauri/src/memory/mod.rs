@@ -34,14 +34,14 @@ use std::sync::Arc;
 use crate::config::Config;
 use crate::keystore::Keystore;
 use crate::llm::{make_provider, Provider, ProviderKind};
-use crate::storage::{Db, MemoryCandidate};
+use crate::storage::{Db, MemoryCandidate, MAX_MEMORY_VALUE_CHARS};
 
 /// One extraction response contributes at most this many facts.
 const MAX_FACTS: usize = 8;
 /// `attribute` is a slug: `[a-z0-9_]`, this many chars max.
 const MAX_ATTRIBUTE_CHARS: usize = 64;
-/// `value` length cap, in Unicode scalar values.
-const MAX_VALUE_CHARS: usize = 500;
+/// `value` length cap lives in `storage` (the layer that also enforces
+/// it for manual edits) — imported as `MAX_MEMORY_VALUE_CHARS`.
 /// The `<user_profile>` block renders at most this many rows…
 const MAX_PROFILE_ROWS: usize = 32;
 /// …and never exceeds this many UTF-8 bytes, wrapper included.
@@ -122,8 +122,8 @@ pub(crate) fn parse_response(text: &str) -> anyhow::Result<Vec<MemoryCandidate>>
             anyhow::bail!("invalid memory attribute {:?}", raw.attribute);
         }
         let value = raw.value.trim();
-        if value.is_empty() || value.chars().count() > MAX_VALUE_CHARS {
-            anyhow::bail!("memory value must be 1..={MAX_VALUE_CHARS} characters");
+        if value.is_empty() || value.chars().count() > MAX_MEMORY_VALUE_CHARS {
+            anyhow::bail!("memory value must be 1..={MAX_MEMORY_VALUE_CHARS} characters");
         }
         let lower = value.to_lowercase();
         if let Some(hit) = FORBIDDEN_VALUE_SUBSTRINGS
@@ -139,7 +139,10 @@ pub(crate) fn parse_response(text: &str) -> anyhow::Result<Vec<MemoryCandidate>>
         if !matches!(basis.as_str(), "explicit" | "inferred") {
             anyhow::bail!("unknown memory basis {:?}", raw.basis);
         }
-        if seen.insert((category.clone(), attribute.clone(), value.to_string())) {
+        // Dedup on the table's unique key — a value in the mix would
+        // let `{key: A}, {key: B}` apply twice (silent last-wins plus a
+        // doubled history row). First candidate wins.
+        if seen.insert((category.clone(), attribute.clone())) {
             facts.push(MemoryCandidate {
                 category,
                 attribute,

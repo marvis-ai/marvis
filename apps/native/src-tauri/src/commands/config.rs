@@ -229,13 +229,10 @@ pub(crate) fn config_set(
         // window getters, which park the caller on the main queue —
         // this command runs on a worker, so hop rather than run them
         // off the main thread.
-        let app2 = app.clone();
-        if let Err(e) = app.run_on_main_thread(move || {
-            transition_gate(&app2);
-            app2.state::<AppState>().sync_bar_visibility();
-        }) {
-            log::warn!("config_set: gate transition hop failed: {e}");
-        }
+        run_on_main(&app, "config_set", |app| {
+            transition_gate(app);
+            app.state::<AppState>().sync_bar_visibility();
+        });
     }
     let updated = state.config.lock().clone();
     let _ = app.emit("config:changed", &updated);

@@ -117,6 +117,12 @@ pub struct Summary {
     pub updated_at: i64,
 }
 
+/// `memories.value` length cap in Unicode scalar values — the single
+/// bound both writers enforce: `memory_update` rejects oversized
+/// manual edits here, and `memory::parse_response` re-uses the same
+/// constant for extractor output.
+pub(crate) const MAX_MEMORY_VALUE_CHARS: usize = 500;
+
 /// A row of `memories` — one stored identity/preference fact.
 /// `Serialize` so the `memory_list` command hands rows to the settings
 /// UI verbatim. `category`/`attribute`/`value` are the display columns;

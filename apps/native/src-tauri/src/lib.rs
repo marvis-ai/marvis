@@ -295,6 +295,21 @@ fn app_gate(state: &AppState) -> Gate {
     }
 }
 
+/// Hop window work onto the main thread — the pool's getters park the
+/// caller on the main queue, so running them off a tokio worker is the
+/// ABBA deadlock the window-event `try_lock`s exist to avoid. `what`
+/// labels the warn; a dispatch failure only logs (fire-and-forget).
+fn run_on_main(
+    app: &AppHandle,
+    what: &'static str,
+    work: impl FnOnce(&AppHandle) + Send + 'static,
+) {
+    let app2 = app.clone();
+    if let Err(e) = app.run_on_main_thread(move || work(&app2)) {
+        log::warn!("{what}: main-thread hop failed: {e}");
+    }
+}
+
 /// Recompute the gate, run the transition's side-effects, then ALWAYS
 /// emit `app:state` `{"gate": ...}` — called after every mutation that can
 /// change the gate and once at startup.

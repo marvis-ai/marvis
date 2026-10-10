@@ -7,7 +7,7 @@
  * CRUD surface — a manual edit pins `source = 'manual'` server-side so
  * extraction can never overwrite it.
  */
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   configSet,
   memoryDelete,
@@ -42,6 +42,24 @@ import type { PrefsData } from './types';
 
 const CONFIRM_MS = 4000;
 
+/** Two-step arm→confirm: `arm` sets the pending value and starts the
+ * auto-reset timeout, `disarm` clears both. Shared by the disable
+ * toggle and per-row delete so the pattern stays in sync. */
+const useArmConfirm = <T,>() => {
+  const [pending, setPending] = useState<T | null>(null);
+  const timer = useRef<number | undefined>(undefined);
+  const disarm = useCallback(() => {
+    window.clearTimeout(timer.current);
+    setPending(null);
+  }, []);
+  const arm = useCallback((value: T) => {
+    window.clearTimeout(timer.current);
+    setPending(value);
+    timer.current = window.setTimeout(() => setPending(null), CONFIRM_MS);
+  }, []);
+  return [pending, arm, disarm] as const;
+};
+
 export const MemoryTab = ({ data }: { data: PrefsData }) => {
   const { config } = data;
   const memory = config?.memory ?? { enabled: false, provider: '', model: '' };
@@ -66,14 +84,13 @@ export const MemoryTab = ({ data }: { data: PrefsData }) => {
   );
   const [model, setModel] = useState(memory.model || suggested?.model || '');
   const [models, setModels] = useState<string[]>([]);
-  const [confirmingDisable, setConfirmingEnable] = useState(false);
+  const [confirmingDisable, armDisable, disarmDisable] =
+    useArmConfirm<boolean>();
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [editingId, setEditingId] = useState<number | null>(null);
-  const [confirmingDelete, setConfirmingDelete] = useState<number | null>(null);
+  const [confirmingDelete, armDelete, disarmDelete] = useArmConfirm<number>();
   const editValue = useRef<HTMLInputElement | null>(null);
-  const disableTimer = useRef<number | undefined>(undefined);
-  const deleteTimer = useRef<number | undefined>(undefined);
 
   const refreshFacts = () => {
     void memoryList()
@@ -132,17 +149,11 @@ export const MemoryTab = ({ data }: { data: PrefsData }) => {
       // Disabling is the destructive-feeling direction for the user —
       // their profile stops learning — so it arms, then confirms.
       if (!confirmingDisable) {
-        setConfirmingEnable(true);
+        armDisable(true);
         setError('');
-        window.clearTimeout(disableTimer.current);
-        disableTimer.current = window.setTimeout(
-          () => setConfirmingEnable(false),
-          CONFIRM_MS,
-        );
         return;
       }
-      window.clearTimeout(disableTimer.current);
-      setConfirmingEnable(false);
+      disarmDisable();
       try {
         data.setConfig(await configSet('memory.enabled', false));
       } catch {
@@ -187,16 +198,10 @@ export const MemoryTab = ({ data }: { data: PrefsData }) => {
 
   const removeFact = async (id: number) => {
     if (confirmingDelete !== id) {
-      setConfirmingDelete(id);
-      window.clearTimeout(deleteTimer.current);
-      deleteTimer.current = window.setTimeout(
-        () => setConfirmingDelete(null),
-        CONFIRM_MS,
-      );
+      armDelete(id);
       return;
     }
-    window.clearTimeout(deleteTimer.current);
-    setConfirmingDelete(null);
+    disarmDelete();
     try {
       await memoryDelete(id);
       setFacts((rows) => rows.filter((r) => r.id !== id));

@@ -624,14 +624,17 @@ impl AskService {
         // A regenerate never mints a session — there'd be nothing in it
         // to re-ask.
         let fresh_session = !regenerate && !deps.pool.lock().is_chat_open();
-        // Expand first so any pre-flight error still renders in the card.
-        deps.pool.lock().set_chat_open(app, true);
+        // The card opens only where there's something to show — a
+        // pre-flight error below, or the run once `claim` accepts it —
+        // so a session-busy refusal stays a silent no-op for the pill.
+        let open_card = || deps.pool.lock().set_chat_open(app, true);
         // Attachment validation precedes session resolution: a rejected
         // send must not mint a ghost session row. The chain decodes
         // again for persistence — this pass is the early no so the
         // sessionless error stays off `runs` (same shape `send_chain`'s
         // guard emits, minus the resolved session tag).
         if attachments.len() > MAX_ATTACHMENTS {
+            open_card();
             self.kick_error(
                 app,
                 gen,
@@ -641,6 +644,7 @@ impl AskService {
         }
         for input in &attachments {
             if let Err(message) = attachments::decode_attachment(input) {
+                open_card();
                 self.kick_error(app, gen, message);
                 return true;
             }
@@ -700,6 +704,7 @@ impl AskService {
             )
         };
         if candidates.is_empty() {
+            open_card();
             self.pre_spawn_error(
                 app,
                 gen,
@@ -724,6 +729,7 @@ impl AskService {
         let Some(cancel) = self.claim(session_id, text, gen) else {
             return false;
         };
+        open_card();
         let svc = Arc::clone(self);
         let app = app.clone();
         let db = Arc::clone(&deps.db);

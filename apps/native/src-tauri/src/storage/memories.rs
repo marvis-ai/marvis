@@ -102,8 +102,10 @@ impl Db {
     /// turns it into "Memory not found").
     pub fn memory_update(&self, id: i64, value: &str) -> anyhow::Result<Option<Memory>> {
         let value = value.trim();
-        if value.is_empty() || value.chars().count() > 500 {
-            return Err(anyhow::anyhow!("memory value must be 1..=500 characters"));
+        if value.is_empty() || value.chars().count() > MAX_MEMORY_VALUE_CHARS {
+            return Err(anyhow::anyhow!(
+                "memory value must be 1..={MAX_MEMORY_VALUE_CHARS} characters"
+            ));
         }
         let mut conn = self.conn.lock();
         let tx = conn.transaction()?;

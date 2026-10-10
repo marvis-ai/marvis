@@ -153,6 +153,38 @@ fn session_incarnation_token_changes_when_highest_id_is_recreated() {
 }
 
 #[test]
+fn incarnation_bound_message_writes_and_deletes_skip_recreated_ids() {
+    let dir = tmp_dir();
+    let db = Db::at(dir.join("marvis.db")).unwrap();
+    let sid = db.session_get_or_create_active("ask").unwrap();
+    let old_token = db.session_compaction(sid).unwrap().unwrap().0;
+
+    db.session_delete(sid).unwrap();
+    assert_eq!(db.session_get_or_create_active("ask").unwrap(), sid);
+    let new_id = db.message_add(sid, "user", "new incarnation").unwrap();
+
+    assert_eq!(
+        db.message_add_meta_if_session_token(
+            sid,
+            &old_token,
+            "assistant",
+            "stale answer",
+            &MessageMeta::default(),
+        )
+        .unwrap(),
+        None
+    );
+    assert_eq!(
+        db.message_delete_for_session(sid, &old_token, &[new_id])
+            .unwrap(),
+        None
+    );
+    assert_eq!(db.messages_for(sid).unwrap()[0].content, "new incarnation");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn regenerate_clear_does_not_clear_recreated_incarnation() {
     let dir = tmp_dir();
     let db = Db::at(dir.join("marvis.db")).unwrap();

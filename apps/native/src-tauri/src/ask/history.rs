@@ -181,42 +181,58 @@ pub(super) fn rows_to_history_at(
 /// (their files re-read by the caller as the turn's images; the id is
 /// where a retry's fresh screenshot attaches). Every later row (the
 /// rejected reply) is deleted so a reload never replays it. `None`
-/// when the session has no user turn to re-ask or the lookup failed.
+/// when the session has no user turn to re-ask, the expected incarnation
+/// changed, or the lookup failed.
 pub(super) fn regenerate_tail_rows(
     db: &Db,
     session_id: Option<i64>,
+    expected_token: Option<&str>,
 ) -> Option<(Vec<crate::storage::Message>, i64, Vec<MessageAttachment>)> {
     let sid = session_id?;
+    let expected_token = expected_token?;
+    // Validate the pre-history incarnation before accepting any row snapshot.
+    // A recreated integer id must not be treated as the old conversation.
+    let Some((token, _, _)) = db.session_compaction(sid).ok()? else {
+        return None;
+    };
+    if token != expected_token {
+        return None;
+    }
     let rows = db.messages_for(sid).ok()?;
+    let Some((verified_token, _, compact_through)) = db.session_compaction(sid).ok()? else {
+        return None;
+    };
+    if verified_token != expected_token {
+        return None;
+    }
     let cut = rows.iter().rposition(|r| r.role == "user")?;
     let re_asked_id = rows[cut].id;
     let re_asked_attachments = rows[cut].attachments.clone();
-    let (rejected_is_compacted, compaction_token) = match db.session_compaction(sid) {
-        Ok(Some((token, _, Some(compact_through)))) => (
-            rows[cut + 1..].iter().any(|row| row.id <= compact_through),
-            Some(token),
-        ),
-        Ok(Some((_, _, None)) | None) => (false, None),
-        Err(error) => {
-            log::warn!("ask: session compaction watermark load failed: {error}");
-            (false, None)
+    let rejected_rows = &rows[cut + 1..];
+    let rejected_is_compacted =
+        compact_through.is_some_and(|through| rejected_rows.iter().any(|row| row.id <= through));
+    let rejected_ids: Vec<i64> = rejected_rows.iter().map(|row| row.id).collect();
+
+    match db.message_delete_for_session(sid, expected_token, &rejected_ids) {
+        Ok(Some(_)) => {}
+        Ok(None) => {
+            log::warn!("ask: regenerate skipped after the session incarnation changed");
+            return None;
         }
-    };
-    for row in &rows[cut + 1..] {
-        if let Err(e) = db.message_delete(row.id) {
-            log::warn!("ask: failed to drop rejected reply {}: {e}", row.id);
+        Err(error) => {
+            // Preserve the existing retry behavior on an ordinary storage
+            // hiccup; only the token-bound `None` result retires the run.
+            log::warn!("ask: failed to drop rejected regenerate rows: {error}");
         }
     }
     if rejected_is_compacted {
-        if let Some(token) = compaction_token {
-            match db.session_compact_clear(sid, &token) {
-                Ok(true) => {}
-                Ok(false) => log::warn!(
-                    "ask: session compaction clear after regenerate skipped for a changed session"
-                ),
-                Err(error) => {
-                    log::warn!("ask: session compaction clear after regenerate failed: {error}");
-                }
+        match db.session_compact_clear(sid, expected_token) {
+            Ok(true) => {}
+            Ok(false) => log::warn!(
+                "ask: session compaction clear after regenerate skipped for a changed session"
+            ),
+            Err(error) => {
+                log::warn!("ask: session compaction clear after regenerate failed: {error}");
             }
         }
     }
@@ -232,16 +248,25 @@ pub(super) fn regenerate_tail_rows(
 pub(super) fn persist_user_message(
     db: &Db,
     session_id: Option<i64>,
+    session_token: Option<&str>,
     text: &str,
     preset: Option<&str>,
 ) -> Option<i64> {
     let sid = session_id?;
+    let Some(session_token) = session_token else {
+        log::warn!("ask: user message skipped without a session incarnation");
+        return None;
+    };
     let meta = MessageMeta {
         preset: preset.map(str::to_string),
         ..MessageMeta::default()
     };
-    match db.message_add_meta(sid, "user", text, &meta) {
-        Ok(id) => Some(id),
+    match db.message_add_meta_if_session_token(sid, session_token, "user", text, &meta) {
+        Ok(Some(id)) => Some(id),
+        Ok(None) => {
+            log::warn!("ask: user message skipped after the session incarnation changed");
+            None
+        }
         Err(e) => {
             log::warn!("ask: failed to persist user message: {e}");
             None
@@ -250,17 +275,26 @@ pub(super) fn persist_user_message(
 }
 
 /// The completed assistant reply, next to its user row — provenance and
-/// token spend ride along for the card's per-message ⋯ menu.
+/// token spend ride along for the card's per-message ⋯ menu. The write is
+/// bound to the run's session incarnation so a recreated id cannot receive
+/// the stale answer. Returns `false` only when the incarnation guard rejects
+/// the write; ordinary storage failures preserve the existing warning-only
+/// behavior.
 pub(super) fn persist_assistant_message(
     db: &Db,
     session_id: Option<i64>,
+    session_token: Option<&str>,
     full: &str,
     provider: &str,
     model: &str,
     usage: Option<TokenUsage>,
-) {
+) -> bool {
     let Some(sid) = session_id else {
-        return;
+        return true;
+    };
+    let Some(session_token) = session_token else {
+        log::warn!("ask: assistant message skipped without a session incarnation");
+        return false;
     };
     let meta = MessageMeta {
         provider: Some(provider.to_string()),
@@ -270,7 +304,15 @@ pub(super) fn persist_assistant_message(
         // Armed presets ride user rows, not assistant replies.
         preset: None,
     };
-    if let Err(e) = db.message_add_meta(sid, "assistant", full, &meta) {
-        log::warn!("ask: failed to persist assistant message: {e}");
+    match db.message_add_meta_if_session_token(sid, session_token, "assistant", full, &meta) {
+        Ok(Some(_)) => true,
+        Ok(None) => {
+            log::warn!("ask: assistant message skipped after the session incarnation changed");
+            false
+        }
+        Err(e) => {
+            log::warn!("ask: failed to persist assistant message: {e}");
+            true
+        }
     }
 }

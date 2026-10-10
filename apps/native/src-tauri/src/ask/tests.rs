@@ -10,6 +10,7 @@ use crate::storage::Message;
     use std::path::PathBuf;
     use std::pin::Pin;
     use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize};
+    use std::sync::OnceLock;
     use std::time::Duration;
     use tokio::sync::Notify;
 
@@ -48,7 +49,10 @@ use crate::storage::Message;
 
     /// Wrap a mock in the chain's candidate shape — the id/model ride
     /// into `ask:done` so tests can assert which provider answered.
-    fn candidate(id: &str, provider: MockProvider) -> ProviderCandidate {
+    fn candidate<P>(id: &str, provider: P) -> ProviderCandidate
+    where
+        P: Provider + 'static,
+    {
         ProviderCandidate {
             id: id.to_string(),
             model: "mock-model".to_string(),
@@ -236,6 +240,33 @@ use crate::storage::Message;
         (digest, through)
     }
 
+    static STALE_SEND_DB: OnceLock<Mutex<Option<Arc<Db>>>> = OnceLock::new();
+
+    /// The real send pipeline calls this after history capture and current-turn
+    /// persistence, giving the regression a deterministic delete/recreate seam
+    /// immediately before provider execution.
+    fn stale_send_shot() -> anyhow::Result<Option<Frame>> {
+        let db = STALE_SEND_DB
+            .get_or_init(|| Mutex::new(None))
+            .lock()
+            .take();
+        if let Some(db) = db {
+            let sid = db.session_get_or_create_active("ask").unwrap();
+            db.session_delete(sid).unwrap();
+            let recreated = db.session_get_or_create_active("ask").unwrap();
+            assert_eq!(recreated, sid);
+            let token = compaction_token(&db, sid);
+            db.message_add(sid, "user", "new incarnation question")
+                .unwrap();
+            let answer = db
+                .message_add(sid, "assistant", "new incarnation answer")
+                .unwrap();
+            db.session_compact_write(sid, &token, None, "new incarnation digest", answer)
+                .unwrap();
+        }
+        Ok(Some(test_frame()))
+    }
+
     #[test]
     fn compaction_plan_waits_until_ten_rows_are_outside_history_tail() {
         let rows = test_messages(29); // 9 dropped after HISTORY_TAIL = 20
@@ -290,6 +321,109 @@ use crate::storage::Message;
 
         assert!(calls.lock().is_empty());
         assert_eq!(compaction_state(&db, sid), (None, None));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn send_chain_rejects_stale_history_before_provider_after_session_recreation() {
+        let dir = tmp_dir();
+        let db = Arc::new(Db::at(dir.join("marvis.db")).unwrap());
+        let sid = seed_compaction_history(db.as_ref(), 30);
+        let provider = MockProvider::new(vec![Behavior::Tokens(vec!["stale answer".into()])]);
+        let calls = provider.calls();
+        let (_events, emit) = recorder();
+        let reader = screen_read::ScreenReader::new();
+        let ring = Mutex::new(RingBuffer::new(4, 1 << 20));
+        let mut input = input(&reader, &ring);
+        input.needs_screen = true;
+        input.shot = stale_send_shot;
+        *STALE_SEND_DB.get_or_init(|| Mutex::new(None)).lock() = Some(Arc::clone(&db));
+
+        let result = send_chain(
+            vec![candidate("mock", provider)],
+            None,
+            db.as_ref(),
+            &emit,
+            &input,
+            &CancellationToken::new(),
+            ChainOpts {
+                text: "old incarnation question",
+                session_id: Some(sid),
+                language: "en",
+                ..ChainOpts::default()
+            },
+        )
+        .await;
+
+        assert!(result.is_err(), "a recreated session must retire the stale run");
+        assert!(calls.lock().is_empty(), "stale history must not reach the provider");
+        let rows = db.messages_for(sid).unwrap();
+        assert_eq!(
+            rows.iter().map(|row| row.content.as_str()).collect::<Vec<_>>(),
+            vec!["new incarnation question", "new incarnation answer"]
+        );
+        assert_eq!(
+            compaction_state(&db, sid),
+            (Some("new incarnation digest".into()), Some(rows[1].id))
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn send_chain_does_not_persist_answer_after_session_recreation() {
+        let dir = tmp_dir();
+        let db = Arc::new(Db::at(dir.join("marvis.db")).unwrap());
+        let sid = seed_compaction_history(db.as_ref(), 2);
+        let provider = BarrierProvider::new("stale answer");
+        let entered = provider.entered();
+        let release = provider.release();
+        let calls = provider.calls();
+        let (_events, emit) = recorder();
+        let reader = screen_read::ScreenReader::new();
+        let ring = Mutex::new(RingBuffer::new(4, 1 << 20));
+        let input = input(&reader, &ring);
+        let cancel = CancellationToken::new();
+        let send = send_chain(
+            vec![candidate("mock", provider)],
+            None,
+            db.as_ref(),
+            &emit,
+            &input,
+            &cancel,
+            ChainOpts {
+                text: "old incarnation question",
+                session_id: Some(sid),
+                language: "en",
+                ..ChainOpts::default()
+            },
+        );
+        let recreate = async {
+            entered.notified().await;
+            db.session_delete(sid).unwrap();
+            assert_eq!(db.session_get_or_create_active("ask").unwrap(), sid);
+            let token = compaction_token(&db, sid);
+            db.message_add(sid, "user", "new incarnation question")
+                .unwrap();
+            let answer = db
+                .message_add(sid, "assistant", "new incarnation answer")
+                .unwrap();
+            db.session_compact_write(sid, &token, None, "new incarnation digest", answer)
+                .unwrap();
+            release.notify_one();
+        };
+        let (result, ()) = tokio::join!(send, recreate);
+
+        assert!(result.is_err(), "a stale provider result must retire the run");
+        assert_eq!(calls.lock().len(), 1);
+        let rows = db.messages_for(sid).unwrap();
+        assert_eq!(
+            rows.iter().map(|row| row.content.as_str()).collect::<Vec<_>>(),
+            vec!["new incarnation question", "new incarnation answer"]
+        );
+        assert_eq!(
+            compaction_state(&db, sid),
+            (Some("new incarnation digest".into()), Some(rows[1].id))
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -813,6 +947,53 @@ use crate::storage::Message;
     }
 
     #[test]
+    fn regenerate_tail_rows_rejects_recreated_session_and_preserves_new_messages() {
+        let dir = tmp_dir();
+        let db = Db::at(dir.join("marvis.db")).unwrap();
+        let sid = db.session_get_or_create_active("ask").unwrap();
+        db.message_add(sid, "user", "old question").unwrap();
+        db.message_add(sid, "assistant", "old rejected answer").unwrap();
+        let old_token = compaction_token(&db, sid);
+
+        db.session_delete(sid).unwrap();
+        assert_eq!(db.session_get_or_create_active("ask").unwrap(), sid);
+        let new_token = compaction_token(&db, sid);
+        assert_ne!(new_token, old_token);
+        let new_question = db
+            .message_add(sid, "user", "new incarnation question")
+            .unwrap();
+        let new_answer = db
+            .message_add(sid, "assistant", "new incarnation answer")
+            .unwrap();
+        db.session_compact_write(
+            sid,
+            &new_token,
+            None,
+            "new incarnation digest",
+            new_answer,
+        )
+        .unwrap();
+
+        assert!(regenerate_tail_rows(&db, Some(sid), Some(&old_token)).is_none());
+        assert_eq!(
+            db.messages_for(sid)
+                .unwrap()
+                .iter()
+                .map(|row| (row.id, row.content.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                (new_question, "new incarnation question"),
+                (new_answer, "new incarnation answer")
+            ]
+        );
+        assert_eq!(
+            compaction_state(&db, sid),
+            (Some("new incarnation digest".into()), Some(new_answer))
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn session_compaction_regenerate_clears_covered_digest() {
         let dir = tmp_dir();
         let db = Db::at(dir.join("marvis.db")).unwrap();
@@ -829,7 +1010,7 @@ use crate::storage::Message;
         )
         .unwrap();
 
-        assert!(regenerate_tail_rows(&db, Some(sid)).is_some());
+        assert!(regenerate_tail_rows(&db, Some(sid), Some(&token)).is_some());
         assert_eq!(compaction_state(&db, sid), (None, None));
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -851,7 +1032,7 @@ use crate::storage::Message;
         )
         .unwrap();
 
-        assert!(regenerate_tail_rows(&db, Some(sid)).is_some());
+        assert!(regenerate_tail_rows(&db, Some(sid), Some(&token)).is_some());
         assert_eq!(
             compaction_state(&db, sid),
             (Some("digest before rejected answer".into()), Some(first))
@@ -3836,7 +4017,8 @@ async fn retry_fresh_screenshot_replaces_old_shot_and_keeps_other_images() {
     let root = dir.join("attachments");
     let sid = db.session_get_or_create_active("ask").unwrap();
     let mid = db.message_add(sid, "user", "look again").unwrap();
-    super::attachments::persist_attachments(&db, &root, mid, vec![
+    let token = compaction_token(&db, sid);
+    super::attachments::persist_attachments(&db, &root, Some(sid), Some(&token), mid, vec![
         super::attachments::PendingImage { name: "screenshot.jpg".into(), jpeg: vec![1] },
         super::attachments::PendingImage { name: "diagram.jpg".into(), jpeg: vec![2] },
     ]).await.unwrap();

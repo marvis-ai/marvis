@@ -300,6 +300,22 @@ impl Db {
         )? > 0)
     }
 
+    /// First-write-wins title setter bound to one session incarnation. A
+    /// detached title from an older Ask run cannot name a recreated id.
+    pub fn session_set_title_if_session_token(
+        &self,
+        id: i64,
+        session_token: &str,
+        title: &str,
+    ) -> anyhow::Result<bool> {
+        Ok(self.conn.lock().execute(
+            "UPDATE sessions
+             SET title = ?3
+             WHERE id = ?1 AND session_token = ?2 AND title IS NULL",
+            params![id, session_token, title],
+        )? > 0)
+    }
+
     /// Record the STT engine label at listen start — the finished doc's
     /// header reads it back via `session_list`; pre-column rows show none.
     pub fn session_set_stt(&self, id: i64, stt: &str) -> anyhow::Result<()> {
@@ -331,6 +347,7 @@ impl Db {
     /// write happened; `false` also covers a missing session. Stores
     /// `title` verbatim, including an empty string, without updating activity.
     /// Database update errors propagate to the caller.
+    #[allow(dead_code)] // retained for storage/test callers; Ask uses the bound variant
     pub fn session_set_title(&self, id: i64, title: &str) -> anyhow::Result<bool> {
         Ok(self.conn.lock().execute(
             "UPDATE sessions SET title = ?2 WHERE id = ?1 AND title IS NULL",

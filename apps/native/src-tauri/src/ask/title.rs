@@ -25,9 +25,14 @@ impl TitleSidecar {
         self,
         provider: Arc<dyn Provider>,
         session_id: Option<i64>,
+        session_token: Option<String>,
         question: String,
     ) {
         let Some(sid) = session_id else { return };
+        let Some(session_token) = session_token else {
+            log::warn!("ask: title skipped without a session incarnation");
+            return;
+        };
         match self.db.session_title(sid) {
             Ok(None) => {}
             Ok(Some(_)) => return, // already named — never retitle
@@ -38,7 +43,15 @@ impl TitleSidecar {
         }
         let Self { db, titled } = self;
         tauri::async_runtime::spawn(async move {
-            title_session(db.as_ref(), provider.as_ref(), sid, &question, titled.as_ref()).await;
+            title_session(
+                db.as_ref(),
+                provider.as_ref(),
+                sid,
+                &session_token,
+                &question,
+                titled.as_ref(),
+            )
+            .await;
         });
     }
 }
@@ -56,9 +69,18 @@ async fn title_session(
     db: &Db,
     provider: &dyn Provider,
     sid: i64,
+    session_token: &str,
     question: &str,
     titled: &(dyn Fn(i64) + Send + Sync),
 ) {
+    match db.session_compaction(sid) {
+        Ok(Some((actual_token, _, _))) if actual_token == session_token => {}
+        Ok(_) => return,
+        Err(error) => {
+            log::warn!("ask: title incarnation load failed: {error}");
+            return;
+        }
+    }
     let question: String = question.chars().take(TITLE_QUESTION_CAP).collect();
     let msgs = [
         ChatMessage::text(Role::System, TITLE_PROMPT),
@@ -84,7 +106,7 @@ async fn title_session(
     if title.is_empty() {
         return;
     }
-    match db.session_set_title(sid, &title) {
+    match db.session_set_title_if_session_token(sid, session_token, &title) {
         Ok(true) => titled(sid),
         Ok(false) => {}
         Err(e) => log::warn!("ask: session title write failed: {e}"),

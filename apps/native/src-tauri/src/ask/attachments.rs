@@ -120,12 +120,25 @@ pub(super) async fn persist_attachments(
 
 /// The `loading` payload — `attachments` rides along only when the
 /// turn carries persisted images (composer picks or a screenshot).
+/// `attempt` is the 0-based failover index (0 = the run's start emit)
+/// and `regenerate` marks `ask_retry`'s re-ask (`re_asked` — a regen
+/// that found no user tail sends normally, so it reports false): the
+/// card's fold tells retry/re-ask apart from a fresh turn by these
+/// fields, not by matching the question text.
 pub(super) fn make_loading(
     text: &str,
     preset_id: Option<&str>,
     run_attachments: &[MessageAttachment],
+    attempt: usize,
+    regenerate: bool,
 ) -> serde_json::Value {
-    let mut loading = json!({"state": "loading", "question": text, "preset": preset_id});
+    let mut loading = json!({
+        "state": "loading",
+        "question": text,
+        "preset": preset_id,
+        "attempt": attempt,
+        "regenerate": regenerate,
+    });
     if !run_attachments.is_empty() {
         loading["attachments"] = json!(run_attachments);
     }

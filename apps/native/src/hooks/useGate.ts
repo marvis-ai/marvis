@@ -45,9 +45,8 @@ export const useGate = () => {
 
   useTauriEvent<AppStatePayload>(EV_APP_STATE, (p) => setGate(p.gate));
   // Mid-session screen-permission revocation (ask.rs detects it when a
-  // stale frame would have shipped): collapse the card — NOT `askClose`,
-  // which would cancel the text-only fallback — and show the
-  // permission card.
+  // stale frame would have shipped): collapse the card — a pure view
+  // detach that kills nothing — and show the permission card.
   useTauriEvent<{ permission: string }>(EV_CAPTURE_PERMISSION_NEEDED, () => {
     void windowSetChatOpen(false).catch(() => {});
     setGate('needs_permission');

@@ -117,3 +117,63 @@ pub struct Summary {
     pub updated_at: i64,
 }
 
+/// `memories.value` length cap in Unicode scalar values — the single
+/// bound both writers enforce: `memory_update` rejects oversized
+/// manual edits here, and `memory::parse_response` re-uses the same
+/// constant for extractor output.
+pub(crate) const MAX_MEMORY_VALUE_CHARS: usize = 500;
+
+/// A row of `memories` — one stored identity/preference fact.
+/// `Serialize` so the `memory_list` command hands rows to the settings
+/// UI verbatim. `category`/`attribute`/`value` are the display columns;
+/// `basis` (`"explicit"`/`"inferred"`) and `confidence` are provenance.
+/// `source` is `"automatic"` (extracted by the Memory LLM) or `"manual"`
+/// (user-edited — automatic writes never overwrite it).
+/// `source_*` ids point at the ask turn a fact came from; `ON DELETE
+/// SET NULL` clears them when history is wiped.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct Memory {
+    pub id: i64,
+    pub category: String,
+    pub attribute: String,
+    pub value: String,
+    pub confidence: f64,
+    pub basis: String,
+    pub source: String,
+    pub source_session_id: Option<i64>,
+    pub source_message_id: Option<i64>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+/// A row of `memory_history` — one entry per add/edit/delete of a
+/// stored fact, written by `memory_apply`, `memory_update`, and
+/// `memory_delete`. `memory_id` is deliberately not a foreign key: the
+/// audit row outlives the fact it describes, and `category`/`attribute`
+/// are denormalized so a deleted fact's history still reads. `event` is
+/// `"add"`, `"update"`, or `"delete"`; `old_value`/`new_value` are NULL
+/// on add/delete respectively. `Serialize` so `memory_history` can hand
+/// rows to the webview verbatim.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct MemoryHistory {
+    pub id: i64,
+    pub memory_id: i64,
+    pub category: String,
+    pub attribute: String,
+    pub event: String,
+    pub old_value: Option<String>,
+    pub new_value: Option<String>,
+    pub source: String,
+    pub created_at: i64,
+}
+
+/// A parsed extraction candidate — the not-yet-persisted half of a
+/// [`Memory`]. `memory_apply` upserts these under `source = "auto"`.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct MemoryCandidate {
+    pub category: String,
+    pub attribute: String,
+    pub value: String,
+    pub confidence: f64,
+    pub basis: String,
+}

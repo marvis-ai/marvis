@@ -185,9 +185,10 @@ pub(crate) fn capture_pick_and_start(app: AppHandle) {
 
 /// Non-macOS alias: the record button's "pick and start" is the same
 /// custom-picker flow (Windows) or portal dialog (Linux) — whichever
-/// `capture_pick_begin` drives on this OS.
+/// `capture_pick_begin` drives on this OS. Main-thread command like
+/// its callee.
 #[cfg(not(target_os = "macos"))]
-#[tauri::command(async)]
+#[tauri::command]
 pub(crate) fn capture_pick_and_start(app: AppHandle) {
     capture_pick_begin(app);
 }
@@ -232,7 +233,11 @@ pub(crate) fn portal_pick_flow(app: AppHandle) {
 /// must not surface the picker (or a capture behind it). The bar is
 /// re-shown by `capture_pick_select`/`capture_pick_cancel`. On Linux
 /// the portal's native dialog replaces the picker window entirely.
-#[tauri::command(async)]
+/// Main-thread command: the non-Linux arm is all window work, and
+/// `show_picker`'s getters (`cursor_position`, monitors) park the
+/// caller on the main queue — off-main under `pool` that's the ABBA
+/// deadlock `try_lock` handlers exist to avoid. Never mark `(async)`.
+#[tauri::command]
 pub(crate) fn capture_pick_begin(app: AppHandle) {
     let state = app.state::<AppState>();
     let Some(_transition) = state.gate_transition.try_lock() else {

@@ -35,17 +35,15 @@ import { relTime, type ListenViewing } from '@/components/listen/model';
 import { EmptyState } from '@/components/shared/EmptyState';
 
 /** List chats and meetings, refreshing on session activity and title changes.
- *  Chat rows resume before navigation and are disabled while `askBusy`.
+ *  Chat rows resume before navigation — resuming a session whose run is
+ *  still live re-attaches its stream via `ask_runs` (the run keeps
+ *  writing to it; ending a session never kills the stream).
  *  Failed list, resume, or delete requests leave the current view in place. */
 export const HistorySection = ({
-  askBusy,
   onOpenChat,
   onOpenListen,
   onBack,
 }: {
-  /** An in-flight ask run belongs to the open chat session — ask rows
-   *  disable until it settles (resume would end that session). */
-  askBusy: boolean;
   onOpenChat: () => void;
   /** `null` = the live session (still-open listen row) → live view. */
   onOpenListen: (v: ListenViewing | null) => void;
@@ -70,7 +68,6 @@ export const HistorySection = ({
 
   const openRow = (s: Session) => {
     if (s.kind === 'ask') {
-      if (askBusy) return; // an in-flight run belongs to the open session
       void sessionResume(s.id)
         .then((ok) => {
           if (ok) onOpenChat();
@@ -124,15 +121,14 @@ export const HistorySection = ({
             sessions.map((s) => {
               const sessionOpen = s.ended_at === null;
               const liveRow = s.kind === 'listen' && sessionOpen;
-              const disabled = s.kind === 'ask' && askBusy;
               return (
                 <div
                   key={s.id}
                   className={cn(
                     'group/row -mx-1.5 flex items-center gap-2 rounded-lg px-1.5 py-1.5 transition-colors',
-                    disabled ? 'opacity-50' : 'cursor-pointer hover:bg-fg-soft',
+                    'cursor-pointer hover:bg-fg-soft',
                   )}
-                  onClick={() => !disabled && openRow(s)}>
+                  onClick={() => openRow(s)}>
                   {s.kind === 'listen' ? (
                     <MicAudioLinesIcon className='size-4 flex-none text-muted-foreground' />
                   ) : (

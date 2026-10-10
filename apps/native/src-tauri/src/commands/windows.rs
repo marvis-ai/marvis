@@ -10,8 +10,7 @@ pub(crate) fn window_toggle_all(app: AppHandle) {
 
 /// Direct card open/close — the mic button's listen mode and the
 /// `capture:permission-needed` collapse use it (toggle semantics would
-/// close an open card when the user only wants to switch modes, and
-/// `ask_close` would cancel an in-flight text-only ask).
+/// close an open card when the user only wants to switch modes).
 #[tauri::command]
 pub(crate) fn window_set_chat_open(app: AppHandle, open: bool) {
     app.state::<AppState>()
@@ -33,14 +32,19 @@ pub(crate) fn window_focus_bar(app: AppHandle) {
 }
 
 /// Same entry point as the bar's `Cmd+,` and the tray's Settings item.
-#[tauri::command(async)]
+/// Main-thread command: `show_prefs` is window work end to end — its
+/// getters (`is_visible` in `set_bar_shown`) park the caller on the
+/// main queue, which deadlocks if a worker arrives holding `pool`
+/// while main waits on it. Never mark `(async)`.
+#[tauri::command]
 pub(crate) fn window_show_settings(app: AppHandle) {
     show_settings(&app);
 }
 
 /// Onboarding mode of the same prefs window — the startup first-run
 /// opener and the sidebar's "Re-run setup" both come through here.
-#[tauri::command(async)]
+/// Main-thread command for the same reason as `window_show_settings`.
+#[tauri::command]
 pub(crate) fn window_show_onboarding(app: AppHandle) {
     app.state::<AppState>()
         .pool
@@ -159,4 +163,3 @@ pub(crate) fn bar_context_menu(app: AppHandle) -> Result<(), String> {
         .ok_or("bar window missing")?;
     bar.popup_menu(&menu).map_err(|e| e.to_string())
 }
-

@@ -52,10 +52,10 @@ export const GeneralTab = ({ data }: { data: PrefsData }) => {
           />
         </PrefRow>
         <PrefRow
-          label='Main language'
+          label='Output language'
           sub='The default for chat replies, meeting summaries, and dictation — unless you ask for another language in the moment.'>
           <select
-            aria-label='Main language'
+            aria-label='Output language'
             className={cn(MODEL_SEL, 'w-40 flex-none')}
             value={cfg?.app.main_language ?? 'en'}
             onChange={(e) =>

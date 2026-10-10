@@ -10,15 +10,27 @@ import { listen } from '@tauri-apps/api/event';
 export const EV_APP_STATE = 'app:state';
 /** Broadcast after every keystore mutation; payload = `KeystoreStatus`. */
 export const EV_KEYSTORE_CHANGED = 'keystore:changed';
-/** Ask stream protocol (ask.rs), emitted to the `bar` window only. */
+/** Ask stream protocol (ask.rs), emitted to the `bar` window only.
+ *  Runs are per-session and concurrent — every `ask:*` packet carries
+ *  `run` (the run's generation, retired on the terminal `idle`: a
+ *  finished or `ask_stop`-killed run's in-flight deliveries drop)
+ *  and, past session resolution, `session_id` — the conversation the
+ *  run writes into: New Chat / resume never kill it, so a detached
+ *  run's packets drop on a view showing a different session, and the
+ *  composer busies only on ITS conversation's run. */
 // `loading` also carries `question` — the run's submitted text — plus
-// `attachments` (MessageAttachment[]) when the user turn has images.
-export const EV_ASK_STATE = 'ask:state'; // { state: 'loading'|'streaming'|'idle', question?: string, attachments?: MessageAttachment[] }
-export const EV_ASK_CHUNK = 'ask:chunk'; // { text: string }
-export const EV_ASK_DONE = 'ask:done'; // { full, provider, model } — who answered
-export const EV_ASK_ERROR = 'ask:error'; // { message: string, needs_setup?: bool }
+// `attachments` (MessageAttachment[]) when the user turn has images,
+// and the run-boundary fields the chat folds on: `attempt` (0-based
+// failover index — >0 is a retry of the same run, never a new turn)
+// and `regenerate` (ask_retry's re-ask — resets the tail pair in
+// place). A same-text re-send is attempt 0 of a fresh run, so it
+// appends like the persisted history shows.
+export const EV_ASK_STATE = 'ask:state'; // { state: 'loading'|'streaming'|'idle', question?: string, preset?, attachments?: MessageAttachment[], run?: number, session_id?: number, attempt?: number, regenerate?: boolean }
+export const EV_ASK_CHUNK = 'ask:chunk'; // { text: string, run?: number, session_id?: number }
+export const EV_ASK_DONE = 'ask:done'; // { full, provider, model, usage, run?: number, session_id?: number } — who answered
+export const EV_ASK_ERROR = 'ask:error'; // { message: string, needs_setup?: bool, run?: number, session_id?: number }
 /** Emitted to the `bar` window when a session's generated title lands
- *  (ask.rs `maybe_title_session`) — the history list re-reads to swap
+ *  (ask.rs title sidecar) — the history list re-reads to swap
  *  its first-question fallback. */
 export const EV_SESSIONS_CHANGED = 'sessions:changed'; // { id: number }
 /** Listen lifecycle, transcript, summary, and terminal error events. */
@@ -173,6 +185,8 @@ export interface PickerThumbPayload {
 /** Broadcast after every successful `config_set` — payload is the full
  * `Config`, so windows re-render without a second `config_get`. */
 export const EV_CONFIG_CHANGED = 'config:changed';
+/** Refresh hint after a memory insert, manual edit, or delete. */
+export const EV_MEMORY_CHANGED = 'memory:changed';
 /** Emitted to the `prefs` window only — `{"mode": "settings"|"onboarding"}`.
  * `prefs_mode` is the mount-time read for shows that raced the load. */
 export const EV_PREFS_MODE = 'prefs:mode';

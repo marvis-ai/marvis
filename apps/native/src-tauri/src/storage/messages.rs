@@ -1,5 +1,5 @@
-use super::*;
 use super::types::*;
+use super::*;
 
 impl Db {
     /// Append a message to a session; returns the new row id.
@@ -189,4 +189,29 @@ impl Db {
         Ok(rows)
     }
 
+    /// The `limit` most recent user/assistant texts strictly before
+    /// `before_id`, oldest first — `(role, content)` pairs only, no
+    /// attachments. The memory extractor reads these as
+    /// `<recent_messages>` context for resolving references in the new
+    /// message; the source message itself (id == before_id) rides the
+    /// prompt separately as `<new_user_message>`.
+    pub(crate) fn message_tail(
+        &self,
+        session_id: i64,
+        before_id: i64,
+        limit: usize,
+    ) -> anyhow::Result<Vec<(String, String)>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT role, content FROM messages
+             WHERE session_id = ?1 AND id < ?2 AND role IN ('user', 'assistant')
+             ORDER BY id DESC LIMIT ?3",
+        )?;
+        let rows = stmt
+            .query_map(params![session_id, before_id, limit as i64], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows.into_iter().rev().collect())
+    }
 }

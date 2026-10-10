@@ -151,6 +151,34 @@ pub(super) fn migrate(conn: &Connection) -> anyhow::Result<()> {
         }
         tx.commit()?;
     }
+    if table_exists("memories")? {
+        // Key dedup before the unique index — a pre-constraint
+        // database may hold synonym-slug splits of the same fact. Keep
+        // the manual row when present (user authority), else the
+        // newest. These rows aren't history-recorded: the table may
+        // not exist yet at migrate time, and this is a structural
+        // cleanup, not a fact change.
+        conn.execute_batch(
+            "DELETE FROM memories WHERE id NOT IN (
+               SELECT id FROM (
+                 SELECT id, ROW_NUMBER() OVER (
+                   PARTITION BY category, attribute
+                   ORDER BY (source = 'manual') DESC, updated_at DESC, id DESC) AS rn
+                 FROM memories
+               ) WHERE rn = 1);",
+        )?;
+        // Same shape as `summaries`: a column-level UNIQUE (autoindex)
+        // or the explicit index both count — fresh tables get the
+        // index from SCHEMA, migrated ones need it created here.
+        let indexed: bool = conn
+            .prepare("PRAGMA index_list(memories)")?
+            .query_map([], |row| row.get::<_, i64>(2))?
+            .any(|unique| unique.is_ok_and(|u| u != 0));
+        if !indexed {
+            conn.execute_batch(
+                "CREATE UNIQUE INDEX memories_key ON memories(category, attribute)",
+            )?;
+        }
+    }
     Ok(())
 }
-

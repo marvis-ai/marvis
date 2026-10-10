@@ -17,8 +17,18 @@ use super::title::*;
 #[derive(Default)]
 pub(crate) struct ChainOpts<'a> {
     pub text: &'a str,
+    /// The session this run writes into — pre-resolved by `kick` so the
+    /// run registers under it before spawning. `None` falls back to
+    /// resolving here from `fresh_session`/`listen_id` (the direct
+    /// `send_chain` tests' path).
+    pub session_id: Option<i64>,
+    /// Fallback-resolution input only (see `session_id`): the send
+    /// found the card closed, so the open ask session ends and a fresh
+    /// one mints.
     pub fresh_session: bool,
     pub regenerate: bool,
+    /// Fallback-resolution input AND meeting-context source: the doc
+    /// this send is bound to.
     pub listen_id: Option<i64>,
     pub language: &'a str,
     /// Resolved `instruct` preset text — appended to the system prompt.
@@ -34,6 +44,14 @@ pub(crate) struct ChainOpts<'a> {
     /// `paths::attachments_dir()`; tests pass a tmp dir so runs never
     /// touch the real `~/.marvis`.
     pub attachments_root: Option<&'a Path>,
+    /// The consent-gated extraction job — `Some` only when
+    /// `[memory].enabled` resolved a usable dedicated provider in
+    /// `kick`. Scheduled once, on success only.
+    pub memory: Option<MemoryHook>,
+    /// The detached title sidecar — spawned on success only, after the
+    /// memory hook. `None` skips naming entirely (tests that don't
+    /// exercise it).
+    pub title: Option<TitleSidecar>,
 }
 
 /// The testable core: persist → walk the failover chain → persist,
@@ -51,8 +69,9 @@ pub(crate) struct ChainOpts<'a> {
 /// 3. Each [`ProviderCandidate`] streams via [`stream_candidate`]:
 ///    `Done` → persist assistant + `ask:done{full, provider, model,
 ///    usage}` +
-///    `ask:state{idle}`, then the title sidecar ([`maybe_title_session`])
-///    on a still-untitled session; `Failed` → warn-log, re-emit
+///    `ask:state{idle}`, then the detached title sidecar
+///    ([`TitleSidecar::schedule`]) on a still-untitled session;
+///    `Failed` → warn-log, re-emit
 ///    `loading` (the card resets its buffer — a dead provider's partial
 ///    chunks must not bleed into the next attempt), and try the NEXT
 ///    candidate; `Cancelled` → `ask:state{idle}` and stop immediately —
@@ -67,9 +86,10 @@ pub(crate) struct ChainOpts<'a> {
 /// `status:0`/`"cancelled"` [`LlmError::Http`] sentinel — the events, not
 /// the return value, drive the UI.
 /// Exhausting the chain returns the last provider error, or
-/// [`LlmError::NoModel`] for an empty chain. Success waits for the title
-/// attempt after emitting `idle`; title failures do not change the answer,
-/// and title usage is excluded from the reported turn usage.
+/// [`LlmError::NoModel`] for an empty chain. Success returns right after
+/// `idle` — the title attempt runs detached, so its failure can't touch
+/// the answer and `stop` can't recall it; title usage is excluded from
+/// the reported turn usage.
 ///
 /// `regenerate` (ask_retry): the run re-asks the session's last user
 /// row instead of persisting a new one, and the rejected reply's row is
@@ -92,6 +112,7 @@ pub(crate) async fn send_chain(
 ) -> Result<String, LlmError> {
     let ChainOpts {
         text,
+        session_id,
         fresh_session,
         regenerate,
         listen_id,
@@ -100,6 +121,8 @@ pub(crate) async fn send_chain(
         preset_id,
         attachments,
         attachments_root,
+        memory,
+        title,
     } = opts;
     // Contract guard: a crafted invoke past the composer cap is an
     // attachment error — no row persists, no provider is called.
@@ -119,29 +142,23 @@ pub(crate) async fn send_chain(
     let attachments_root: PathBuf = attachments_root
         .map(Path::to_path_buf)
         .unwrap_or_else(crate::paths::attachments_dir);
-    // A send that arrived with the card closed is a new conversation:
-    // end the still-open ask session so get_or_create mints a fresh row.
-    // A linked send resolves its own session below instead.
-    if fresh_session && listen_id.is_none() {
-        if let Ok(Some(id)) = db.session_active_id("ask") {
-            if let Err(error) = db.session_end(id) {
-                log::warn!("ask: session_end before fresh send failed: {error}");
-            }
+    // The run's session — `kick` resolves it up-front (the busy gate
+    // registers the run under it before spawn); `None` resolves here
+    // instead, the direct-test path: `fresh_session` ends the open
+    // conversation, a linked send lands in the listen doc's own ask
+    // session, a regenerate keeps the active session — its question IS
+    // that session's last user row.
+    let session_id =
+        session_id.or_else(|| resolve_session(db, fresh_session, regenerate, listen_id));
+    // Every emit past session resolution carries the run's session —
+    // the webview drops packets bound to a conversation it isn't
+    // showing: New Chat / resume leave the run streaming into ITS
+    // session, so only a view on that session renders them.
+    let emit = &|name: &str, mut payload: serde_json::Value| {
+        if let Some(sid) = session_id {
+            payload["session_id"] = sid.into();
         }
-    }
-    // Session resolution: a linked send lands in the listen doc's own
-    // ask session (`ask_session_for_listen` reopens it or mints one);
-    // a regenerate keeps the active session — its question IS that
-    // session's last user row; anything else is the open ask session.
-    let session_id = match (regenerate, listen_id) {
-        (false, Some(lid)) => match db.ask_session_for_listen(lid) {
-            Ok(id) => Some(id),
-            Err(error) => {
-                log::warn!("ask: linked session resolve failed: {error}");
-                None
-            }
-        },
-        _ => open_ask_session(db),
+        emit(name, payload);
     };
     // Order matters: history is read BEFORE the new user row persists —
     // the new turn is appended separately so it can carry the frame. A
@@ -178,6 +195,16 @@ pub(crate) async fn send_chain(
     let listen_id =
         listen_id.or_else(|| session_id.and_then(|sid| db.session_listen_id(sid).ok().flatten()));
     let listen_history = load_listen_context(db, listen_id);
+    // The memory profile snapshot for this run — loaded once, shared by
+    // every candidate/retry. A storage hiccup degrades to `None` (the
+    // plain prompt); it must never fail the ask.
+    let memory_profile = match db.memory_profile() {
+        Ok(rows) => crate::memory::profile_prompt(&rows),
+        Err(error) => {
+            log::warn!("ask: memory profile load failed: {error}");
+            None
+        }
+    };
     let mut user_images: Vec<Vec<u8>> = Vec::new();
     // The run's user-turn attachments — the `loading` payload advertises
     // them so the card/resync renders the persisted message correctly.
@@ -225,7 +252,7 @@ pub(crate) async fn send_chain(
         Err(msg) => {
             // The persisted row never painted — `loading` first so the
             // card still shows the question under the error toast.
-            emit(EV_STATE, make_loading(text, preset_id, &run_attachments));
+            emit(EV_STATE, make_loading(text, preset_id, &run_attachments, 0, re_asked));
             emit(EV_ERROR, json!({ "message": msg }));
             emit(EV_STATE, json!({"state": "idle"}));
             return Err(LlmError::Http {
@@ -299,7 +326,7 @@ pub(crate) async fn send_chain(
     }
     // `loading` announces the run's full attachment list — composer
     // picks plus any just-persisted screenshot.
-    let loading = make_loading(text, preset_id, &run_attachments);
+    let loading = make_loading(text, preset_id, &run_attachments, 0, re_asked);
     emit(EV_STATE, loading.clone());
     // The turn's spend = the answering attempt plus any attachment
     // describe a text-only retry arms (a failed candidate's usage is
@@ -316,9 +343,12 @@ pub(crate) async fn send_chain(
     let mut last_err: Option<LlmError> = None;
     for (i, cand) in candidates.iter().enumerate() {
         // A failover hand-off re-announces `loading` so the card drops
-        // the failed attempt's partial chunks before the next stream.
+        // the failed attempt's partial chunks before the next stream —
+        // `attempt: i` marks it as a retry of THIS run, not a new turn.
         if i > 0 {
-            emit(EV_STATE, loading.clone());
+            let mut retry = loading.clone();
+            retry["attempt"] = json!(i);
+            emit(EV_STATE, retry);
         }
         match stream_candidate(
             &*cand.provider,
@@ -334,6 +364,7 @@ pub(crate) async fn send_chain(
             cancel,
             language,
             instruction,
+            memory_profile.as_deref(),
         )
         .await
         {
@@ -361,10 +392,25 @@ pub(crate) async fn send_chain(
                     }),
                 );
                 emit(EV_STATE, json!({"state": "idle"}));
-                // The sidecar runs after `idle` so the stream's end never
-                // waits on it; its spend isn't part of the turn's usage
-                // (done/persisted already).
-                maybe_title_session(db, &*cand.provider, session_id, text, emit, cancel).await;
+                // Memory extraction runs on success only — the raw user
+                // text (never the reply, screen, or attachments) is the
+                // whole source, and the scheduled job owns the ids of
+                // the turn it came from. Fire-and-forget: the answer
+                // never waits on it and its failure only warns.
+                if let Some(hook) = memory {
+                    hook.schedule(text.to_string(), session_id, message_id);
+                }
+                // The title sidecar is detached like the memory hook —
+                // `idle` already went out, the run never waits on it,
+                // and a `stop` after this point can't recall it (an
+                // ended session still gets named).
+                if let Some(sidecar) = title {
+                    sidecar.schedule(
+                        Arc::clone(&cand.provider),
+                        session_id,
+                        text.to_string(),
+                    );
+                }
                 return Ok(reply.full);
             }
             // User row stays — it was already sent. Never fall over on

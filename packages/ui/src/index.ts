@@ -35,6 +35,7 @@ export {
 export {
   AppWindowIcon,
   ArrowLeftIcon,
+  BrainIcon,
   CameraIcon,
   CaptionsIcon,
   CheckIcon,

@@ -60,7 +60,7 @@ export const PANEL =
 export const PANEL_HEAD =
   'flex min-h-16 items-center gap-1.5 border-b border-border px-3 py-3';
 export const PANEL_BODY =
-  'min-h-0 flex-1 select-text overflow-y-auto px-3.5 pt-3 pb-3.5 text-[13px] leading-[1.6]';
+  'min-h-0 flex-1 select-text overflow-y-auto px-6 pt-3 pb-3.5 text-[14px] leading-[1.8]';
 export const CHIP =
   'inline-flex items-center gap-1 rounded-full border border-border bg-[color-mix(in_oklch,var(--surface)_60%,transparent)] px-2 py-0.75 font-mono text-[8.5px] text-muted-foreground tracking-tight';
 export const SPIN =

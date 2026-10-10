@@ -32,6 +32,9 @@
 //! - `alert:show` `{"message": String}` — to the `alert` window only;
 //!   the toast that replaced the bar's inline error row
 //!   (`alert_current` re-reads it, `alert_dismiss` clears it).
+//! - `memory:changed` `{}` — broadcast when a stored fact is added,
+//!   edited, or deleted (a background extraction landing rows, or a
+//!   Settings → Memory edit/delete); the Memory tab refetches on it.
 
 mod ask;
 pub mod audio;
@@ -44,6 +47,7 @@ mod hotkey;
 mod keystore;
 mod listen;
 mod llm;
+mod memory;
 mod menubar;
 mod menus;
 mod paths;
@@ -82,7 +86,7 @@ use hotkey::RegisteredHotkeys;
 use keystore::Keystore;
 use listen::{ListenEvent, ListenService};
 use llm::{make_provider, ProviderKind};
-use storage::{Db, Message, Session, Summary, Transcript};
+use storage::{Db, Memory, Message, Session, Summary, Transcript};
 use windows::WindowPool;
 
 /// Frame ring caps from the spec: 120 frames / 64 MB (~60 s horizon).
@@ -124,7 +128,11 @@ impl Gate {
 /// `Arc`s shared with spawned tasks and the capture callback.
 pub struct AppState {
     keystore: Mutex<Keystore>,
-    config: Mutex<Config>,
+    /// `Arc`d like `db`/`ring`: the scheduled memory extraction
+    /// re-reads `[memory].enabled` from inside its spawned task —
+    /// the snapshot `prepare_hook` checked can go stale while an ask
+    /// streams or the extraction queues on the service gate.
+    config: Arc<Mutex<Config>>,
     db: Arc<Db>,
     ring: Arc<Mutex<RingBuffer>>,
     capture: Mutex<Option<PlatformCapture>>,
@@ -139,6 +147,9 @@ pub struct AppState {
     /// Restart inputs, nested under `capture` just like `capture_target`.
     capture_restart: Mutex<Option<CaptureRestart>>,
     ask: Arc<AskService>,
+    /// Serialized memory extraction (`[memory]`-gated) — shared with
+    /// every ask send's `MemoryHook` schedule. Owned like `ask`/`listen`.
+    memory: Arc<memory::MemoryService>,
     listen: Arc<ListenService>,
     dictation: Arc<DictationService>,
     /// Whisper CLI staged beside the executable by `externalBin`.
@@ -181,23 +192,24 @@ pub struct AppState {
 }
 
 impl AppState {
-    /// The ask pipeline's borrow bundle: `db`/`ring`/`reader` clone
-    /// their `Arc`s (the spawned stream outlives the call), the rest are
-    /// short-lived `&Mutex` borrows used only in pre-flight.
-    /// `capture_running` snapshots the capture slot so `resolve_screen`
-    /// knows whether ring frames are fresh.
+    /// The ask pipeline's borrow bundle: `db`/`ring`/`reader`/`memory`/
+    /// `config` clone their `Arc`s (the spawned stream outlives the
+    /// call), the rest are short-lived `&Mutex` borrows used only in
+    /// pre-flight. `capture_running` snapshots the capture slot so
+    /// `resolve_screen` knows whether ring frames are fresh.
     fn deps(&self) -> ask::Deps<'_> {
         ask::Deps {
             db: Arc::clone(&self.db),
             ring: Arc::clone(&self.ring),
             reader: Arc::clone(&self.screen_reader),
+            memory: Arc::clone(&self.memory),
+            config: Arc::clone(&self.config),
             capture_running: self
                 .capture
                 .lock()
                 .as_ref()
                 .is_some_and(PlatformCapture::is_running),
             keystore: &self.keystore,
-            config: &self.config,
             pool: &self.pool,
         }
     }
@@ -240,7 +252,9 @@ impl AppState {
     fn for_test(root: &std::path::Path) -> Self {
         Self {
             keystore: Mutex::new(Keystore::at(root.join("keys.json"))),
-            config: Mutex::new(Config::load_from(root.join("config.toml")).unwrap_or_default()),
+            config: Arc::new(Mutex::new(
+                Config::load_from(root.join("config.toml")).unwrap_or_default(),
+            )),
             db: Arc::new(Db::at(root.join("marvis.db")).expect("test db")),
             ring: Arc::new(Mutex::new(RingBuffer::new(RING_MAX_FRAMES, RING_MAX_BYTES))),
             capture: Mutex::new(None),
@@ -248,6 +262,7 @@ impl AppState {
             capture_target: Mutex::new(None),
             capture_restart: Mutex::new(None),
             ask: Arc::new(AskService::new()),
+            memory: memory::MemoryService::new(),
             listen: Arc::new(ListenService::new()),
             dictation: Arc::new(DictationService::new()),
             bundled_whisper: None,
@@ -283,6 +298,21 @@ fn app_gate(state: &AppState) -> Gate {
         Gate::Main
     } else {
         Gate::NeedsPermission
+    }
+}
+
+/// Hop window work onto the main thread — the pool's getters park the
+/// caller on the main queue, so running them off a tokio worker is the
+/// ABBA deadlock the window-event `try_lock`s exist to avoid. `what`
+/// labels the warn; a dispatch failure only logs (fire-and-forget).
+fn run_on_main(
+    app: &AppHandle,
+    what: &'static str,
+    work: impl FnOnce(&AppHandle) + Send + 'static,
+) {
+    let app2 = app.clone();
+    if let Err(e) = app.run_on_main_thread(move || work(&app2)) {
+        log::warn!("{what}: main-thread hop failed: {e}");
     }
 }
 
@@ -329,15 +359,15 @@ fn enter_main(app: &AppHandle) {
     }
 }
 
-/// `Main` exit (onboarding reset / permission revoked): cancel the
-/// in-flight ask and collapse the card, stop dictation, stop + drop
-/// capture, hide the alert toast.
+/// `Main` exit (onboarding reset / permission revoked): collapse the
+/// card, stop dictation, stop + drop capture, hide the alert toast.
 fn leave_main(app: &AppHandle) {
     let state = app.state::<AppState>();
-    // Cancel any in-flight ask — an unbounded stream left running would
-    // hold `AskState::Streaming` past a leave/re-enter and wedge every
-    // future send on the busy-check until it resolves on its own.
-    // Listen is independent of card visibility; only `listen_stop` stops it.
+    // A gate exit is teardown, not a view leave — retire every live
+    // run (each tagged `idle` still emits so mirrors and packet
+    // filters settle), then collapse. Listen is independent of card
+    // visibility; only `listen_stop` stops it.
+    state.ask.retire_all(app);
     state.ask.close(app, &state.pool);
     // Dictation is bound to the ask input that leaving Main hides — an
     // invisible session must not keep the microphone. (Its epoch also
@@ -930,7 +960,7 @@ pub fn run() {
             });
             app.manage(AppState {
                 keystore: Mutex::new(keystore),
-                config: Mutex::new(cfg),
+                config: Arc::new(Mutex::new(cfg)),
                 db: Arc::new(db),
                 ring: Arc::new(Mutex::new(RingBuffer::new(RING_MAX_FRAMES, RING_MAX_BYTES))),
                 capture: Mutex::new(None),
@@ -938,6 +968,7 @@ pub fn run() {
                 capture_target: Mutex::new(None),
                 capture_restart: Mutex::new(None),
                 ask: Arc::new(AskService::new()),
+                memory: memory::MemoryService::new(),
                 listen: Arc::new(ListenService::new()),
                 dictation: Arc::new(DictationService::new()),
                 bundled_whisper,
@@ -1021,8 +1052,9 @@ pub fn run() {
             ask_send,
             ask_retry,
             ask_close,
+            ask_stop,
             ask_send_screen_only,
-            ask_current,
+            ask_runs,
             listen_start,
             listen_stop,
             listen_pause,
@@ -1088,6 +1120,10 @@ pub fn run() {
             session_delete,
             session_end_active,
             session_resume,
+            memory_list,
+            memory_update,
+            memory_delete,
+            memory_history,
             save_audio_file,
             save_text_file,
             config_get,
@@ -1173,6 +1209,33 @@ mod tests {
         assert!(source.contains("sherpa_cancel_download,"));
         assert!(source.contains("sherpa_remove_model,"));
         assert!(source.contains("session_resume,"));
+    }
+
+    /// The composer's stop button plus the packet identity that keeps a
+    /// stream out of the wrong conversation: `ask_stop` cancels ONE
+    /// session's run through `AskService::stop` while session
+    /// boundaries deliberately DON'T — a detached run keeps writing to
+    /// its own session. The emit fold `run`-tags every `ask:*` packet
+    /// (in-flight deliveries of a killed run drop) and `send_chain`
+    /// `session_id`-tags them (a detached run's packets drop on any
+    /// view that isn't showing that session). `ask_runs` is the
+    /// per-session resync replacing the single-run `ask_current`.
+    #[test]
+    fn ask_stop_and_packet_tagging_are_in_the_contract() {
+        let lib = include_str!("lib.rs");
+        assert!(lib.contains(concat!("ask", "_stop,")));
+        assert!(lib.contains(concat!("ask", "_runs,")));
+        let commands = include_str!("commands/ask.rs");
+        assert!(commands.contains("pub(crate) fn ask_stop("));
+        assert!(commands.contains("state.ask.stop(&app, session_id)"));
+        assert!(commands.contains("pub(crate) fn ask_runs("));
+        let sessions = include_str!("commands/sessions.rs");
+        assert!(!sessions.contains("state.ask.stop"));
+        let ask = include_str!("ask/mod.rs");
+        assert!(ask.contains("pub fn stop(&self, app: &AppHandle, session_id: i64)"));
+        assert!(ask.contains("payload[\"run\"]"));
+        let pipeline = include_str!("ask/pipeline.rs");
+        assert!(pipeline.contains("payload[\"session_id\"]"));
     }
 
     /// The preset surface: `presets_list` plus the palette commands
@@ -1874,5 +1937,18 @@ mod tests {
         .expect("jpegBase64 must deserialize");
         assert_eq!(parsed.name, "a.png");
         assert_eq!(parsed.jpeg_base64, "AA==");
+    }
+
+    /// The memory CRUD surface: all three commands ride
+    /// `generate_handler!` and the `memory:changed` broadcast name is
+    /// part of this file's contract.
+    #[test]
+    fn memory_commands_and_event_are_registered() {
+        let source = include_str!("lib.rs");
+        assert!(source.contains("memory_list,"));
+        assert!(source.contains("memory_update,"));
+        assert!(source.contains("memory_delete,"));
+        assert!(source.contains("memory_history,"));
+        assert!(source.contains(concat!("memory", ":changed")));
     }
 }

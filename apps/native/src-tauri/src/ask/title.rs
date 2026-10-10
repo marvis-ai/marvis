@@ -1,51 +1,83 @@
 use super::*;
 
-/// A still-untitled session gets named by the provider that just
-/// answered — a small `stream_chat` for a short title over the raw
-/// question, then `session_set_title`'s `title IS NULL` write guard
-/// makes it first-wins (a failed call retries on the next send, a
-/// landed one is never redone). Failure is silent to the run: the
-/// history row keeps the first-question fallback. `sessions:changed`
-/// goes out through the run's gen-guarded `emit` — a stale run's ping
-/// drops, but the next run's `idle` refresh picks the title up anyway.
-/// Only the first 1,000 Unicode scalar values of `question` are sent.
-/// The provider call has a 30-second deadline; cancellation, timeout,
-/// provider/storage errors, or an empty cleaned title leave it unwritten.
-pub(super) async fn maybe_title_session(
+/// The detached title job handed to `send_chain` — mirrors
+/// `MemoryHook`: it owns the `Db` share and the `sessions:changed`
+/// emit because the spawned task outlives the run (the answering
+/// provider is only known at schedule time, so it's a `schedule`
+/// argument). Unlike the old awaited call, `stop` can't recall it —
+/// a "New chat" mid-title still names the ended session.
+pub(super) struct TitleSidecar {
+    db: Arc<Db>,
+    titled: Arc<dyn Fn(i64) + Send + Sync>,
+}
+
+impl TitleSidecar {
+    pub(super) fn new(db: Arc<Db>, titled: Arc<dyn Fn(i64) + Send + Sync>) -> Self {
+        Self { db, titled }
+    }
+
+    /// Fire-and-forget: the ask task never waits on it. The
+    /// still-untitled check runs here so an already-named session —
+    /// every send after the first — never spawns; the write-side
+    /// `title IS NULL` guard keeps the write first-wins anyway.
+    /// `None` session or an unreadable row never tasks.
+    pub(super) fn schedule(
+        self,
+        provider: Arc<dyn Provider>,
+        session_id: Option<i64>,
+        question: String,
+    ) {
+        let Some(sid) = session_id else { return };
+        match self.db.session_title(sid) {
+            Ok(None) => {}
+            Ok(Some(_)) => return, // already named — never retitle
+            Err(e) => {
+                log::warn!("ask: session title read failed: {e}");
+                return;
+            }
+        }
+        let Self { db, titled } = self;
+        tauri::async_runtime::spawn(async move {
+            title_session(db.as_ref(), provider.as_ref(), sid, &question, titled.as_ref()).await;
+        });
+    }
+}
+
+/// One title attempt: a small `stream_chat` over the raw question on
+/// the provider that answered — [title prompt, question] — under a
+/// total deadline (`stream_chat` bounds only the connect; a hung call
+/// would leak the task). No cancel arm — the task deliberately
+/// survives `stop`. Failure is silent: the row keeps its
+/// first-question fallback and the next send retries. Only the first
+/// `TITLE_QUESTION_CAP` scalars of `question` are sent. On a landed
+/// write, `titled` pings `sessions:changed` — an open history list
+/// re-reads to swap the fallback for the title.
+async fn title_session(
     db: &Db,
     provider: &dyn Provider,
-    session_id: Option<i64>,
+    sid: i64,
     question: &str,
-    emit: &(dyn Fn(&str, serde_json::Value) + Send + Sync),
-    cancel: &CancellationToken,
+    titled: &(dyn Fn(i64) + Send + Sync),
 ) {
-    let Some(sid) = session_id else { return };
-    match db.session_title(sid) {
-        Ok(None) => {}
-        Ok(Some(_)) => return, // already named — never retitle
-        Err(e) => {
-            log::warn!("ask: session title read failed: {e}");
-            return;
-        }
-    }
     let question: String = question.chars().take(TITLE_QUESTION_CAP).collect();
     let msgs = [
         ChatMessage::text(Role::System, TITLE_PROMPT),
         ChatMessage::text(Role::User, question),
     ];
     let mut sink = |_: &str| {};
-    let reply = tokio::select! {
-        _ = cancel.cancelled() => return,
-        r = tokio::time::timeout(TITLE_TIMEOUT, provider.stream_chat(&msgs, &mut sink)) => r,
-    };
-    let title = match reply {
-        Ok(Ok(r)) => clean_title(&r.full),
-        Ok(Err(e)) => {
-            log::warn!("ask: title generation failed: {e}");
-            return;
-        }
+    let reply = match tokio::time::timeout(TITLE_TIMEOUT, provider.stream_chat(&msgs, &mut sink))
+        .await
+    {
+        Ok(r) => r,
         Err(_) => {
             log::warn!("ask: title generation timed out");
+            return;
+        }
+    };
+    let title = match reply {
+        Ok(r) => clean_title(&r.full),
+        Err(e) => {
+            log::warn!("ask: title generation failed: {e}");
             return;
         }
     };
@@ -53,7 +85,7 @@ pub(super) async fn maybe_title_session(
         return;
     }
     match db.session_set_title(sid, &title) {
-        Ok(true) => emit(EV_SESSIONS_CHANGED, json!({"id": sid})),
+        Ok(true) => titled(sid),
         Ok(false) => {}
         Err(e) => log::warn!("ask: session title write failed: {e}"),
     }
@@ -76,4 +108,3 @@ pub(super) fn clean_title(raw: &str) -> String {
         .trim_end();
     line.chars().take(60).collect()
 }
-

@@ -919,3 +919,328 @@ fn legacy_message_merge_rolls_back_if_drop_fails() {
         "preserve me"
     );
 }
+
+#[test]
+fn memory_profile_inserts_updates_and_manual_edits_win() {
+    let dir = tmp_dir();
+    let db = Db::at(dir.join("marvis.db")).unwrap();
+    let session_id = db.session_get_or_create_active("ask").unwrap();
+    let message_id = db
+        .message_add(session_id, "user", "My name is Allen.")
+        .unwrap();
+    let name = MemoryCandidate {
+        category: "identity".into(),
+        attribute: "name".into(),
+        value: "The user's name is Allen.".into(),
+        confidence: 0.98,
+        basis: "explicit".into(),
+    };
+
+    assert_eq!(
+        db.memory_apply(Some(session_id), Some(message_id), &[name.clone()])
+            .unwrap(),
+        1
+    );
+    let first = db.memory_profile().unwrap();
+    assert_eq!(first.len(), 1);
+    assert_eq!(first[0].value, "The user's name is Allen.");
+    assert_eq!(first[0].source_session_id, Some(session_id));
+    assert_eq!(first[0].source_message_id, Some(message_id));
+
+    let changed = MemoryCandidate {
+        value: "The user's name is Chenillen.".into(),
+        confidence: 0.99,
+        ..name.clone()
+    };
+    assert_eq!(
+        db.memory_apply(Some(session_id), Some(message_id), &[changed.clone()])
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        db.memory_profile().unwrap()[0].value,
+        "The user's name is Chenillen."
+    );
+
+    let id = db.memory_profile().unwrap()[0].id;
+    let edited = db
+        .memory_update(id, "The user's preferred name is Chenillen.")
+        .unwrap()
+        .unwrap();
+    assert_eq!(edited.source, "manual");
+    assert_eq!(edited.basis, "explicit");
+    assert_eq!(edited.confidence, 1.0);
+    assert_eq!(edited.source_session_id, None);
+    assert_eq!(edited.source_message_id, None);
+
+    // Automatic extraction must never overwrite a manual row.
+    let ignored = MemoryCandidate {
+        value: "The user's name is Different.".into(),
+        ..changed
+    };
+    assert_eq!(
+        db.memory_apply(Some(session_id), Some(message_id), &[ignored])
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        db.memory_profile().unwrap()[0].value,
+        "The user's preferred name is Chenillen."
+    );
+
+    db.memory_delete(id).unwrap();
+    assert!(db.memory_profile().unwrap().is_empty());
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Every write to `memories` leaves one `memory_history` row with the
+/// old/new values and the writer's authority — and the trail survives
+/// the fact's own deletion (the `delete` row is the last entry).
+#[test]
+fn memory_history_audits_every_write_and_survives_delete() {
+    let dir = tmp_dir();
+    let db = Db::at(dir.join("marvis.db")).unwrap();
+    let session_id = db.session_get_or_create_active("ask").unwrap();
+    let message_id = db
+        .message_add(session_id, "user", "My name is Allen.")
+        .unwrap();
+    let fact = MemoryCandidate {
+        category: "identity".into(),
+        attribute: "name".into(),
+        value: "The user's name is Allen.".into(),
+        confidence: 0.98,
+        basis: "explicit".into(),
+    };
+    db.memory_apply(Some(session_id), Some(message_id), &[fact.clone()])
+        .unwrap();
+    let id = db.memory_profile().unwrap()[0].id;
+    db.memory_apply(
+        Some(session_id),
+        Some(message_id),
+        &[MemoryCandidate {
+            value: "The user's name is Chenillen.".into(),
+            ..fact
+        }],
+    )
+    .unwrap();
+    db.memory_update(id, "The user's preferred name is Chenillen.")
+        .unwrap();
+    db.memory_delete(id).unwrap();
+
+    let history = db.memory_history(id).unwrap();
+    assert_eq!(
+        history.iter().map(|h| h.event.as_str()).collect::<Vec<_>>(),
+        ["add", "update", "update", "delete"]
+    );
+    assert_eq!(history[0].old_value, None);
+    assert_eq!(
+        history[0].new_value.as_deref(),
+        Some("The user's name is Allen.")
+    );
+    assert_eq!(history[0].source, "automatic");
+    assert_eq!(
+        history[1].old_value.as_deref(),
+        Some("The user's name is Allen.")
+    );
+    assert_eq!(
+        history[1].new_value.as_deref(),
+        Some("The user's name is Chenillen.")
+    );
+    assert_eq!(history[2].source, "manual");
+    assert_eq!(history[3].new_value, None);
+    assert_eq!(
+        history[3].old_value.as_deref(),
+        Some("The user's preferred name is Chenillen.")
+    );
+    assert!(history
+        .iter()
+        .all(|h| h.memory_id == id && h.attribute == "name"));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// `<recent_messages>` reads strictly before the source row — the
+/// newest `limit` user/assistant turns, oldest first — so the
+/// extractor's context never includes the message it's extracting.
+#[test]
+fn message_tail_reads_only_prior_turns_oldest_first() {
+    let dir = tmp_dir();
+    let db = Db::at(dir.join("marvis.db")).unwrap();
+    let session_id = db.session_get_or_create_active("ask").unwrap();
+    db.message_add(session_id, "user", "first").unwrap();
+    db.message_add(session_id, "assistant", "answer one")
+        .unwrap();
+    let source = db.message_add(session_id, "user", "the source").unwrap();
+
+    assert_eq!(
+        db.message_tail(session_id, source, 6).unwrap(),
+        vec![
+            ("user".to_string(), "first".to_string()),
+            ("assistant".to_string(), "answer one".to_string()),
+        ]
+    );
+    assert_eq!(
+        db.message_tail(session_id, source, 1).unwrap(),
+        vec![("assistant".to_string(), "answer one".to_string())]
+    );
+    assert!(db.message_tail(session_id, 1, 6).unwrap().is_empty());
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn memory_source_foreign_keys_are_cleared_when_history_is_deleted() {
+    let dir = tmp_dir();
+    let db = Db::at(dir.join("marvis.db")).unwrap();
+    let session_id = db.session_get_or_create_active("ask").unwrap();
+    let message_id = db
+        .message_add(session_id, "user", "I prefer lists.")
+        .unwrap();
+    db.memory_apply(
+        Some(session_id),
+        Some(message_id),
+        &[MemoryCandidate {
+            category: "preference".into(),
+            attribute: "formatting".into(),
+            value: "The user prefers lists.".into(),
+            confidence: 0.9,
+            basis: "explicit".into(),
+        }],
+    )
+    .unwrap();
+
+    db.session_delete(session_id).unwrap();
+    let row = &db.memory_profile().unwrap()[0];
+    assert_eq!(row.source_session_id, None);
+    assert_eq!(row.source_message_id, None);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn existing_database_open_creates_memory_table_without_backfill() {
+    let dir = tmp_dir();
+    let path = dir.join("marvis.db");
+    std::fs::create_dir_all(&dir).unwrap();
+    let conn = Connection::open(&path).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE sessions (id INTEGER PRIMARY KEY, type TEXT NOT NULL, started_at INTEGER NOT NULL, last_active_at INTEGER NOT NULL);",
+    )
+    .unwrap();
+    drop(conn);
+
+    let db = Db::at(&path).unwrap();
+    assert!(db.memory_profile().unwrap().is_empty());
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// `(category, attribute)` is structurally unique on a fresh database:
+/// a second row under the same key can never land, and the apply path
+/// still updates that key in place.
+#[test]
+fn memory_key_is_unique_and_updates_in_place() {
+    let dir = tmp_dir();
+    let db = Db::at(dir.join("marvis.db")).unwrap();
+    let session_id = db.session_get_or_create_active("ask").unwrap();
+    let message_id = db.message_add(session_id, "user", "Call me Al.").unwrap();
+    db.memory_apply(
+        Some(session_id),
+        Some(message_id),
+        &[MemoryCandidate {
+            category: "identity".into(),
+            attribute: "name".into(),
+            value: "The user goes by Al.".into(),
+            confidence: 0.9,
+            basis: "explicit".into(),
+        }],
+    )
+    .unwrap();
+
+    // A duplicate key cannot be inserted by any path — not even a raw
+    // write that bypasses `memory_apply`'s select-then-upsert.
+    let conn = db.conn.lock();
+    let dup = conn.execute(
+        "INSERT INTO memories (category, attribute, value, confidence, basis, source, created_at, updated_at)
+         VALUES ('identity', 'name', 'duplicate', 1.0, 'explicit', 'automatic', 0, 0)",
+        [],
+    );
+    assert!(dup.is_err());
+    drop(conn);
+
+    // Same key through the normal path still updates the row in place.
+    db.memory_apply(
+        Some(session_id),
+        Some(message_id),
+        &[MemoryCandidate {
+            category: "identity".into(),
+            attribute: "name".into(),
+            value: "The user goes by Allen.".into(),
+            confidence: 0.95,
+            basis: "explicit".into(),
+        }],
+    )
+    .unwrap();
+    let profile = db.memory_profile().unwrap();
+    assert_eq!(profile.len(), 1);
+    assert_eq!(profile[0].value, "The user goes by Allen.");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// A database written before the constraint can hold synonym-slug or
+/// duplicate-key rows. Migration collapses each key to one row —
+/// keeping the manual row when present (user authority), else the
+/// newest — then installs the unique index.
+#[test]
+fn migration_dedups_memory_keys_and_manual_rows_win() {
+    let dir = tmp_dir();
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("marvis.db");
+    {
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE memories (
+                id               INTEGER PRIMARY KEY,
+                category         TEXT NOT NULL,
+                attribute        TEXT NOT NULL,
+                value            TEXT NOT NULL,
+                confidence       REAL NOT NULL,
+                basis            TEXT NOT NULL,
+                source           TEXT NOT NULL,
+                source_session_id INTEGER,
+                source_message_id INTEGER,
+                created_at       INTEGER NOT NULL,
+                updated_at       INTEGER NOT NULL
+            );
+            CREATE INDEX memories_category_attribute
+                ON memories(category, attribute);
+            INSERT INTO memories (category, attribute, value, confidence, basis, source, created_at, updated_at) VALUES
+                ('identity', 'name', 'auto name', 0.9, 'explicit', 'automatic', 1, 1),
+                ('identity', 'name', 'manual name', 1.0, 'explicit', 'manual', 2, 2),
+                ('preference', 'theme', 'old theme', 0.8, 'inferred', 'automatic', 1, 1),
+                ('preference', 'theme', 'new theme', 0.9, 'explicit', 'automatic', 2, 3);",
+        )
+        .unwrap();
+    }
+
+    {
+        let db = Db::at(&path).unwrap();
+        let profile = db.memory_profile().unwrap();
+        assert_eq!(profile.len(), 2);
+        let name = profile.iter().find(|m| m.attribute == "name").unwrap();
+        assert_eq!(name.value, "manual name");
+        assert_eq!(name.source, "manual");
+        let theme = profile.iter().find(|m| m.attribute == "theme").unwrap();
+        assert_eq!(theme.value, "new theme");
+
+        let conn = db.conn.lock();
+        let dup = conn.execute(
+            "INSERT INTO memories (category, attribute, value, confidence, basis, source, created_at, updated_at)
+             VALUES ('identity', 'name', 'dup', 1.0, 'explicit', 'automatic', 0, 0)",
+            [],
+        );
+        assert!(dup.is_err());
+    }
+    // Reopening is idempotent — the index exists, the dedup is a no-op.
+    {
+        let db = Db::at(&path).unwrap();
+        assert_eq!(db.memory_profile().unwrap().len(), 2);
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

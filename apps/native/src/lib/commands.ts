@@ -144,6 +144,30 @@ export interface PromptPrefs {
   custom: Preset[];
 }
 
+/** `[memory]` section — the consent-gated local memory extractor. Off by
+ *  default; `provider`/`model` are a DEDICATED selection independent of
+ *  the Ask failover chain (`''`/`''` = unconfigured). */
+export interface MemoryPrefs {
+  enabled: boolean;
+  provider: string;
+  model: string;
+}
+
+/** `memory_list` / `memory_update` row (storage.rs `Memory`). */
+export interface Memory {
+  id: number;
+  category: 'identity' | 'preference';
+  attribute: string;
+  value: string;
+  confidence: number;
+  basis: 'explicit' | 'inferred';
+  source: 'automatic' | 'manual';
+  source_session_id: number | null;
+  source_message_id: number | null;
+  created_at: number;
+  updated_at: number;
+}
+
 /** `config_get` / `config_set` return / `config:changed` payload. */
 export interface Config {
   app: AppPrefs;
@@ -155,6 +179,7 @@ export interface Config {
   compat: CompatPrefs;
   vision: VisionPrefs;
   prompts: PromptPrefs;
+  memory: MemoryPrefs;
 }
 
 /** `session_list` row (storage.rs `Session`; `kind` is the `type` column). */
@@ -305,9 +330,11 @@ export interface AskSendOpts {
   attachments?: AskImageInput[];
 }
 
-/** Fire-and-forget: returns after pre-flight; tokens stream as `ask:*`. */
+/** Fire-and-forget: returns after pre-flight; tokens stream as `ask:*`.
+ *  Resolves `false` when the send was refused — that session already
+ *  has a live run — so the composer can keep the draft. */
 export const askSend = (text: string, opts: AskSendOpts = {}) =>
-  invoke<void>('ask_send', {
+  invoke<boolean>('ask_send', {
     text,
     withScreen: opts.withScreen ?? false,
     listenId: opts.listenId,
@@ -326,8 +353,20 @@ export const askRetry = () => invoke<void>('ask_retry');
 
 export const askClose = () => invoke<void>('ask_close');
 
-/** `ask_current` return — the in-flight run's resync payload. */
-export interface AskCurrent {
+/** The composer's stop — cancels ONE session's in-flight run; every
+ *  other session's run streams on. (`ask_close` is collapse-only.) */
+export const askStop = (sessionId: number) =>
+  invoke<void>('ask_stop', { sessionId });
+
+/** `ask_runs` row — one run's resync snapshot, keyed by the session it
+ *  writes into. */
+export interface AskRunSnapshot {
+  /** The session the run belongs to — `null` on the sessionless
+   *  pre-flight orphan (errors that fire before a session exists). */
+  session_id: number | null;
+  /** The run's generation — the newest-run bound for stale packets
+   *  (`run` on every `ask:*` event). */
+  run?: number;
   state: 'idle' | 'loading' | 'streaming';
   question: string;
   response: string;
@@ -339,8 +378,9 @@ export interface AskCurrent {
   attachments: MessageAttachment[];
 }
 
-/** The live ask tail — a re-expanded chat resyncs from this. */
-export const askCurrent = () => invoke<AskCurrent>('ask_current');
+/** Every run's tail — a remounting chat folds its own session's entry;
+ *  the activity mirror folds them all. */
+export const askRuns = () => invoke<AskRunSnapshot[]>('ask_runs');
 
 // ---------------------------------------------------------------------------
 // presets
@@ -725,6 +765,40 @@ export const saveTextFile = (suggestedName: string, contents: string) =>
 /** Session WAV export: native save dialog + byte-for-byte copy. */
 export const saveAudioFile = (sessionId: number, suggestedName: string) =>
   invoke<string | null>('save_audio_file', { sessionId, suggestedName });
+
+// ---------------------------------------------------------------------------
+// memory — the consent-gated local profile rows; every successful
+// mutation also lands as a `memory:changed` broadcast
+// ---------------------------------------------------------------------------
+
+export const memoryList = () => invoke<Memory[]>('memory_list');
+
+/** Manual edit — marks the row `source = 'manual'` so extraction can't
+ * overwrite it. Resolves to the updated row; rejects `'Memory not
+ * found'` on a stale id. */
+export const memoryUpdate = (id: number, value: string) =>
+  invoke<Memory>('memory_update', { id, value });
+
+export const memoryDelete = (id: number) =>
+  invoke<void>('memory_delete', { id });
+
+/** `memory_history` row (storage.rs `MemoryHistory`) — one audit entry
+ *  per add/edit/delete of a fact; survives the fact's own deletion. */
+export interface MemoryHistory {
+  id: number;
+  memory_id: number;
+  category: string;
+  attribute: string;
+  event: 'add' | 'update' | 'delete';
+  old_value: string | null;
+  new_value: string | null;
+  source: 'automatic' | 'manual';
+  created_at: number;
+}
+
+/** One fact's audit trail, oldest first. */
+export const memoryHistory = (id: number) =>
+  invoke<MemoryHistory[]>('memory_history', { id });
 
 // ---------------------------------------------------------------------------
 // config / app

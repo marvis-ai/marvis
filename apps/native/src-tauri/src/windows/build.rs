@@ -25,16 +25,20 @@ pub(super) fn accent_glass_tint(accent: &str) -> Option<String> {
 #[cfg(target_os = "macos")]
 pub(super) fn order_front_unfocused(win: &WebviewWindow) {
     use objc2_app_kit::NSWindow;
-    match win.ns_window() {
-        // SAFETY: tauri hands us the live NSWindow for `win`.
+    let handle = win.clone();
+    // Resolve and use the native window on the main thread, keeping the
+    // Tauri handle alive through dispatch.
+    if let Err(e) = win.run_on_main_thread(move || match handle.ns_window() {
         Ok(ptr) => unsafe {
+            // SAFETY: Tauri resolved this live NSWindow on the main thread;
+            // it is used immediately while the cloned handle is held.
             let ns_win = &*(ptr as *const NSWindow);
             ns_win.orderFront(None);
         },
-        Err(e) => {
-            log::warn!("windows: palette orderFront failed ({e}) — falling back to show");
-            let _ = win.show();
-        }
+        Err(e) => log::warn!("windows: palette NSWindow lookup failed ({e})"),
+    }) {
+        log::warn!("windows: palette orderFront hop failed ({e}) — falling back to show");
+        let _ = win.show();
     }
 }
 

@@ -5,6 +5,7 @@
  */
 import { useState } from 'react';
 import {
+  BrainIcon,
   InfoIcon,
   KeyboardIcon,
   KeyRoundIcon,
@@ -18,6 +19,7 @@ import { AboutTab } from './AboutTab';
 import { BarTab } from './BarTab';
 import { GeneralTab } from './GeneralTab';
 import { HotkeysTab } from './HotkeysTab';
+import { MemoryTab } from './MemoryTab';
 import { PrivacyTab } from './PrivacyTab';
 import { PresetsTab } from './PresetsTab';
 import { ProvidersTab } from './ProvidersTab';
@@ -30,6 +32,7 @@ const TABS = [
   { id: 'bar', label: 'Bar', icon: PanelTopIcon },
   { id: 'recording', label: 'Recording', icon: VideoIcon },
   { id: 'presets', label: 'Presets', icon: MessageSquareTextIcon },
+  { id: 'memory', label: 'Memory', icon: BrainIcon },
   { id: 'providers', label: 'Providers', icon: KeyRoundIcon },
   { id: 'hotkeys', label: 'Hotkeys', icon: KeyboardIcon },
   { id: 'privacy', label: 'Privacy & data', icon: ShieldIcon },
@@ -76,6 +79,7 @@ export const SettingsMode = ({ data }: { data: PrefsData }) => {
         {tab === 'bar' && <BarTab />}
         {tab === 'recording' && <RecordingTab data={data} />}
         {tab === 'presets' && <PresetsTab data={data} />}
+        {tab === 'memory' && <MemoryTab data={data} />}
         {tab === 'providers' && <ProvidersTab data={data} />}
         {tab === 'hotkeys' && <HotkeysTab data={data} />}
         {tab === 'privacy' && <PrivacyTab />}

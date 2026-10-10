@@ -6,7 +6,7 @@ use super::title::*;
     use std::future::Future;
     use std::path::PathBuf;
     use std::pin::Pin;
-    use std::sync::atomic::AtomicU32;
+    use std::sync::atomic::{AtomicBool, AtomicU32};
     use std::time::Duration;
 
     /// Scripted provider: each `stream_chat` call pops the next behaviour
@@ -48,7 +48,7 @@ use super::title::*;
         ProviderCandidate {
             id: id.to_string(),
             model: "mock-model".to_string(),
-            provider: Box::new(provider),
+            provider: Arc::new(provider),
         }
     }
 
@@ -115,6 +115,15 @@ use super::title::*;
         (name.to_string(), payload)
     }
 
+    /// Expected-event builder for session-bound packets: `send_chain`
+    /// `session_id`-tags every emit once the run's session resolves —
+    /// the webview's wrong-conversation filter reads it — and every
+    /// test session minted here is id 1.
+    fn bound(name: &str, mut payload: serde_json::Value) -> (String, serde_json::Value) {
+        payload["session_id"] = json!(1);
+        (name.to_string(), payload)
+    }
+
     /// Unique temp dir per test; `Db::at` creates it.
     fn tmp_dir() -> PathBuf {
         static N: AtomicU32 = AtomicU32::new(0);
@@ -136,6 +145,7 @@ use super::title::*;
             None,
             None,
             "en",
+            None,
             None,
         );
         let system = match &messages[0].content[0] {
@@ -169,6 +179,7 @@ use super::title::*;
             None,
             "en",
             None,
+            None,
         );
         let parts = &messages[1].content;
         assert!(matches!(&parts[0], ContentPart::Text(t) if t.contains("what are these?")));
@@ -183,9 +194,32 @@ use super::title::*;
     #[test]
     fn build_messages_without_images_keeps_single_text_part() {
         let messages =
-            build_messages(&[], "", "q", &[], None, None, None, "en", None);
+            build_messages(&[], "", "q", &[], None, None, None, "en", None, None);
         assert_eq!(messages[1].content.len(), 1);
         assert_request_text(&messages[1], "q");
+    }
+
+    /// The memory profile block lands in the SYSTEM message as untrusted
+    /// data — the user's request stays the bare text in the user turn.
+    #[test]
+    fn build_messages_puts_profile_in_system_and_keeps_request_in_user_message() {
+        let messages = build_messages(
+            &[],
+            "",
+            "What should I do?",
+            &[],
+            None,
+            None,
+            None,
+            "en",
+            None,
+            Some("<user_profile>\n- preference/response_style: concise\n</user_profile>"),
+        );
+        let system = text_of(&messages[0]);
+        let request = text_of(&messages[1]);
+        assert!(system.contains("<user_profile>"));
+        assert!(system.contains("concise"));
+        assert_eq!(request, "What should I do?");
     }
 
     fn test_frame() -> Frame {
@@ -252,6 +286,14 @@ use super::title::*;
         assert_eq!(text, request);
     }
 
+    /// The first text part of a message — panics on image-only content.
+    fn text_of(message: &ChatMessage) -> &str {
+        match &message.content[0] {
+            ContentPart::Text(text) => text,
+            _ => panic!("expected a text part"),
+        }
+    }
+
     #[tokio::test]
     async fn send_chain_streams_ordered_chunks_and_persists_both_messages() {
         let dir = tmp_dir();
@@ -298,19 +340,19 @@ use super::title::*;
         assert_eq!(
             got,
             vec![
-                ev(
+                bound(
                     EV_STATE,
-                    json!({"state": "loading", "question": "what is this?", "preset": null, "attachments": shot})
+                    json!({"state": "loading", "question": "what is this?", "preset": null, "attempt": 0, "regenerate": false, "attachments": shot})
                 ),
-                ev(EV_STATE, json!({"state": "streaming"})),
-                ev(EV_CHUNK, json!({"text": "Hello"})),
-                ev(EV_CHUNK, json!({"text": " "})),
-                ev(EV_CHUNK, json!({"text": "world"})),
-                ev(
+                bound(EV_STATE, json!({"state": "streaming"})),
+                bound(EV_CHUNK, json!({"text": "Hello"})),
+                bound(EV_CHUNK, json!({"text": " "})),
+                bound(EV_CHUNK, json!({"text": "world"})),
+                bound(
                     EV_DONE,
                     json!({"full": "Hello world", "provider": "openai", "model": "mock-model", "usage": null})
                 ),
-                ev(EV_STATE, json!({"state": "idle"})),
+                bound(EV_STATE, json!({"state": "idle"})),
             ]
         );
 
@@ -322,11 +364,10 @@ use super::title::*;
         assert_eq!(msgs[1].role, "assistant");
         assert_eq!(msgs[1].content, "Hello world");
 
-        // The answer call's user message carried the image; the second
-        // call is the title sidecar (its empty default reply writes no
-        // title and emits no `sessions:changed`).
+        // The answer call's user message carried the image — the only
+        // call, `title` being `None` here.
         let calls = calls.lock();
-        assert_eq!(calls.len(), 2);
+        assert_eq!(calls.len(), 1);
         assert_eq!(calls[0][1].role, Role::User);
         assert!(has_image(&calls[0][1]));
 
@@ -378,9 +419,9 @@ use super::title::*;
         // The `loading` emit announces the armed id to the card.
         assert_eq!(
             events.lock()[0],
-            ev(
+            bound(
                 EV_STATE,
-                json!({"state": "loading", "question": "hi", "preset": "b:concise"})
+                json!({"state": "loading", "question": "hi", "preset": "b:concise", "attempt": 0, "regenerate": false})
             )
         );
 
@@ -423,30 +464,31 @@ use super::title::*;
         .unwrap();
         assert_eq!(full, "ok");
         assert_eq!(first_calls.lock().len(), 1);
-        // The answer plus the title sidecar on the provider that spoke.
-        assert_eq!(second_calls.lock().len(), 2);
+        // Just the answer on the provider that spoke.
+        assert_eq!(second_calls.lock().len(), 1);
 
         // loading → (fail) → loading reset → streaming → done naming the
-        // SECOND provider — no ask:error between the attempts.
+        // SECOND provider — no ask:error between the attempts. The
+        // hand-off re-emit carries `attempt: 1`.
         let got = events.lock().clone();
         assert_eq!(
             got,
             vec![
-                ev(
+                bound(
                     EV_STATE,
-                    json!({"state": "loading", "question": "q", "preset": null})
+                    json!({"state": "loading", "question": "q", "preset": null, "attempt": 0, "regenerate": false})
                 ),
-                ev(
+                bound(
                     EV_STATE,
-                    json!({"state": "loading", "question": "q", "preset": null})
+                    json!({"state": "loading", "question": "q", "preset": null, "attempt": 1, "regenerate": false})
                 ),
-                ev(EV_STATE, json!({"state": "streaming"})),
-                ev(EV_CHUNK, json!({"text": "ok"})),
-                ev(
+                bound(EV_STATE, json!({"state": "streaming"})),
+                bound(EV_CHUNK, json!({"text": "ok"})),
+                bound(
                     EV_DONE,
                     json!({"full": "ok", "provider": "gemini", "model": "mock-model", "usage": null})
                 ),
-                ev(EV_STATE, json!({"state": "idle"})),
+                bound(EV_STATE, json!({"state": "idle"})),
             ]
         );
         // One assistant row, from the provider that answered.
@@ -492,16 +534,16 @@ use super::title::*;
         assert_eq!(
             events.lock().clone(),
             vec![
-                ev(
+                bound(
                     EV_STATE,
-                    json!({"state": "loading", "question": "q", "preset": null})
+                    json!({"state": "loading", "question": "q", "preset": null, "attempt": 0, "regenerate": false})
                 ),
-                ev(
+                bound(
                     EV_STATE,
-                    json!({"state": "loading", "question": "q", "preset": null})
+                    json!({"state": "loading", "question": "q", "preset": null, "attempt": 1, "regenerate": false})
                 ),
-                ev(EV_ERROR, json!({"message": "http 500: boom"})),
-                ev(EV_STATE, json!({"state": "idle"})),
+                bound(EV_ERROR, json!({"message": "http 500: boom"})),
+                bound(EV_STATE, json!({"state": "idle"})),
             ]
         );
         assert_eq!(ask_messages(&db).len(), 1); // user row only
@@ -586,10 +628,9 @@ use super::title::*;
         .unwrap();
         assert_eq!(full, "answer");
 
-        // Call 1 carried the image; the retry must be text-only; call 3
-        // is the title sidecar.
+        // Call 1 carried the image; the retry must be text-only.
         let calls = calls.lock();
-        assert_eq!(calls.len(), 3);
+        assert_eq!(calls.len(), 2);
         assert!(has_image(&calls[0][1]));
         assert!(!has_image(&calls[1][1]));
         assert_request_text(&calls[1][1], "q");
@@ -646,15 +687,15 @@ use super::title::*;
         assert_eq!(
             got,
             vec![
-                ev(
+                bound(
                     EV_STATE,
-                    json!({"state": "loading", "question": "q", "preset": null})
+                    json!({"state": "loading", "question": "q", "preset": null, "attempt": 0, "regenerate": false})
                 ),
-                ev(
+                bound(
                     EV_ERROR,
                     json!({"message": LlmError::MultimodalUnsupported.to_string()})
                 ),
-                ev(EV_STATE, json!({"state": "idle"})),
+                bound(EV_STATE, json!({"state": "idle"})),
             ]
         );
         assert_eq!(ask_messages(&db).len(), 1); // user row only
@@ -710,11 +751,11 @@ use super::title::*;
         assert_eq!(
             got,
             vec![
-                ev(
+                bound(
                     EV_STATE,
-                    json!({"state": "loading", "question": "q", "preset": null, "attachments": shot})
+                    json!({"state": "loading", "question": "q", "preset": null, "attempt": 0, "regenerate": false, "attachments": shot})
                 ),
-                ev(EV_STATE, json!({"state": "idle"})),
+                bound(EV_STATE, json!({"state": "idle"})),
             ]
         );
 
@@ -756,7 +797,7 @@ use super::title::*;
         .unwrap();
 
         let calls = calls.lock();
-        assert_eq!(calls.len(), 2); // answer + title sidecar
+        assert_eq!(calls.len(), 1); // the answer only
         assert_request_text(&calls[0][1], "q");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -799,12 +840,12 @@ use super::title::*;
         assert_eq!(
             got,
             vec![
-                ev(
+                bound(
                     EV_STATE,
-                    json!({"state": "loading", "question": "q", "preset": null, "attachments": shot})
+                    json!({"state": "loading", "question": "q", "preset": null, "attempt": 0, "regenerate": false, "attachments": shot})
                 ),
-                ev(EV_ERROR, json!({"message": LlmError::Auth.to_string()})),
-                ev(EV_STATE, json!({"state": "idle"})),
+                bound(EV_ERROR, json!({"message": LlmError::Auth.to_string()})),
+                bound(EV_STATE, json!({"state": "idle"})),
             ]
         );
         assert_eq!(ask_messages(&db).len(), 1); // user row only
@@ -1108,9 +1149,9 @@ use super::title::*;
         drop(vcalls);
 
         // The retried call: no image parts, the description riding
-        // <attached_images>; then the title sidecar.
+        // <attached_images>.
         let ccalls = chat_calls.lock();
-        assert_eq!(ccalls.len(), 3);
+        assert_eq!(ccalls.len(), 2);
         assert!(has_image(&ccalls[0][1])); // the rejected attempt got the real bytes
         let retry = &ccalls[1][1];
         assert!(!has_image(retry));
@@ -1186,8 +1227,7 @@ use super::title::*;
 
         assert_eq!(vision_calls.lock().len(), 1);
         let second = second_calls.lock();
-        // image attempt → described retry → (no title sidecar: the
-        // session was titled... actually untitled — sidecar follows)
+        // image attempt → described retry.
         assert!(has_image(&second[0][1]));
         let retry = &second[1][1];
         assert!(!has_image(retry));
@@ -1246,7 +1286,7 @@ use super::title::*;
         // The next candidate still got the real image — a failed read
         // must not silently strip the attachment.
         let second = second_calls.lock();
-        assert_eq!(second.len(), 2); // answer + title sidecar
+        assert_eq!(second.len(), 1); // the answer only
         assert!(has_image(&second[0][1]));
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1944,7 +1984,7 @@ use super::title::*;
 
         // The chain got the raw screenshot as an image part.
         let ccalls = chat_calls.lock();
-        assert_eq!(ccalls.len(), 2); // answer + title sidecar
+        assert_eq!(ccalls.len(), 1); // the answer only
         assert!(has_image(&ccalls[0][1]));
         drop(ccalls);
         assert_eq!(vision_calls.lock().len(), 0);
@@ -2266,11 +2306,15 @@ use super::title::*;
         assert_eq!(msgs[3].tokens_in, Some(10));
         assert_eq!(msgs[3].tokens_out, Some(4));
 
-        // `ask:done` reports the same spend.
+        // `ask:done` reports the same spend — and `loading` marked the
+        // run a re-ask (`regenerate`) so the card folds in place rather
+        // than appending a phantom turn.
         let got = events.lock().clone();
         assert!(got
             .iter()
             .any(|(n, p)| { n == EV_DONE && p["usage"] == json!({"input": 10, "output": 4}) }));
+        assert_eq!(got[0].1["regenerate"], json!(true));
+        assert_eq!(got[0].1["attempt"], json!(0));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2512,138 +2556,165 @@ use super::title::*;
     }
 
     /// The first answered send names a still-untitled session: the
-    /// provider that answered gets one extra call — [title prompt, raw
-    /// question] — its reply is cleaned, stored first-wins, and pinged
-    /// to the card after `idle`.
+    /// provider that answered gets a detached sidecar call — [title
+    /// prompt, raw question] — its reply is cleaned, stored first-wins,
+    /// and pinged through `titled` (the `sessions:changed` emit).
     #[tokio::test]
     async fn send_chain_titles_an_untitled_session() {
         let dir = tmp_dir();
-        let db = Db::at(dir.join("marvis.db")).unwrap();
+        let db = Arc::new(Db::at(dir.join("marvis.db")).unwrap());
         let provider = MockProvider::new(vec![
             Behavior::Tokens(vec!["answer".into()]),
             Behavior::Tokens(vec!["\"Capsule width fix\"\nignored".into()]),
         ]);
         let calls = provider.calls();
-        let (events, emit) = recorder();
+        let (_events, emit) = recorder();
         let reader = screen_read::ScreenReader::new();
         let ring = Mutex::new(RingBuffer::new(4, 1 << 20));
         let input = input(&reader, &ring);
         let cancel = CancellationToken::new();
+        let titled_ids = Arc::new(Mutex::new(Vec::<i64>::new()));
+        let titled: Arc<dyn Fn(i64) + Send + Sync> = {
+            let ids = Arc::clone(&titled_ids);
+            Arc::new(move |sid| ids.lock().push(sid))
+        };
 
         send_chain(
             vec![candidate("openai", provider)],
             None,
-            &db,
+            db.as_ref(),
             &emit,
             &input,
             &cancel,
             ChainOpts {
                 text: "how do I fix the capsule width?",
                 language: "en",
+                title: Some(TitleSidecar::new(Arc::clone(&db), titled)),
                 ..ChainOpts::default()
             },
         )
         .await
         .unwrap();
 
+        // The sidecar runs detached — poll for the ping like the
+        // memory hook's `changed`.
+        for _ in 0..40 {
+            if !titled_ids.lock().is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
         let sid = db.session_active_id("ask").unwrap().unwrap();
+        assert_eq!(titled_ids.lock().as_slice(), &[sid]);
         assert_eq!(
             db.session_title(sid).unwrap().as_deref(),
             Some("Capsule width fix")
         );
 
         // The sidecar gets the raw question, not the context-wrapped
-        // wire text.
+        // wire text — the ping already proves the call recorded.
         let calls = calls.lock();
         assert_eq!(calls.len(), 2);
         assert_eq!(calls[1][0].role, Role::System);
         assert_request_text(&calls[1][1], "how do I fix the capsule width?");
-        drop(calls);
-
-        // The ping lands after `idle` — an open history list re-reads.
-        let got = events.lock().clone();
-        assert_eq!(
-            got[got.len() - 2..],
-            [
-                ev(EV_STATE, json!({"state": "idle"})),
-                ev(EV_SESSIONS_CHANGED, json!({"id": sid})),
-            ]
-        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// An already-titled session never retitles — the NULL guard
-    /// short-circuits before the provider sees a sidecar call.
+    /// An already-titled session never retitles — `schedule`'s
+    /// still-untitled check short-circuits before a task even spawns.
     #[tokio::test]
     async fn send_chain_never_retitles_a_named_session() {
         let dir = tmp_dir();
-        let db = Db::at(dir.join("marvis.db")).unwrap();
+        let db = Arc::new(Db::at(dir.join("marvis.db")).unwrap());
         let sid = db.session_get_or_create_active("ask").unwrap();
         assert!(db.session_set_title(sid, "already named").unwrap());
         let provider = MockProvider::new(vec![Behavior::Tokens(vec!["ok".into()])]);
         let calls = provider.calls();
-        let (events, emit) = recorder();
+        let (_events, emit) = recorder();
         let reader = screen_read::ScreenReader::new();
         let ring = Mutex::new(RingBuffer::new(4, 1 << 20));
         let input = input(&reader, &ring);
         let cancel = CancellationToken::new();
+        let titled = Arc::new(AtomicBool::new(false));
+        let titled_cb: Arc<dyn Fn(i64) + Send + Sync> = {
+            let titled = Arc::clone(&titled);
+            Arc::new(move |_| titled.store(true, Ordering::SeqCst))
+        };
 
         send_chain(
             vec![candidate("openai", provider)],
             None,
-            &db,
+            db.as_ref(),
             &emit,
             &input,
             &cancel,
             ChainOpts {
                 text: "q",
                 language: "en",
+                title: Some(TitleSidecar::new(Arc::clone(&db), titled_cb)),
                 ..ChainOpts::default()
             },
         )
         .await
         .unwrap();
 
+        // schedule() returned before spawning — synchronous, no settle.
         assert_eq!(calls.lock().len(), 1); // the answer only — no title call
         assert_eq!(
             db.session_title(sid).unwrap().as_deref(),
             Some("already named")
         );
-        assert!(events.lock().iter().all(|(n, _)| n != EV_SESSIONS_CHANGED));
+        assert!(!titled.load(Ordering::SeqCst));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// A failed title call writes nothing and emits nothing — the run
+    /// A failed title call writes nothing and pings nothing — the run
     /// is unaffected and the next send retries.
     #[tokio::test]
     async fn send_chain_title_failure_keeps_the_fallback() {
         let dir = tmp_dir();
-        let db = Db::at(dir.join("marvis.db")).unwrap();
+        let db = Arc::new(Db::at(dir.join("marvis.db")).unwrap());
         let provider = MockProvider::new(vec![
             Behavior::Tokens(vec!["ok".into()]),
             Behavior::Fail(LlmError::Auth),
         ]);
-        let (events, emit) = recorder();
+        let calls = provider.calls();
+        let (_events, emit) = recorder();
         let reader = screen_read::ScreenReader::new();
         let ring = Mutex::new(RingBuffer::new(4, 1 << 20));
         let input = input(&reader, &ring);
         let cancel = CancellationToken::new();
+        let titled = Arc::new(AtomicBool::new(false));
+        let titled_cb: Arc<dyn Fn(i64) + Send + Sync> = {
+            let titled = Arc::clone(&titled);
+            Arc::new(move |_| titled.store(true, Ordering::SeqCst))
+        };
 
         send_chain(
             vec![candidate("openai", provider)],
             None,
-            &db,
+            db.as_ref(),
             &emit,
             &input,
             &cancel,
             ChainOpts {
                 text: "q",
                 language: "en",
+                title: Some(TitleSidecar::new(Arc::clone(&db), titled_cb)),
                 ..ChainOpts::default()
             },
         )
         .await
         .unwrap();
+
+        // Wait out the detached sidecar's failed call.
+        for _ in 0..40 {
+            if calls.lock().len() >= 2 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
 
         let sid = db.session_active_id("ask").unwrap().unwrap();
         assert_eq!(db.session_title(sid).unwrap(), None);
@@ -2656,7 +2727,7 @@ use super::title::*;
             .find(|s| s.id == sid)
             .unwrap();
         assert_eq!(session.title.as_deref(), Some("q"));
-        assert!(events.lock().iter().all(|(n, _)| n != EV_SESSIONS_CHANGED));
+        assert!(!titled.load(Ordering::SeqCst));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2677,21 +2748,72 @@ use super::title::*;
         assert_eq!(AskState::Streaming.as_str(), "streaming");
     }
 
-    /// The cold-open resync contract: `ask:error` rides `ask_current`
-    /// until a `loading` boundary supersedes it — the trailing `idle`
-    /// of the loading→error→idle sequence must NOT clear it, or a
-    /// pre-flight error would be lost before the webview listens.
+    /// The cold-open resync contract: a sessionless `ask:error` rides
+    /// `ask_runs` until a `loading` boundary supersedes it — the
+    /// trailing `idle` of the loading→error→idle sequence must NOT
+    /// clear it, or a pre-flight error would be lost before the
+    /// webview listens.
     #[test]
-    fn observe_keeps_the_last_error_for_resync_until_loading() {
+    fn orphan_error_resyncs_until_a_loading_boundary() {
         let svc = AskService::new();
-        assert!(svc.current_payload()["error"].is_null());
-        svc.observe(EV_ERROR, &json!({"message": "boom", "needs_setup": true}));
-        svc.observe(EV_STATE, &json!({"state": "idle"}));
-        let payload = svc.current_payload();
-        assert_eq!(payload["error"]["message"], "boom");
-        assert_eq!(payload["error"]["needs_setup"], true);
-        svc.observe(EV_STATE, &json!({"state": "loading"}));
-        assert!(svc.current_payload()["error"].is_null());
+        assert!(svc.runs_payload().is_empty());
+        // The service-emits fold — `kick_error`/`pre_spawn_error`
+        // packets have no run to gate against.
+        svc.fold_orphan(EV_ERROR, &json!({"message": "boom", "needs_setup": true}));
+        svc.fold_orphan(EV_STATE, &json!({"state": "idle"}));
+        let payload = svc.runs_payload();
+        let orphan = payload
+            .iter()
+            .find(|p| p["session_id"].is_null())
+            .expect("orphan entry");
+        assert_eq!(orphan["error"]["message"], "boom");
+        assert_eq!(orphan["error"]["needs_setup"], true);
+        svc.fold_orphan(EV_STATE, &json!({"state": "loading"}));
+        assert!(svc.runs_payload().is_empty());
+    }
+
+    /// The multi-chat contract: runs key on their own session — a
+    /// send into a live session is refused while every other session
+    /// proceeds; stop retires exactly one run; an idle entry never
+    /// blocks that session's next send.
+    #[test]
+    fn claim_folds_and_retires_per_session() {
+        let svc = AskService::new();
+        let c7 = svc.claim(Some(7), "q7", 1).expect("fresh session runs");
+        let c9 = svc.claim(Some(9), "q9", 2).expect("a second session runs too");
+        // The same-session busy rule: a second send while 7 streams is
+        // refused — 9's run is untouched by it.
+        assert!(svc.claim(Some(7), "q7b", 3).is_none());
+        assert!(svc.fold_emit(Some(7), 1, EV_STATE, &json!({"state": "streaming"})));
+        let payload = svc.runs_payload();
+        let s7 = payload.iter().find(|p| p["session_id"] == 7).unwrap();
+        let s9 = payload.iter().find(|p| p["session_id"] == 9).unwrap();
+        assert_eq!(s7["state"], "streaming");
+        assert_eq!(s9["state"], "loading");
+        // A stale-generation emit drops — a superseded run can't
+        // clobber the current one's fold.
+        assert!(!svc.fold_emit(Some(7), 99, EV_STATE, &json!({"state": "idle"})));
+        // Stop retires exactly that session: its token cancels, its
+        // trailing emits drop, the other run streams on.
+        svc.retire(Some(7));
+        assert!(c7.is_cancelled());
+        assert!(!c9.is_cancelled());
+        assert!(!svc.fold_emit(Some(7), 1, EV_STATE, &json!({"state": "idle"})));
+        // An idle entry never blocks the next send on its session.
+        svc.fold_emit(Some(9), 2, EV_STATE, &json!({"state": "idle"}));
+        assert!(svc.claim(Some(9), "q9b", 4).is_some());
+        // A sessionless run (resolution hiccup) registers under `None`
+        // and gates + folds the same way — `retire_all` is its only
+        // out since `ask_stop` addresses a session id.
+        let cn = svc.claim(None, "q?", 5).expect("a sessionless run");
+        assert!(svc.claim(None, "q?2", 6).is_none());
+        assert!(svc.fold_emit(None, 5, EV_STATE, &json!({"state": "idle"})));
+        let cn2 = svc.claim(None, "q?2", 6).expect("an idle slot frees");
+        svc.retire(None);
+        // Retire cancels the CURRENT entry — the replaced idle run's
+        // token was never cancelled (its task had already finished).
+        assert!(cn2.is_cancelled());
+        assert!(!cn.is_cancelled());
     }
 
     // ------------------------------------------------------------------
@@ -2958,4 +3080,179 @@ async fn retry_fresh_screenshot_replaces_old_shot_and_keeps_other_images() {
     assert_ne!(images[1], vec![1]);
     drop(db);
     std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// A successful send schedules background extraction on the hook —
+/// the ask answer is unchanged and `changed` fires once the fact lands.
+#[tokio::test]
+async fn successful_send_schedules_memory_without_changing_ask_result() {
+    let dir = tmp_dir();
+    let db = Arc::new(Db::at(dir.join("marvis.db")).unwrap());
+    let reader = screen_read::ScreenReader::new();
+    let ring = Mutex::new(RingBuffer::new(8, 1024));
+    let input = input(&reader, &ring);
+    let (_events, emit) = recorder();
+    let changed = Arc::new(AtomicBool::new(false));
+    let memory_provider = MockProvider::new(vec![Behavior::Tokens(vec![
+        r#"{"facts":[{"category":"identity","attribute":"name","value":"The user's name is Allen.","confidence":0.98,"basis":"explicit"}]}"#.into(),
+    ])]);
+    let hook = MemoryHook::new(
+        MemoryService::new(),
+        Arc::clone(&db),
+        Box::new(memory_provider),
+        Arc::new({
+            let changed = Arc::clone(&changed);
+            move || changed.store(true, Ordering::SeqCst)
+        }),
+        Arc::new(|| true),
+    );
+
+    let result = send_chain(
+        vec![candidate(
+            "mock",
+            MockProvider::new(vec![Behavior::Tokens(vec!["answer".into()])]),
+        )],
+        None,
+        db.as_ref(),
+        &emit,
+        &input,
+        &CancellationToken::new(),
+        ChainOpts {
+            text: "My name is Allen.",
+            language: "en",
+            memory: Some(hook),
+            ..ChainOpts::default()
+        },
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(result, "answer");
+    for _ in 0..20 {
+        if changed.load(Ordering::SeqCst) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert!(changed.load(Ordering::SeqCst));
+    assert_eq!(db.memory_profile().unwrap()[0].attribute, "name");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// A failed send never schedules extraction — no provider call, no
+/// callback, no row.
+#[tokio::test]
+async fn failed_send_never_schedules_memory_extraction() {
+    let dir = tmp_dir();
+    let db = Arc::new(Db::at(dir.join("marvis.db")).unwrap());
+    let reader = screen_read::ScreenReader::new();
+    let ring = Mutex::new(RingBuffer::new(8, 1024));
+    let input = input(&reader, &ring);
+    let (_events, emit) = recorder();
+    let changed = Arc::new(AtomicBool::new(false));
+    let memory_provider = MockProvider::new(vec![Behavior::Tokens(vec![r#"{"facts":[]}"#.into()])]);
+    let memory_calls = memory_provider.calls();
+    let hook = MemoryHook::new(
+        MemoryService::new(),
+        Arc::clone(&db),
+        Box::new(memory_provider),
+        Arc::new({
+            let changed = Arc::clone(&changed);
+            move || changed.store(true, Ordering::SeqCst)
+        }),
+        Arc::new(|| true),
+    );
+
+    // A deterministic offline `reqwest::Error` for LlmError::Network.
+    let network = reqwest::Client::new()
+        .get("://invalid-url")
+        .send()
+        .await
+        .unwrap_err();
+    let result = send_chain(
+        vec![candidate(
+            "mock",
+            MockProvider::new(vec![Behavior::Fail(LlmError::Network(network))]),
+        )],
+        None,
+        db.as_ref(),
+        &emit,
+        &input,
+        &CancellationToken::new(),
+        ChainOpts {
+            text: "My name is Allen.",
+            language: "en",
+            memory: Some(hook),
+            ..ChainOpts::default()
+        },
+    )
+    .await;
+
+    assert!(result.is_err());
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert!(!changed.load(Ordering::SeqCst));
+    assert_eq!(memory_calls.lock().len(), 0);
+    assert!(db.memory_profile().unwrap().is_empty());
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// The consent flag is read live at extraction time, not captured when
+/// the hook was built: it flips `false` after `MemoryHook::new` (the
+/// `prepare_hook` snapshot's moment), so the scheduled job must return
+/// without the provider ever seeing the text or a fact landing.
+#[tokio::test]
+async fn memory_disabled_after_hook_creation_drops_the_extraction() {
+    let dir = tmp_dir();
+    let db = Arc::new(Db::at(dir.join("marvis.db")).unwrap());
+    let reader = screen_read::ScreenReader::new();
+    let ring = Mutex::new(RingBuffer::new(8, 1024));
+    let input = input(&reader, &ring);
+    let (_events, emit) = recorder();
+    let changed = Arc::new(AtomicBool::new(false));
+    let consent = Arc::new(AtomicBool::new(true));
+    let memory_provider = MockProvider::new(vec![Behavior::Tokens(vec![r#"{"facts":[]}"#.into()])]);
+    let memory_calls = memory_provider.calls();
+    let hook = MemoryHook::new(
+        MemoryService::new(),
+        Arc::clone(&db),
+        Box::new(memory_provider),
+        Arc::new({
+            let changed = Arc::clone(&changed);
+            move || changed.store(true, Ordering::SeqCst)
+        }),
+        Arc::new({
+            let consent = Arc::clone(&consent);
+            move || consent.load(Ordering::SeqCst)
+        }),
+    );
+    // The user disables memory while the ask streams — the hook was
+    // already prepared under the stale `true` snapshot.
+    consent.store(false, Ordering::SeqCst);
+
+    let result = send_chain(
+        vec![candidate(
+            "mock",
+            MockProvider::new(vec![Behavior::Tokens(vec!["answer".into()])]),
+        )],
+        None,
+        db.as_ref(),
+        &emit,
+        &input,
+        &CancellationToken::new(),
+        ChainOpts {
+            text: "My name is Allen.",
+            language: "en",
+            memory: Some(hook),
+            ..ChainOpts::default()
+        },
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(result, "answer");
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert_eq!(memory_calls.lock().len(), 0);
+    assert!(!changed.load(Ordering::SeqCst));
+    assert!(db.memory_profile().unwrap().is_empty());
+    let _ = std::fs::remove_dir_all(dir);
 }

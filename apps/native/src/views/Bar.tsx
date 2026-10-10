@@ -46,6 +46,7 @@ import {
   MicIcon,
   MonitorDotIcon,
   ShineBorder,
+  SquareIcon,
   WandSparklesIcon,
   XIcon,
   cn,
@@ -53,6 +54,7 @@ import {
 import {
   askClose,
   askSend,
+  askStop,
   barContextMenu,
   capturePickBegin,
   captureStop,
@@ -238,7 +240,8 @@ const Bar = () => {
     setCaptureRunning,
     captureTarget,
     setCaptureTarget,
-    askState,
+    askRuns,
+    askLive,
   } = useBarActivity();
 
   // Icon-row ⇄ input-row swap: the gate card and boot errors count as
@@ -289,10 +292,27 @@ const Bar = () => {
   /** Any live work pulses the floating shell — specific controls keep
    *  their stronger active affordances on top of it. */
   const activeWork = hasActiveWork({
-    ask: askState,
+    ask: askLive,
     listen: listenState,
     dictation: dictation.state,
   });
+  /** The session the chat surface is bound to — `ChatSection` reports
+   *  it up (`null` on a fresh New Chat, the doc's own session after a
+   *  listen-bound send). */
+  const [visibleSession, setVisibleSession] = useState<number | null>(null);
+  /** THIS conversation's run in flight — the composer swaps its
+   *  right-side affordances for the stop and refuses its own send.
+   *  Runs are per-session now, so a backgrounded session streaming on
+   *  must NOT busy another conversation's composer; the backend
+   *  refuses a busy target anyway, keeping the draft. The ref mirror
+   *  is the deferred-callback read — a submit queued behind a
+   *  dictation settle must see the latest state. */
+  const composerBusy =
+    section === 'chat' &&
+    visibleSession != null &&
+    (askRuns[visibleSession] ?? 'idle') !== 'idle';
+  const composerBusyRef = useRef(composerBusy);
+  composerBusyRef.current = composerBusy;
 
   // The boot splash (index.html) is a sibling of #root — outside React —
   // so it needs imperative removal once the intro has finished, was
@@ -391,7 +411,8 @@ const Bar = () => {
   }, [showInputRow, gate]);
 
   // Type-to-wake on the collapsed pill; Esc collapses input → capsule,
-  // and collapses the card via `ask_close` (cancel + `set_chat_open`).
+  // and collapses the card via `ask_close` (`set_chat_open` — collapse
+  // detaches the view only; runs keep streaming into their sessions).
   // `Cmd`/`Ctrl+,` opens settings — a bar-local key (fires only while
   // this window is focused), not a global hotkey.
   useEffect(() => {
@@ -615,6 +636,12 @@ const Bar = () => {
     question?: string,
     { skipSlashResolution = false } = {},
   ) => {
+    // This conversation's run is in flight — the backend refuses a
+    // busy send anyway, and swallowing it here would still have
+    // cleared the composer's text. Keep the draft; the stop button is
+    // the way to interrupt. (A different conversation's run never
+    // reaches this check.)
+    if (composerBusyRef.current) return;
     let preset = armedPresetRef.current;
     let slashInput: string | undefined;
     if (question === undefined && !skipSlashResolution) {
@@ -638,7 +665,6 @@ const Bar = () => {
         }
         preset = hit.preset;
         slashInput = rest;
-        setText('');
       }
     }
     const t0 = (slashInput ?? question ?? textRef.current).trim();
@@ -655,14 +681,10 @@ const Bar = () => {
             langParamRef.current ?? langName(mainLang),
           ).trim()
         : t0;
-    if (question === undefined) {
-      setText('');
-    }
     const presetLang =
       preset && hasLangParam(preset)
         ? (langParamRef.current ?? undefined)
         : undefined;
-    disarmPreset(); // one-shot: the badges clear when a send fires
     let listenId = section === 'listen' ? listenViewing?.id : undefined;
     if (section === 'listen' && listenId === undefined) {
       listenId =
@@ -672,8 +694,9 @@ const Bar = () => {
     }
     // Pending images ride along with the question — strip the
     // previewUrl so only the normalized payload crosses IPC. They
-    // clear once the send is actually initiated; a rejected invoke
-    // keeps them so a retry doesn't silently lose user attachments.
+    // clear once the send is actually accepted; a refused (session-
+    // busy) or failed send keeps them so a retry doesn't silently
+    // lose the draft or the attachments.
     const attachments = pendingImagesRef.current.map(
       ({ name, jpegBase64 }) => ({ name, jpegBase64 }),
     );
@@ -684,7 +707,12 @@ const Bar = () => {
       presetLang,
       attachments,
     })
-      .then(() => {
+      .then((accepted) => {
+        if (!accepted) return; // that session's own run is live
+        if (question === undefined) {
+          setText('');
+        }
+        disarmPreset(); // one-shot: the badges clear when a send fires
         setPendingImages([]);
         setAttachmentError(null);
       })
@@ -1053,10 +1081,28 @@ const Bar = () => {
             }}
             dropActive={gate === 'main' && dropActive}
           />
+          {/* A live run ON THIS conversation swaps the composer's
+            right-side affordances (attach / presets / dictation) for
+            the stop — `ask_stop` cancels that session's stream without
+            collapsing the card or touching any other session's run.
+            Leaving the view never ends the run, so no navigation
+            implies it. */}
+          {showInputRow && composerBusy && (
+            <BarButton
+              label='Stop generating'
+              title='Stop generating'
+              onPress={() => {
+                if (visibleSession != null) {
+                  void askStop(visibleSession).catch(() => {});
+                }
+              }}>
+              <SquareIcon className='size-4 fill-current' />
+            </BarButton>
+          )}
           {/* Image attach — same row idiom as the wand: the hidden
             picker lives beside it; `onPick`'s wake-the-pill role is
             `setOpen` (a no-op for the already-open card). */}
-          {showInputRow && (
+          {showInputRow && !composerBusy && (
             <>
               <BarButton
                 label='Attach images'
@@ -1084,7 +1130,7 @@ const Bar = () => {
           )}
           {/* Preset palette — the styled glass overlay beside the bar;
             picks arrive as bar:preset-pick. */}
-          {showInputRow && (
+          {showInputRow && !composerBusy && (
             <BarButton
               label='Prompt presets'
               disabled={gate !== 'main'}
@@ -1159,7 +1205,7 @@ const Bar = () => {
             <DictationWaveform />
           )}
 
-          {controls.includes('dictation') && (
+          {controls.includes('dictation') && !composerBusy && (
             <BarButton
               label={
                 dictation.state === 'listening' ? 'Stop dictation' : 'Dictate'
@@ -1247,6 +1293,7 @@ const Bar = () => {
         {section === 'chat' && (
           <ChatSection
             onBack={() => void windowSetChatOpen(false).catch(() => {})}
+            onSessionChange={setVisibleSession}
           />
         )}
         {section === 'listen' && (
@@ -1278,7 +1325,6 @@ const Bar = () => {
         )}
         {section === 'history' && (
           <HistorySection
-            askBusy={askState !== 'idle'}
             onOpenChat={() => setPinned('chat')}
             onOpenListen={(v) => {
               setListenViewing(v);

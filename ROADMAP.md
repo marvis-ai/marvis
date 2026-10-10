@@ -56,14 +56,18 @@ search grounding; both remain planned provider-specific follow-ups.
 
 ## Phase 2 — Memory
 
-Local-first recall over what Marvis already hears and sees. On-device by
-default; provider-hosted embeddings only as an opt-in.
+Phase 2 starts with a compact personal profile: Marvis can remember the user's
+identity and preferences across Ask sessions. Profile facts and their index stay
+local in `~/.marvis/marvis.db`; automatic extraction uses a separate,
+user-configured Memory LLM and only starts after explicit confirmation. The
+broader corpus-recall and screen-memory work remains exploratory.
 
 | Item | Status | Notes |
 | --- | --- | --- |
-| Embedding index over sessions, messages, transcripts, summaries | exploring | sqlite-vec or a bundled model; the corpus already lives in SQLite |
-| Recall in Ask — "what did we decide last week?" | exploring | Retrieval wired into the ask pipeline beside `screen_context` |
-| Memory browser in the history UI | exploring | Search + browse across meetings and chats |
+| Basic identity/preferences memory | in progress | Mem0-style fact extraction informed by Supermemory's user-profile model; new Ask messages only; dedicated Memory LLM config; editable/deletable facts in Preferences; no backfill, vectors, transcripts, or OCR |
+| Embedding index over sessions, messages, transcripts, summaries | exploring | Future semantic layer; sqlite-vec or a bundled model can index the existing SQLite corpus after the profile slice |
+| Recall in Ask — "what did we decide last week?" | exploring | Future corpus retrieval beside `screen_context`; distinct from the initial always-injected user profile |
+| Memory browser in the history UI | exploring | Future search + browse across meetings and chats; profile management starts in Preferences |
 | Optional OCR screen-memory index | exploring | Rewind-style recall; needs per-app exclusion rules before it's safe to build — biggest privacy surface in the roadmap |
 
 ## Phase 3 — Skills & tools

@@ -19,7 +19,9 @@ pub(crate) fn config_get(state: State<'_, AppState>) -> Config {
 /// ≥1 — minimum seconds between ambient screen reads; applies on the
 /// next capture start), `recording.summary_prompt` (string), and
 /// `prompts.custom` (array of `{id, name, text}` presets —
-/// replaces the whole custom list; rejected rows fail the write).
+/// replaces the whole custom list; rejected rows fail the write), and
+/// `memory.provider`/`memory.model`/`memory.enabled` (the dedicated
+/// Memory LLM pick; enabling requires provider+model already set).
 /// Provider order/switches/models have
 /// their own commands (`providers_reorder`,
 /// `provider_set_enabled`, `model_set_selected`). Persists `config.toml`
@@ -94,6 +96,7 @@ pub(crate) fn config_set(
             }
             key if config::apply_recording_config(&mut cfg.recording, key, &value)? => {}
             key if config::apply_prompts_config(&mut cfg.prompts, key, &value)? => {}
+            key if config::apply_memory_config(&mut cfg.memory, key, &value)? => {}
             "compat.name" => {
                 cfg.compat.name = value
                     .as_str()
@@ -222,8 +225,14 @@ pub(crate) fn config_set(
     if onboarding_changed {
         // Gate first: `enter_main` starts capture while the
         // wizard is still the visible window; then the bar un-hides.
-        transition_gate(&app);
-        state.sync_bar_visibility();
+        // `transition_gate`/`sync_bar_visibility` reach the pool's
+        // window getters, which park the caller on the main queue —
+        // this command runs on a worker, so hop rather than run them
+        // off the main thread.
+        run_on_main(&app, "config_set", |app| {
+            transition_gate(app);
+            app.state::<AppState>().sync_bar_visibility();
+        });
     }
     let updated = state.config.lock().clone();
     let _ = app.emit("config:changed", &updated);
@@ -235,4 +244,3 @@ pub(crate) fn config_set(
     refresh_tray_menu(&app);
     Ok(updated)
 }
-

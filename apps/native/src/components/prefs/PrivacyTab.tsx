@@ -61,7 +61,7 @@ export const PrivacyTab = () => {
         {'\n├── keys.json        '}
         <em>0600 — provider keys, plaintext, this Mac only</em>
         {'\n├── marvis.db        '}
-        <em>sessions + messages, sqlite</em>
+        <em>sessions + messages + memories, sqlite</em>
         {'\n├── voiceprint.bin   '}
         <em>enrolled speaker embedding</em>
         {'\n├── audios/          '}

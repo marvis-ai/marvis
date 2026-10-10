@@ -617,6 +617,37 @@ fn memory_config_rejects_invalid_enable_and_provider() {
 }
 
 #[test]
+fn memory_config_only_allows_clearing_selection_while_disabled() {
+    for key in ["memory.provider", "memory.model"] {
+        for blank in ["", " \t\n "] {
+            let mut memory = MemoryPrefs {
+                enabled: true,
+                provider: "openai".into(),
+                model: "gpt-4o".into(),
+            };
+            let original = memory.clone();
+            assert!(apply_memory_config(&mut memory, key, &serde_json::json!(blank)).is_err());
+            assert_eq!(
+                memory, original,
+                "a rejected write must not mutate preferences"
+            );
+
+            apply_memory_config(&mut memory, "memory.enabled", &serde_json::json!(false)).unwrap();
+            assert!(apply_memory_config(&mut memory, key, &serde_json::json!(blank)).unwrap());
+            assert!(if key == "memory.provider" {
+                memory.provider.is_empty()
+            } else {
+                memory.model.is_empty()
+            });
+            assert!(
+                apply_memory_config(&mut memory, "memory.enabled", &serde_json::json!(true))
+                    .is_err()
+            );
+        }
+    }
+}
+
+#[test]
 fn memory_normalization_disables_incomplete_hand_edited_config() {
     let tmp = tempfile_dir();
     let path = tmp.join("config.toml");

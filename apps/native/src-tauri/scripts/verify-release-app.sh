@@ -45,6 +45,11 @@ fi
 # included — under which AVCaptureDevice mic access requires the
 # audio-input entitlement; without it requestAccess is denied at the
 # signature level and dictation can never start.
-codesign -d --entitlements - "$APP_PATH" 2>/dev/null \
-  | grep -q 'com.apple.security.device.audio-input' \
-  || fail "missing com.apple.security.device.audio-input entitlement"
+entitlements="$(mktemp)"
+trap 'rm -f "$entitlements"' EXIT
+codesign -d --entitlements - "$APP_PATH" > "$entitlements" 2>/dev/null \
+  || fail "could not read signed entitlements"
+# XML output distinguishes a boolean true from a string containing "true".
+/usr/libexec/PlistBuddy -x -c 'Print :com.apple.security.device.audio-input' "$entitlements" \
+  | grep -q '^<true/>$' \
+  || fail "com.apple.security.device.audio-input entitlement must be true"

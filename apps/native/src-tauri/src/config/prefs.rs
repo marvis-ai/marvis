@@ -333,6 +333,9 @@ pub(crate) fn apply_memory_config(
                 .as_str()
                 .ok_or("memory.provider expects a string")?
                 .trim();
+            if memory.enabled && provider.is_empty() {
+                return Err("memory.provider must be set while memory is enabled".into());
+            }
             if !provider.is_empty() && ProviderKind::from_str(provider).is_none() {
                 return Err(format!("unknown memory provider {provider:?}"));
             }
@@ -344,6 +347,9 @@ pub(crate) fn apply_memory_config(
                 .as_str()
                 .ok_or("memory.model expects a string")?
                 .trim();
+            if memory.enabled && model.is_empty() {
+                return Err("memory.model must be set while memory is enabled".into());
+            }
             if model.chars().count() > 128 {
                 return Err("memory.model must be 128 characters or fewer".into());
             }

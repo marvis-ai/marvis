@@ -76,7 +76,11 @@ const FORBIDDEN_VALUE_SUBSTRINGS: &[&str] = &[
     "password",
     "api key",
     "access token",
-    "secret",
+    "client secret",
+    "secret key",
+    "secret token",
+    "secret:",
+    "secret=",
     "private key",
 ];
 

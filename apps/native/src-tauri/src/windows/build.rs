@@ -25,27 +25,20 @@ pub(super) fn accent_glass_tint(accent: &str) -> Option<String> {
 #[cfg(target_os = "macos")]
 pub(super) fn order_front_unfocused(win: &WebviewWindow) {
     use objc2_app_kit::NSWindow;
-    match win.ns_window() {
-        // `orderFront:` is a main-thread-only AppKit write — off the main
-        // thread the window manager asserts ("Must only be used from the
-        // main thread", SIGTRAP). Hop: inline on the main thread, queued
-        // otherwise — the call stays safe wherever a caller lands.
-        Ok(ptr) => {
-            let ptr = ptr as usize;
-            if let Err(e) = win.run_on_main_thread(move || unsafe {
-                // SAFETY: tauri hands us the live NSWindow for `win`; the
-                // pool owns the window, so it outlives this dispatch.
-                let ns_win = &*(ptr as *const NSWindow);
-                ns_win.orderFront(None);
-            }) {
-                log::warn!("windows: palette orderFront hop failed ({e}) — falling back to show");
-                let _ = win.show();
-            }
-        }
-        Err(e) => {
-            log::warn!("windows: palette orderFront failed ({e}) — falling back to show");
-            let _ = win.show();
-        }
+    let handle = win.clone();
+    // Resolve and use the native window on the main thread, keeping the
+    // Tauri handle alive through dispatch.
+    if let Err(e) = win.run_on_main_thread(move || match handle.ns_window() {
+        Ok(ptr) => unsafe {
+            // SAFETY: Tauri resolved this live NSWindow on the main thread;
+            // it is used immediately while the cloned handle is held.
+            let ns_win = &*(ptr as *const NSWindow);
+            ns_win.orderFront(None);
+        },
+        Err(e) => log::warn!("windows: palette NSWindow lookup failed ({e})"),
+    }) {
+        log::warn!("windows: palette orderFront hop failed ({e}) — falling back to show");
+        let _ = win.show();
     }
 }
 

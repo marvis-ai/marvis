@@ -43,7 +43,7 @@ import type { PrefsData } from './types';
 const CONFIRM_MS = 4000;
 
 /** Two-step arm→confirm: `arm` sets the pending value and starts the
- * auto-reset timeout, `disarm` clears both. Shared by the disable
+ * auto-reset timeout, `disarm` clears both. Shared by the memory
  * toggle and per-row delete so the pattern stays in sync. */
 const useArmConfirm = <T,>() => {
   const [pending, setPending] = useState<T | null>(null);
@@ -84,8 +84,9 @@ export const MemoryTab = ({ data }: { data: PrefsData }) => {
   );
   const [model, setModel] = useState(memory.model || suggested?.model || '');
   const [models, setModels] = useState<string[]>([]);
-  const [confirmingDisable, armDisable, disarmDisable] =
-    useArmConfirm<boolean>();
+  const [pendingEnabled, armToggle, disarmToggle] = useArmConfirm<boolean>();
+  const confirmingToggle = pendingEnabled === !memory.enabled;
+  const confirmingDisable = confirmingToggle && memory.enabled;
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [editingId, setEditingId] = useState<number | null>(null);
@@ -146,14 +147,12 @@ export const MemoryTab = ({ data }: { data: PrefsData }) => {
 
   const toggleMemory = async () => {
     if (memory.enabled) {
-      // Disabling is the destructive-feeling direction for the user —
-      // their profile stops learning — so it arms, then confirms.
-      if (!confirmingDisable) {
-        armDisable(true);
+      if (!confirmingToggle) {
+        armToggle(false);
         setError('');
         return;
       }
-      disarmDisable();
+      disarmToggle();
       try {
         data.setConfig(await configSet('memory.enabled', false));
       } catch {
@@ -161,14 +160,19 @@ export const MemoryTab = ({ data }: { data: PrefsData }) => {
       }
       return;
     }
-    // Enabling is one click — the privacy disclosure is always on the
-    // row, and the resolved pick writes before the consent bit.
+    // Validate the selection before arming; persist it only after consent.
     const p = provider || suggested?.provider || '';
     const m = model || suggested?.model || '';
     if (!p || !m) {
       setError('Choose a provider and model before enabling memory.');
       return;
     }
+    if (!confirmingToggle) {
+      armToggle(true);
+      setError('');
+      return;
+    }
+    disarmToggle();
     setSaving(true);
     setError('');
     try {
@@ -229,11 +233,11 @@ export const MemoryTab = ({ data }: { data: PrefsData }) => {
             aria-label={memory.enabled ? 'Disable memory' : 'Enable memory'}
             className={cn(
               BTN_SM,
-              memory.enabled || confirmingDisable ? BTN_OUTLINE : BTN_PRIMARY,
+              memory.enabled || confirmingToggle ? BTN_OUTLINE : BTN_PRIMARY,
             )}
             disabled={saving}
             onClick={() => void toggleMemory()}>
-            {confirmingDisable
+            {confirmingToggle
               ? 'Click to confirm'
               : memory.enabled
                 ? 'Disable memory'

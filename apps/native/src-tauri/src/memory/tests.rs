@@ -47,6 +47,35 @@ fn parser_rejects_invalid_categories_attributes_confidence_and_secrets() {
     }
 }
 
+#[test]
+fn parser_allows_ordinary_secret_words_but_rejects_credential_phrases() {
+    for (value, allowed) in [
+        ("The user works as a secretary.", true),
+        ("The user studies secretions.", true),
+        ("The user enjoys Secret Santa.", true),
+        ("The user likes secret gardens.", true),
+        ("The user's password is example.", false),
+        ("The user's API key is example.", false),
+        ("The user's access token is example.", false),
+        ("The user's private key is example.", false),
+        ("The user's CLIENT SECRET is example.", false),
+        ("The user's secret key is example.", false),
+        ("The user's secret token is example.", false),
+        ("Secret: example", false),
+        ("secret=example", false),
+    ] {
+        let response = serde_json::json!({"facts": [{
+            "category": "identity", "attribute": "detail", "value": value,
+            "confidence": 1.0, "basis": "explicit"
+        }]});
+        assert_eq!(
+            parse_response(&response.to_string()).is_ok(),
+            allowed,
+            "{value}"
+        );
+    }
+}
+
 /// Small models compress "nothing to store" to a bare `[]` (and some
 /// emit the fact array without the `{"facts":…}` wrapper at all). The
 /// container shape isn't part of the safety contract — every element

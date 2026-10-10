@@ -395,14 +395,32 @@ fn key(name: &'static CStr) -> Retained<NSString> {
     NSString::from_str(name.to_str().expect("CoreAudio keys are ASCII"))
 }
 
-/// Object-graph cast for dictionary values — every ObjC object pointer
-/// is layout-compatible with `AnyObject`.
-fn as_object<T>(value: &T) -> &AnyObject {
-    unsafe { &*(value as *const T).cast::<AnyObject>() }
+/// `&AnyObject` view of a retained Foundation object for dictionary
+/// values. Takes `&Retained<T>` and derefs the wrapper — passing the
+/// wrapper slot itself (rather than the object pointer inside it) hands
+/// CoreFoundation a garbage "object" whose first qword is the real
+/// pointer; it then treats that pointer as an isa and faults realizing
+/// the class (`__NSDictionaryI_new` → `objc_lookUpImpOrForward`).
+fn as_object<T>(value: &Retained<T>) -> &AnyObject {
+    unsafe { &*((&**value) as *const T).cast::<AnyObject>() }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    /// Regression guard for the `__NSDictionaryI_new` crash: the helper
+    /// must return the object pointer INSIDE the `Retained`, not the
+    /// address of the wrapper slot — the dictionary messages its values
+    /// and a wrapper pointer reads as a bogus isa.
+    #[test]
+    fn as_object_returns_the_wrapped_object_pointer() {
+        let string = NSString::from_str("probe");
+        let expected = &*string as *const NSString as usize;
+        let object = as_object(&string) as *const AnyObject as usize;
+        assert_eq!(object, expected);
+    }
+
     /// A muted tap would silence the user's own playback while we record
     /// — the tap must stay unmuted or Listen makes the call inaudible.
     #[test]

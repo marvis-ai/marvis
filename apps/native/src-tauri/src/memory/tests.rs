@@ -129,6 +129,28 @@ fn extraction_messages_keep_source_text_separate_from_profile() {
     assert_request_contains(&messages[1], "The user prefers concise answers.");
 }
 
+/// The extractor gets a `YYYY-MM-DD` observation date to ground
+/// relative references ("last week"), and the contract pins the
+/// fact's language to the user's own — no silent translation to
+/// English.
+#[test]
+fn extraction_messages_carry_observation_date_and_language_rule() {
+    let messages = extraction_messages(&[], "anything");
+    assert_request_contains(&messages[0], "same language and script");
+    let text = match &messages[1].content[0] {
+        ContentPart::Text(t) => t.as_str(),
+        ContentPart::ImageJpeg(_) => panic!("user prompt must be text"),
+    };
+    let date = text
+        .split("<observation_date>\n")
+        .nth(1)
+        .and_then(|rest| rest.split('\n').next())
+        .expect("observation_date block");
+    assert_eq!(date.len(), 10, "not YYYY-MM-DD: {date}");
+    assert!(date.chars().all(|c| c.is_ascii_digit() || c == '-'));
+    assert_eq!(date, super::today_utc());
+}
+
 /// A stub `Provider`: `reply` returns the canned body, `error` fails.
 struct ScriptedProvider {
     reply: Option<String>,

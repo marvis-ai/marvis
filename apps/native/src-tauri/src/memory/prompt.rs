@@ -10,10 +10,10 @@
 //! facts produce byte-identical context.
 //!
 //! `extraction_messages` builds the two-message extractor call: a
-//! system contract plus ONE user message wrapping the existing profile
-//! and the new ask text in separate data blocks — the raw ask text is
-//! the only new source content (no assistant reply, no screen text,
-//! no history).
+//! system contract plus ONE user message wrapping the existing
+//! profile, the new ask text, and the send's observation date in
+//! separate data blocks — the raw ask text is the only new source
+//! content (no assistant reply, no screen text, no history).
 
 use super::{MAX_PROFILE_BYTES, MAX_PROFILE_ROWS};
 use crate::llm::{ChatMessage, Role};
@@ -73,30 +73,25 @@ pub(crate) fn profile_prompt(rows: &[Memory]) -> Option<String> {
     Some(out)
 }
 
-/// The extractor's contract — strict JSON, durable user facts only.
-fn extraction_system_prompt() -> String {
-    "You are Marvis's memory extractor. From the user's new message, \
-     extract durable facts about the user for personalization.\n\
-     Return one JSON object with a `facts` array only.\n\
-     Each fact has: `category` (`identity` or `preference`), `attribute` \
-     (lowercase `[a-z0-9_]` slug like `name` or `response_style`), \
-     `value` (one sentence, at most 500 characters), `confidence` \
-     (0.0-1.0), and `basis` (`explicit` — the user stated it — or \
-     `inferred`).\n\
-     Store only durable identity or preference facts about the user.\n\
-     Do not store credentials, secrets, transient tasks, arbitrary \
-     summaries, or facts about other people.\n\
-     Existing profile rows are context for updates, not evidence — \
-     return a fact only when the new message supports it. To update a \
-     fact, emit it again with the same category and attribute.\n\
-     Return an empty `facts` array when the message carries nothing \
-     durable. Never output anything except the JSON object."
-        .to_string()
+/// The extractor's contract — strict JSON, durable user facts only —
+/// lives in `prompts/marvis-extraction.md` beside the other mode
+/// prompts (`src/prompts.rs`).
+fn extraction_system_prompt() -> &'static str {
+    include_str!("../../prompts/marvis-extraction.md").trim()
+}
+
+/// `YYYY-MM-DD` in UTC — the extractor's temporal anchor. Day
+/// precision is all it needs; a local-tz date would move the answer
+/// only around midnight.
+pub(crate) fn today_utc() -> String {
+    chrono::Utc::now().format("%Y-%m-%d").to_string()
 }
 
 /// The extractor call: system contract + one user message carrying
-/// `<existing_profile>` (current rows — context, dedup signal) and
-/// `<new_user_message>` (the raw ask text — the only extraction source).
+/// `<existing_profile>` (current rows — context, dedup signal),
+/// `<new_user_message>` (the raw ask text — the only extraction
+/// source), and `<observation_date>` (the send's date — the anchor for
+/// resolving the message's relative time references).
 pub(crate) fn extraction_messages(existing: &[Memory], source_text: &str) -> Vec<ChatMessage> {
     let lines = profile_lines(existing);
     let profile = if lines.is_empty() {
@@ -110,7 +105,9 @@ pub(crate) fn extraction_messages(existing: &[Memory], source_text: &str) -> Vec
             Role::User,
             format!(
                 "<existing_profile>\n{profile}\n</existing_profile>\n\n\
-                 <new_user_message>\n{source_text}\n</new_user_message>"
+                 <new_user_message>\n{source_text}\n</new_user_message>\n\n\
+                 <observation_date>\n{}\n</observation_date>",
+                today_utc()
             ),
         ),
     ]

@@ -39,6 +39,10 @@ stays inside Marvis's existing Rust, provider, and SQLite boundaries.
   whether it was automatically or manually written.
 - Inject a compact profile into every Ask request when facts exist, including
   when new extraction is disabled.
+- Keep extracted values in the user's own language and script, and ground
+  relative time references against the message's send date.
+- Record an append-only audit history of every fact write (add, update,
+  delete).
 - Keep memory extraction failures, malformed model output, and memory storage
   failures non-fatal to Ask.
 - Preserve a clean future seam for semantic/vector recall without requiring it
@@ -82,7 +86,9 @@ consent dialog.
 
 The confirmation explains:
 
-- new Ask user text will be sent to the selected Memory LLM for fact extraction;
+- new Ask user text — plus a short tail of the same session's recent turns as
+  reference-resolution context — will be sent to the selected Memory LLM for
+  fact extraction;
 - memory facts and the profile index remain in the local Marvis database;
 - a hosted provider receives the selected source text when the user chooses one;
 - Ollama/local inference may use substantial CPU/GPU resources.
@@ -108,9 +114,14 @@ The extractor may return explicit facts and reasonable inferences, but every
 fact records `basis = explicit | inferred` and a numeric confidence. The
 Settings UI exposes both values so the user can correct the model's judgment.
 
-The source text for extraction is only the current Ask user message. The
-assistant response is not treated as evidence, and no screen, image, Listen,
-or transcript content is sent to the Memory LLM in this release.
+The extraction *evidence* is only the current Ask user message — a fact is
+stored only when that message supports it. To resolve pronouns and
+corrections (`I meant X`, "that one"), the extractor also receives a bounded
+tail of the same session's recent turns (up to 6 user/assistant messages
+strictly before the source message, each capped at 300 characters) as
+`<recent_messages>` context. Prior turns — including assistant responses —
+are context, never evidence. No screen, image, Listen, or transcript content
+is sent to the Memory LLM in this release.
 
 ## Architecture
 
@@ -163,7 +174,7 @@ Ask user message
                     │
                     ├── Rust validation + secret filtering
                     │
-                    └── SQLite transactional dedupe/update
+                    └── SQLite transactional dedupe/update + history
                               └── memory:changed
 ```
 
@@ -221,10 +232,28 @@ CREATE TABLE IF NOT EXISTS memories (
     FOREIGN KEY (source_message_id) REFERENCES messages(id) ON DELETE SET NULL
 );
 
-CREATE INDEX IF NOT EXISTS memories_category_attribute
+CREATE UNIQUE INDEX IF NOT EXISTS memories_key
     ON memories(category, attribute);
 CREATE INDEX IF NOT EXISTS memories_updated_at
     ON memories(updated_at DESC, id DESC);
+
+-- The audit trail: one row per fact write. `memory_id` is deliberately NOT
+-- a foreign key — a deleted fact's history is the record worth keeping —
+-- and `category`/`attribute` are denormalized so it still reads without the
+-- row.
+CREATE TABLE IF NOT EXISTS memory_history (
+    id         INTEGER PRIMARY KEY,
+    memory_id  INTEGER NOT NULL,
+    category   TEXT NOT NULL,
+    attribute  TEXT NOT NULL,
+    event      TEXT NOT NULL,   -- add | update | delete
+    old_value  TEXT,
+    new_value  TEXT,
+    source     TEXT NOT NULL,   -- automatic | manual
+    created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS memory_history_memory
+    ON memory_history(memory_id, id);
 ```
 
 Allowed values are validated in Rust:
@@ -243,13 +272,27 @@ attributes may coexist.
 response contributes at most `8` facts. The rendered Ask profile contains at
 most `32` rows and `4,000` UTF-8 bytes.
 
-Automatic writes use `(category, attribute)` as the update identity:
+Automatic writes use `(category, attribute)` as the update identity, enforced
+structurally by the `memories_key` unique index so a duplicate key can never
+land even outside the apply path:
 
 - no row: insert an automatic fact;
 - same normalized value: leave the row unchanged;
 - changed value: update the automatic row's value, basis, confidence, source
   IDs, and `updated_at`;
 - existing manual row: never overwrite it automatically.
+
+Because a database written before the constraint can already hold duplicate
+keys (synonym slugs like `name` vs `nickname`), the migration collapses each
+key group to one row before creating the index — keeping the manual row when
+present, else the newest — and reruns idempotently on every open. The
+extraction prompt is additionally instructed to reuse an existing row's exact
+`category`/`attribute` rather than coining a synonym, so same-meaning facts
+converge on the same key.
+
+Every fact write (automatic `add`/`update`, manual `update`, `delete`)
+records a `memory_history` row inside the same transaction, preserving the
+old value across updates and the final value across deletes.
 
 Manual edit updates only the requested row's value, sets `source = manual`,
 `basis = explicit`, and sets `confidence = 1.0`. It also clears the original
@@ -268,10 +311,17 @@ but leaves it empty.
 
 ## Extraction contract
 
-The Memory LLM receives a dedicated system prompt and the current user message.
-The prompt states that only durable identity/preferences are eligible and that
-credentials, tokens, passwords, API keys, transient tasks, and arbitrary
-conversation summaries must not be returned.
+The Memory LLM receives a dedicated system prompt (externalized in
+`prompts/marvis-extraction.md`, embedded via `include_str!`) and a user
+message carrying `<new_user_message>`, the existing `<profile>` rows, a
+`<recent_messages>` same-session tail, and an `<observation_date>` — the
+message's send date in UTC (`YYYY-MM-DD`). The prompt states that only
+durable identity/preferences are eligible; that credentials, tokens,
+passwords, API keys, transient tasks, and arbitrary conversation summaries
+must not be returned; that `value` stays in the user's language and script;
+that relative time references (`yesterday`, `last week`) are resolved against
+`observation_date` into absolute dates; and that the tail is reference-
+resolution context only — evidence comes from `new_user_message` alone.
 
 The only accepted response shape is:
 
@@ -311,7 +361,10 @@ user deletion is performed only through the Settings command.
 
 The extractor receives a compact rendering of current automatic/manual facts so
 it can recognize an update. It must not treat those facts as new evidence and
-must not overwrite a manual row.
+must not overwrite a manual row. To update a fact it emits that row's exact
+`category` and `attribute` — never a synonym slug — which is what lets the
+`memories_key` uniqueness guarantee and the update-in-place semantics
+converge.
 
 ## Ask prompt integration
 
@@ -350,11 +403,14 @@ Add the following Rust commands and TypeScript wrappers:
 memory_list() -> Memory[]
 memory_update(id: i64, value: String) -> Memory
 memory_delete(id: i64) -> ()
+memory_history(id: i64) -> MemoryHistory[]
 ```
 
 `memory_update` edits only the fact value in this first release; its category
 and normalized attribute remain stable so automatic conflict handling remains
 predictable. `memory_delete` returns a user-safe `Result<(), String>`.
+`memory_history` is a read-only audit accessor returning a fact's
+`add`/`update`/`delete` events oldest-first; it takes no UI in this release.
 
 Add the event contract on both sides:
 
@@ -407,7 +463,8 @@ primitive. Each job:
 
 1. checks the current enabled configuration before doing work;
 2. acquires the serialized extraction permit;
-3. re-reads current profile facts before prompting the Memory LLM;
+3. re-reads current profile facts and fetches the same-session message tail
+   before prompting the Memory LLM;
 4. calls only the configured provider/model;
 5. applies candidates in one SQLite transaction;
 6. emits `memory:changed` after commit;
@@ -432,8 +489,10 @@ the manual write is authoritative from that point forward.
   when extraction is disabled.
 - The Memory tab explains both the local-storage/remote-extraction distinction
   and that normal Ask requests follow the user's existing provider choice.
-- Screen frames, OCR text, attachments, Listen transcripts, and assistant
-  responses are excluded from this first extraction input.
+- Screen frames, OCR text, attachments, and Listen transcripts are excluded
+  from extraction input. Assistant turns may appear in `<recent_messages>`
+  as reference-resolution context but are never treated as extraction
+  evidence.
 - Obvious secrets are rejected before persistence, but the UI must still warn
   users not to put credentials into profile facts.
 - Memory values are untrusted prompt data; the Ask prompt must not allow a
@@ -449,8 +508,15 @@ the manual write is authoritative from that point forward.
 - Schema creation on a fresh database and table creation on an existing database.
 - Memory insert/update/deduplication and deterministic listing.
 - Automatic update versus manual-row protection.
+- `(category, attribute)` structural uniqueness, and the migration dedup of
+  pre-constraint duplicate keys keeping manual/newest rows.
+- `memory_history` recording add/update/delete and surviving the fact's
+  deletion.
 - Source foreign keys becoming `NULL` after session/message deletion.
 - Explicit memory deletion.
+- `message_tail` returning only prior same-session turns, oldest first.
+- Extraction prompts carrying `observation_date`, the same-language rule,
+  the recent-messages context contract, and exact-slug reuse.
 - Strict extraction JSON parsing and validation for explicit/inferred facts.
 - Rejection of unsupported categories, invalid confidence, oversized values,
   duplicate facts, and credential-like content.
@@ -493,6 +559,8 @@ changes in these responsibilities:
   behavior.
 - `apps/native/src-tauri/src/memory/` — extraction, validation, prompt/profile
   formatting, serialized service, and tests.
+- `apps/native/src-tauri/prompts/marvis-extraction.md` — the extractor's system
+  prompt contract.
 - `apps/native/src-tauri/src/ask/` — profile load/injection and successful-turn
   extraction scheduling.
 - `apps/native/src-tauri/src/lib.rs` and `commands/` — AppState, commands,

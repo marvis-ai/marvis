@@ -318,6 +318,135 @@ use crate::storage::Message;
     }
 
     #[tokio::test]
+    async fn queued_send_transfers_original_handoff_before_pipeline_start() {
+        let dir = tmp_dir();
+        let db = Arc::new(Db::at(dir.join("marvis.db")).unwrap());
+        let session_id = db.session_get_or_create_active("ask").unwrap();
+        let old_token = compaction_token(&db, session_id);
+        let lifecycle = SessionLifecycle::new();
+        let handoff = lifecycle
+            .capture_handoff(db.as_ref(), session_id)
+            .expect("queued Ask should capture its original handoff");
+        assert_eq!(handoff.session_token, old_token);
+
+        // Simulate a queued task that has not reached the pipeline yet. The
+        // direct DB boundary stands in for the delete/recreate that can happen
+        // while a queued task is delayed; the transferred handoff must retire
+        // the old run rather than treating the new token as its baseline.
+        db.session_delete(session_id).unwrap();
+        assert_eq!(db.session_get_or_create_active("ask").unwrap(), session_id);
+        assert_ne!(compaction_token(&db, session_id), old_token);
+
+        let provider = MockProvider::new(vec![Behavior::Tokens(vec!["stale answer".into()])]);
+        let calls = provider.calls();
+        let (_events, emit) = recorder();
+        let reader = screen_read::ScreenReader::new();
+        let ring = Mutex::new(RingBuffer::new(4, 1 << 20));
+        let input = input(&reader, &ring);
+        let result = send_chain(
+            vec![candidate("mock", provider)],
+            None,
+            db.as_ref(),
+            &emit,
+            &input,
+            &CancellationToken::new(),
+            ChainOpts {
+                text: "old question",
+                session_id: Some(session_id),
+                session_handoff: Some(handoff),
+                language: "en",
+                ..ChainOpts::default()
+            },
+        )
+        .await;
+
+        assert!(result.is_err(), "the queued old incarnation must retire");
+        assert!(calls.lock().is_empty(), "the new incarnation must not see the provider");
+        assert!(db.messages_for(session_id).unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn compaction_acquires_before_rereading_after_delete_recreate_boundary() {
+        let dir = tmp_dir();
+        let db = Arc::new(Db::at(dir.join("marvis.db")).unwrap());
+        let session_id = seed_compaction_history(db.as_ref(), 30);
+        let old_token = compaction_token(&db, session_id);
+        let plan = compaction_plan(
+            session_id,
+            old_token.clone(),
+            &test_messages(30),
+            None,
+            None,
+        )
+        .unwrap();
+        let lifecycle = SessionLifecycle::new();
+        let db_for_boundary = Arc::clone(&db);
+        let service = CompactService::with_before_lease_hook(Arc::new(move |sid| {
+            db_for_boundary.session_delete(sid).unwrap();
+            assert_eq!(db_for_boundary.session_get_or_create_active("ask").unwrap(), sid);
+        }));
+        let provider = BarrierProvider::new("stale digest");
+        let entered = provider.entered();
+        let release = provider.release();
+        let calls = provider.calls();
+
+        CompactHook::with_lifecycle(Arc::clone(&db), service, Arc::clone(&lifecycle))
+            .maybe_schedule(Arc::new(provider), plan);
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), entered.notified())
+                .await
+                .is_err(),
+            "compaction must reread after its owned lease and skip the recreated row"
+        );
+        release.notify_one();
+        assert!(calls.lock().is_empty());
+        assert_eq!(compaction_state(&db, session_id), (None, None));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn title_handoff_skips_provider_after_deletion_is_marked() {
+        let dir = tmp_dir();
+        let db = Arc::new(Db::at(dir.join("marvis.db")).unwrap());
+        let session_id = db.session_get_or_create_active("ask").unwrap();
+        let token = compaction_token(&db, session_id);
+        let lifecycle = SessionLifecycle::new();
+        let blocker = lifecycle.acquire(session_id).unwrap();
+        let delete_task = {
+            let lifecycle = Arc::clone(&lifecycle);
+            let db = Arc::clone(&db);
+            tokio::spawn(async move { lifecycle.delete(db.as_ref(), session_id).await })
+        };
+        wait_for_delete_mark(&lifecycle, session_id).await;
+
+        let provider = BarrierProvider::new("A stale title");
+        let entered = provider.entered();
+        let calls = provider.calls();
+        let titled: Arc<dyn Fn(i64) + Send + Sync> = Arc::new(|_| {});
+        TitleSidecar::new(Arc::clone(&db), titled, Arc::clone(&lifecycle)).schedule(
+            Arc::new(provider),
+            Some(session_id),
+            Some(token),
+            "old question".into(),
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), entered.notified())
+                .await
+                .is_err(),
+            "marked deletion must prevent the detached title provider handoff"
+        );
+        assert!(calls.lock().is_empty());
+
+        drop(blocker);
+        delete_task
+            .await
+            .expect("session deletion task should join")
+            .unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
     async fn send_chain_lease_keeps_session_alive_until_answer_persists() {
         let dir = tmp_dir();
         let db = Arc::new(Db::at(dir.join("marvis.db")).unwrap());
@@ -3830,7 +3959,7 @@ use crate::storage::Message;
             ChainOpts {
                 text: "how do I fix the capsule width?",
                 language: "en",
-                title: Some(TitleSidecar::new(Arc::clone(&db), titled)),
+                title: Some(TitleSidecar::new(Arc::clone(&db), titled, SessionLifecycle::new())),
                 ..ChainOpts::default()
             },
         )
@@ -3892,7 +4021,7 @@ use crate::storage::Message;
             ChainOpts {
                 text: "q",
                 language: "en",
-                title: Some(TitleSidecar::new(Arc::clone(&db), titled_cb)),
+                title: Some(TitleSidecar::new(Arc::clone(&db), titled_cb, SessionLifecycle::new())),
                 ..ChainOpts::default()
             },
         )
@@ -3941,7 +4070,7 @@ use crate::storage::Message;
             ChainOpts {
                 text: "q",
                 language: "en",
-                title: Some(TitleSidecar::new(Arc::clone(&db), titled_cb)),
+                title: Some(TitleSidecar::new(Arc::clone(&db), titled_cb, SessionLifecycle::new())),
                 ..ChainOpts::default()
             },
         )

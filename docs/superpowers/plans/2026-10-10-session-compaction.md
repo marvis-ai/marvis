@@ -9,19 +9,24 @@
 SQLite `hex(randomblob(16))`; the idempotent open-time migration adds the token
 column and backfills NULL legacy/current-test rows without changing existing
 tokens or data. `AppState` also owns one shared in-memory `SessionLifecycle`
-registry. The existing `session_delete` command marks a session deleting,
-waits for owned Ask/compaction leases, deletes the row, and removes the
-registry entry even on errors. Before history/regenerate work, capture the
-session token and acquire the production lease; a missing/erroring identity
-read or failed lease acquisition aborts before provider execution. After that
-work, re-read the token/digest and inject the post-history digest only when the
-token is unchanged. A changed or missing token skips context and planning for
-that run. After a successful answer, schedule a detached compaction job when at
-least ten newly dropped rows are available. The job uses the provider that
-answered, serializes compaction work, rechecks token/digest/watermark, acquires
-the same lease before `stream_chat`, and writes with a token- and
+registry. `AskService::kick` captures the resolved session's token and an owned
+lease synchronously, then transfers both in a `SessionHandoff` into the spawned
+pipeline; production never lets a queued Ask establish a later incarnation
+baseline. The existing `session_delete` command marks one generation deleting,
+waits for owned Ask/compaction/title leases, deletes the row, publishes the
+owner's success/error to all duplicate waiters, and removes the registry entry
+even on errors. Before history/regenerate work, `send_chain` consumes the
+transferred handoff (direct tests may use the legacy acquisition fallback).
+After that work, re-read the token/digest and inject the post-history digest
+only when the token is unchanged. A changed or missing token skips context and
+planning for that run. After a successful answer, schedule a detached
+compaction job when at least ten newly dropped rows are available. The job uses
+the provider that answered, serializes compaction work, acquires its lifecycle
+lease before re-reading token/digest/watermark, and writes with a token- and
 watermark-bound compare-and-set so stale or recreated-session jobs cannot
-overwrite a newer incarnation.
+overwrite a newer incarnation. The detached title sidecar uses the same
+acquire-before-token/provider boundary and holds its lease through the title
+write.
 
 **Tech Stack:** Rust/Tauri 2, Tokio async runtime, `rusqlite` SQLite storage, existing `Provider`/`ChatMessage` abstractions, existing Ask test harness with scripted providers, Markdown prompts embedded with `include_str!`.
 
@@ -32,8 +37,9 @@ overwrite a newer incarnation.
 - Use the answering Ask provider (`Arc<dyn Provider>`) for compaction, never the consent-gated Memory LLM.
 - Compaction is fire-and-forget after `ask:done` and `ask:state{idle}`; provider, timeout, parse, and storage failures only warn-log and never affect the Ask result.
 - Hold the `tokio::sync::Mutex` compaction permit across the provider await; never hold a SQLite/parking-lot guard across an await.
-- The owned `SessionLease`, not a registry mutex guard, may cross provider awaits. Production `AppState`/`Deps` wiring is mandatory; direct `ChainOpts` and `CompactHook::new` tests may default the lifecycle dependency off.
-- A missing/erroring pre-history identity read or failed Ask/compaction lease acquisition aborts before provider execution. Background compaction provider/timeout/parse/storage failures remain warning-only.
+- The owned `SessionLease`, not a registry mutex guard, may cross provider awaits. Production `AskService::kick` must synchronously transfer the original `SessionHandoff` through `ChainOpts`; direct pipeline tests may default the legacy lifecycle dependency off.
+- Ask, compaction, and title acquire before their token re-read/provider handoff and hold the lease through token-bound persistence. A missing/erroring pre-history identity read or failed lease acquisition aborts before provider execution. Background compaction provider/timeout/parse/storage failures remain warning-only.
+- Deletion completion is generation-specific: every duplicate waiter receives the owner's result, and registry state is released after success or failure before a new incarnation can start a fresh generation.
 - Store the digest locally in the existing `0600` SQLite database; its only remote destination is the Ask provider that already receives the session messages.
 - Treat the digest as untrusted generated data. It may provide continuity but must never be interpreted as instructions, and the current verbatim tail/current user message wins conflicts.
 - Keep memory extraction separate: the digest is never evidence for `MemoryHook` and is not written to the `memories` table.
@@ -55,6 +61,7 @@ overwrite a newer incarnation.
 | `apps/native/src-tauri/src/storage/sessions.rs` | Mint tokens for new rows; read token-bound state; CAS-write and clear the session digest. |
 | `apps/native/src-tauri/src/storage/tests.rs` | Verify schema, token migration/recreation, token/watermark CAS, timestamp preservation, and clear behavior. |
 | `apps/native/src-tauri/src/ask/compact.rs` | Own compaction plan math, bounded row rendering, reply validation, detached hook, and serialized service. |
+| `apps/native/src-tauri/src/ask/title.rs` | Protect detached title token re-read, provider call, and token-bound write with the shared lifecycle lease. |
 | `apps/native/src-tauri/prompts/marvis-compaction.md` | Define the plain-text continuity-digest contract. |
 | `apps/native/src-tauri/src/ask/mod.rs` | Register the module, define compaction constants, and wire `CompactService` through `Deps`/`AppState` construction. |
 | `apps/native/src-tauri/src/prompts.rs` | Append the bounded `<conversation_so_far>` block after the profile block. |
@@ -509,11 +516,13 @@ pub(crate) fn maybe_schedule(
 ```
 
 Inside `compact_once`, acquire the service gate and keep it through the
-provider await. Re-read `db.session_compaction(plan.session_id)` before
-calling the provider. If the session is missing, or the re-read token, stored
-watermark, or raw digest differs from the corresponding values in `plan`,
-return `Ok(())` without a provider call. Otherwise, use the re-read digest
-plus the owned source rows to render the bounded prompt, call
+provider await. Acquire the owned lifecycle lease before re-reading
+`db.session_compaction(plan.session_id)`. If the lease is refused, return
+`Ok(())` without a provider call. While the lease is held, if the session is
+missing, or the re-read token, stored watermark, or raw digest differs from the
+corresponding values in `plan`, return `Ok(())` without a provider call.
+Otherwise, use the re-read digest plus the owned source rows to render the
+bounded prompt, call
 `tokio::time::timeout(COMPACT_TIMEOUT, provider.stream_chat(&messages, &mut sink))`
 with a no-op token callback, normalize the reply, and call
 `session_compact_write` with the plan token and the id returned for the last
@@ -753,19 +762,23 @@ the old plan. The recreated row's token must differ, the detached provider must
 receive zero calls, and the recreated row must retain a NULL digest/watermark.
 This test is added and run red before the token implementation.
 
-Add the ordering-boundary regression separately: capture the pre-history token,
-retain an old history snapshot, delete/recreate the highest-id session before
-post-history plan construction, and assert that no old rows are sent or written
-to the recreated incarnation. Add lifecycle handoff barriers as well: a
-marked deletion must refuse an Ask provider and a compaction provider, while a
-delete waits for an in-flight owned lease and removes its registry state after
-the DB operation. Also add a real production `send_chain` regression with
-`regenerate: true`: delete/recreate during the pre-provider handoff, assert no
-stale provider call, and verify the recreated rows/digest survive. The
-regenerate delete/recreate clear regression must pass the expected session token
-to the current `regenerate_tail_rows` signature and prove an old-token clear
-leaves the recreated row's digest and watermark untouched. All regressions are
-added and run red before the implementation.
+Add the queued-start regression separately: resolve a session, synchronously
+capture the production `SessionHandoff`, pause before pipeline execution,
+delete/recreate the integer id, and pass the original handoff into the real
+`send_chain`; the old provider and all stale writes must be absent from the new
+incarnation. Add the ordering-boundary regression separately: use a
+barrier/seam between an old compaction state snapshot and its lifecycle
+acquisition, delete/recreate the id, and prove acquire-before-reread skips the
+provider. Add lifecycle handoff barriers as well: a marked deletion must refuse
+Ask, compaction, and title providers, while a delete waits for an in-flight
+owned lease and removes its registry state after the DB operation. Also add a
+real production `send_chain` regression with `regenerate: true`: delete/recreate
+during the pre-provider handoff, assert no stale provider call, and verify the
+recreated rows/digest survive. The regenerate delete/recreate clear regression
+must pass the expected session token to the current `regenerate_tail_rows`
+signature and prove an old-token clear leaves the recreated row's digest and
+watermark untouched. All regressions are added and run red before the
+implementation.
 
 - [ ] **Step 2: Run the integration tests and verify they fail before wiring.**
 
@@ -787,13 +800,16 @@ In `ask/mod.rs`:
 - add the mandatory `lifecycle: Arc<SessionLifecycle>` to `Deps` next to the
   shared services;
 - add `compact: Arc<CompactService>` to `Deps` next to `memory`;
-- add `compact: Option<CompactHook>` and optional `lifecycle` to `ChainOpts`
-  next to `memory`; `ChainOpts::default()` keeps direct tests source-compatible;
-- destructure the fields in `send_chain`;
-- construct an unconditional lifecycle-aware hook in `kick` with the current
-  DB/service/registry arcs;
-- pass the hook and lifecycle clone in the `ChainOpts` literal at the spawn
-  boundary.
+- add `compact: Option<CompactHook>`, the production `session_handoff`, and
+  optional `lifecycle` fallback to `ChainOpts` next to `memory`;
+  `ChainOpts::default()` keeps direct tests source-compatible;
+- destructure the fields in `send_chain`, consuming the transferred owned lease
+  for the whole run;
+- construct an unconditional lifecycle-aware compaction/title handoff in
+  `kick`, synchronously capture the current token plus owned lease after session
+  resolution, and refuse before claim/spawn if deletion is already marked;
+- pass the hook, title lifecycle, and original `SessionHandoff` in the
+  `ChainOpts` literal at the spawn boundary.
 
 In `lib.rs`:
 
@@ -813,14 +829,15 @@ surface.
 
 - [ ] **Step 4: Bind the post-history digest and plan to the pre-history token.**
 
-In `send_chain`, read the session identity before the regenerate/fresh history
-rows are chosen and acquire the optional production `SessionLifecycle` lease
-immediately after that check. A missing/erroring pre-history identity or a
-failed lease acquisition is safety-critical: retire the session-bound run
-before any provider execution. The owned lease contains no mutex guard and
-remains alive through history/current-user persistence, every candidate await,
-and assistant persistence; direct pipeline tests leave it `None` through
-`ChainOpts::default()`.
+In production `kick`, capture the session identity and acquire the
+`SessionLifecycle` lease synchronously before spawning. `send_chain` consumes
+that `SessionHandoff` token/lease before the regenerate/fresh history rows are
+chosen. A missing/erroring pre-history identity or a failed lease acquisition
+is safety-critical: retire the session-bound run before any provider execution.
+The owned lease contains no mutex guard and remains alive through
+history/current-user persistence, every candidate await, and assistant
+persistence; direct pipeline tests may leave the handoff/lifecycle fallback
+`None` through `ChainOpts::default()`.
 
 After history work and before the existing
 `spawn_blocking(move || rows_to_history_at(&history_rows, &root))`, re-read

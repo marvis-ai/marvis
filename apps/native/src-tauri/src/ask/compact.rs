@@ -188,12 +188,24 @@ fn truncate_to_bytes(value: &str, max_bytes: usize) -> String {
 /// read the same watermark and race to generate redundant digests.
 pub(crate) struct CompactService {
     gate: tokio::sync::Mutex<()>,
+    #[cfg(test)]
+    before_lease_hook: Option<Arc<dyn Fn(i64) + Send + Sync>>,
 }
 
 impl CompactService {
     pub(crate) fn new() -> Arc<Self> {
         Arc::new(Self {
             gate: tokio::sync::Mutex::new(()),
+            #[cfg(test)]
+            before_lease_hook: None,
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_before_lease_hook(hook: Arc<dyn Fn(i64) + Send + Sync>) -> Arc<Self> {
+        Arc::new(Self {
+            gate: tokio::sync::Mutex::new(()),
+            before_lease_hook: Some(hook),
         })
     }
 
@@ -205,6 +217,25 @@ impl CompactService {
         plan: CompactionPlan,
     ) -> anyhow::Result<()> {
         let _permit = self.gate.lock().await;
+        // The owned lifecycle lease is acquired before the state re-read. A
+        // deletion that wins first therefore refuses this handoff; a deletion
+        // that starts afterward waits through the re-read, provider await, and
+        // token-bound CAS write instead of allowing a new registry entry to be
+        // acquired for a recreated integer id.
+        let _session_lease = match lifecycle.as_ref() {
+            Some(lifecycle) => match lifecycle.acquire(plan.session_id) {
+                Some(lease) => Some(lease),
+                None => return Ok(()),
+            },
+            None => None,
+        };
+        #[cfg(test)]
+        if let Some(hook) = &self.before_lease_hook {
+            // This seam models a direct delete/recreate between the old
+            // plan's handoff and its state re-read. Production deletion uses
+            // the owned lease and therefore waits instead.
+            hook(plan.session_id);
+        }
         let Some((stored_token, stored_digest, stored_through)) =
             db.session_compaction(plan.session_id)?
         else {
@@ -218,16 +249,6 @@ impl CompactService {
         {
             return Ok(());
         }
-        // Re-read and lease acquisition are the provider handoff boundary:
-        // deletion either marked first and makes this a no-op, or waits for
-        // this owned lease through stream_chat and the token-bound CAS write.
-        let _session_lease = match lifecycle.as_ref() {
-            Some(lifecycle) => match lifecycle.acquire(plan.session_id) {
-                Some(lease) => Some(lease),
-                None => return Ok(()),
-            },
-            None => None,
-        };
 
         let (messages, rendered_through) =
             compaction_messages_with_watermark(stored_digest.as_deref(), &plan.source_rows);

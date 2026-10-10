@@ -4,7 +4,7 @@ use super::history::*;
 use super::screen::*;
 use super::stream::*;
 use super::title::*;
-use crate::session_lifecycle::SessionLifecycle;
+use crate::session_lifecycle::{SessionHandoff, SessionLifecycle};
 
 /// The per-run fields `send_chain` consumes — resolved by `kick`
 /// (bundled the same way `ScreenInput` bundles the screen side):
@@ -52,8 +52,12 @@ pub(crate) struct ChainOpts<'a> {
     /// The detached session compaction job — scheduled only after a
     /// candidate answers successfully and a plan exists.
     pub compact: Option<CompactHook>,
-    /// The production per-session handoff boundary. Direct pipeline tests
-    /// leave this `None` through `ChainOpts::default()`.
+    /// The production per-session handoff boundary captured synchronously by
+    /// `AskService::kick`. Direct pipeline tests may leave this `None`.
+    pub session_handoff: Option<SessionHandoff>,
+    /// Legacy direct-pipeline lifecycle fallback. Production transfers the
+    /// already-owned lease above; tests that exercise deletion can still let
+    /// `send_chain` acquire one here.
     pub lifecycle: Option<Arc<SessionLifecycle>>,
     /// The detached title sidecar — spawned on success only, after the
     /// memory hook. `None` skips naming entirely (tests that don't
@@ -196,6 +200,7 @@ pub(crate) async fn send_chain(
         attachments_root,
         memory,
         compact,
+        session_handoff,
         lifecycle,
         title,
     } = opts;
@@ -235,30 +240,43 @@ pub(crate) async fn send_chain(
         }
         emit(name, payload);
     };
-    // Capture the session incarnation BEFORE history or regenerate work. The
-    // history rows and every later write must belong to this same incarnation;
-    // a missing token is not safe to treat as an ordinary storage hiccup.
-    let pre_history_token = match session_id {
-        Some(sid) => match db.session_compaction(sid) {
-            Ok(Some((token, _, _))) => Some(token),
-            Ok(None) => return Err(incarnation_error(emit)),
-            Err(error) => {
-                log::warn!("ask: session compaction incarnation load failed: {error}");
+    // Capture the session incarnation before history/regenerate work. In
+    // production `kick` transfers an already-owned lease and immutable token;
+    // this is what makes a queued Ask retain the original boundary even when
+    // its pipeline task is delayed. Direct pipeline tests can use the legacy
+    // lifecycle fallback below.
+    let (pre_history_token, _session_lease) = match session_id {
+        Some(sid) => match session_handoff {
+            Some(handoff) if handoff.session_id == sid => {
+                (Some(handoff.session_token), Some(handoff.lease))
+            }
+            Some(handoff) => {
+                drop(handoff);
                 return Err(incarnation_error(emit));
             }
+            None => {
+                let lease = match lifecycle.as_ref() {
+                    Some(lifecycle) => match lifecycle.acquire(sid) {
+                        Some(lease) => Some(lease),
+                        None => return Err(incarnation_error(emit)),
+                    },
+                    None => None,
+                };
+                let token = match db.session_compaction(sid) {
+                    Ok(Some((token, _, _))) => Some(token),
+                    Ok(None) => return Err(incarnation_error(emit)),
+                    Err(error) => {
+                        log::warn!("ask: session compaction incarnation load failed: {error}");
+                        return Err(incarnation_error(emit));
+                    }
+                };
+                (token, lease)
+            }
         },
-        None => None,
-    };
-    // The production handoff lease is acquired immediately after the
-    // incarnation check. Its owned lifetime covers history/current-user
-    // persistence, every candidate provider await, and the assistant write;
-    // deletion can either mark first (and make this refuse) or wait for Drop.
-    let _session_lease = match (lifecycle.as_ref(), session_id) {
-        (Some(lifecycle), Some(sid)) => match lifecycle.acquire(sid) {
-            Some(lease) => Some(lease),
-            None => return Err(incarnation_error(emit)),
-        },
-        _ => None,
+        None => {
+            drop(session_handoff);
+            (None, None)
+        }
     };
     // Order matters: history is read BEFORE the new user row persists —
     // the new turn is appended separately so it can carry the frame. A

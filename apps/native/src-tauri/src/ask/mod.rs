@@ -753,6 +753,23 @@ impl AskService {
         // direct `send_chain` tests.)
         let session_id =
             history::resolve_session(&deps.db, fresh_session, regenerate, listen_id);
+        // Capture the original incarnation synchronously, before this send is
+        // queued. The owned handoff lease prevents production deletion from
+        // completing underneath the delayed pipeline; the immutable token
+        // rejects any direct stale storage boundary before provider work.
+        let session_handoff = match session_id {
+            Some(session_id) => {
+                match deps.lifecycle.capture_handoff(deps.db.as_ref(), session_id) {
+                    Ok(handoff) => Some(handoff),
+                    Err(error) => {
+                        open_card();
+                        self.kick_error(app, gen, error.to_string());
+                        return true;
+                    }
+                }
+            }
+            None => None,
+        };
         // The per-session busy gate: a live run on THIS session refuses
         // the send — any other session's run streams on.
         let Some(cancel) = self.claim(session_id, text, gen) else {
@@ -842,8 +859,13 @@ impl AskService {
                     attachments_root: None,
                     memory,
                     compact: Some(compact),
+                    session_handoff,
                     lifecycle: Some(Arc::clone(&lifecycle)),
-                    title: Some(TitleSidecar::new(Arc::clone(&db), titled)),
+                    title: Some(TitleSidecar::new(
+                        Arc::clone(&db),
+                        titled,
+                        Arc::clone(&lifecycle),
+                    )),
                 },
             )
             .await;

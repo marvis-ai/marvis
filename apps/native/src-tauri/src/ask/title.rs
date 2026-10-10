@@ -1,4 +1,5 @@
 use super::*;
+use crate::session_lifecycle::SessionLifecycle;
 
 /// The detached title job handed to `send_chain` — mirrors
 /// `MemoryHook`: it owns the `Db` share and the `sessions:changed`
@@ -8,12 +9,21 @@ use super::*;
 /// a "New chat" mid-title still names the ended session.
 pub(super) struct TitleSidecar {
     db: Arc<Db>,
+    lifecycle: Arc<SessionLifecycle>,
     titled: Arc<dyn Fn(i64) + Send + Sync>,
 }
 
 impl TitleSidecar {
-    pub(super) fn new(db: Arc<Db>, titled: Arc<dyn Fn(i64) + Send + Sync>) -> Self {
-        Self { db, titled }
+    pub(super) fn new(
+        db: Arc<Db>,
+        titled: Arc<dyn Fn(i64) + Send + Sync>,
+        lifecycle: Arc<SessionLifecycle>,
+    ) -> Self {
+        Self {
+            db,
+            lifecycle,
+            titled,
+        }
     }
 
     /// Fire-and-forget: the ask task never waits on it. The
@@ -41,10 +51,15 @@ impl TitleSidecar {
                 return;
             }
         }
-        let Self { db, titled } = self;
+        let Self {
+            db,
+            lifecycle,
+            titled,
+        } = self;
         tauri::async_runtime::spawn(async move {
             title_session(
                 db.as_ref(),
+                &lifecycle,
                 provider.as_ref(),
                 sid,
                 &session_token,
@@ -67,12 +82,16 @@ impl TitleSidecar {
 /// re-reads to swap the fallback for the title.
 async fn title_session(
     db: &Db,
+    lifecycle: &Arc<SessionLifecycle>,
     provider: &dyn Provider,
     sid: i64,
     session_token: &str,
     question: &str,
     titled: &(dyn Fn(i64) + Send + Sync),
 ) {
+    let Some(_session_lease) = lifecycle.acquire(sid) else {
+        return;
+    };
     match db.session_compaction(sid) {
         Ok(Some((actual_token, _, _))) if actual_token == session_token => {}
         Ok(_) => return,

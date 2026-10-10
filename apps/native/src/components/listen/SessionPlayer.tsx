@@ -1,103 +1,38 @@
-import { useEffect, useState, type RefObject } from 'react';
-import { convertFileSrc } from '@tauri-apps/api/core';
+import type { CSSProperties } from 'react';
 import { elapsedLabel } from './model';
+import type { SessionPlayerHandle } from '@/hooks/useSessionPlayer';
 
-/** Metadata loads before showing controls so empty recordings can degrade. */
-export const SessionPlayer = ({
-  audioFile,
-  audioRef,
-  onTime,
-  onReady,
-  onError,
-  onPlayingChange,
-}: {
-  audioFile: string;
-  audioRef: RefObject<HTMLAudioElement | null>;
-  onTime: (seconds: number) => void;
-  onReady: (duration: number) => void;
-  onError: () => void;
-  onPlayingChange: (playing: boolean) => void;
-}) => {
-  const assetSrc = convertFileSrc(audioFile);
-  const [position, setPosition] = useState(0);
-  const [duration, setDuration] = useState(0);
-  const updateTime = (audio: HTMLAudioElement) => {
-    const seconds = Number.isFinite(audio.currentTime) ? audio.currentTime : 0;
-    setPosition(seconds);
-    onTime(seconds);
-  };
-  const updateMetadata = (audio: HTMLAudioElement) => {
-    const seconds = audio.duration;
-    setDuration(Number.isFinite(seconds) && seconds > 0 ? seconds : 0);
-    onReady(seconds);
-    updateTime(audio);
-  };
-
-  useEffect(() => {
-    setPosition(0);
-    setDuration(0);
-    const audio = audioRef.current;
-    if (!audio) return;
-
-    audio.pause();
-    audio.currentTime = 0;
-    audio.load();
-    return () => {
-      audio.pause();
-      audio.currentTime = 0;
-    };
-  }, [audioFile, audioRef]);
-
+/** Ended-session audio view — the hidden `<audio>` element plus the
+ *  1px seek line that rides `ListenHeader`'s bottom border. All the
+ *  element plumbing and playback state come from `useSessionPlayer`;
+ *  this component is markup only. */
+export const SessionPlayer = ({ player }: { player: SessionPlayerHandle }) => {
+  if (!player.visible) return null;
   return (
     <>
       <audio
-        ref={audioRef}
-        src={assetSrc}
         preload='metadata'
         className='hidden'
         aria-hidden
-        onLoadedMetadata={(event) => updateMetadata(event.currentTarget)}
-        onDurationChange={(event) => {
-          if (Number.isFinite(event.currentTarget.duration) && event.currentTarget.duration > 0) {
-            updateMetadata(event.currentTarget);
-          }
-        }}
-        onTimeUpdate={(event) => updateTime(event.currentTarget)}
-        onSeeking={(event) => updateTime(event.currentTarget)}
-        onSeeked={(event) => updateTime(event.currentTarget)}
-        onPlay={() => onPlayingChange(true)}
-        onPause={() => onPlayingChange(false)}
-        onEnded={(event) => {
-          onPlayingChange(false);
-          updateTime(event.currentTarget);
-        }}
-        onError={() => {
-          setDuration(0);
-          setPosition(0);
-          onError();
-        }}
+        {...player.audio}
       />
-      {duration > 0 && (
-        <div className='flex items-center gap-3 border-b border-border px-3 py-2 text-xs text-muted-foreground tabular-nums'>
-          <span>{elapsedLabel(position)}</span>
-          <input
-            type='range'
-            aria-label='Playback position'
-            aria-valuetext={`${elapsedLabel(position)} of ${elapsedLabel(duration)}`}
-            min={0}
-            max={duration}
-            step={0.1}
-            value={Math.min(position, duration)}
-            className='min-w-0 flex-1 accent-accent'
-            onInput={(event) => {
-              const audio = audioRef.current;
-              if (!audio) return;
-              audio.currentTime = Number(event.currentTarget.value);
-              updateTime(audio);
-            }}
-          />
-          <span>{elapsedLabel(duration)}</span>
-        </div>
+      {player.duration > 0 && (
+        <input
+          type='range'
+          aria-label='Playback position'
+          aria-valuetext={`${elapsedLabel(player.position)} of ${elapsedLabel(player.duration)}`}
+          min={0}
+          max={player.duration}
+          step={0.1}
+          value={Math.min(player.position, player.duration)}
+          style={
+            {
+              '--seek-fill': `${(Math.min(player.position, player.duration) / player.duration) * 100}%`,
+            } as CSSProperties
+          }
+          className='absolute inset-x-0 bottom-[-4.5px] m-0 h-2.5 cursor-pointer appearance-none [-webkit-appearance:none] bg-transparent outline-none [&::-webkit-slider-runnable-track]:h-px [&::-webkit-slider-runnable-track]:bg-[linear-gradient(to_right,var(--accent)_var(--seek-fill,0%),transparent_var(--seek-fill,0%))] [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:[-webkit-appearance:none] [&::-webkit-slider-thumb]:mt-[-4.5px] [&::-webkit-slider-thumb]:size-2.5 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-accent'
+          onInput={(event) => player.seekTo(Number(event.currentTarget.value))}
+        />
       )}
     </>
   );

@@ -1,8 +1,9 @@
 /// <reference types="bun-types" />
 import { expect, test } from 'bun:test';
 import { GlobalWindow } from 'happy-dom';
-import { act, createRef } from 'react';
+import { act } from 'react';
 import { createRoot } from 'react-dom/client';
+import { useSessionPlayer } from '@/hooks/useSessionPlayer';
 import { SessionPlayer } from '@/components/listen/SessionPlayer';
 
 test('playback controls follow metadata, playback, external seeks, slider input, and source changes', async () => {
@@ -18,24 +19,19 @@ test('playback controls follow metadata, playback, external seeks, slider input,
   const host = document.createElement('div');
   document.body.appendChild(host);
   const root = createRoot(host);
-  const audioRef = createRef<HTMLAudioElement>();
-  const times: number[] = [];
-  const durations: number[] = [];
-  const playing: boolean[] = [];
-  let errors = 0;
-  const render = async (audioFile: string) => {
-    await act(async () =>
-      root.render(
-        <SessionPlayer
-          audioFile={audioFile}
-          audioRef={audioRef}
-          onTime={(time) => times.push(time)}
-          onReady={(duration) => durations.push(duration)}
-          onPlayingChange={(value) => playing.push(value)}
-          onError={() => errors++}
-        />,
-      ),
-    );
+  let player!: ReturnType<typeof useSessionPlayer>;
+  const Harness = ({ file }: { file: string }) => {
+    player = useSessionPlayer({
+      file,
+      ended: true,
+      resetKey: null,
+      blocks: [],
+      startedAt: 0,
+    });
+    return <SessionPlayer player={player} />;
+  };
+  const render = async (file: string) => {
+    await act(async () => root.render(<Harness file={file} />));
   };
   const fire = async (target: Element, type: string) => {
     await act(async () =>
@@ -46,17 +42,18 @@ test('playback controls follow metadata, playback, external seeks, slider input,
   };
   try {
     await render('first.wav');
-    const audio = audioRef.current!;
+    const audio = host.querySelector('audio')!;
     expect(host.querySelector('input')).toBeNull();
     Object.defineProperty(audio, 'duration', {
       configurable: true,
       value: 125,
     });
     await fire(audio, 'loadedmetadata');
-    expect(durations[durations.length - 1]).toBe(125);
+    expect(player.duration).toBe(125);
+    expect(player.canSeek).toBe(true);
     const slider = host.querySelector('input')!;
     expect(slider.max).toBe('125');
-    expect(host.textContent).toContain('2:05');
+    expect(slider.getAttribute('style')).toContain('--seek-fill: 0%');
     Object.defineProperty(audio, 'duration', {
       configurable: true,
       value: 130,
@@ -66,7 +63,7 @@ test('playback controls follow metadata, playback, external seeks, slider input,
     audio.currentTime = 20;
     await fire(audio, 'timeupdate');
     expect(slider.value).toBe('20');
-    expect(times[times.length - 1]).toBe(20);
+    expect(player.position).toBe(20);
     audio.currentTime = 30;
     await fire(audio, 'seeking');
     expect(slider.value).toBe('30');
@@ -77,19 +74,22 @@ test('playback controls follow metadata, playback, external seeks, slider input,
     )!.set!.call(slider, '45');
     await fire(slider, 'input');
     expect(audio.currentTime).toBe(45);
-    expect(times[times.length - 1]).toBe(45);
+    expect(player.position).toBe(45);
     await fire(audio, 'play');
+    expect(player.playing).toBe(true);
     await fire(audio, 'pause');
-    expect(playing.slice(-2)).toEqual([true, false]);
+    expect(player.playing).toBe(false);
     audio.currentTime = 125;
     await fire(audio, 'ended');
     expect(slider.value).toBe('125');
-    expect(playing[playing.length - 1]).toBe(false);
+    expect(player.playing).toBe(false);
     await render('second.wav');
     expect(host.querySelector('input')).toBeNull();
     expect(audio.currentTime).toBe(0);
     await fire(audio, 'error');
-    expect(errors).toBe(1);
+    expect(player.unavailable).toBe(true);
+    // `visible` flips off on error — the element unmounts entirely.
+    expect(host.querySelector('audio')).toBeNull();
   } finally {
     await act(async () => root.unmount());
     host.remove();

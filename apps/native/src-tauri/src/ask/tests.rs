@@ -301,7 +301,7 @@ use crate::storage::Message;
         let delete_task = {
             let lifecycle = Arc::clone(&lifecycle);
             let db = Arc::clone(&db);
-            tokio::spawn(async move { lifecycle.delete(db.as_ref(), sid).await })
+            tokio::spawn(async move { lifecycle.delete(db.as_ref(), sid, || {}).await })
         };
 
         wait_for_delete_mark(&lifecycle, sid).await;
@@ -312,6 +312,86 @@ use crate::storage::Message;
         delete_task
             .await
             .expect("session deletion task should join")
+            .unwrap();
+        assert!(db.session_compaction(sid).unwrap().is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn session_delete_cancels_hanging_ask_and_waits_for_remaining_leases() {
+        let dir = tmp_dir();
+        let db = Arc::new(Db::at(dir.join("marvis.db")).unwrap());
+        let sid = db.session_get_or_create_active("ask").unwrap();
+        let lifecycle = SessionLifecycle::new();
+        let handoff = lifecycle.capture_handoff(db.as_ref(), sid).unwrap();
+        let blocker = lifecycle.acquire(sid).unwrap();
+        let svc = Arc::new(AskService::new());
+        let cancel = svc.claim(Some(sid), "question", 1).unwrap();
+        let other_cancel = svc.claim(Some(sid + 1), "other question", 2).unwrap();
+        let provider = MockProvider::new(vec![Behavior::Hang]);
+        let calls = provider.calls();
+        let ask_task = {
+            let db = Arc::clone(&db);
+            let cancel = cancel.clone();
+            tokio::spawn(async move {
+                let (_, emit) = recorder();
+                let reader = screen_read::ScreenReader::new();
+                let ring = Mutex::new(RingBuffer::new(4, 1 << 20));
+                send_chain(
+                    vec![candidate("mock", provider)],
+                    None,
+                    db.as_ref(),
+                    &emit,
+                    &input(&reader, &ring),
+                    &cancel,
+                    ChainOpts {
+                        text: "question",
+                        session_id: Some(sid),
+                        session_handoff: Some(handoff),
+                        ..ChainOpts::default()
+                    },
+                )
+                .await
+            })
+        };
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while calls.lock().is_empty() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("Ask did not enter the hanging provider");
+
+        let delete_task = {
+            let lifecycle = Arc::clone(&lifecycle);
+            let db = Arc::clone(&db);
+            let svc = Arc::clone(&svc);
+            tokio::spawn(async move {
+                lifecycle
+                    .delete(db.as_ref(), sid, || {
+                        assert!(lifecycle.is_deleting(sid));
+                        assert!(lifecycle.acquire(sid).is_none());
+                        svc.retire(Some(sid));
+                    })
+                    .await
+            })
+        };
+        let error = tokio::time::timeout(Duration::from_secs(1), ask_task)
+            .await
+            .expect("session deletion did not cancel the hanging Ask")
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(error.to_string(), "http 0: cancelled");
+        assert!(cancel.is_cancelled());
+        assert!(!other_cancel.is_cancelled());
+        assert!(!delete_task.is_finished());
+        assert!(db.session_compaction(sid).unwrap().is_some());
+
+        drop(blocker);
+        tokio::time::timeout(Duration::from_secs(1), delete_task)
+            .await
+            .expect("deletion did not finish after the last lease released")
+            .unwrap()
             .unwrap();
         assert!(db.session_compaction(sid).unwrap().is_none());
         let _ = std::fs::remove_dir_all(&dir);
@@ -416,7 +496,7 @@ use crate::storage::Message;
         let delete_task = {
             let lifecycle = Arc::clone(&lifecycle);
             let db = Arc::clone(&db);
-            tokio::spawn(async move { lifecycle.delete(db.as_ref(), session_id).await })
+            tokio::spawn(async move { lifecycle.delete(db.as_ref(), session_id, || {}).await })
         };
         wait_for_delete_mark(&lifecycle, session_id).await;
 
@@ -485,7 +565,7 @@ use crate::storage::Message;
         let delete_task = {
             let lifecycle = Arc::clone(&lifecycle);
             let db = Arc::clone(&db);
-            tokio::spawn(async move { lifecycle.delete(db.as_ref(), sid).await })
+            tokio::spawn(async move { lifecycle.delete(db.as_ref(), sid, || {}).await })
         };
         wait_for_delete_mark(&lifecycle, sid).await;
         assert!(!delete_task.is_finished());
@@ -522,7 +602,7 @@ use crate::storage::Message;
         let delete_task = {
             let lifecycle = Arc::clone(&lifecycle);
             let db = Arc::clone(&db);
-            tokio::spawn(async move { lifecycle.delete(db.as_ref(), sid).await })
+            tokio::spawn(async move { lifecycle.delete(db.as_ref(), sid, || {}).await })
         };
         wait_for_delete_mark(&lifecycle, sid).await;
 
@@ -606,7 +686,7 @@ use crate::storage::Message;
         let delete_task = {
             let lifecycle = Arc::clone(&lifecycle);
             let db = Arc::clone(&db);
-            tokio::spawn(async move { lifecycle.delete(db.as_ref(), sid).await })
+            tokio::spawn(async move { lifecycle.delete(db.as_ref(), sid, || {}).await })
         };
         wait_for_delete_mark(&lifecycle, sid).await;
 

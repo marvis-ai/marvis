@@ -123,17 +123,28 @@ impl SessionLifecycle {
         })
     }
 
-    /// Mark the session deleting, wait for all owned leases, remove the row,
-    /// and always release the registry state before returning the DB result.
+    /// Mark the session deleting, stop its Ask run, wait for all owned leases,
+    /// remove the row, and always release the registry state before returning
+    /// the DB result.
     /// Duplicate callers subscribe to this exact deletion generation and
     /// receive the owner's result, including an error. A later incarnation
     /// creates a fresh generation after the entry is released.
-    pub(crate) async fn delete(&self, db: &Db, session_id: i64) -> anyhow::Result<()> {
-        self.delete_inner(session_id, || db.session_delete(session_id))
+    pub(crate) async fn delete(
+        &self,
+        db: &Db,
+        session_id: i64,
+        stop: impl FnOnce(),
+    ) -> anyhow::Result<()> {
+        self.delete_inner(session_id, stop, || db.session_delete(session_id))
             .await
     }
 
-    async fn delete_inner<F>(&self, session_id: i64, delete: F) -> anyhow::Result<()>
+    async fn delete_inner<F>(
+        &self,
+        session_id: i64,
+        stop: impl FnOnce(),
+        delete: F,
+    ) -> anyhow::Result<()>
     where
         F: FnOnce() -> anyhow::Result<()>,
     {
@@ -156,6 +167,11 @@ impl SessionLifecycle {
         if !owner {
             return generation.wait().await;
         }
+
+        // Deletion is already marked, so new handoffs cannot enter. Stop
+        // outside the registry lock, then wait for cancellation to release
+        // the run's lease; a cancellation deadline cannot make deletion safe.
+        stop();
 
         loop {
             let notified = {
@@ -195,7 +211,7 @@ impl SessionLifecycle {
         session_id: i64,
         result: anyhow::Result<()>,
     ) -> anyhow::Result<()> {
-        self.delete_inner(session_id, || result).await
+        self.delete_inner(session_id, || {}, || result).await
     }
 
     #[cfg(test)]
@@ -269,19 +285,19 @@ mod tests {
         let owner = {
             let lifecycle = Arc::clone(&lifecycle);
             let db = Arc::clone(&db);
-            tokio::spawn(async move { lifecycle.delete(db.as_ref(), session_id).await })
+            tokio::spawn(async move { lifecycle.delete(db.as_ref(), session_id, || {}).await })
         };
         wait_for_delete_mark(&lifecycle, session_id).await;
 
         let waiter_one = {
             let lifecycle = Arc::clone(&lifecycle);
             let db = Arc::clone(&db);
-            tokio::spawn(async move { lifecycle.delete(db.as_ref(), session_id).await })
+            tokio::spawn(async move { lifecycle.delete(db.as_ref(), session_id, || {}).await })
         };
         let waiter_two = {
             let lifecycle = Arc::clone(&lifecycle);
             let db = Arc::clone(&db);
-            tokio::spawn(async move { lifecycle.delete(db.as_ref(), session_id).await })
+            tokio::spawn(async move { lifecycle.delete(db.as_ref(), session_id, || {}).await })
         };
         drop(blocker);
 
@@ -320,13 +336,13 @@ mod tests {
         let owner = {
             let lifecycle = Arc::clone(&lifecycle);
             let db = Arc::clone(&db);
-            tokio::spawn(async move { lifecycle.delete(db.as_ref(), session_id).await })
+            tokio::spawn(async move { lifecycle.delete(db.as_ref(), session_id, || {}).await })
         };
         wait_for_delete_mark(&lifecycle, session_id).await;
         let waiter = {
             let lifecycle = Arc::clone(&lifecycle);
             let db = Arc::clone(&db);
-            tokio::spawn(async move { lifecycle.delete(db.as_ref(), session_id).await })
+            tokio::spawn(async move { lifecycle.delete(db.as_ref(), session_id, || {}).await })
         };
         drop(blocker);
 
@@ -341,7 +357,10 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        lifecycle.delete(db.as_ref(), session_id).await.unwrap();
+        lifecycle
+            .delete(db.as_ref(), session_id, || {})
+            .await
+            .unwrap();
         assert!(db.session_compaction(session_id).unwrap().is_none());
         let _ = std::fs::remove_dir_all(dir);
     }

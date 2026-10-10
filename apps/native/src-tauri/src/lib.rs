@@ -1227,9 +1227,10 @@ mod tests {
 
     /// The composer's stop button plus the packet identity that keeps a
     /// stream out of the wrong conversation: `ask_stop` cancels ONE
-    /// session's run through `AskService::stop` while session
-    /// boundaries deliberately DON'T — a detached run keeps writing to
-    /// its own session. The emit fold `run`-tags every `ask:*` packet
+    /// session's run through `AskService::stop`. Deletion also cancels
+    /// its run; ending/resuming sessions only detaches the view, so a
+    /// detached run keeps writing to its own session. The emit fold
+    /// `run`-tags every `ask:*` packet
     /// (in-flight deliveries of a killed run drop) and `send_chain`
     /// `session_id`-tags them (a detached run's packets drop on any
     /// view that isn't showing that session). `ask_runs` is the
@@ -1244,7 +1245,12 @@ mod tests {
         assert!(commands.contains("state.ask.stop(&app, session_id)"));
         assert!(commands.contains("pub(crate) fn ask_runs("));
         let sessions = include_str!("commands/sessions.rs");
-        assert!(!sessions.contains("state.ask.stop"));
+        assert!(sessions.contains("state.ask.stop(&app, id)"));
+        let view_boundaries = sessions
+            .split("pub(crate) fn session_end_active")
+            .nth(1)
+            .unwrap();
+        assert!(!view_boundaries.contains("state.ask.stop"));
         let ask = include_str!("ask/mod.rs");
         assert!(ask.contains("pub fn stop(&self, app: &AppHandle, session_id: i64)"));
         assert!(ask.contains("payload[\"run\"]"));

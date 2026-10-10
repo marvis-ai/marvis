@@ -13,8 +13,9 @@ registry. `AskService::kick` captures the resolved session's token and an owned
 lease synchronously, then transfers both in a `SessionHandoff` into the spawned
 pipeline; production never lets a queued Ask establish a later incarnation
 baseline. The existing `session_delete` command marks one generation deleting,
-waits for owned Ask/compaction/title leases, deletes the row, publishes the
-owner's success/error to all duplicate waiters, and removes the registry entry
+cancels that session's Ask run through `AskService::stop`, waits for owned
+Ask/compaction/title leases, deletes the row, publishes the owner's
+success/error to all duplicate waiters, and removes the registry entry
 even on errors. Before history/regenerate work, `send_chain` consumes the
 transferred handoff (direct tests may use the legacy acquisition fallback).
 After that work, re-read the token/digest and inject the post-history digest
@@ -160,7 +161,7 @@ fn session_compaction_roundtrips_and_uses_token_and_watermark_cas() {
 
 Also assert that `session_compaction` returns `None` for a missing session,
 that a wrong token or watermark makes `session_compact_write` return `false`,
-that clearing a missing session is a successful no-op, and that write/clear do
+that clearing a missing session returns `false`, and that write/clear do
 not change `last_active_at`. An existing session with no digest returns
 `Some((token, None, None))`, so a detached job can distinguish deletion before
 it contacts the provider.
@@ -825,7 +826,10 @@ initialize both in the real `AppState` literal inside `setup`. Keep the registry
 and service on `AppState`; do not create either per send. In
 `commands/sessions.rs`, make the existing `session_delete` command await the
 registry deletion path while preserving its `session_delete(id) -> void` IPC
-surface.
+surface. After marking deletion and before waiting, call `AskService::stop`
+outside the registry lock to cancel that session's run. Keep waiting in
+`session_lifecycle.rs` until all leases release; a deadline must never allow
+deletion while a lease remains active.
 
 - [ ] **Step 4: Bind the post-history digest and plan to the pre-history token.**
 
@@ -847,12 +851,14 @@ token; if the token changed or the session disappeared, use no digest and no
 plan for this run:
 
 ```rust
-let pre_history_token = session_id.and_then(|sid| {
-    db.session_compaction(sid)
-        .ok()
-        .flatten()
-        .map(|(token, _, _)| token)
-});
+// Production consumes the original handoff captured by AskService::kick.
+let (pre_history_token, _session_lease) = match (session_id, session_handoff) {
+    (Some(sid), Some(handoff)) if handoff.session_id == sid => {
+        (Some(handoff.session_token), Some(handoff.lease))
+    }
+    (None, None) => (None, None),
+    _ => return Err(incarnation_error(emit)),
+};
 // ... history/regenerate processing ...
 let (compaction, compact_plan) = compaction_after_history(
     db,
@@ -861,6 +867,13 @@ let (compaction, compact_plan) = compaction_after_history(
     &history_rows,
 );
 ```
+
+For the direct pipeline fallback without `session_handoff`, acquire the
+optional lifecycle lease and read `session_compaction` before history work.
+Only `Ok(Some((token, _, _)))` may establish the pre-history token;
+`Ok(None)` or `Err(_)` must return `Err(incarnation_error(emit))` before
+provider work, as must a failed lease acquisition. Keep the acquired lease
+alive for the whole run.
 
 Keep `compaction` alive through the candidate loop and pass
 `compaction.as_deref()` to `stream_candidate`. A non-safety-critical detached
@@ -1032,7 +1045,7 @@ Run:
 ```bash
 git status --short
 git diff --check
-git diff --stat develop...HEAD
+git diff --stat master...HEAD
 ```
 
 Review every changed line, then commit the roadmap update and any formatter

@@ -8,13 +8,14 @@
 `compact` and `compact_through` columns to `sessions`. Marvis-created rows use
 SQLite `hex(randomblob(16))`; the idempotent open-time migration adds the token
 column and backfills NULL legacy/current-test rows without changing existing
-tokens or data. Before each Ask provider call, load the session token and digest
-and inject the bounded digest after the existing user profile; after a successful
-answer, schedule a detached compaction job when at least ten newly dropped rows
-are available. The job uses the provider that answered, serializes compaction
-work, rechecks token/digest/watermark, and writes with a token- and watermark-
-bound compare-and-set so stale or recreated-session jobs cannot overwrite a
-newer incarnation.
+tokens or data. Before history/regenerate work, capture the session token; after
+that work, re-read the token/digest and inject the post-history digest only when
+the token is unchanged. A changed or missing token skips context and planning for
+that run. After a successful answer, schedule a detached compaction job when at
+least ten newly dropped rows are available. The job uses the provider that
+answered, serializes compaction work, rechecks token/digest/watermark, and writes
+with a token- and watermark-bound compare-and-set so stale or recreated-session
+jobs cannot overwrite a newer incarnation.
 
 **Tech Stack:** Rust/Tauri 2, Tokio async runtime, `rusqlite` SQLite storage, existing `Provider`/`ChatMessage` abstractions, existing Ask test harness with scripted providers, Markdown prompts embedded with `include_str!`.
 
@@ -88,7 +89,11 @@ impl Db {
         new_through: i64,
     ) -> anyhow::Result<bool>;
 
-    pub fn session_compact_clear(&self, session_id: i64) -> anyhow::Result<()>;
+    pub fn session_compact_clear(
+        &self,
+        session_id: i64,
+        session_token: &str,
+    ) -> anyhow::Result<bool>;
 }
 ```
 
@@ -126,10 +131,10 @@ fn session_compaction_roundtrips_and_uses_token_and_watermark_cas() {
         .unwrap());
     assert_eq!(
         db.session_compaction(sid).unwrap(),
-        Some((token, Some("second digest".to_string()), Some(20)))
+        Some((token.clone(), Some("second digest".to_string()), Some(20)))
     );
 
-    db.session_compact_clear(sid).unwrap();
+    assert!(db.session_compact_clear(sid, &token).unwrap());
     let cleared = db.session_compaction(sid).unwrap().unwrap();
     assert_eq!((cleared.1, cleared.2), (None, None));
     let _ = std::fs::remove_dir_all(&dir);
@@ -230,8 +235,10 @@ WHERE id = ?3
 ```
 
 Return `changed_rows > 0`. Do not update `last_active_at`: a detached digest
-must not make a session appear newly active. `session_compact_clear` sets both
-compaction columns to `NULL` without deleting messages or touching activity.
+must not make a session appear newly active. `session_compact_clear` requires
+`session_token`, sets both compaction columns to `NULL` only for that
+incarnation, and returns `false` for a missing/mismatched row without deleting
+messages or touching activity.
 
 - [ ] **Step 6: Add the migration regression test and run the focused suite.**
 
@@ -736,6 +743,14 @@ the old plan. The recreated row's token must differ, the detached provider must
 receive zero calls, and the recreated row must retain a NULL digest/watermark.
 This test is added and run red before the token implementation.
 
+Add the ordering-boundary regression separately: capture the pre-history token,
+retain an old history snapshot, delete/recreate the highest-id session before
+post-history plan construction, and assert that no old rows are sent or written
+to the recreated incarnation. Also add the regenerate delete/recreate clear
+regression: a clear using the old token must leave the recreated row's digest
+and watermark untouched. Both regressions are added and run red before the
+implementation.
+
 - [ ] **Step 2: Run the integration tests and verify they fail before wiring.**
 
 Run:
@@ -772,38 +787,37 @@ Clone it in `AppState::deps`, initialize it in `AppState::for_test`, and initial
 `AppState` literal inside `setup`. Keep the service on `AppState`; do not create
 a new service per send.
 
-- [ ] **Step 4: Load the digest and plan before history rows move into `spawn_blocking`.**
+- [ ] **Step 4: Bind the post-history digest and plan to the pre-history token.**
 
-In `send_chain`, immediately after the regenerate/fresh history rows are
-chosen and before the existing `spawn_blocking(move || rows_to_history_at(&history_rows, &root))`,
-read the session compaction once:
+In `send_chain`, capture only the session token before the regenerate/fresh
+history rows are chosen. After that history work and before the existing
+`spawn_blocking(move || rows_to_history_at(&history_rows, &root))`, re-read
+`session_compaction`. Use the post-history digest and watermark as the
+authoritative prompt/plan snapshot only when its token equals the pre-history
+token; if the token changed or the session disappeared, use no digest and no
+plan for this run:
 
 ```rust
-let (compaction, compact_plan) = match session_id {
-    Some(sid) => match db.session_compaction(sid) {
-        Ok(Some((session_token, digest, through))) => {
-            let plan = compaction_plan(
-                sid,
-                session_token,
-                &history_rows,
-                digest.clone(),
-                through,
-            );
-            (digest, plan)
-        }
-        Ok(None) => (None, None),
-        Err(error) => {
-            log::warn!("ask: session compaction load failed: {error}");
-            (None, None)
-        }
-    },
-    None => (None, None),
-};
+let pre_history_token = session_id.and_then(|sid| {
+    db.session_compaction(sid)
+        .ok()
+        .flatten()
+        .map(|(token, _, _)| token)
+});
+// ... history/regenerate processing ...
+let (compaction, compact_plan) = compaction_after_history(
+    db,
+    session_id,
+    pre_history_token,
+    &history_rows,
+);
 ```
 
 Keep `compaction` alive through the candidate loop and pass
 `compaction.as_deref()` to `stream_candidate`. If storage fails, the Ask
 continues exactly as it did without a digest and no compaction job is planned.
+The pre-history token remains the plan's source-incarnation snapshot; the
+post-history digest remains authoritative so regenerate clearing is reflected.
 
 - [ ] **Step 5: Schedule compaction only after an answering candidate succeeds.**
 
@@ -823,12 +837,13 @@ provider fails and the second answers, use the second candidate's provider.
 
 - [ ] **Step 6: Invalidate compaction when regenerate deletes covered rows.**
 
-In `regenerate_tail_rows`, read the current watermark before deleting rows.
-Compute whether any row in `rows[cut + 1..]` has `id <= compact_through`. Delete
-the rejected rows using the existing loop. If the read succeeded and the
-predicate is true, call `session_compact_clear(sid)` after the deletes. Log a
-read or clear error and continue the retry path; do not turn a storage hiccup
-into a provider error.
+In `regenerate_tail_rows`, read the current token and watermark before
+deleting rows. Compute whether any row in `rows[cut + 1..]` has
+`id <= compact_through`. Delete the rejected rows using the existing loop. If
+the read succeeded and the predicate is true, call
+`session_compact_clear(sid, token)` after the deletes. A missing row or token
+mismatch is a warning-only no-op; log a read or storage error and continue the
+retry path rather than turning a storage hiccup into a provider error.
 
 Use this direct regression shape:
 

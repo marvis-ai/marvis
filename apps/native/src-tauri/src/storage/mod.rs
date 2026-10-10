@@ -10,7 +10,7 @@
 //! Schema (spec §Persistence):
 //!
 //! ```sql
-//! sessions(id PK, type 'ask'|'listen', title?, audio_file?, stt?, session_token, started_at, ended_at?, last_active_at)
+//! sessions(id PK, type 'ask'|'listen', title?, audio_file?, stt?, listen_id?, session_token?, compact?, compact_through?, started_at, ended_at?, last_active_at)
 //! messages(id PK, session_id FK → sessions.id ON DELETE CASCADE, role, content,
 //!          provider?, model?, tokens_in?, tokens_out?, preset?, ts)
 //! transcripts(id PK, session_id FK → sessions.id ON DELETE CASCADE, speaker, speaker_idx?, content, ts)

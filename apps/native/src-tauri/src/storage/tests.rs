@@ -120,10 +120,10 @@ fn session_compaction_roundtrips_and_uses_token_and_watermark_cas() {
         .unwrap());
     assert_eq!(
         db.session_compaction(sid).unwrap(),
-        Some((token, Some("second digest".to_string()), Some(20)))
+        Some((token.clone(), Some("second digest".to_string()), Some(20)))
     );
 
-    db.session_compact_clear(sid).unwrap();
+    assert!(db.session_compact_clear(sid, &token).unwrap());
     let cleared = db.session_compaction(sid).unwrap().unwrap();
     assert_eq!(cleared.1, None);
     assert_eq!(cleared.2, None);
@@ -131,7 +131,7 @@ fn session_compaction_roundtrips_and_uses_token_and_watermark_cas() {
     assert!(!db
         .session_compact_write(i64::MAX, "missing-token", None, "missing digest", 1)
         .unwrap());
-    db.session_compact_clear(i64::MAX).unwrap();
+    assert!(!db.session_compact_clear(i64::MAX, "missing-token").unwrap());
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -148,6 +148,34 @@ fn session_incarnation_token_changes_when_highest_id_is_recreated() {
     assert_eq!(recreated_id, first_id);
     let recreated_token = db.session_compaction(recreated_id).unwrap().unwrap().0;
     assert_ne!(recreated_token, first_token);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn regenerate_clear_does_not_clear_recreated_incarnation() {
+    let dir = tmp_dir();
+    let db = Db::at(dir.join("marvis.db")).unwrap();
+    let sid = db.session_get_or_create_active("ask").unwrap();
+    let old_token = db.session_compaction(sid).unwrap().unwrap().0;
+    assert!(db
+        .session_compact_write(sid, &old_token, None, "old digest", 1)
+        .unwrap());
+
+    db.session_delete(sid).unwrap();
+    assert_eq!(db.session_get_or_create_active("ask").unwrap(), sid);
+    let new_token = db.session_compaction(sid).unwrap().unwrap().0;
+    assert_ne!(new_token, old_token);
+    assert!(db
+        .session_compact_write(sid, &new_token, None, "new digest", 2)
+        .unwrap());
+
+    assert!(!db.session_compact_clear(sid, &old_token).unwrap());
+    assert_eq!(
+        db.session_compaction(sid).unwrap().unwrap().1.as_deref(),
+        Some("new digest")
+    );
+    assert_eq!(db.session_compaction(sid).unwrap().unwrap().2, Some(2));
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -179,7 +207,7 @@ fn session_compaction_write_and_clear_preserve_last_active_at() {
         last_active_at
     );
 
-    db.session_compact_clear(sid).unwrap();
+    assert!(db.session_compact_clear(sid, &token).unwrap());
     assert_eq!(
         db.session_list()
             .unwrap()

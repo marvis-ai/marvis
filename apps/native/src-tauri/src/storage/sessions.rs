@@ -285,13 +285,19 @@ impl Db {
     }
 
     /// Clear the detached compaction digest and watermark without changing
-    /// messages or session activity. Missing sessions are a no-op.
-    pub fn session_compact_clear(&self, session_id: i64) -> anyhow::Result<()> {
-        self.conn.lock().execute(
-            "UPDATE sessions SET compact = NULL, compact_through = NULL WHERE id = ?1",
-            [session_id],
-        )?;
-        Ok(())
+    /// messages or session activity. Missing sessions or a changed
+    /// incarnation are no-ops and return `false`.
+    pub fn session_compact_clear(
+        &self,
+        session_id: i64,
+        session_token: &str,
+    ) -> anyhow::Result<bool> {
+        Ok(self.conn.lock().execute(
+            "UPDATE sessions
+             SET compact = NULL, compact_through = NULL
+             WHERE id = ?1 AND session_token = ?2",
+            params![session_id, session_token],
+        )? > 0)
     }
 
     /// Record the STT engine label at listen start — the finished doc's

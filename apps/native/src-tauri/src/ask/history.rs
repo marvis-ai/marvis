@@ -191,14 +191,15 @@ pub(super) fn regenerate_tail_rows(
     let cut = rows.iter().rposition(|r| r.role == "user")?;
     let re_asked_id = rows[cut].id;
     let re_asked_attachments = rows[cut].attachments.clone();
-    let rejected_is_compacted = match db.session_compaction(sid) {
-        Ok(Some((_, _, Some(compact_through)))) => {
-            rows[cut + 1..].iter().any(|row| row.id <= compact_through)
-        }
-        Ok(Some((_, _, None)) | None) => false,
+    let (rejected_is_compacted, compaction_token) = match db.session_compaction(sid) {
+        Ok(Some((token, _, Some(compact_through)))) => (
+            rows[cut + 1..].iter().any(|row| row.id <= compact_through),
+            Some(token),
+        ),
+        Ok(Some((_, _, None)) | None) => (false, None),
         Err(error) => {
             log::warn!("ask: session compaction watermark load failed: {error}");
-            false
+            (false, None)
         }
     };
     for row in &rows[cut + 1..] {
@@ -207,8 +208,16 @@ pub(super) fn regenerate_tail_rows(
         }
     }
     if rejected_is_compacted {
-        if let Err(error) = db.session_compact_clear(sid) {
-            log::warn!("ask: session compaction clear after regenerate failed: {error}");
+        if let Some(token) = compaction_token {
+            match db.session_compact_clear(sid, &token) {
+                Ok(true) => {}
+                Ok(false) => log::warn!(
+                    "ask: session compaction clear after regenerate skipped for a changed session"
+                ),
+                Err(error) => {
+                    log::warn!("ask: session compaction clear after regenerate failed: {error}");
+                }
+            }
         }
     }
     Some((rows[..cut].to_vec(), re_asked_id, re_asked_attachments))

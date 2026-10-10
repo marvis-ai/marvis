@@ -96,8 +96,10 @@ Db accessors follow the existing `storage/sessions.rs` style:
   watermark match the plan snapshot; `new_through` is the last rendered source
   row id, and the method returns whether it wrote. It never updates
   `last_active_at`.
-- `session_compact_clear(sid)` — NULLs both digest columns (regenerate
-  invalidation) without changing session activity.
+- `session_compact_clear(sid, session_token) -> bool` — NULLs both digest
+  columns only for the expected incarnation (regenerate invalidation), without
+  changing session activity; a missing row or token mismatch is a warning-only
+  no-op that returns `false`.
 
 ### Watermark and trigger
 
@@ -125,10 +127,14 @@ never compacts — zero extra calls.
 
 ### Injection
 
-`send_chain` reads `session_compaction` once per run beside the existing
-`memory_profile` load; a storage hiccup or a deleted session degrades to
-`None`. The raw stored digest remains available for detached CAS comparison,
-but prompt construction passes only its first 2,000 Unicode scalar values to
+`send_chain` captures the session token before loading or regenerating
+`history_rows`, then re-reads `session_compaction` after that history work. A
+storage hiccup or a deleted session degrades to `None`. The post-history read
+is authoritative for prompt injection and the digest/watermark snapshot, but a
+plan is built only when its token equals the pre-history token; a changed or
+missing token skips both compaction context and scheduling for that run. The
+raw stored digest remains available for detached CAS comparison, while prompt
+construction passes only its first 2,000 Unicode scalar values to
 `build_messages` → `live_system_prompt_with_profile`, which gains a `compact`
 parameter and appends the block LAST, after `<user_profile>`, with the same
 untrusted-data treatment:
@@ -214,9 +220,11 @@ replies leave the previous digest untouched.
 
 `regenerate_tail_rows` deletes every row after the session's last user row.
 If any deleted row's `id <= compact_through`, the digest may incorporate
-content the user just rejected → `session_compact_clear(sid)`; the next
-qualifying send rebuilds from scratch. Normally the watermark sits ≥20 rows
-behind the tail so this is a rare, correctness-only path.
+content the user just rejected → `session_compact_clear(sid, token)`, where
+`token` is the incarnation read with the watermark before deletion; a changed
+or missing incarnation is a warning-only no-op. The next qualifying send
+rebuilds from scratch. Normally the watermark sits ≥20 rows behind the tail so
+this is a rare, correctness-only path.
 
 ### Data flow
 
@@ -280,8 +288,11 @@ for a kill switch it is a small follow-up.
 - Watermark/trigger math: no digest below threshold, first compaction covers
   the eligible rendered prefix, refresh covers only newly uncovered rows, and
   a later plan selects rows omitted by the 32,000-byte bound.
-- Regenerate: deleting rows beyond the watermark leaves the digest; deleting
-  rows inside it clears both columns.
+- Regenerate: deleting rows beyond the watermark leaves the digest;
+  deleting rows inside it clears both columns only for the token read with the
+  watermark, and a delete/recreate race leaves the recreated digest intact.
+- Ask ordering: an old history snapshot paired with a changed/recreated token
+  does not inject a new digest, call the compaction provider, or write a plan.
 - Prompt: `previous_summary` chaining, attachment markers, per-row and total
   caps, non-empty/cap enforcement on the reply.
 - `build_messages`/`live_system_prompt_with_profile`: block present only

@@ -57,6 +57,45 @@ pub(crate) struct ChainOpts<'a> {
     pub title: Option<TitleSidecar>,
 }
 
+/// Re-read compaction state after history/regenerate processing. The token
+/// captured before history is the source-incarnation snapshot; the digest and
+/// watermark come only from this post-history read so regenerate clearing is
+/// reflected in the live prompt and detached plan.
+pub(super) fn compaction_after_history(
+    db: &Db,
+    session_id: Option<i64>,
+    pre_history_token: Option<String>,
+    history_rows: &[crate::storage::Message],
+) -> (Option<String>, Option<CompactionPlan>) {
+    let (Some(sid), Some(pre_history_token)) = (session_id, pre_history_token) else {
+        return (None, None);
+    };
+    match db.session_compaction(sid) {
+        Ok(Some((post_history_token, digest, through)))
+            if post_history_token == pre_history_token =>
+        {
+            let plan = compaction_plan(
+                sid,
+                pre_history_token,
+                history_rows,
+                digest.clone(),
+                through,
+            );
+            (digest, plan)
+        }
+        Ok(Some(_)) => {
+            // The history snapshot belongs to a different incarnation. Do
+            // not expose the new row's digest or schedule old source rows.
+            (None, None)
+        }
+        Ok(None) => (None, None),
+        Err(error) => {
+            log::warn!("ask: post-history session compaction load failed: {error}");
+            (None, None)
+        }
+    }
+}
+
 /// The testable core: persist → walk the failover chain → persist,
 /// emitting the `ask:*` protocol through `emit`. No `AppHandle`/keystore/
 /// pool inside — [`AskService::send`] gathers those deps and delegates.
@@ -164,6 +203,20 @@ pub(crate) async fn send_chain(
         }
         emit(name, payload);
     };
+    // Capture the session incarnation BEFORE history or regenerate work. The
+    // history rows and the later compaction read must belong to this same
+    // incarnation; the post-history digest itself remains authoritative.
+    let pre_history_token = match session_id {
+        Some(sid) => match db.session_compaction(sid) {
+            Ok(Some((token, _, _))) => Some(token),
+            Ok(None) => None,
+            Err(error) => {
+                log::warn!("ask: session compaction incarnation load failed: {error}");
+                None
+            }
+        },
+        None => None,
+    };
     // Order matters: history is read BEFORE the new user row persists —
     // the new turn is appended separately so it can carry the frame. A
     // regenerate skips the write: its question is the session's last
@@ -178,26 +231,13 @@ pub(crate) async fn send_chain(
     } else {
         (message_rows(db, session_id), false, None, Vec::new())
     };
-    // The digest is read while the owned history rows are still available;
-    // `compact_plan` clones its source rows before history moves to the
-    // attachment-loading task.
-    let (compaction, compact_plan): (Option<String>, Option<CompactionPlan>) = match session_id {
-        Some(sid) => match db.session_compaction(sid) {
-            Ok(Some((session_token, digest, through))) => {
-                let plan =
-                    compaction_plan(sid, session_token, &history_rows, digest.clone(), through);
-                (digest, plan)
-            }
-            Ok(None) => (None, None),
-            Err(error) => {
-                log::warn!("ask: session compaction load failed: {error}");
-                (None, None)
-            }
-        },
-        None => (None, None),
-    };
-    // Keep the raw digest in `compaction` for the detached job's CAS snapshot,
-    // but pass only the bounded view to live Ask prompts.
+    // Read the digest after history/regenerate processing. The helper keeps
+    // this post-history state authoritative for prompt injection while only
+    // planning when its token still matches the pre-history snapshot.
+    let (compaction, compact_plan) =
+        compaction_after_history(db, session_id, pre_history_token, &history_rows);
+    // Keep the raw post-history digest in `compaction` for prompt bounding;
+    // the detached plan retains its own raw CAS snapshot.
     let compact_prompt = bounded_compaction(compaction.as_deref());
     // Prior history degrades unreadable images to markers. Current-turn
     // attachments are loaded strictly after the fresh screenshot is resolved.

@@ -267,6 +267,33 @@ use crate::storage::Message;
     }
 
     #[tokio::test]
+    async fn compaction_ordering_rejects_old_history_after_session_recreation() {
+        let dir = tmp_dir();
+        let db = Arc::new(Db::at(dir.join("marvis.db")).unwrap());
+        let sid = seed_compaction_history(db.as_ref(), 30);
+        let old_token = compaction_token(&db, sid);
+        let old_history = db.messages_for(sid).unwrap();
+
+        db.session_delete(sid).unwrap();
+        assert_eq!(db.session_get_or_create_active("ask").unwrap(), sid);
+        assert_ne!(compaction_token(&db, sid), old_token);
+
+        let (_, plan) =
+            compaction_after_history(db.as_ref(), Some(sid), Some(old_token), &old_history);
+        let provider = MockProvider::new(vec![Behavior::Tokens(vec!["must not run".into()])]);
+        let calls = provider.calls();
+        if let Some(plan) = plan {
+            CompactHook::new(Arc::clone(&db), CompactService::new())
+                .maybe_schedule(Arc::new(provider), plan);
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+
+        assert!(calls.lock().is_empty());
+        assert_eq!(compaction_state(&db, sid), (None, None));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
     async fn compaction_watermark_stops_at_last_rendered_row() {
         let dir = tmp_dir();
         let db = Arc::new(Db::at(dir.join("marvis.db")).unwrap());
@@ -566,7 +593,7 @@ use crate::storage::Message;
             .unwrap();
         let plan = compaction_plan(
             sid,
-            token,
+            token.clone(),
             &test_messages(40),
             Some("old digest".into()),
             Some(10),
@@ -580,7 +607,7 @@ use crate::storage::Message;
         CompactHook::new(Arc::clone(&db), CompactService::new())
             .maybe_schedule(Arc::new(provider), plan);
         entered.notified().await;
-        db.session_compact_clear(sid).unwrap();
+        assert!(db.session_compact_clear(sid, &token).unwrap());
         release.notify_one();
         tokio::time::sleep(Duration::from_millis(25)).await;
 

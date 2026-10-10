@@ -41,8 +41,6 @@ import { PrefRow } from './bits';
 import type { PrefsData } from './types';
 
 const CONFIRM_MS = 4000;
-const INPUT =
-  'w-full rounded-lg border border-border bg-input-well px-2.5 py-1.5 text-[12.5px] text-foreground outline-none transition-[border-color,box-shadow] duration-(--motion-fast) ease-(--ease) focus:border-accent focus:shadow-(--focus-ring)';
 
 export const MemoryTab = ({ data }: { data: PrefsData }) => {
   const { config } = data;
@@ -323,7 +321,7 @@ export const MemoryTab = ({ data }: { data: PrefsData }) => {
                 aria-label='Memory value'
                 maxLength={500}
                 defaultValue={f.value}
-                className={INPUT}
+                className='w-full rounded-lg border border-border bg-input-well px-2.5 py-1.5 text-[12.5px] text-foreground outline-none transition-[border-color,box-shadow] duration-(--motion-fast) ease-(--ease) focus:border-accent focus:shadow-(--focus-ring)'
               />
               <div className='flex justify-end gap-2'>
                 <button

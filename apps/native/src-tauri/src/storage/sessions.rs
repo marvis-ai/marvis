@@ -187,7 +187,8 @@ impl Db {
                           WHERE sm.session_id = s.id AND sm.topic IS NOT NULL
                           ORDER BY sm.updated_at DESC, sm.id DESC LIMIT 1)
                       END),
-                    s.audio_file, s.stt, s.started_at, s.ended_at, s.last_active_at
+                    s.audio_file, s.stt, s.compact, s.compact_through,
+                    s.started_at, s.ended_at, s.last_active_at
              FROM sessions s ORDER BY s.last_active_at DESC, s.id DESC",
         )?;
         let rows = stmt.query_map([], |row| {
@@ -197,9 +198,11 @@ impl Db {
                 title: row.get(2)?,
                 audio_file: row.get(3)?,
                 stt: row.get(4)?,
-                started_at: row.get(5)?,
-                ended_at: row.get(6)?,
-                last_active_at: row.get(7)?,
+                compact: row.get(5)?,
+                compact_through: row.get(6)?,
+                started_at: row.get(7)?,
+                ended_at: row.get(8)?,
+                last_active_at: row.get(9)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -228,6 +231,58 @@ impl Db {
             )
             .optional()?
             .flatten())
+    }
+
+    /// Read the detached compaction digest and the message watermark for a
+    /// session. A missing session and an uninitialized digest both read as
+    /// `(None, None)`.
+    #[allow(dead_code)] // Task 2 compaction pipeline consumes this accessor.
+    pub fn session_compaction(
+        &self,
+        session_id: i64,
+    ) -> anyhow::Result<(Option<String>, Option<i64>)> {
+        Ok(self
+            .conn
+            .lock()
+            .query_row(
+                "SELECT compact, compact_through FROM sessions WHERE id = ?1",
+                [session_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?
+            .unwrap_or((None, None)))
+    }
+
+    /// Store a detached compaction digest only when the session's watermark
+    /// still matches the caller's expected value. `NULL` is a valid initial
+    /// watermark and is matched explicitly for SQLite's three-valued logic.
+    #[allow(dead_code)] // Task 2 compaction pipeline consumes this accessor.
+    pub fn session_compact_write(
+        &self,
+        session_id: i64,
+        expected_through: Option<i64>,
+        compact: &str,
+        new_through: i64,
+    ) -> anyhow::Result<bool> {
+        Ok(self.conn.lock().execute(
+            "UPDATE sessions
+             SET compact = ?1, compact_through = ?2
+             WHERE id = ?3
+               AND ((compact_through IS NULL AND ?4 IS NULL)
+                    OR compact_through = ?4)",
+            params![compact, new_through, session_id, expected_through],
+        )? > 0)
+    }
+
+    /// Clear the detached compaction digest and watermark without changing
+    /// messages or session activity. Missing sessions are a no-op.
+    #[allow(dead_code)] // Task 2 compaction pipeline consumes this accessor.
+    pub fn session_compact_clear(&self, session_id: i64) -> anyhow::Result<()> {
+        self.conn.lock().execute(
+            "UPDATE sessions SET compact = NULL, compact_through = NULL WHERE id = ?1",
+            [session_id],
+        )?;
+        Ok(())
     }
 
     /// Record the STT engine label at listen start — the finished doc's
@@ -302,5 +357,4 @@ impl Db {
         }
         Ok(())
     }
-
 }

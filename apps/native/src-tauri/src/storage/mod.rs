@@ -63,6 +63,8 @@ const SCHEMA: &str = "
         audio_file     TEXT,
         stt            TEXT,
         listen_id      INTEGER,
+        compact        TEXT,
+        compact_through INTEGER,
         started_at     INTEGER NOT NULL,
         ended_at       INTEGER,
         last_active_at INTEGER NOT NULL

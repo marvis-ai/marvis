@@ -75,6 +75,12 @@ pub(super) fn migrate(conn: &Connection) -> anyhow::Result<()> {
         if !columns.iter().any(|c| c == "listen_id") {
             conn.execute_batch("ALTER TABLE sessions ADD COLUMN listen_id INTEGER")?;
         }
+        if !columns.iter().any(|column| column == "compact") {
+            conn.execute_batch("ALTER TABLE sessions ADD COLUMN compact TEXT")?;
+        }
+        if !columns.iter().any(|column| column == "compact_through") {
+            conn.execute_batch("ALTER TABLE sessions ADD COLUMN compact_through INTEGER")?;
+        }
     }
     if table_exists("summaries")? {
         let columns = columns("summaries")?;

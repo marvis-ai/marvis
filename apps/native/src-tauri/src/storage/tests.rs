@@ -92,6 +92,42 @@ fn session_audio_file_reads_recording_path() {
 }
 
 #[test]
+fn session_compaction_roundtrips_and_uses_watermark_cas() {
+    let dir = tmp_dir();
+    let db = Db::at(dir.join("marvis.db")).unwrap();
+    let sid = db.session_get_or_create_active("ask").unwrap();
+
+    assert_eq!(db.session_compaction(sid).unwrap(), (None, None));
+    assert!(db
+        .session_compact_write(sid, None, "first digest", 10)
+        .unwrap());
+    assert_eq!(
+        db.session_compaction(sid).unwrap(),
+        (Some("first digest".to_string()), Some(10))
+    );
+    assert!(!db
+        .session_compact_write(sid, None, "stale digest", 20)
+        .unwrap());
+    assert!(db
+        .session_compact_write(sid, Some(10), "second digest", 20)
+        .unwrap());
+    assert_eq!(
+        db.session_compaction(sid).unwrap(),
+        (Some("second digest".to_string()), Some(20))
+    );
+
+    db.session_compact_clear(sid).unwrap();
+    assert_eq!(db.session_compaction(sid).unwrap(), (None, None));
+    assert_eq!(db.session_compaction(i64::MAX).unwrap(), (None, None));
+    assert!(!db
+        .session_compact_write(i64::MAX, None, "missing digest", 1)
+        .unwrap());
+    db.session_compact_clear(i64::MAX).unwrap();
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn session_delete_cascades_messages() {
     // foreign_keys is a per-connection pragma — if it weren't applied,
     // this test would leave orphan rows instead of cascading.
@@ -493,6 +529,35 @@ fn migrate_upgrades_pre_rename_database() {
         .unwrap();
     let transcripts = db.transcripts_for(1, None).unwrap();
     assert_eq!(transcripts[1].speaker_idx, Some(1));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn session_compaction_migrates_legacy_schema() {
+    let dir = tmp_dir();
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("marvis.db");
+    {
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(V1_SCHEMA).unwrap();
+        conn.execute_batch(
+            "INSERT INTO sessions (type, started_at, last_active_at)
+                 VALUES ('ask', 1, 1);
+             INSERT INTO ai_messages (session_id, role, content, ts)
+                 VALUES (1, 'user', 'old question', 1);",
+        )
+        .unwrap();
+    }
+
+    let db = Db::at(&path).unwrap();
+    assert_eq!(db.session_compaction(1).unwrap(), (None, None));
+    assert!(db.session_compact_write(1, None, "legacy-safe", 1).unwrap());
+    assert_eq!(
+        db.session_compaction(1).unwrap().0.as_deref(),
+        Some("legacy-safe")
+    );
+    assert_eq!(db.messages_for(1).unwrap()[0].content, "old question");
+
     let _ = std::fs::remove_dir_all(&dir);
 }
 

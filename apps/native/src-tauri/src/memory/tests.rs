@@ -1,6 +1,7 @@
 use super::*;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::llm::{ChatMessage, ContentPart, LlmError, Provider, Role, StreamReply};
 use crate::storage::Memory;
@@ -229,17 +230,26 @@ fn extraction_messages_carry_observation_date_and_language_rule() {
 /// A stub `Provider`: `reply` returns the canned body, `error` fails.
 struct ScriptedProvider {
     reply: Option<String>,
+    calls: AtomicUsize,
 }
 
 impl ScriptedProvider {
     fn reply(text: &str) -> Self {
         Self {
             reply: Some(text.to_string()),
+            calls: AtomicUsize::new(0),
         }
     }
 
     fn error() -> Self {
-        Self { reply: None }
+        Self {
+            reply: None,
+            calls: AtomicUsize::new(0),
+        }
+    }
+
+    fn calls(&self) -> usize {
+        self.calls.load(Ordering::SeqCst)
     }
 }
 
@@ -249,6 +259,7 @@ impl Provider for ScriptedProvider {
         _msgs: &'a [ChatMessage],
         _on_token: &'a mut (dyn FnMut(&str) + Send),
     ) -> Pin<Box<dyn Future<Output = Result<StreamReply, LlmError>> + Send + 'a>> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
         Box::pin(async move {
             match &self.reply {
                 Some(full) => Ok(StreamReply {
@@ -279,7 +290,7 @@ async fn extraction_stores_valid_facts_and_provider_failure_keeps_db_unchanged()
 
     assert_eq!(
         service
-            .extract_once(&provider, &db, "My name is Allen.", None, None)
+            .extract_once(&provider, &db, "My name is Allen.", None, None, &|| true)
             .await
             .unwrap(),
         1
@@ -288,10 +299,36 @@ async fn extraction_stores_valid_facts_and_provider_failure_keeps_db_unchanged()
 
     let failing = ScriptedProvider::error();
     assert!(service
-        .extract_once(&failing, &db, "I prefer bullets.", None, None)
+        .extract_once(&failing, &db, "I prefer bullets.", None, None, &|| true)
         .await
         .is_err());
     assert_eq!(db.memory_profile().unwrap().len(), 1);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// A `false` consent read inside the gate drops the job before the
+/// provider sees a byte — `Ok(0)` (nothing changed, no event) and no
+/// fact lands. This is the mid-flight-disable guard: `prepare_hook`'s
+/// snapshot `enabled` check can't cover a toggle that lands while the
+/// ask streams or the extraction queues on `gate`.
+#[tokio::test]
+async fn extraction_rechecks_consent_inside_the_gate() {
+    let dir = std::env::temp_dir().join(format!("marvis-memory-consent-{}", std::process::id()));
+    let db = Db::at(dir.join("marvis.db")).unwrap();
+    let service = MemoryService::new();
+    let provider = ScriptedProvider::reply(
+        r#"{"facts":[{"category":"identity","attribute":"name","value":"x","confidence":0.9,"basis":"explicit"}]}"#,
+    );
+
+    assert_eq!(
+        service
+            .extract_once(&provider, &db, "My name is Allen.", None, None, &|| false)
+            .await
+            .unwrap(),
+        0
+    );
+    assert_eq!(provider.calls(), 0, "provider saw text after disable");
+    assert!(db.memory_profile().unwrap().is_empty());
     let _ = std::fs::remove_dir_all(dir);
 }
 
@@ -315,6 +352,7 @@ fn prepare_hook_uses_memory_selection_and_not_the_ask_failover_order() {
         db,
         MemoryService::new(),
         Arc::new(|| {}),
+        Arc::new(|| true),
     );
     assert!(hook.is_some());
     let _ = std::fs::remove_dir_all(dir);

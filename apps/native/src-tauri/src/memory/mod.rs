@@ -181,7 +181,13 @@ impl MemoryService {
     /// context for the prompt, never extracted from), calls the
     /// dedicated provider, strictly parses, and upserts. Returns the
     /// number of rows changed; `0` for a clean empty `facts` list (no
-    /// db write, no event).
+    /// db write, no event) or when `consent` reads disabled.
+    ///
+    /// `consent` is re-read INSIDE the gate — the `[memory].enabled`
+    /// check `prepare_hook` ran predates the whole ask stream plus any
+    /// wait on `gate`, so a disable landing in between must still stop
+    /// the job here, before any text reaches the provider or a fact
+    /// lands.
     pub(crate) async fn extract_once(
         &self,
         provider: &dyn Provider,
@@ -189,8 +195,12 @@ impl MemoryService {
         source_text: &str,
         session_id: Option<i64>,
         message_id: Option<i64>,
+        consent: &(dyn Fn() -> bool + Send + Sync),
     ) -> anyhow::Result<usize> {
         let _permit = self.gate.lock().await;
+        if !consent() {
+            return Ok(0);
+        }
         let existing = db.memory_profile()?;
         // Prior turns of this session, strictly before the source
         // message — pronoun/correction context. A read hiccup degrades
@@ -219,13 +229,17 @@ impl MemoryService {
 }
 
 /// The scheduled extraction job handed to `send_chain` — fully owned
-/// (Arc'd service/db, boxed provider, owned callback) so nothing
+/// (Arc'd service/db, boxed provider, owned callbacks) so nothing
 /// borrowed from `AppState`/config crosses the spawn boundary.
 pub(crate) struct MemoryHook {
     service: Arc<MemoryService>,
     db: Arc<Db>,
     provider: Box<dyn Provider>,
     changed: Arc<dyn Fn() + Send + Sync>,
+    /// Live `[memory].enabled` read — `extract_once` re-checks it
+    /// inside the gate, so consent captured at `prepare_hook` time
+    /// isn't the only guard.
+    consent: Arc<dyn Fn() -> bool + Send + Sync>,
 }
 
 impl MemoryHook {
@@ -234,12 +248,14 @@ impl MemoryHook {
         db: Arc<Db>,
         provider: Box<dyn Provider>,
         changed: Arc<dyn Fn() + Send + Sync>,
+        consent: Arc<dyn Fn() -> bool + Send + Sync>,
     ) -> Self {
         Self {
             service,
             db,
             provider,
             changed,
+            consent,
         }
     }
 
@@ -257,6 +273,7 @@ impl MemoryHook {
             db,
             provider,
             changed,
+            consent,
         } = self;
         tauri::async_runtime::spawn(async move {
             match service
@@ -266,6 +283,7 @@ impl MemoryHook {
                     &source_text,
                     session_id,
                     message_id,
+                    consent.as_ref(),
                 )
                 .await
             {
@@ -282,12 +300,18 @@ impl MemoryHook {
 /// where the provider requires one, `compat.base_url` for `compatible`,
 /// and a non-empty model. `providers.order`/`disabled` are NOT consulted:
 /// this selection is independent of the Ask failover chain by design.
+///
+/// `consent` is the live `[memory].enabled` read the hook carries —
+/// the `config` snapshot checked here can go stale before the
+/// scheduled extraction runs, so `extract_once` re-checks it inside
+/// the service gate.
 pub(crate) fn prepare_hook(
     config: &Config,
     keystore: &Keystore,
     db: Arc<Db>,
     service: Arc<MemoryService>,
     changed: Arc<dyn Fn() + Send + Sync>,
+    consent: Arc<dyn Fn() -> bool + Send + Sync>,
 ) -> Option<MemoryHook> {
     if !config.memory.enabled {
         return None;
@@ -306,5 +330,5 @@ pub(crate) fn prepare_hook(
         return None; // no model picked
     }
     let provider = make_provider(kind, api_key, model.to_string(), base_url);
-    Some(MemoryHook::new(service, db, provider, changed))
+    Some(MemoryHook::new(service, db, provider, changed, consent))
 }

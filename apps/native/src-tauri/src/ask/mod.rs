@@ -183,10 +183,11 @@ impl AskState {
 }
 
 /// The `AppState` fields the ask pipeline needs, bundled so this module
-/// compiles before `AppState` exists. `db`/`ring`/`reader` are owned
-/// `Arc`s (the spawned stream task outlives the call); the rest are
-/// locked only during synchronous pre-flight, so plain `&Mutex` borrows
-/// suffice.
+/// compiles before `AppState` exists. `db`/`ring`/`reader`/`memory`/
+/// `config` are owned `Arc`s (the spawned stream task outlives the
+/// call — `config`'s share is how the scheduled extraction re-reads
+/// `[memory].enabled`); the rest are locked only during synchronous
+/// pre-flight, so plain `&Mutex` borrows suffice.
 pub struct Deps<'a> {
     pub db: Arc<Db>,
     pub ring: Arc<Mutex<RingBuffer>>,
@@ -198,8 +199,11 @@ pub struct Deps<'a> {
     /// The consent-gated extraction service — Arc'd because the
     /// scheduled `MemoryHook` outlives this borrow.
     pub memory: Arc<MemoryService>,
+    /// The live config share — `kick` snapshots it for the chain AND
+    /// hands the memory hook a closure re-reading `[memory].enabled`
+    /// at extraction time.
+    pub config: Arc<Mutex<Config>>,
     pub keystore: &'a Mutex<Keystore>,
-    pub config: &'a Mutex<Config>,
     pub pool: &'a Mutex<WindowPool>,
 }
 
@@ -681,12 +685,20 @@ impl AskService {
             // `[memory]` pick is independent of the chain above (order
             // and disabled switches don't apply), and the `changed`
             // callback only broadcasts `memory:changed` — fire-and-forget,
-            // never a lock held into the emit.
+            // never a lock held into the emit. The snapshot's `enabled`
+            // check is a pre-flight only: the scheduled extraction
+            // re-reads consent through `consent` (a live lock on the
+            // shared config) after acquiring the service gate, so a
+            // disable landing mid-stream or mid-queue still stops it.
             let changed: Arc<dyn Fn() + Send + Sync> = {
                 let app = app.clone();
                 Arc::new(move || {
                     let _ = app.emit(crate::EV_MEMORY_CHANGED, json!({}));
                 })
+            };
+            let consent: Arc<dyn Fn() -> bool + Send + Sync> = {
+                let config = Arc::clone(&deps.config);
+                Arc::new(move || config.lock().memory.enabled)
             };
             (
                 crate::provider_candidates(&cfg, &ks),
@@ -700,6 +712,7 @@ impl AskService {
                     Arc::clone(&deps.db),
                     Arc::clone(&deps.memory),
                     changed,
+                    consent,
                 ),
             )
         };

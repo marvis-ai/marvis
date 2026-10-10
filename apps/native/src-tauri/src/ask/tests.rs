@@ -3104,6 +3104,7 @@ async fn successful_send_schedules_memory_without_changing_ask_result() {
             let changed = Arc::clone(&changed);
             move || changed.store(true, Ordering::SeqCst)
         }),
+        Arc::new(|| true),
     );
 
     let result = send_chain(
@@ -3159,6 +3160,7 @@ async fn failed_send_never_schedules_memory_extraction() {
             let changed = Arc::clone(&changed);
             move || changed.store(true, Ordering::SeqCst)
         }),
+        Arc::new(|| true),
     );
 
     // A deterministic offline `reqwest::Error` for LlmError::Network.
@@ -3190,6 +3192,67 @@ async fn failed_send_never_schedules_memory_extraction() {
     tokio::time::sleep(Duration::from_millis(20)).await;
     assert!(!changed.load(Ordering::SeqCst));
     assert_eq!(memory_calls.lock().len(), 0);
+    assert!(db.memory_profile().unwrap().is_empty());
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// The consent flag is read live at extraction time, not captured when
+/// the hook was built: it flips `false` after `MemoryHook::new` (the
+/// `prepare_hook` snapshot's moment), so the scheduled job must return
+/// without the provider ever seeing the text or a fact landing.
+#[tokio::test]
+async fn memory_disabled_after_hook_creation_drops_the_extraction() {
+    let dir = tmp_dir();
+    let db = Arc::new(Db::at(dir.join("marvis.db")).unwrap());
+    let reader = screen_read::ScreenReader::new();
+    let ring = Mutex::new(RingBuffer::new(8, 1024));
+    let input = input(&reader, &ring);
+    let (_events, emit) = recorder();
+    let changed = Arc::new(AtomicBool::new(false));
+    let consent = Arc::new(AtomicBool::new(true));
+    let memory_provider = MockProvider::new(vec![Behavior::Tokens(vec![r#"{"facts":[]}"#.into()])]);
+    let memory_calls = memory_provider.calls();
+    let hook = MemoryHook::new(
+        MemoryService::new(),
+        Arc::clone(&db),
+        Box::new(memory_provider),
+        Arc::new({
+            let changed = Arc::clone(&changed);
+            move || changed.store(true, Ordering::SeqCst)
+        }),
+        Arc::new({
+            let consent = Arc::clone(&consent);
+            move || consent.load(Ordering::SeqCst)
+        }),
+    );
+    // The user disables memory while the ask streams — the hook was
+    // already prepared under the stale `true` snapshot.
+    consent.store(false, Ordering::SeqCst);
+
+    let result = send_chain(
+        vec![candidate(
+            "mock",
+            MockProvider::new(vec![Behavior::Tokens(vec!["answer".into()])]),
+        )],
+        None,
+        db.as_ref(),
+        &emit,
+        &input,
+        &CancellationToken::new(),
+        ChainOpts {
+            text: "My name is Allen.",
+            language: "en",
+            memory: Some(hook),
+            ..ChainOpts::default()
+        },
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(result, "answer");
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert_eq!(memory_calls.lock().len(), 0);
+    assert!(!changed.load(Ordering::SeqCst));
     assert!(db.memory_profile().unwrap().is_empty());
     let _ = std::fs::remove_dir_all(dir);
 }

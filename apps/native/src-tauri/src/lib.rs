@@ -128,7 +128,11 @@ impl Gate {
 /// `Arc`s shared with spawned tasks and the capture callback.
 pub struct AppState {
     keystore: Mutex<Keystore>,
-    config: Mutex<Config>,
+    /// `Arc`d like `db`/`ring`: the scheduled memory extraction
+    /// re-reads `[memory].enabled` from inside its spawned task —
+    /// the snapshot `prepare_hook` checked can go stale while an ask
+    /// streams or the extraction queues on the service gate.
+    config: Arc<Mutex<Config>>,
     db: Arc<Db>,
     ring: Arc<Mutex<RingBuffer>>,
     capture: Mutex<Option<PlatformCapture>>,
@@ -188,24 +192,24 @@ pub struct AppState {
 }
 
 impl AppState {
-    /// The ask pipeline's borrow bundle: `db`/`ring`/`reader` clone
-    /// their `Arc`s (the spawned stream outlives the call), the rest are
-    /// short-lived `&Mutex` borrows used only in pre-flight.
-    /// `capture_running` snapshots the capture slot so `resolve_screen`
-    /// knows whether ring frames are fresh.
+    /// The ask pipeline's borrow bundle: `db`/`ring`/`reader`/`memory`/
+    /// `config` clone their `Arc`s (the spawned stream outlives the
+    /// call), the rest are short-lived `&Mutex` borrows used only in
+    /// pre-flight. `capture_running` snapshots the capture slot so
+    /// `resolve_screen` knows whether ring frames are fresh.
     fn deps(&self) -> ask::Deps<'_> {
         ask::Deps {
             db: Arc::clone(&self.db),
             ring: Arc::clone(&self.ring),
             reader: Arc::clone(&self.screen_reader),
             memory: Arc::clone(&self.memory),
+            config: Arc::clone(&self.config),
             capture_running: self
                 .capture
                 .lock()
                 .as_ref()
                 .is_some_and(PlatformCapture::is_running),
             keystore: &self.keystore,
-            config: &self.config,
             pool: &self.pool,
         }
     }
@@ -248,7 +252,9 @@ impl AppState {
     fn for_test(root: &std::path::Path) -> Self {
         Self {
             keystore: Mutex::new(Keystore::at(root.join("keys.json"))),
-            config: Mutex::new(Config::load_from(root.join("config.toml")).unwrap_or_default()),
+            config: Arc::new(Mutex::new(
+                Config::load_from(root.join("config.toml")).unwrap_or_default(),
+            )),
             db: Arc::new(Db::at(root.join("marvis.db")).expect("test db")),
             ring: Arc::new(Mutex::new(RingBuffer::new(RING_MAX_FRAMES, RING_MAX_BYTES))),
             capture: Mutex::new(None),
@@ -954,7 +960,7 @@ pub fn run() {
             });
             app.manage(AppState {
                 keystore: Mutex::new(keystore),
-                config: Mutex::new(cfg),
+                config: Arc::new(Mutex::new(cfg)),
                 db: Arc::new(db),
                 ring: Arc::new(Mutex::new(RingBuffer::new(RING_MAX_FRAMES, RING_MAX_BYTES))),
                 capture: Mutex::new(None),

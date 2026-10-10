@@ -11,11 +11,12 @@
 //!
 //! `extraction_messages` builds the two-message extractor call: a
 //! system contract plus ONE user message wrapping the existing
-//! profile, the new ask text, and the send's observation date in
-//! separate data blocks — the raw ask text is the only new source
-//! content (no assistant reply, no screen text, no history).
+//! profile, the session's recent turns, the new ask text, and the
+//! send's observation date in separate data blocks — the raw ask text
+//! is the only new source content (`<recent_messages>` resolves
+//! references only; no assistant reply is ever extracted from).
 
-use super::{MAX_PROFILE_BYTES, MAX_PROFILE_ROWS};
+use super::{MAX_PROFILE_BYTES, MAX_PROFILE_ROWS, MAX_TAIL_CHARS};
 use crate::llm::{ChatMessage, Role};
 use crate::storage::Memory;
 
@@ -89,26 +90,43 @@ pub(crate) fn today_utc() -> String {
 
 /// The extractor call: system contract + one user message carrying
 /// `<existing_profile>` (current rows — context, dedup signal),
-/// `<new_user_message>` (the raw ask text — the only extraction
-/// source), and `<observation_date>` (the send's date — the anchor for
-/// resolving the message's relative time references).
-pub(crate) fn extraction_messages(existing: &[Memory], source_text: &str) -> Vec<ChatMessage> {
+/// `<recent_messages>` (the session's prior turns — reference
+/// resolution only, omitted when none), `<new_user_message>` (the raw
+/// ask text — the only extraction source), and `<observation_date>`
+/// (the send's date — the anchor for resolving the message's relative
+/// time references).
+pub(crate) fn extraction_messages(
+    existing: &[Memory],
+    source_text: &str,
+    tail: &[(String, String)],
+) -> Vec<ChatMessage> {
     let lines = profile_lines(existing);
     let profile = if lines.is_empty() {
         "(none)".to_string()
     } else {
         lines.join("\n")
     };
+    let mut user = format!("<existing_profile>\n{profile}\n</existing_profile>");
+    if !tail.is_empty() {
+        let lines: Vec<String> = tail
+            .iter()
+            .map(|(role, content)| {
+                let content: String = content.chars().take(MAX_TAIL_CHARS).collect();
+                format!("{role}: {content}")
+            })
+            .collect();
+        user.push_str(&format!(
+            "\n\n<recent_messages>\n{}\n</recent_messages>",
+            lines.join("\n")
+        ));
+    }
+    user.push_str(&format!(
+        "\n\n<new_user_message>\n{source_text}\n</new_user_message>\n\n\
+         <observation_date>\n{}\n</observation_date>",
+        today_utc()
+    ));
     vec![
         ChatMessage::text(Role::System, extraction_system_prompt()),
-        ChatMessage::text(
-            Role::User,
-            format!(
-                "<existing_profile>\n{profile}\n</existing_profile>\n\n\
-                 <new_user_message>\n{source_text}\n</new_user_message>\n\n\
-                 <observation_date>\n{}\n</observation_date>",
-                today_utc()
-            ),
-        ),
+        ChatMessage::text(Role::User, user),
     ]
 }

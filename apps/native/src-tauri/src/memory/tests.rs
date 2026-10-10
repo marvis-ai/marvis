@@ -121,12 +121,40 @@ fn extraction_messages_keep_source_text_separate_from_profile() {
         created_at: 1,
         updated_at: 1,
     }];
-    let messages = extraction_messages(&existing, "My name is Allen.");
+    let messages = extraction_messages(&existing, "My name is Allen.", &[]);
     assert_eq!(messages.len(), 2);
     assert!(matches!(messages[0].role, Role::System));
     assert!(matches!(messages[1].role, Role::User));
     assert_request_contains(&messages[1], "My name is Allen.");
     assert_request_contains(&messages[1], "The user prefers concise answers.");
+}
+
+/// Prior turns render as `role: content` lines inside
+/// `<recent_messages>` — truncated per message — and the block is
+/// omitted entirely on a first-ever send.
+#[test]
+fn extraction_messages_render_the_tail_as_context_only() {
+    let tail = vec![
+        ("user".to_string(), "call me Al".to_string()),
+        ("assistant".to_string(), "x".repeat(400)),
+    ];
+    let messages = extraction_messages(&[], "It's spelled Ailin.", &tail);
+    let text = match &messages[1].content[0] {
+        ContentPart::Text(t) => t.as_str(),
+        ContentPart::ImageJpeg(_) => panic!("user prompt must be text"),
+    };
+    assert!(text.contains("<recent_messages>\nuser: call me Al\nassistant: "));
+    // The tail is capped per message — a 400-char reply lands as 300.
+    assert!(text.contains(&"x".repeat(300)));
+    assert!(!text.contains(&"x".repeat(301)));
+    // …and no tail at all → no block (an empty context tag would read
+    // as meaningful context to the model).
+    let messages = extraction_messages(&[], "hi", &[]);
+    let text = match &messages[1].content[0] {
+        ContentPart::Text(t) => t.as_str(),
+        _ => panic!(),
+    };
+    assert!(!text.contains("recent_messages"));
 }
 
 /// The extractor gets a `YYYY-MM-DD` observation date to ground
@@ -135,7 +163,7 @@ fn extraction_messages_keep_source_text_separate_from_profile() {
 /// English.
 #[test]
 fn extraction_messages_carry_observation_date_and_language_rule() {
-    let messages = extraction_messages(&[], "anything");
+    let messages = extraction_messages(&[], "anything", &[]);
     assert_request_contains(&messages[0], "same language and script");
     let text = match &messages[1].content[0] {
         ContentPart::Text(t) => t.as_str(),

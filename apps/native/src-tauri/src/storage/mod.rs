@@ -18,6 +18,8 @@
 //! memories(id PK, category, attribute, value, confidence, basis, source 'automatic'|'manual',
 //!          source_session_id? FK → sessions.id ON DELETE SET NULL,
 //!          source_message_id? FK → messages.id ON DELETE SET NULL, created_at, updated_at)
+//! memory_history(id PK, memory_id, category, attribute, event 'add'|'update'|'delete',
+//!                old_value?, new_value?, source, created_at)
 //! ```
 //!
 //! `summaries` holds one row per session — the live summary is an upsert,
@@ -133,6 +135,24 @@ const SCHEMA: &str = "
         ON memories(category, attribute);
     CREATE INDEX IF NOT EXISTS memories_updated_at
         ON memories(updated_at DESC, id DESC);
+
+    -- The audit trail: one row per fact write (add/update/delete).
+    -- `memory_id` is deliberately NOT a foreign key — a deleted fact's
+    -- history is exactly the record worth keeping, and `category`/
+    -- `attribute` are denormalized so it still reads without the row.
+    CREATE TABLE IF NOT EXISTS memory_history (
+        id         INTEGER PRIMARY KEY,
+        memory_id  INTEGER NOT NULL,
+        category   TEXT NOT NULL,
+        attribute  TEXT NOT NULL,
+        event      TEXT NOT NULL,
+        old_value  TEXT,
+        new_value  TEXT,
+        source     TEXT NOT NULL,
+        created_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS memory_history_memory
+        ON memory_history(memory_id, id);
 ";
 
 /// The database handle. Cheap to share: all state lives behind the mutex.

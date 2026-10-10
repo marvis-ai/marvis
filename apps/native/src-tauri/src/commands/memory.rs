@@ -8,6 +8,7 @@
 //! every successful mutation broadcasts `memory:changed` so open
 //! windows refetch.
 
+use crate::storage::MemoryHistory;
 use crate::*;
 
 /// Broadcast when a stored fact is added, edited, or deleted —
@@ -47,6 +48,17 @@ pub(crate) fn memory_delete(app: AppHandle, id: i64) -> Result<(), String> {
     map_delete(state.db.memory_delete(id))?;
     let _ = app.emit(EV_MEMORY_CHANGED, json!({}));
     Ok(())
+}
+
+/// One fact's audit trail (`memory_history` rows, oldest first) —
+/// read-only, so no `memory:changed`. Entries survive the fact's own
+/// deletion.
+#[tauri::command]
+pub(crate) fn memory_history(
+    state: State<'_, AppState>,
+    id: i64,
+) -> Result<Vec<MemoryHistory>, String> {
+    state.db.memory_history(id).map_err(|e| e.to_string())
 }
 
 #[cfg(test)]

@@ -12,6 +12,8 @@ Write `value` in the same language and script as the user's message — never tr
 
 `observation_date` is when the message was sent — resolve relative time references (`yesterday`, `last week`, `recently`) against it and record absolute dates in `value`.
 
+`recent_messages` is prior conversation context — use it only to resolve references (pronouns, corrections like "I meant X") in the new message. Extract facts from `new_user_message` alone.
+
 Existing profile rows are context for updates, not evidence — return a fact only when the new message supports it. To update a fact, emit it again with the same category and attribute.
 
 Return an empty `facts` array when the message carries nothing durable. Never output anything except the JSON object.

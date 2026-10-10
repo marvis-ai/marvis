@@ -1102,6 +1102,7 @@ pub fn run() {
             memory_list,
             memory_update,
             memory_delete,
+            memory_history,
             save_audio_file,
             save_text_file,
             config_get,
@@ -1926,6 +1927,7 @@ mod tests {
         assert!(source.contains("memory_list,"));
         assert!(source.contains("memory_update,"));
         assert!(source.contains("memory_delete,"));
+        assert!(source.contains("memory_history,"));
         assert!(source.contains(concat!("memory", ":changed")));
     }
 }

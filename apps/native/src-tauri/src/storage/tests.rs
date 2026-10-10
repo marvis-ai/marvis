@@ -993,6 +993,99 @@ fn memory_profile_inserts_updates_and_manual_edits_win() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// Every write to `memories` leaves one `memory_history` row with the
+/// old/new values and the writer's authority — and the trail survives
+/// the fact's own deletion (the `delete` row is the last entry).
+#[test]
+fn memory_history_audits_every_write_and_survives_delete() {
+    let dir = tmp_dir();
+    let db = Db::at(dir.join("marvis.db")).unwrap();
+    let session_id = db.session_get_or_create_active("ask").unwrap();
+    let message_id = db
+        .message_add(session_id, "user", "My name is Allen.")
+        .unwrap();
+    let fact = MemoryCandidate {
+        category: "identity".into(),
+        attribute: "name".into(),
+        value: "The user's name is Allen.".into(),
+        confidence: 0.98,
+        basis: "explicit".into(),
+    };
+    db.memory_apply(Some(session_id), Some(message_id), &[fact.clone()])
+        .unwrap();
+    let id = db.memory_profile().unwrap()[0].id;
+    db.memory_apply(
+        Some(session_id),
+        Some(message_id),
+        &[MemoryCandidate {
+            value: "The user's name is Chenillen.".into(),
+            ..fact
+        }],
+    )
+    .unwrap();
+    db.memory_update(id, "The user's preferred name is Chenillen.")
+        .unwrap();
+    db.memory_delete(id).unwrap();
+
+    let history = db.memory_history(id).unwrap();
+    assert_eq!(
+        history.iter().map(|h| h.event.as_str()).collect::<Vec<_>>(),
+        ["add", "update", "update", "delete"]
+    );
+    assert_eq!(history[0].old_value, None);
+    assert_eq!(
+        history[0].new_value.as_deref(),
+        Some("The user's name is Allen.")
+    );
+    assert_eq!(history[0].source, "automatic");
+    assert_eq!(
+        history[1].old_value.as_deref(),
+        Some("The user's name is Allen.")
+    );
+    assert_eq!(
+        history[1].new_value.as_deref(),
+        Some("The user's name is Chenillen.")
+    );
+    assert_eq!(history[2].source, "manual");
+    assert_eq!(history[3].new_value, None);
+    assert_eq!(
+        history[3].old_value.as_deref(),
+        Some("The user's preferred name is Chenillen.")
+    );
+    assert!(history
+        .iter()
+        .all(|h| h.memory_id == id && h.attribute == "name"));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// `<recent_messages>` reads strictly before the source row — the
+/// newest `limit` user/assistant turns, oldest first — so the
+/// extractor's context never includes the message it's extracting.
+#[test]
+fn message_tail_reads_only_prior_turns_oldest_first() {
+    let dir = tmp_dir();
+    let db = Db::at(dir.join("marvis.db")).unwrap();
+    let session_id = db.session_get_or_create_active("ask").unwrap();
+    db.message_add(session_id, "user", "first").unwrap();
+    db.message_add(session_id, "assistant", "answer one")
+        .unwrap();
+    let source = db.message_add(session_id, "user", "the source").unwrap();
+
+    assert_eq!(
+        db.message_tail(session_id, source, 6).unwrap(),
+        vec![
+            ("user".to_string(), "first".to_string()),
+            ("assistant".to_string(), "answer one".to_string()),
+        ]
+    );
+    assert_eq!(
+        db.message_tail(session_id, source, 1).unwrap(),
+        vec![("assistant".to_string(), "answer one".to_string())]
+    );
+    assert!(db.message_tail(session_id, 1, 6).unwrap().is_empty());
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 #[test]
 fn memory_source_foreign_keys_are_cleared_when_history_is_deleted() {
     let dir = tmp_dir();

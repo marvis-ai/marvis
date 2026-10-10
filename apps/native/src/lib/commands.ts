@@ -782,6 +782,24 @@ export const memoryUpdate = (id: number, value: string) =>
 export const memoryDelete = (id: number) =>
   invoke<void>('memory_delete', { id });
 
+/** `memory_history` row (storage.rs `MemoryHistory`) — one audit entry
+ *  per add/edit/delete of a fact; survives the fact's own deletion. */
+export interface MemoryHistory {
+  id: number;
+  memory_id: number;
+  category: string;
+  attribute: string;
+  event: 'add' | 'update' | 'delete';
+  old_value: string | null;
+  new_value: string | null;
+  source: 'automatic' | 'manual';
+  created_at: number;
+}
+
+/** One fact's audit trail, oldest first. */
+export const memoryHistory = (id: number) =>
+  invoke<MemoryHistory[]>('memory_history', { id });
+
 // ---------------------------------------------------------------------------
 // config / app
 // ---------------------------------------------------------------------------

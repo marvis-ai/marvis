@@ -40,6 +40,51 @@ const MEMORY_SELECT: &str = "SELECT id, category, attribute, value, confidence, 
             source_session_id, source_message_id, created_at, updated_at
      FROM memories";
 
+fn read_history(row: &rusqlite::Row<'_>) -> rusqlite::Result<MemoryHistory> {
+    Ok(MemoryHistory {
+        id: row.get(0)?,
+        memory_id: row.get(1)?,
+        category: row.get(2)?,
+        attribute: row.get(3)?,
+        event: row.get(4)?,
+        old_value: row.get(5)?,
+        new_value: row.get(6)?,
+        source: row.get(7)?,
+        created_at: row.get(8)?,
+    })
+}
+
+/// One audit row — every fact mutation funnels here. Runs inside the
+/// caller's transaction (or under the same connection lock) so a
+/// history write can't outlive a rolled-back change.
+fn record_history(
+    conn: &Connection,
+    memory_id: i64,
+    category: &str,
+    attribute: &str,
+    event: &str,
+    old_value: Option<&str>,
+    new_value: Option<&str>,
+    source: &str,
+) -> rusqlite::Result<()> {
+    conn.execute(
+        "INSERT INTO memory_history
+         (memory_id, category, attribute, event, old_value, new_value, source, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![
+            memory_id,
+            category,
+            attribute,
+            event,
+            old_value,
+            new_value,
+            source,
+            now()
+        ],
+    )?;
+    Ok(())
+}
+
 impl Db {
     /// Every stored fact, sorted deterministically for the settings UI
     /// and the `<user_profile>` prompt block.
@@ -60,28 +105,65 @@ impl Db {
         if value.is_empty() || value.chars().count() > 500 {
             return Err(anyhow::anyhow!("memory value must be 1..=500 characters"));
         }
-        let conn = self.conn.lock();
-        let changed = conn.execute(
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction()?;
+        let existing: Option<(String, String, String)> = tx
+            .query_row(
+                "SELECT category, attribute, value FROM memories WHERE id = ?1",
+                [id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()?;
+        let Some((category, attribute, old)) = existing else {
+            return Ok(None);
+        };
+        tx.execute(
             "UPDATE memories
              SET value = ?1, confidence = 1.0, basis = 'explicit', source = 'manual',
                  source_session_id = NULL, source_message_id = NULL, updated_at = ?2
              WHERE id = ?3",
             params![value, now(), id],
         )?;
-        if changed == 0 {
-            return Ok(None);
-        }
-        Ok(Some(conn.query_row(
-            &format!("{MEMORY_SELECT} WHERE id = ?1"),
-            [id],
-            read_memory,
-        )?))
+        record_history(
+            &tx,
+            id,
+            &category,
+            &attribute,
+            "update",
+            Some(&old),
+            Some(value),
+            "manual",
+        )?;
+        let row = tx.query_row(&format!("{MEMORY_SELECT} WHERE id = ?1"), [id], read_memory)?;
+        tx.commit()?;
+        Ok(Some(row))
     }
 
     pub fn memory_delete(&self, id: i64) -> anyhow::Result<()> {
-        self.conn
-            .lock()
-            .execute("DELETE FROM memories WHERE id = ?1", [id])?;
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction()?;
+        let existing: Option<(String, String, String, String)> = tx
+            .query_row(
+                "SELECT category, attribute, value, source FROM memories WHERE id = ?1",
+                [id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .optional()?;
+        let Some((category, attribute, old, source)) = existing else {
+            return Ok(());
+        };
+        tx.execute("DELETE FROM memories WHERE id = ?1", [id])?;
+        record_history(
+            &tx,
+            id,
+            &category,
+            &attribute,
+            "delete",
+            Some(&old),
+            None,
+            &source,
+        )?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -112,7 +194,7 @@ impl Db {
                 // Manual rows are user authority — never overwrite. An
                 // identical value is a no-op either way.
                 Some((_id, source, value)) if source == "manual" || value == fact.value => {}
-                Some((id, _, _)) => {
+                Some((id, _, old)) => {
                     tx.execute(
                         "UPDATE memories
                          SET value = ?1, confidence = ?2, basis = ?3, source = 'automatic',
@@ -127,6 +209,16 @@ impl Db {
                             now(),
                             id
                         ],
+                    )?;
+                    record_history(
+                        &tx,
+                        id,
+                        &fact.category,
+                        &fact.attribute,
+                        "update",
+                        Some(&old),
+                        Some(&fact.value),
+                        "automatic",
                     )?;
                     changed += 1;
                 }
@@ -148,11 +240,35 @@ impl Db {
                             timestamp
                         ],
                     )?;
+                    record_history(
+                        &tx,
+                        tx.last_insert_rowid(),
+                        &fact.category,
+                        &fact.attribute,
+                        "add",
+                        None,
+                        Some(&fact.value),
+                        "automatic",
+                    )?;
                     changed += 1;
                 }
             }
         }
         tx.commit()?;
         Ok(changed)
+    }
+
+    /// One fact's audit trail, oldest first — the `memory_history`
+    /// command's row set. Entries survive the fact itself being
+    /// deleted (the `delete` event is the last row).
+    pub fn memory_history(&self, memory_id: i64) -> anyhow::Result<Vec<MemoryHistory>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT id, memory_id, category, attribute, event, old_value, new_value,
+                    source, created_at
+             FROM memory_history WHERE memory_id = ?1 ORDER BY id ASC",
+        )?;
+        let rows = stmt.query_map([memory_id], read_history)?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 }

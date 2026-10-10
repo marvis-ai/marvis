@@ -140,6 +140,27 @@ pub struct Memory {
     pub updated_at: i64,
 }
 
+/// A row of `memory_history` — one entry per add/edit/delete of a
+/// stored fact, written by `memory_apply`, `memory_update`, and
+/// `memory_delete`. `memory_id` is deliberately not a foreign key: the
+/// audit row outlives the fact it describes, and `category`/`attribute`
+/// are denormalized so a deleted fact's history still reads. `event` is
+/// `"add"`, `"update"`, or `"delete"`; `old_value`/`new_value` are NULL
+/// on add/delete respectively. `Serialize` so `memory_history` can hand
+/// rows to the webview verbatim.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct MemoryHistory {
+    pub id: i64,
+    pub memory_id: i64,
+    pub category: String,
+    pub attribute: String,
+    pub event: String,
+    pub old_value: Option<String>,
+    pub new_value: Option<String>,
+    pub source: String,
+    pub created_at: i64,
+}
+
 /// A parsed extraction candidate — the not-yet-persisted half of a
 /// [`Memory`]. `memory_apply` upserts these under `source = "auto"`.
 #[derive(Debug, Clone, PartialEq)]

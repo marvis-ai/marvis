@@ -17,8 +17,9 @@
 //! a fact, and `EV_MEMORY_CHANGED` fires only when rows actually change.
 //!
 //! Privacy boundary (see `MemoryPrefs`): extraction runs only when
-//! `[memory].enabled`, reads only the new Ask user message, and calls
-//! only the dedicated memory provider — never the Ask failover chain.
+//! `[memory].enabled`, reads only the new Ask user message plus its
+//! session's recent turns for context, and calls only the dedicated
+//! memory provider — never the Ask failover chain.
 
 mod prompt;
 
@@ -45,6 +46,11 @@ const MAX_VALUE_CHARS: usize = 500;
 const MAX_PROFILE_ROWS: usize = 32;
 /// …and never exceeds this many UTF-8 bytes, wrapper included.
 const MAX_PROFILE_BYTES: usize = 4_000;
+/// `<recent_messages>` carries at most this many prior turns…
+const MAX_TAIL_MESSAGES: usize = 6;
+/// …each truncated to this many scalar values — the tail resolves
+/// references ("I meant X", "that one"), it isn't extraction source.
+const MAX_TAIL_CHARS: usize = 300;
 
 /// The extractor's wire shape — `{"facts":[{category, attribute, value,
 /// confidence, basis}]}`. Strict: no `default`, no `deny_unknown_fields`
@@ -162,11 +168,13 @@ impl MemoryService {
         })
     }
 
-    /// One extraction pass over `source_text` (the new Ask user message
-    /// — never anything else). Loads the current profile for the
-    /// prompt, calls the dedicated provider, strictly parses, and
-    /// upserts. Returns the number of rows changed; `0` for a clean
-    /// empty `facts` list (no db write, no event).
+    /// One extraction pass over `source_text` (the new Ask user
+    /// message — the only extraction source). Loads the current
+    /// profile and the session's recent turns (reference-resolution
+    /// context for the prompt, never extracted from), calls the
+    /// dedicated provider, strictly parses, and upserts. Returns the
+    /// number of rows changed; `0` for a clean empty `facts` list (no
+    /// db write, no event).
     pub(crate) async fn extract_once(
         &self,
         provider: &dyn Provider,
@@ -177,7 +185,19 @@ impl MemoryService {
     ) -> anyhow::Result<usize> {
         let _permit = self.gate.lock().await;
         let existing = db.memory_profile()?;
-        let messages = extraction_messages(&existing, source_text);
+        // Prior turns of this session, strictly before the source
+        // message — pronoun/correction context. A read hiccup degrades
+        // to no tail, not a skipped extraction.
+        let tail = match (session_id, message_id) {
+            (Some(sid), Some(mid)) => db
+                .message_tail(sid, mid, MAX_TAIL_MESSAGES)
+                .unwrap_or_else(|error| {
+                    log::warn!("memory tail read failed: {error}");
+                    Vec::new()
+                }),
+            _ => Vec::new(),
+        };
+        let messages = extraction_messages(&existing, source_text, &tail);
         let mut on_token = |_token: &str| {};
         let reply = provider.stream_chat(&messages, &mut on_token).await?;
         // A malformed reply is unactionable without seeing it — carry a

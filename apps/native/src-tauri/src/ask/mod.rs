@@ -375,7 +375,7 @@ impl AskService {
         let mut runs = self.runs.lock();
         if let Some(run) = runs.get(&session_id) {
             if run.state != AskState::Idle {
-                log::warn!("ask::send: session {session_id:?} busy; ignoring send");
+                log::warn!("ask::send: session busy; ignoring send");
                 return None;
             }
         }

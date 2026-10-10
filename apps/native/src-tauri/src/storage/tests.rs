@@ -1130,3 +1130,117 @@ fn existing_database_open_creates_memory_table_without_backfill() {
     assert!(db.memory_profile().unwrap().is_empty());
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// `(category, attribute)` is structurally unique on a fresh database:
+/// a second row under the same key can never land, and the apply path
+/// still updates that key in place.
+#[test]
+fn memory_key_is_unique_and_updates_in_place() {
+    let dir = tmp_dir();
+    let db = Db::at(dir.join("marvis.db")).unwrap();
+    let session_id = db.session_get_or_create_active("ask").unwrap();
+    let message_id = db.message_add(session_id, "user", "Call me Al.").unwrap();
+    db.memory_apply(
+        Some(session_id),
+        Some(message_id),
+        &[MemoryCandidate {
+            category: "identity".into(),
+            attribute: "name".into(),
+            value: "The user goes by Al.".into(),
+            confidence: 0.9,
+            basis: "explicit".into(),
+        }],
+    )
+    .unwrap();
+
+    // A duplicate key cannot be inserted by any path — not even a raw
+    // write that bypasses `memory_apply`'s select-then-upsert.
+    let conn = db.conn.lock();
+    let dup = conn.execute(
+        "INSERT INTO memories (category, attribute, value, confidence, basis, source, created_at, updated_at)
+         VALUES ('identity', 'name', 'duplicate', 1.0, 'explicit', 'automatic', 0, 0)",
+        [],
+    );
+    assert!(dup.is_err());
+    drop(conn);
+
+    // Same key through the normal path still updates the row in place.
+    db.memory_apply(
+        Some(session_id),
+        Some(message_id),
+        &[MemoryCandidate {
+            category: "identity".into(),
+            attribute: "name".into(),
+            value: "The user goes by Allen.".into(),
+            confidence: 0.95,
+            basis: "explicit".into(),
+        }],
+    )
+    .unwrap();
+    let profile = db.memory_profile().unwrap();
+    assert_eq!(profile.len(), 1);
+    assert_eq!(profile[0].value, "The user goes by Allen.");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// A database written before the constraint can hold synonym-slug or
+/// duplicate-key rows. Migration collapses each key to one row —
+/// keeping the manual row when present (user authority), else the
+/// newest — then installs the unique index.
+#[test]
+fn migration_dedups_memory_keys_and_manual_rows_win() {
+    let dir = tmp_dir();
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("marvis.db");
+    {
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE memories (
+                id               INTEGER PRIMARY KEY,
+                category         TEXT NOT NULL,
+                attribute        TEXT NOT NULL,
+                value            TEXT NOT NULL,
+                confidence       REAL NOT NULL,
+                basis            TEXT NOT NULL,
+                source           TEXT NOT NULL,
+                source_session_id INTEGER,
+                source_message_id INTEGER,
+                created_at       INTEGER NOT NULL,
+                updated_at       INTEGER NOT NULL
+            );
+            CREATE INDEX memories_category_attribute
+                ON memories(category, attribute);
+            INSERT INTO memories (category, attribute, value, confidence, basis, source, created_at, updated_at) VALUES
+                ('identity', 'name', 'auto name', 0.9, 'explicit', 'automatic', 1, 1),
+                ('identity', 'name', 'manual name', 1.0, 'explicit', 'manual', 2, 2),
+                ('preference', 'theme', 'old theme', 0.8, 'inferred', 'automatic', 1, 1),
+                ('preference', 'theme', 'new theme', 0.9, 'explicit', 'automatic', 2, 3);",
+        )
+        .unwrap();
+    }
+
+    {
+        let db = Db::at(&path).unwrap();
+        let profile = db.memory_profile().unwrap();
+        assert_eq!(profile.len(), 2);
+        let name = profile.iter().find(|m| m.attribute == "name").unwrap();
+        assert_eq!(name.value, "manual name");
+        assert_eq!(name.source, "manual");
+        let theme = profile.iter().find(|m| m.attribute == "theme").unwrap();
+        assert_eq!(theme.value, "new theme");
+
+        let conn = db.conn.lock();
+        let dup = conn.execute(
+            "INSERT INTO memories (category, attribute, value, confidence, basis, source, created_at, updated_at)
+             VALUES ('identity', 'name', 'dup', 1.0, 'explicit', 'automatic', 0, 0)",
+            [],
+        );
+        assert!(dup.is_err());
+    }
+    // Reopening is idempotent — the index exists, the dedup is a no-op.
+    {
+        let db = Db::at(&path).unwrap();
+        assert_eq!(db.memory_profile().unwrap().len(), 2);
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -131,7 +131,7 @@ const SCHEMA: &str = "
         FOREIGN KEY (source_session_id) REFERENCES sessions(id) ON DELETE SET NULL,
         FOREIGN KEY (source_message_id) REFERENCES messages(id) ON DELETE SET NULL
     );
-    CREATE INDEX IF NOT EXISTS memories_category_attribute
+    CREATE UNIQUE INDEX IF NOT EXISTS memories_key
         ON memories(category, attribute);
     CREATE INDEX IF NOT EXISTS memories_updated_at
         ON memories(updated_at DESC, id DESC);

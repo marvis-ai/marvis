@@ -71,9 +71,10 @@
 //!
 //! Wiring note for Task 14: `send`/`send_screen_only`/`close` take a
 //! [`Deps`] bundle of `AppState` fields so this module never names the
-//! not-yet-existing `AppState` type. `deps.db`/`deps.ring`/`deps.reader`
-//! must be [`Arc`]s — the stream runs on a spawned task that outlives the
-//! command call — and `AppState.ask` must be an `Arc<AskService>` (all
+//! not-yet-existing `AppState` type. `deps.db`/`deps.ring`/`deps.reader`/
+//! `deps.lifecycle` must be [`Arc`]s — the stream and owned provider lease run
+//! on a spawned task that outlives the command call — and `AppState.ask` must
+//! be an `Arc<AskService>` (all
 //! fields are interior-mutable; the spawned task keeps a share). After
 //! synchronous pre-flight, real work runs inside
 //! `tauri::async_runtime::spawn` so the invoking command handler returns
@@ -112,6 +113,7 @@ use crate::llm::{ChatMessage, ContentPart, LlmError, Provider, Role, StreamReply
 use crate::memory::{MemoryHook, MemoryService};
 use crate::prompts::{bounded_compaction, live_system_prompt_with_profile, live_user_prompt};
 use crate::screen_read;
+use crate::session_lifecycle::SessionLifecycle;
 use crate::storage::{Db, MessageAttachment, MessageMeta, NewAttachment, Transcript};
 use crate::windows::{WindowPool, BAR_LABEL};
 use crate::ProviderCandidate;
@@ -199,6 +201,9 @@ impl AskState {
 /// pre-flight, so plain `&Mutex` borrows suffice.
 pub struct Deps<'a> {
     pub db: Arc<Db>,
+    /// Shared provider-handoff/deletion boundary; production wiring always
+    /// supplies the AppState-owned registry.
+    pub lifecycle: Arc<SessionLifecycle>,
     pub ring: Arc<Mutex<RingBuffer>>,
     /// The ambient screen reader — `resolve_screen` serves its cached
     /// context while recording runs.
@@ -757,7 +762,12 @@ impl AskService {
         let svc = Arc::clone(self);
         let app = app.clone();
         let db = Arc::clone(&deps.db);
-        let compact = CompactHook::new(Arc::clone(&db), Arc::clone(&deps.compact));
+        let compact = CompactHook::with_lifecycle(
+            Arc::clone(&db),
+            Arc::clone(&deps.compact),
+            Arc::clone(&deps.lifecycle),
+        );
+        let lifecycle = Arc::clone(&deps.lifecycle);
         // The title sidecar's emit is dedicated — the spawned task's
         // gen-guarded `emit` would drop it once this run's generation
         // ends (stop/superseded), but a landed title write should
@@ -832,6 +842,7 @@ impl AskService {
                     attachments_root: None,
                     memory,
                     compact: Some(compact),
+                    lifecycle: Some(Arc::clone(&lifecycle)),
                     title: Some(TitleSidecar::new(Arc::clone(&db), titled)),
                 },
             )

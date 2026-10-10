@@ -4,6 +4,7 @@ use super::history::*;
 use super::screen::*;
 use super::stream::*;
 use super::title::*;
+use crate::session_lifecycle::SessionLifecycle;
 
 /// The per-run fields `send_chain` consumes — resolved by `kick`
 /// (bundled the same way `ScreenInput` bundles the screen side):
@@ -51,6 +52,9 @@ pub(crate) struct ChainOpts<'a> {
     /// The detached session compaction job — scheduled only after a
     /// candidate answers successfully and a plan exists.
     pub compact: Option<CompactHook>,
+    /// The production per-session handoff boundary. Direct pipeline tests
+    /// leave this `None` through `ChainOpts::default()`.
+    pub lifecycle: Option<Arc<SessionLifecycle>>,
     /// The detached title sidecar — spawned on success only, after the
     /// memory hook. `None` skips naming entirely (tests that don't
     /// exercise it).
@@ -192,6 +196,7 @@ pub(crate) async fn send_chain(
         attachments_root,
         memory,
         compact,
+        lifecycle,
         title,
     } = opts;
     // Contract guard: a crafted invoke past the composer cap is an
@@ -243,6 +248,17 @@ pub(crate) async fn send_chain(
             }
         },
         None => None,
+    };
+    // The production handoff lease is acquired immediately after the
+    // incarnation check. Its owned lifetime covers history/current-user
+    // persistence, every candidate provider await, and the assistant write;
+    // deletion can either mark first (and make this refuse) or wait for Drop.
+    let _session_lease = match (lifecycle.as_ref(), session_id) {
+        (Some(lifecycle), Some(sid)) => match lifecycle.acquire(sid) {
+            Some(lease) => Some(lease),
+            None => return Err(incarnation_error(emit)),
+        },
+        _ => None,
     };
     // Order matters: history is read BEFORE the new user row persists —
     // the new turn is appended separately so it can carry the frame. A

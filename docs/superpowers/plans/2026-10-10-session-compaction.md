@@ -8,14 +8,20 @@
 `compact` and `compact_through` columns to `sessions`. Marvis-created rows use
 SQLite `hex(randomblob(16))`; the idempotent open-time migration adds the token
 column and backfills NULL legacy/current-test rows without changing existing
-tokens or data. Before history/regenerate work, capture the session token; after
-that work, re-read the token/digest and inject the post-history digest only when
-the token is unchanged. A changed or missing token skips context and planning for
+tokens or data. `AppState` also owns one shared in-memory `SessionLifecycle`
+registry. The existing `session_delete` command marks a session deleting,
+waits for owned Ask/compaction leases, deletes the row, and removes the
+registry entry even on errors. Before history/regenerate work, capture the
+session token and acquire the production lease; a missing/erroring identity
+read or failed lease acquisition aborts before provider execution. After that
+work, re-read the token/digest and inject the post-history digest only when the
+token is unchanged. A changed or missing token skips context and planning for
 that run. After a successful answer, schedule a detached compaction job when at
 least ten newly dropped rows are available. The job uses the provider that
-answered, serializes compaction work, rechecks token/digest/watermark, and writes
-with a token- and watermark-bound compare-and-set so stale or recreated-session
-jobs cannot overwrite a newer incarnation.
+answered, serializes compaction work, rechecks token/digest/watermark, acquires
+the same lease before `stream_chat`, and writes with a token- and
+watermark-bound compare-and-set so stale or recreated-session jobs cannot
+overwrite a newer incarnation.
 
 **Tech Stack:** Rust/Tauri 2, Tokio async runtime, `rusqlite` SQLite storage, existing `Provider`/`ChatMessage` abstractions, existing Ask test harness with scripted providers, Markdown prompts embedded with `include_str!`.
 
@@ -26,6 +32,8 @@ jobs cannot overwrite a newer incarnation.
 - Use the answering Ask provider (`Arc<dyn Provider>`) for compaction, never the consent-gated Memory LLM.
 - Compaction is fire-and-forget after `ask:done` and `ask:state{idle}`; provider, timeout, parse, and storage failures only warn-log and never affect the Ask result.
 - Hold the `tokio::sync::Mutex` compaction permit across the provider await; never hold a SQLite/parking-lot guard across an await.
+- The owned `SessionLease`, not a registry mutex guard, may cross provider awaits. Production `AppState`/`Deps` wiring is mandatory; direct `ChainOpts` and `CompactHook::new` tests may default the lifecycle dependency off.
+- A missing/erroring pre-history identity read or failed Ask/compaction lease acquisition aborts before provider execution. Background compaction provider/timeout/parse/storage failures remain warning-only.
 - Store the digest locally in the existing `0600` SQLite database; its only remote destination is the Ask provider that already receives the session messages.
 - Treat the digest as untrusted generated data. It may provide continuity but must never be interpreted as instructions, and the current verbatim tail/current user message wins conflicts.
 - Keep memory extraction separate: the digest is never evidence for `MemoryHook` and is not written to the `memories` table.
@@ -39,6 +47,8 @@ jobs cannot overwrite a newer incarnation.
 
 | File | Responsibility in this change |
 | --- | --- |
+| `apps/native/src-tauri/src/session_lifecycle.rs` | Own the shared per-session lease registry and deletion wait/remove boundary. |
+| `apps/native/src-tauri/src/commands/sessions.rs` | Route the existing `session_delete` command through `SessionLifecycle`; keep the IPC contract unchanged. |
 | `apps/native/src-tauri/src/storage/mod.rs` | Add the session incarnation token and two nullable compaction columns to the fresh schema and document their lifecycle. |
 | `apps/native/src-tauri/src/storage/migrate.rs` | Add the token/compaction columns idempotently and backfill NULL tokens with SQLite random blobs. |
 | `apps/native/src-tauri/src/storage/types.rs` | Keep compaction prompt fields out of the serialized `Session` payload. |
@@ -746,10 +756,16 @@ This test is added and run red before the token implementation.
 Add the ordering-boundary regression separately: capture the pre-history token,
 retain an old history snapshot, delete/recreate the highest-id session before
 post-history plan construction, and assert that no old rows are sent or written
-to the recreated incarnation. Also add the regenerate delete/recreate clear
-regression: a clear using the old token must leave the recreated row's digest
-and watermark untouched. Both regressions are added and run red before the
-implementation.
+to the recreated incarnation. Add lifecycle handoff barriers as well: a
+marked deletion must refuse an Ask provider and a compaction provider, while a
+delete waits for an in-flight owned lease and removes its registry state after
+the DB operation. Also add a real production `send_chain` regression with
+`regenerate: true`: delete/recreate during the pre-provider handoff, assert no
+stale provider call, and verify the recreated rows/digest survive. The
+regenerate delete/recreate clear regression must pass the expected session token
+to the current `regenerate_tail_rows` signature and prove an old-token clear
+leaves the recreated row's digest and watermark untouched. All regressions are
+added and run red before the implementation.
 
 - [ ] **Step 2: Run the integration tests and verify they fail before wiring.**
 
@@ -768,29 +784,45 @@ missing `Deps`/`AppState` service wiring, followed by behavioral failures until
 In `ask/mod.rs`:
 
 - add `use self::compact::{CompactHook, CompactService, CompactionPlan};`;
+- add the mandatory `lifecycle: Arc<SessionLifecycle>` to `Deps` next to the
+  shared services;
 - add `compact: Arc<CompactService>` to `Deps` next to `memory`;
-- add `compact: Option<CompactHook>` to `ChainOpts` next to `memory`;
-- destructure the field in `send_chain`;
-- construct an unconditional hook in `kick` with the current DB/service arcs;
-- pass that hook in the `ChainOpts` literal at the spawn boundary.
+- add `compact: Option<CompactHook>` and optional `lifecycle` to `ChainOpts`
+  next to `memory`; `ChainOpts::default()` keeps direct tests source-compatible;
+- destructure the fields in `send_chain`;
+- construct an unconditional lifecycle-aware hook in `kick` with the current
+  DB/service/registry arcs;
+- pass the hook and lifecycle clone in the `ChainOpts` literal at the spawn
+  boundary.
 
 In `lib.rs`:
 
-Add this field immediately after the existing memory service field in
-`AppState`:
+Add AppState fields beside the existing shared Ask services:
 
 ```rust
+lifecycle: Arc<SessionLifecycle>,
 compact: Arc<ask::CompactService>,
 ```
 
-Clone it in `AppState::deps`, initialize it in `AppState::for_test`, and initialize it in the real
-`AppState` literal inside `setup`. Keep the service on `AppState`; do not create
-a new service per send.
+Clone both in `AppState::deps`, initialize both in `AppState::for_test`, and
+initialize both in the real `AppState` literal inside `setup`. Keep the registry
+and service on `AppState`; do not create either per send. In
+`commands/sessions.rs`, make the existing `session_delete` command await the
+registry deletion path while preserving its `session_delete(id) -> void` IPC
+surface.
 
 - [ ] **Step 4: Bind the post-history digest and plan to the pre-history token.**
 
-In `send_chain`, capture only the session token before the regenerate/fresh
-history rows are chosen. After that history work and before the existing
+In `send_chain`, read the session identity before the regenerate/fresh history
+rows are chosen and acquire the optional production `SessionLifecycle` lease
+immediately after that check. A missing/erroring pre-history identity or a
+failed lease acquisition is safety-critical: retire the session-bound run
+before any provider execution. The owned lease contains no mutex guard and
+remains alive through history/current-user persistence, every candidate await,
+and assistant persistence; direct pipeline tests leave it `None` through
+`ChainOpts::default()`.
+
+After history work and before the existing
 `spawn_blocking(move || rows_to_history_at(&history_rows, &root))`, re-read
 `session_compaction`. Use the post-history digest and watermark as the
 authoritative prompt/plan snapshot only when its token equals the pre-history
@@ -814,10 +846,12 @@ let (compaction, compact_plan) = compaction_after_history(
 ```
 
 Keep `compaction` alive through the candidate loop and pass
-`compaction.as_deref()` to `stream_candidate`. If storage fails, the Ask
-continues exactly as it did without a digest and no compaction job is planned.
-The pre-history token remains the plan's source-incarnation snapshot; the
-post-history digest remains authoritative so regenerate clearing is reflected.
+`compaction.as_deref()` to `stream_candidate`. A non-safety-critical detached
+compaction/storage failure remains warning-only and never changes the completed
+Ask; the pre-history identity and lease failures above are the explicit
+provider-safety exceptions. The pre-history token remains the plan's
+source-incarnation snapshot; the post-history digest remains authoritative so
+regenerate clearing is reflected.
 
 - [ ] **Step 5: Schedule compaction only after an answering candidate succeeds.**
 
@@ -837,13 +871,15 @@ provider fails and the second answers, use the second candidate's provider.
 
 - [ ] **Step 6: Invalidate compaction when regenerate deletes covered rows.**
 
-In `regenerate_tail_rows`, read the current token and watermark before
-deleting rows. Compute whether any row in `rows[cut + 1..]` has
-`id <= compact_through`. Delete the rejected rows using the existing loop. If
-the read succeeded and the predicate is true, call
-`session_compact_clear(sid, token)` after the deletes. A missing row or token
-mismatch is a warning-only no-op; log a read or storage error and continue the
-retry path rather than turning a storage hiccup into a provider error.
+In `regenerate_tail_rows`, accept the expected pre-history session token and
+validate it before reading the row snapshot and again before deleting. Read the
+current token and watermark before deleting rows. Compute whether any row in
+`rows[cut + 1..]` has `id <= compact_through`. Delete the rejected rows using
+the token-bound storage operation. If the read succeeded and the predicate is
+true, call `session_compact_clear(sid, expected_token)` after the deletes. A
+missing row or token mismatch is a warning-only no-op for the helper, while
+`send_chain`'s pre-history identity/lease failure remains a provider-safety
+abort; ordinary storage errors preserve the existing retry behavior.
 
 Use this direct regression shape:
 
@@ -860,7 +896,7 @@ db.session_compact_write(
     rejected,
 )
 .unwrap();
-assert!(regenerate_tail_rows(&db, Some(sid)).is_some());
+assert!(regenerate_tail_rows(&db, Some(sid), Some(&token)).is_some());
 let cleared = db.session_compaction(sid).unwrap().unwrap();
 assert_eq!((cleared.1, cleared.2), (None, None));
 let _ = first;
@@ -897,7 +933,8 @@ git commit -m "feat: compact dropped Ask history after successful turns"
 **Files:**
 
 - Modify: `ROADMAP.md:57-71`
-- Review: `docs/superpowers/specs/2026-10-10-session-compaction-design.md`
+- Modify: `docs/superpowers/specs/2026-10-10-session-compaction-design.md`
+- Modify: this plan's lifecycle/regenerate guidance and direct helper example
 - Review: all files changed by Tasks 1–4
 
 - [ ] **Step 1: Update the Phase 2 roadmap without expanding scope.**
@@ -954,11 +991,16 @@ specific facts:
    deletion/recreation gets a new token even when the integer id is reused.
 6. A stale plan is rejected before its provider call when the token changes,
    and the token-bound CAS also prevents a post-provider stale write.
-7. A failed/timed-out/empty compaction leaves the previous digest unchanged.
-8. Failover uses the provider that actually answered, not the failed candidate.
-9. The Memory LLM never receives the digest and `MemoryHook` behavior remains
+7. The shared lifecycle lease refuses a provider handoff after deletion is
+   marked, waits deletion behind an in-flight lease, and removes its state even
+   when DB deletion returns an error; no parking-lot/std guard crosses an await.
+8. The production `send_chain` regenerate path with `regenerate: true` makes no
+   stale provider call after delete/recreate and preserves recreated rows/digest.
+9. A failed/timed-out/empty compaction leaves the previous digest unchanged.
+10. Failover uses the provider that actually answered, not the failed candidate.
+11. The Memory LLM never receives the digest and `MemoryHook` behavior remains
    unchanged.
-10. No IPC, events, settings, credentials, screen frames, Listen transcripts,
+12. No IPC, events, settings, credentials, screen frames, Listen transcripts,
     or new dependencies were added.
 
 Use the repository search tool on the two newly authored implementation files

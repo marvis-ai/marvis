@@ -2,6 +2,7 @@ use super::compact::*;
 use super::history::regenerate_tail_rows;
 use super::stream::*;
 use super::title::*;
+use crate::session_lifecycle::SessionLifecycle;
 use crate::storage::Message;
     use super::*;
     use crate::llm::ContentPart;
@@ -110,6 +111,7 @@ use crate::storage::Message;
         calls: Arc<Mutex<Vec<Vec<ChatMessage>>>>,
         entered: Arc<Notify>,
         release: Arc<Notify>,
+        finished: Arc<Notify>,
         reply: String,
         active: Arc<AtomicUsize>,
         max_active: Arc<AtomicUsize>,
@@ -121,6 +123,7 @@ use crate::storage::Message;
                 calls: Arc::new(Mutex::new(Vec::new())),
                 entered: Arc::new(Notify::new()),
                 release: Arc::new(Notify::new()),
+                finished: Arc::new(Notify::new()),
                 reply: reply.to_string(),
                 active: Arc::new(AtomicUsize::new(0)),
                 max_active: Arc::new(AtomicUsize::new(0)),
@@ -139,6 +142,10 @@ use crate::storage::Message;
             Arc::clone(&self.release)
         }
 
+        fn finished(&self) -> Arc<Notify> {
+            Arc::clone(&self.finished)
+        }
+
         fn max_active(&self) -> Arc<AtomicUsize> {
             Arc::clone(&self.max_active)
         }
@@ -153,6 +160,7 @@ use crate::storage::Message;
             self.calls.lock().push(msgs.to_vec());
             let entered = Arc::clone(&self.entered);
             let release = Arc::clone(&self.release);
+            let finished = Arc::clone(&self.finished);
             let reply = self.reply.clone();
             let active = Arc::clone(&self.active);
             let max_active = Arc::clone(&self.max_active);
@@ -162,6 +170,7 @@ use crate::storage::Message;
                 entered.notify_one();
                 release.notified().await;
                 active.fetch_sub(1, Ordering::SeqCst);
+                finished.notify_one();
                 Ok(StreamReply {
                     full: reply,
                     usage: None,
@@ -240,6 +249,19 @@ use crate::storage::Message;
         (digest, through)
     }
 
+    async fn wait_for_delete_mark(lifecycle: &SessionLifecycle, sid: i64) {
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if lifecycle.is_deleting(sid) {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("session deletion did not reach its lifecycle boundary");
+    }
+
     static STALE_SEND_DB: OnceLock<Mutex<Option<Arc<Db>>>> = OnceLock::new();
 
     /// The real send pipeline calls this after history capture and current-turn
@@ -265,6 +287,224 @@ use crate::storage::Message;
                 .unwrap();
         }
         Ok(Some(test_frame()))
+    }
+
+    #[tokio::test]
+    async fn session_delete_waits_for_an_in_flight_lease_and_removes_after_release() {
+        let dir = tmp_dir();
+        let db = Arc::new(Db::at(dir.join("marvis.db")).unwrap());
+        let sid = db.session_get_or_create_active("ask").unwrap();
+        let lifecycle = SessionLifecycle::new();
+        let lease = lifecycle
+            .acquire(sid)
+            .expect("the first session lease should be accepted");
+        let delete_task = {
+            let lifecycle = Arc::clone(&lifecycle);
+            let db = Arc::clone(&db);
+            tokio::spawn(async move { lifecycle.delete(db.as_ref(), sid).await })
+        };
+
+        wait_for_delete_mark(&lifecycle, sid).await;
+        assert!(!delete_task.is_finished());
+        assert!(db.session_compaction(sid).unwrap().is_some());
+
+        drop(lease);
+        delete_task
+            .await
+            .expect("session deletion task should join")
+            .unwrap();
+        assert!(db.session_compaction(sid).unwrap().is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn send_chain_lease_keeps_session_alive_until_answer_persists() {
+        let dir = tmp_dir();
+        let db = Arc::new(Db::at(dir.join("marvis.db")).unwrap());
+        let sid = db.session_get_or_create_active("ask").unwrap();
+        let lifecycle = SessionLifecycle::new();
+        let provider = BarrierProvider::new("answer");
+        let entered = provider.entered();
+        let release = provider.release();
+        let calls = provider.calls();
+        let (_events, emit) = recorder();
+        let reader = screen_read::ScreenReader::new();
+        let ring = Mutex::new(RingBuffer::new(4, 1 << 20));
+        let input = input(&reader, &ring);
+        let cancel = CancellationToken::new();
+        let send = send_chain(
+            vec![candidate("mock", provider)],
+            None,
+            db.as_ref(),
+            &emit,
+            &input,
+            &cancel,
+            ChainOpts {
+                text: "question",
+                session_id: Some(sid),
+                language: "en",
+                lifecycle: Some(Arc::clone(&lifecycle)),
+                ..ChainOpts::default()
+            },
+        );
+        tokio::pin!(send);
+        tokio::select! {
+            result = &mut send => panic!("send completed before provider barrier: {result:?}"),
+            _ = entered.notified() => {}
+        }
+
+        let delete_task = {
+            let lifecycle = Arc::clone(&lifecycle);
+            let db = Arc::clone(&db);
+            tokio::spawn(async move { lifecycle.delete(db.as_ref(), sid).await })
+        };
+        wait_for_delete_mark(&lifecycle, sid).await;
+        assert!(!delete_task.is_finished());
+        assert!(db.session_compaction(sid).unwrap().is_some());
+
+        release.notify_one();
+        assert_eq!(send.await.unwrap(), "answer");
+        delete_task
+            .await
+            .expect("session deletion task should join")
+            .unwrap();
+        assert_eq!(calls.lock().len(), 1);
+        assert!(db.session_compaction(sid).unwrap().is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn send_chain_regenerate_refuses_provider_after_marked_delete_and_recreate() {
+        let dir = tmp_dir();
+        let db = Arc::new(Db::at(dir.join("marvis.db")).unwrap());
+        let sid = db.session_get_or_create_active("ask").unwrap();
+        db.message_add(sid, "user", "old question").unwrap();
+        let rejected = db
+            .message_add(sid, "assistant", "old rejected answer")
+            .unwrap();
+        let old_token = compaction_token(&db, sid);
+        db.session_compact_write(sid, &old_token, None, "old digest", rejected)
+            .unwrap();
+
+        let lifecycle = SessionLifecycle::new();
+        let lease = lifecycle
+            .acquire(sid)
+            .expect("the deletion blocker should acquire");
+        let delete_task = {
+            let lifecycle = Arc::clone(&lifecycle);
+            let db = Arc::clone(&db);
+            tokio::spawn(async move { lifecycle.delete(db.as_ref(), sid).await })
+        };
+        wait_for_delete_mark(&lifecycle, sid).await;
+
+        let provider = MockProvider::new(vec![Behavior::Tokens(vec!["stale answer".into()])]);
+        let calls = provider.calls();
+        let (_events, emit) = recorder();
+        let reader = screen_read::ScreenReader::new();
+        let ring = Mutex::new(RingBuffer::new(4, 1 << 20));
+        let input = input(&reader, &ring);
+        let result = send_chain(
+            vec![candidate("mock", provider)],
+            None,
+            db.as_ref(),
+            &emit,
+            &input,
+            &CancellationToken::new(),
+            ChainOpts {
+                text: "old question",
+                session_id: Some(sid),
+                regenerate: true,
+                language: "en",
+                lifecycle: Some(Arc::clone(&lifecycle)),
+                ..ChainOpts::default()
+            },
+        )
+        .await;
+
+        assert!(result.is_err(), "a marked deletion must retire the regenerate");
+        assert!(calls.lock().is_empty(), "the stale provider must not run");
+
+        drop(lease);
+        delete_task
+            .await
+            .expect("session deletion task should join")
+            .unwrap();
+        assert_eq!(db.session_get_or_create_active("ask").unwrap(), sid);
+        let new_token = compaction_token(&db, sid);
+        let new_question = db
+            .message_add(sid, "user", "new incarnation question")
+            .unwrap();
+        let new_answer = db
+            .message_add(sid, "assistant", "new incarnation answer")
+            .unwrap();
+        db.session_compact_write(
+            sid,
+            &new_token,
+            None,
+            "new incarnation digest",
+            new_answer,
+        )
+        .unwrap();
+        assert_eq!(
+            db.messages_for(sid)
+                .unwrap()
+                .iter()
+                .map(|row| (row.id, row.content.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                (new_question, "new incarnation question"),
+                (new_answer, "new incarnation answer")
+            ]
+        );
+        assert_eq!(
+            compaction_state(&db, sid),
+            (Some("new incarnation digest".into()), Some(new_answer))
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn compaction_handoff_skips_provider_after_marked_delete() {
+        let dir = tmp_dir();
+        let db = Arc::new(Db::at(dir.join("marvis.db")).unwrap());
+        let sid = seed_compaction_history(db.as_ref(), 30);
+        let plan = compaction_plan(sid, compaction_token(&db, sid), &test_messages(30), None, None)
+            .unwrap();
+        let lifecycle = SessionLifecycle::new();
+        let lease = lifecycle
+            .acquire(sid)
+            .expect("the deletion blocker should acquire");
+        let delete_task = {
+            let lifecycle = Arc::clone(&lifecycle);
+            let db = Arc::clone(&db);
+            tokio::spawn(async move { lifecycle.delete(db.as_ref(), sid).await })
+        };
+        wait_for_delete_mark(&lifecycle, sid).await;
+
+        let provider = BarrierProvider::new("stale digest");
+        let entered = provider.entered();
+        let calls = provider.calls();
+        CompactHook::with_lifecycle(
+            Arc::clone(&db),
+            CompactService::new(),
+            Arc::clone(&lifecycle),
+        )
+        .maybe_schedule(Arc::new(provider), plan);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), entered.notified())
+                .await
+                .is_err(),
+            "marked deletion must prevent the compaction provider handoff"
+        );
+        assert!(calls.lock().is_empty());
+
+        drop(lease);
+        delete_task
+            .await
+            .expect("session deletion task should join")
+            .unwrap();
+        assert!(db.session_compaction(sid).unwrap().is_none());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -317,8 +557,8 @@ use crate::storage::Message;
             CompactHook::new(Arc::clone(&db), CompactService::new())
                 .maybe_schedule(Arc::new(provider), plan);
         }
-        tokio::time::sleep(Duration::from_millis(25)).await;
-
+        // The old-token plan is rejected before scheduling, so no detached
+        // task needs a timing grace period here.
         assert!(calls.lock().is_empty());
         assert_eq!(compaction_state(&db, sid), (None, None));
         let _ = std::fs::remove_dir_all(&dir);
@@ -480,12 +720,18 @@ use crate::storage::Message;
         )
         .unwrap();
         db.session_delete(sid).unwrap();
-        let provider = MockProvider::new(vec![Behavior::Tokens(vec!["must not run".into()])]);
+        let provider = BarrierProvider::new("must not run");
+        let entered = provider.entered();
         let calls = provider.calls();
 
         CompactHook::new(Arc::clone(&db), CompactService::new())
             .maybe_schedule(Arc::new(provider), plan);
-        tokio::time::sleep(Duration::from_millis(25)).await;
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), entered.notified())
+                .await
+                .is_err(),
+            "a deleted session must not reach its compaction provider"
+        );
 
         assert!(calls.lock().is_empty());
         assert!(db.session_list().unwrap().iter().all(|session| session.id != sid));
@@ -518,11 +764,17 @@ use crate::storage::Message;
         let recreated = db.session_compaction(sid).unwrap().unwrap();
         assert_ne!(recreated.0, session_token);
 
-        let provider = MockProvider::new(vec![Behavior::Tokens(vec!["must not run".into()])]);
+        let provider = BarrierProvider::new("must not run");
+        let entered = provider.entered();
         let calls = provider.calls();
         CompactHook::new(Arc::clone(&db), CompactService::new())
             .maybe_schedule(Arc::new(provider), plan);
-        tokio::time::sleep(Duration::from_millis(25)).await;
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), entered.notified())
+                .await
+                .is_err(),
+            "a recreated session must not reach its old compaction provider"
+        );
 
         assert!(calls.lock().is_empty());
         assert_eq!(db.session_compaction(sid).unwrap().unwrap().1, None);
@@ -543,8 +795,10 @@ use crate::storage::Message;
         let first = BarrierProvider::new("stale digest");
         let entered = first.entered();
         let release = first.release();
+        let first_finished = first.finished();
         let first_calls = first.calls();
-        let second = MockProvider::new(vec![Behavior::Tokens(vec!["must not run".into()])]);
+        let second = BarrierProvider::new("must not run");
+        let second_entered = second.entered();
         let second_calls = second.calls();
 
         CompactHook::new(Arc::clone(&db), Arc::clone(&service))
@@ -557,7 +811,13 @@ use crate::storage::Message;
         assert_eq!(db.session_get_or_create_active("ask").unwrap(), sid);
         assert_ne!(compaction_token(&db, sid), token);
         release.notify_one();
-        tokio::time::sleep(Duration::from_millis(25)).await;
+        first_finished.notified().await;
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), second_entered.notified())
+                .await
+                .is_err(),
+            "a queued stale compaction job must not reach its provider"
+        );
 
         assert_eq!(first_calls.lock().len(), 1);
         assert!(second_calls.lock().is_empty());
@@ -662,11 +922,17 @@ use crate::storage::Message;
         assert_eq!(calls.lock().len(), 1);
 
         let stale = compaction_plan(sid, compaction_token(&db, sid), &rows, None, None).unwrap();
-        let stale_provider = MockProvider::new(vec![Behavior::Tokens(vec!["wrong".into()])]);
+        let stale_provider = BarrierProvider::new("wrong");
+        let stale_entered = stale_provider.entered();
         let stale_calls = stale_provider.calls();
         CompactHook::new(Arc::clone(&db), CompactService::new())
             .maybe_schedule(Arc::new(stale_provider), stale);
-        tokio::time::sleep(Duration::from_millis(25)).await;
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), stale_entered.notified())
+                .await
+                .is_err(),
+            "a stale watermark plan must not reach its provider"
+        );
         assert_eq!(stale_calls.lock().len(), 0);
         assert_eq!(compaction_state(&db, sid).0.as_deref(), Some("digest"));
 
@@ -686,10 +952,11 @@ use crate::storage::Message;
         let first = BarrierProvider::new("first digest");
         let first_entered = first.entered();
         let first_release = first.release();
+        let first_finished = first.finished();
         let first_calls = first.calls();
         let first_max_active = first.max_active();
         let second = BarrierProvider::new("second digest");
-        let second_release = second.release();
+        let second_entered = second.entered();
         let second_calls = second.calls();
 
         CompactHook::new(Arc::clone(&db), Arc::clone(&service))
@@ -697,19 +964,29 @@ use crate::storage::Message;
         first_entered.notified().await;
         CompactHook::new(Arc::clone(&db), Arc::clone(&service))
             .maybe_schedule(Arc::new(second), second_plan);
-        tokio::time::sleep(Duration::from_millis(25)).await;
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), second_entered.notified())
+                .await
+                .is_err(),
+            "the second compaction must wait behind the first provider"
+        );
         assert_eq!(first_calls.lock().len(), 1);
         assert!(second_calls.lock().is_empty());
 
         first_release.notify_one();
+        first_finished.notified().await;
         for _ in 0..100 {
             if compaction_state(&db, sid).0.as_deref() == Some("first digest") {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
-        second_release.notify_one();
-        tokio::time::sleep(Duration::from_millis(25)).await;
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), second_entered.notified())
+                .await
+                .is_err(),
+            "the stale queued compaction must skip before its provider"
+        );
         assert_eq!(first_max_active.load(Ordering::SeqCst), 1);
         assert!(second_calls.lock().is_empty());
         assert_eq!(compaction_state(&db, sid).0.as_deref(), Some("first digest"));
@@ -736,6 +1013,7 @@ use crate::storage::Message;
         let provider = BarrierProvider::new("stale digest");
         let entered = provider.entered();
         let release = provider.release();
+        let finished = provider.finished();
         let calls = provider.calls();
 
         CompactHook::new(Arc::clone(&db), CompactService::new())
@@ -743,7 +1021,7 @@ use crate::storage::Message;
         entered.notified().await;
         assert!(db.session_compact_clear(sid, &token).unwrap());
         release.notify_one();
-        tokio::time::sleep(Duration::from_millis(25)).await;
+        finished.notified().await;
 
         assert_eq!(calls.lock().len(), 1);
         assert_eq!(compaction_state(&db, sid), (None, None));

@@ -31,8 +31,13 @@ pub(crate) fn summary_latest(
 }
 
 #[tauri::command]
-pub(crate) fn session_delete(state: State<'_, AppState>, id: i64) -> Result<(), String> {
-    state.db.session_delete(id).map_err(|e| e.to_string())
+pub(crate) async fn session_delete(state: State<'_, AppState>, id: i64) -> Result<(), String> {
+    let lifecycle = state.lifecycle.clone();
+    let db = state.db.clone();
+    lifecycle
+        .delete(db.as_ref(), id)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// "New chat": end the active session of `kind` (`"ask"`) so the next

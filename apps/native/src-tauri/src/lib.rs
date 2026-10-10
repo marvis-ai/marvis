@@ -55,6 +55,7 @@ mod permissions;
 mod presets;
 mod prompts;
 mod screen_read;
+mod session_lifecycle;
 mod sherpa_models;
 mod storage;
 pub mod stt;
@@ -86,6 +87,7 @@ use hotkey::RegisteredHotkeys;
 use keystore::Keystore;
 use listen::{ListenEvent, ListenService};
 use llm::{make_provider, ProviderKind};
+use session_lifecycle::SessionLifecycle;
 use storage::{Db, Memory, Message, Session, Summary, Transcript};
 use windows::WindowPool;
 
@@ -124,8 +126,8 @@ impl Gate {
 
 /// Everything commands, hotkey dispatch, and deep links touch. Field
 /// types follow the consumers: `Deps` borrows `&Mutex<…>` (so `keystore`,
-/// `config`, `pool` are plain `Mutex`es) while `db`/`ring`/`ask` are
-/// `Arc`s shared with spawned tasks and the capture callback.
+/// `config`, `pool` are plain `Mutex`es) while `db`/`ring`/`ask`/`lifecycle`
+/// are `Arc`s shared with spawned tasks and the capture callback.
 pub struct AppState {
     keystore: Mutex<Keystore>,
     /// `Arc`d like `db`/`ring`: the scheduled memory extraction
@@ -134,6 +136,9 @@ pub struct AppState {
     /// streams or the extraction queues on the service gate.
     config: Arc<Mutex<Config>>,
     db: Arc<Db>,
+    /// Shared per-session handoff boundary — Ask/compaction leases are
+    /// coordinated with the production session deletion command.
+    lifecycle: Arc<SessionLifecycle>,
     ring: Arc<Mutex<RingBuffer>>,
     capture: Mutex<Option<PlatformCapture>>,
     /// The settled-screen describer — fed by the capture callback and
@@ -196,13 +201,14 @@ pub struct AppState {
 
 impl AppState {
     /// The ask pipeline's borrow bundle: `db`/`ring`/`reader`/`memory`/
-    /// `config` clone their `Arc`s (the spawned stream outlives the
+    /// `lifecycle`/`config` clone their `Arc`s (the spawned stream outlives the
     /// call), the rest are short-lived `&Mutex` borrows used only in
     /// pre-flight. `capture_running` snapshots the capture slot so
     /// `resolve_screen` knows whether ring frames are fresh.
     fn deps(&self) -> ask::Deps<'_> {
         ask::Deps {
             db: Arc::clone(&self.db),
+            lifecycle: Arc::clone(&self.lifecycle),
             ring: Arc::clone(&self.ring),
             reader: Arc::clone(&self.screen_reader),
             memory: Arc::clone(&self.memory),
@@ -260,6 +266,7 @@ impl AppState {
                 Config::load_from(root.join("config.toml")).unwrap_or_default(),
             )),
             db: Arc::new(Db::at(root.join("marvis.db")).expect("test db")),
+            lifecycle: SessionLifecycle::new(),
             ring: Arc::new(Mutex::new(RingBuffer::new(RING_MAX_FRAMES, RING_MAX_BYTES))),
             capture: Mutex::new(None),
             screen_reader: Arc::new(screen_read::ScreenReader::new()),
@@ -967,6 +974,7 @@ pub fn run() {
                 keystore: Mutex::new(keystore),
                 config: Arc::new(Mutex::new(cfg)),
                 db: Arc::new(db),
+                lifecycle: SessionLifecycle::new(),
                 ring: Arc::new(Mutex::new(RingBuffer::new(RING_MAX_FRAMES, RING_MAX_BYTES))),
                 capture: Mutex::new(None),
                 screen_reader: Arc::new(screen_read::ScreenReader::new()),

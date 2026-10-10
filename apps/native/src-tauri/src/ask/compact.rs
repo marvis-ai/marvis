@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use crate::llm::{ChatMessage, Provider, Role};
+use crate::session_lifecycle::SessionLifecycle;
 use crate::storage::{Db, Message};
 
 use super::{
@@ -200,6 +201,7 @@ impl CompactService {
         &self,
         db: &Db,
         provider: &dyn Provider,
+        lifecycle: Option<Arc<SessionLifecycle>>,
         plan: CompactionPlan,
     ) -> anyhow::Result<()> {
         let _permit = self.gate.lock().await;
@@ -216,6 +218,16 @@ impl CompactService {
         {
             return Ok(());
         }
+        // Re-read and lease acquisition are the provider handoff boundary:
+        // deletion either marked first and makes this a no-op, or waits for
+        // this owned lease through stream_chat and the token-bound CAS write.
+        let _session_lease = match lifecycle.as_ref() {
+            Some(lifecycle) => match lifecycle.acquire(plan.session_id) {
+                Some(lease) => Some(lease),
+                None => return Ok(()),
+            },
+            None => None,
+        };
 
         let (messages, rendered_through) =
             compaction_messages_with_watermark(stored_digest.as_deref(), &plan.source_rows);
@@ -249,20 +261,45 @@ impl CompactService {
 pub(crate) struct CompactHook {
     db: Arc<Db>,
     service: Arc<CompactService>,
+    lifecycle: Option<Arc<SessionLifecycle>>,
 }
 
 impl CompactHook {
+    /// Direct pipeline tests can use the legacy constructor without an
+    /// application lifecycle registry; production `AskService::kick` uses
+    /// [`Self::with_lifecycle`] below.
+    #[cfg(test)]
     pub(crate) fn new(db: Arc<Db>, service: Arc<CompactService>) -> Self {
-        Self { db, service }
+        Self {
+            db,
+            service,
+            lifecycle: None,
+        }
+    }
+
+    pub(crate) fn with_lifecycle(
+        db: Arc<Db>,
+        service: Arc<CompactService>,
+        lifecycle: Arc<SessionLifecycle>,
+    ) -> Self {
+        Self {
+            db,
+            service,
+            lifecycle: Some(lifecycle),
+        }
     }
 
     /// Fire-and-forget compaction. Any provider, timeout, validation, or
     /// storage error is warning-only and never changes the completed Ask.
     pub(crate) fn maybe_schedule(self, provider: Arc<dyn Provider>, plan: CompactionPlan) {
-        let Self { db, service } = self;
+        let Self {
+            db,
+            service,
+            lifecycle,
+        } = self;
         tauri::async_runtime::spawn(async move {
             if let Err(error) = service
-                .compact_once(db.as_ref(), provider.as_ref(), plan)
+                .compact_once(db.as_ref(), provider.as_ref(), lifecycle, plan)
                 .await
             {
                 log::warn!("ask: session compaction skipped: {error}");

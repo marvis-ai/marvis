@@ -71,21 +71,25 @@
 //!
 //! Wiring note for Task 14: `send`/`send_screen_only`/`close` take a
 //! [`Deps`] bundle of `AppState` fields so this module never names the
-//! not-yet-existing `AppState` type. `deps.db`/`deps.ring`/`deps.reader`
-//! must be [`Arc`]s — the stream runs on a spawned task that outlives the
-//! command call — and `AppState.ask` must be an `Arc<AskService>` (all
+//! not-yet-existing `AppState` type. `deps.db`/`deps.ring`/`deps.reader`/
+//! `deps.lifecycle` must be [`Arc`]s — the stream and owned provider lease run
+//! on a spawned task that outlives the command call — and `AppState.ask` must
+//! be an `Arc<AskService>` (all
 //! fields are interior-mutable; the spawned task keeps a share). After
 //! synchronous pre-flight, real work runs inside
 //! `tauri::async_runtime::spawn` so the invoking command handler returns
 //! immediately instead of blocking on an LLM stream.
 
 mod attachments;
+mod compact;
 mod history;
 mod pipeline;
 mod screen;
 mod stream;
 mod title;
 
+pub(crate) use self::compact::CompactService;
+use self::compact::{compaction_plan, CompactHook, CompactionPlan};
 use self::{pipeline::*, screen::*, title::TitleSidecar};
 
 #[cfg(test)]
@@ -107,8 +111,9 @@ use crate::config::Config;
 use crate::keystore::Keystore;
 use crate::llm::{ChatMessage, ContentPart, LlmError, Provider, Role, StreamReply, TokenUsage};
 use crate::memory::{MemoryHook, MemoryService};
-use crate::prompts::{live_system_prompt_with_profile, live_user_prompt};
+use crate::prompts::{bounded_compaction, live_system_prompt_with_profile, live_user_prompt};
 use crate::screen_read;
+use crate::session_lifecycle::SessionLifecycle;
 use crate::storage::{Db, MessageAttachment, MessageMeta, NewAttachment, Transcript};
 use crate::windows::{WindowPool, BAR_LABEL};
 use crate::ProviderCandidate;
@@ -140,6 +145,12 @@ const TITLE_TIMEOUT: Duration = Duration::from_secs(30);
 /// Context window: only the trailing N persisted `messages` ride
 /// along with each ask (spec: last 20, text-only).
 const HISTORY_TAIL: usize = 20;
+
+const COMPACT_BATCH: usize = 10;
+const MAX_COMPACT_CHARS: usize = 2_000;
+const MAX_COMPACT_ROW_CHARS: usize = 1_000;
+const MAX_COMPACT_INPUT_BYTES: usize = 32_000;
+const COMPACT_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Composer images per send — matches the webview cap in
 /// `image-attachments.ts`; a crafted invoke beyond it is rejected
@@ -190,6 +201,9 @@ impl AskState {
 /// pre-flight, so plain `&Mutex` borrows suffice.
 pub struct Deps<'a> {
     pub db: Arc<Db>,
+    /// Shared provider-handoff/deletion boundary; production wiring always
+    /// supplies the AppState-owned registry.
+    pub lifecycle: Arc<SessionLifecycle>,
     pub ring: Arc<Mutex<RingBuffer>>,
     /// The ambient screen reader — `resolve_screen` serves its cached
     /// context while recording runs.
@@ -199,6 +213,8 @@ pub struct Deps<'a> {
     /// The consent-gated extraction service — Arc'd because the
     /// scheduled `MemoryHook` outlives this borrow.
     pub memory: Arc<MemoryService>,
+    /// Serialized session compaction — detached jobs outlive this borrow.
+    pub compact: Arc<CompactService>,
     /// The live config share — `kick` snapshots it for the chain AND
     /// hands the memory hook a closure re-reading `[memory].enabled`
     /// at extraction time.
@@ -737,6 +753,23 @@ impl AskService {
         // direct `send_chain` tests.)
         let session_id =
             history::resolve_session(&deps.db, fresh_session, regenerate, listen_id);
+        // Capture the original incarnation synchronously, before this send is
+        // queued. The owned handoff lease prevents production deletion from
+        // completing underneath the delayed pipeline; the immutable token
+        // rejects any direct stale storage boundary before provider work.
+        let session_handoff = match session_id {
+            Some(session_id) => {
+                match deps.lifecycle.capture_handoff(deps.db.as_ref(), session_id) {
+                    Ok(handoff) => Some(handoff),
+                    Err(error) => {
+                        open_card();
+                        self.kick_error(app, gen, error.to_string());
+                        return true;
+                    }
+                }
+            }
+            None => None,
+        };
         // The per-session busy gate: a live run on THIS session refuses
         // the send — any other session's run streams on.
         let Some(cancel) = self.claim(session_id, text, gen) else {
@@ -746,6 +779,12 @@ impl AskService {
         let svc = Arc::clone(self);
         let app = app.clone();
         let db = Arc::clone(&deps.db);
+        let compact = CompactHook::with_lifecycle(
+            Arc::clone(&db),
+            Arc::clone(&deps.compact),
+            Arc::clone(&deps.lifecycle),
+        );
+        let lifecycle = Arc::clone(&deps.lifecycle);
         // The title sidecar's emit is dedicated — the spawned task's
         // gen-guarded `emit` would drop it once this run's generation
         // ends (stop/superseded), but a landed title write should
@@ -819,7 +858,14 @@ impl AskService {
                     attachments,
                     attachments_root: None,
                     memory,
-                    title: Some(TitleSidecar::new(Arc::clone(&db), titled)),
+                    compact: Some(compact),
+                    session_handoff,
+                    lifecycle: Some(Arc::clone(&lifecycle)),
+                    title: Some(TitleSidecar::new(
+                        Arc::clone(&db),
+                        titled,
+                        Arc::clone(&lifecycle),
+                    )),
                 },
             )
             .await;

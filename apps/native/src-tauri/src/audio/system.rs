@@ -5,8 +5,10 @@
 //! mono/16 kHz `PcmChunk`s via [`super::normalize_pcm`]. Only the PCM
 //! contract is shared — the acquisition is entirely per-platform:
 //!
-//! - macOS: ScreenCaptureKit `SCStream` audio output on the primary
-//!   display's content filter (`excludes_current_process_audio`).
+//! - macOS: CoreAudio process tap (macOS 14.2+) on a private tap-only
+//!   aggregate device — system-audio consent, no screen indicator.
+//!   ScreenCaptureKit `SCStream` audio output on the primary display's
+//!   content filter (`excludes_current_process_audio`) is the fallback.
 //! - Windows: WASAPI shared-mode loopback on the default render device.
 //! - Linux: PulseAudio monitor source of the default sink (the
 //!   `pipewire-pulse` shim exposes the same protocol under PipeWire).

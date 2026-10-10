@@ -38,8 +38,9 @@ impl Db {
             return Ok(id);
         }
         tx.execute(
-            "INSERT INTO sessions (type, title, started_at, ended_at, last_active_at)
-             VALUES (?1, NULL, ?2, NULL, ?2)",
+            "INSERT INTO sessions
+                (type, title, session_token, started_at, ended_at, last_active_at)
+             VALUES (?1, NULL, hex(randomblob(16)), ?2, NULL, ?2)",
             params![kind, now()],
         )?;
         let id = tx.last_insert_rowid();
@@ -70,8 +71,9 @@ impl Db {
             id
         } else {
             tx.execute(
-                "INSERT INTO sessions (type, title, listen_id, started_at, ended_at, last_active_at)
-                 VALUES ('ask', NULL, ?1, ?2, NULL, ?2)",
+                "INSERT INTO sessions
+                    (type, title, listen_id, session_token, started_at, ended_at, last_active_at)
+                 VALUES ('ask', NULL, ?1, hex(randomblob(16)), ?2, NULL, ?2)",
                 params![listen_id, now()],
             )?;
             tx.last_insert_rowid()
@@ -187,7 +189,8 @@ impl Db {
                           WHERE sm.session_id = s.id AND sm.topic IS NOT NULL
                           ORDER BY sm.updated_at DESC, sm.id DESC LIMIT 1)
                       END),
-                    s.audio_file, s.stt, s.started_at, s.ended_at, s.last_active_at
+                    s.audio_file, s.stt, s.compact, s.compact_through,
+                    s.started_at, s.ended_at, s.last_active_at
              FROM sessions s ORDER BY s.last_active_at DESC, s.id DESC",
         )?;
         let rows = stmt.query_map([], |row| {
@@ -197,9 +200,11 @@ impl Db {
                 title: row.get(2)?,
                 audio_file: row.get(3)?,
                 stt: row.get(4)?,
-                started_at: row.get(5)?,
-                ended_at: row.get(6)?,
-                last_active_at: row.get(7)?,
+                compact: row.get(5)?,
+                compact_through: row.get(6)?,
+                started_at: row.get(7)?,
+                ended_at: row.get(8)?,
+                last_active_at: row.get(9)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -228,6 +233,87 @@ impl Db {
             )
             .optional()?
             .flatten())
+    }
+
+    /// Read the session incarnation token, detached compaction digest, and
+    /// message watermark. `None` means the owning session no longer exists;
+    /// an existing session with an uninitialized digest returns
+    /// `Some((token, None, None))`.
+    pub fn session_compaction(
+        &self,
+        session_id: i64,
+    ) -> anyhow::Result<Option<(String, Option<String>, Option<i64>)>> {
+        Ok(self
+            .conn
+            .lock()
+            .query_row(
+                "SELECT session_token, compact, compact_through
+                 FROM sessions WHERE id = ?1",
+                [session_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()?)
+    }
+
+    /// Store a detached compaction digest only when the session incarnation
+    /// token and watermark still match the caller's expected values. `NULL`
+    /// is a valid initial watermark and is matched explicitly for SQLite's
+    /// three-valued logic.
+    pub fn session_compact_write(
+        &self,
+        session_id: i64,
+        session_token: &str,
+        expected_through: Option<i64>,
+        compact: &str,
+        new_through: i64,
+    ) -> anyhow::Result<bool> {
+        Ok(self.conn.lock().execute(
+            "UPDATE sessions
+             SET compact = ?1, compact_through = ?2
+             WHERE id = ?3
+               AND session_token = ?4
+               AND ((compact_through IS NULL AND ?5 IS NULL)
+                    OR compact_through = ?5)",
+            params![
+                compact,
+                new_through,
+                session_id,
+                session_token,
+                expected_through
+            ],
+        )? > 0)
+    }
+
+    /// Clear the detached compaction digest and watermark without changing
+    /// messages or session activity. Missing sessions or a changed
+    /// incarnation are no-ops and return `false`.
+    pub fn session_compact_clear(
+        &self,
+        session_id: i64,
+        session_token: &str,
+    ) -> anyhow::Result<bool> {
+        Ok(self.conn.lock().execute(
+            "UPDATE sessions
+             SET compact = NULL, compact_through = NULL
+             WHERE id = ?1 AND session_token = ?2",
+            params![session_id, session_token],
+        )? > 0)
+    }
+
+    /// First-write-wins title setter bound to one session incarnation. A
+    /// detached title from an older Ask run cannot name a recreated id.
+    pub fn session_set_title_if_session_token(
+        &self,
+        id: i64,
+        session_token: &str,
+        title: &str,
+    ) -> anyhow::Result<bool> {
+        Ok(self.conn.lock().execute(
+            "UPDATE sessions
+             SET title = ?3
+             WHERE id = ?1 AND session_token = ?2 AND title IS NULL",
+            params![id, session_token, title],
+        )? > 0)
     }
 
     /// Record the STT engine label at listen start — the finished doc's
@@ -261,6 +347,7 @@ impl Db {
     /// write happened; `false` also covers a missing session. Stores
     /// `title` verbatim, including an empty string, without updating activity.
     /// Database update errors propagate to the caller.
+    #[allow(dead_code)] // retained for storage/test callers; Ask uses the bound variant
     pub fn session_set_title(&self, id: i64, title: &str) -> anyhow::Result<bool> {
         Ok(self.conn.lock().execute(
             "UPDATE sessions SET title = ?2 WHERE id = ?1 AND title IS NULL",
@@ -302,5 +389,4 @@ impl Db {
         }
         Ok(())
     }
-
 }

@@ -92,6 +92,203 @@ fn session_audio_file_reads_recording_path() {
 }
 
 #[test]
+fn session_compaction_roundtrips_and_uses_token_and_watermark_cas() {
+    let dir = tmp_dir();
+    let db = Db::at(dir.join("marvis.db")).unwrap();
+    let sid = db.session_get_or_create_active("ask").unwrap();
+    let token = db.session_compaction(sid).unwrap().unwrap().0;
+
+    assert_eq!(
+        db.session_compaction(sid).unwrap(),
+        Some((token.clone(), None, None))
+    );
+    assert!(db
+        .session_compact_write(sid, &token, None, "first digest", 10)
+        .unwrap());
+    assert_eq!(
+        db.session_compaction(sid).unwrap(),
+        Some((token.clone(), Some("first digest".to_string()), Some(10)))
+    );
+    assert!(!db
+        .session_compact_write(sid, "wrong-token", Some(10), "stale digest", 20)
+        .unwrap());
+    assert!(!db
+        .session_compact_write(sid, &token, None, "stale digest", 20)
+        .unwrap());
+    assert!(db
+        .session_compact_write(sid, &token, Some(10), "second digest", 20)
+        .unwrap());
+    assert_eq!(
+        db.session_compaction(sid).unwrap(),
+        Some((token.clone(), Some("second digest".to_string()), Some(20)))
+    );
+
+    assert!(db.session_compact_clear(sid, &token).unwrap());
+    let cleared = db.session_compaction(sid).unwrap().unwrap();
+    assert_eq!(cleared.1, None);
+    assert_eq!(cleared.2, None);
+    assert_eq!(db.session_compaction(i64::MAX).unwrap(), None);
+    assert!(!db
+        .session_compact_write(i64::MAX, "missing-token", None, "missing digest", 1)
+        .unwrap());
+    assert!(!db.session_compact_clear(i64::MAX, "missing-token").unwrap());
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn session_incarnation_token_changes_when_highest_id_is_recreated() {
+    let dir = tmp_dir();
+    let db = Db::at(dir.join("marvis.db")).unwrap();
+    let first_id = db.session_get_or_create_active("ask").unwrap();
+    let first_token = db.session_compaction(first_id).unwrap().unwrap().0;
+
+    db.session_delete(first_id).unwrap();
+    let recreated_id = db.session_get_or_create_active("ask").unwrap();
+    assert_eq!(recreated_id, first_id);
+    let recreated_token = db.session_compaction(recreated_id).unwrap().unwrap().0;
+    assert_ne!(recreated_token, first_token);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn incarnation_bound_message_writes_and_deletes_skip_recreated_ids() {
+    let dir = tmp_dir();
+    let db = Db::at(dir.join("marvis.db")).unwrap();
+    let sid = db.session_get_or_create_active("ask").unwrap();
+    let old_token = db.session_compaction(sid).unwrap().unwrap().0;
+
+    db.session_delete(sid).unwrap();
+    assert_eq!(db.session_get_or_create_active("ask").unwrap(), sid);
+    let new_id = db.message_add(sid, "user", "new incarnation").unwrap();
+
+    assert_eq!(
+        db.message_add_meta_if_session_token(
+            sid,
+            &old_token,
+            "assistant",
+            "stale answer",
+            &MessageMeta::default(),
+        )
+        .unwrap(),
+        None
+    );
+    assert_eq!(
+        db.message_delete_for_session(sid, &old_token, &[new_id])
+            .unwrap(),
+        None
+    );
+    assert_eq!(db.messages_for(sid).unwrap()[0].content, "new incarnation");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn regenerate_clear_does_not_clear_recreated_incarnation() {
+    let dir = tmp_dir();
+    let db = Db::at(dir.join("marvis.db")).unwrap();
+    let sid = db.session_get_or_create_active("ask").unwrap();
+    let old_token = db.session_compaction(sid).unwrap().unwrap().0;
+    assert!(db
+        .session_compact_write(sid, &old_token, None, "old digest", 1)
+        .unwrap());
+
+    db.session_delete(sid).unwrap();
+    assert_eq!(db.session_get_or_create_active("ask").unwrap(), sid);
+    let new_token = db.session_compaction(sid).unwrap().unwrap().0;
+    assert_ne!(new_token, old_token);
+    assert!(db
+        .session_compact_write(sid, &new_token, None, "new digest", 2)
+        .unwrap());
+
+    assert!(!db.session_compact_clear(sid, &old_token).unwrap());
+    assert_eq!(
+        db.session_compaction(sid).unwrap().unwrap().1.as_deref(),
+        Some("new digest")
+    );
+    assert_eq!(db.session_compaction(sid).unwrap().unwrap().2, Some(2));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn session_compaction_write_and_clear_preserve_last_active_at() {
+    let dir = tmp_dir();
+    let db = Db::at(dir.join("marvis.db")).unwrap();
+    let sid = db.session_get_or_create_active("ask").unwrap();
+    let token = db.session_compaction(sid).unwrap().unwrap().0;
+    let last_active_at = db
+        .session_list()
+        .unwrap()
+        .into_iter()
+        .find(|session| session.id == sid)
+        .unwrap()
+        .last_active_at;
+
+    assert!(db
+        .session_compact_write(sid, &token, None, "digest", 10)
+        .unwrap());
+    assert_eq!(
+        db.session_list()
+            .unwrap()
+            .into_iter()
+            .find(|session| session.id == sid)
+            .unwrap()
+            .last_active_at,
+        last_active_at
+    );
+
+    assert!(db.session_compact_clear(sid, &token).unwrap());
+    assert_eq!(
+        db.session_list()
+            .unwrap()
+            .into_iter()
+            .find(|session| session.id == sid)
+            .unwrap()
+            .last_active_at,
+        last_active_at
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn session_migration_backfills_token_without_changing_existing_data() {
+    let dir = tmp_dir();
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("marvis.db");
+    {
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        conn.execute_batch(
+            "INSERT INTO sessions
+                (id, type, compact, compact_through, started_at, last_active_at)
+             VALUES (1, 'ask', 'existing digest', 7, 1, 1);
+             INSERT INTO sessions
+                (id, type, session_token, started_at, last_active_at)
+             VALUES (2, 'ask', 'keep-this-token', 2, 2);
+             INSERT INTO messages (session_id, role, content, ts)
+             VALUES (1, 'user', 'preserve this row', 1);",
+        )
+        .unwrap();
+    }
+
+    let db = Db::at(&path).unwrap();
+    let first = db.session_compaction(1).unwrap().unwrap();
+    assert_eq!(first.0.len(), 32);
+    assert_eq!(first.1.as_deref(), Some("existing digest"));
+    assert_eq!(first.2, Some(7));
+    assert_eq!(db.messages_for(1).unwrap()[0].content, "preserve this row");
+    assert_eq!(
+        db.session_compaction(2).unwrap().unwrap().0,
+        "keep-this-token"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn session_delete_cascades_messages() {
     // foreign_keys is a per-connection pragma — if it weren't applied,
     // this test would leave orphan rows instead of cascading.
@@ -493,6 +690,38 @@ fn migrate_upgrades_pre_rename_database() {
         .unwrap();
     let transcripts = db.transcripts_for(1, None).unwrap();
     assert_eq!(transcripts[1].speaker_idx, Some(1));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn session_compaction_migrates_legacy_schema() {
+    let dir = tmp_dir();
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("marvis.db");
+    {
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(V1_SCHEMA).unwrap();
+        conn.execute_batch(
+            "INSERT INTO sessions (type, started_at, last_active_at)
+                 VALUES ('ask', 1, 1);
+             INSERT INTO ai_messages (session_id, role, content, ts)
+                 VALUES (1, 'user', 'old question', 1);",
+        )
+        .unwrap();
+    }
+
+    let db = Db::at(&path).unwrap();
+    let token = db.session_compaction(1).unwrap().unwrap().0;
+    assert_eq!(token.len(), 32);
+    assert!(db
+        .session_compact_write(1, &token, None, "legacy-safe", 1)
+        .unwrap());
+    assert_eq!(
+        db.session_compaction(1).unwrap().unwrap().1.as_deref(),
+        Some("legacy-safe")
+    );
+    assert_eq!(db.messages_for(1).unwrap()[0].content, "old question");
+
     let _ = std::fs::remove_dir_all(&dir);
 }
 

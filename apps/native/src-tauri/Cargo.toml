@@ -69,6 +69,28 @@ block2 = "0.6"
 # without stealing the composer's focus (show() makes key).
 objc2-app-kit = { version = "0.3", default-features = false, features = ["NSWindow"] }
 objc2-av-foundation = { version = "0.3", default-features = false, features = ["AVCaptureDevice", "AVMediaFormat", "block2"] }
+# System-audio capture without screen-recording consent: CATapDescription +
+# AudioHardwareCreateProcessTap on a tap-only private aggregate device
+# (macOS 14.2+). ScreenCaptureKit remains the fallback.
+objc2-core-audio = { version = "0.3", default-features = false, features = [
+    "std",
+    "AudioHardware",
+    "objc2",
+    "objc2-foundation",
+    "objc2-core-audio-types",
+] }
+objc2-core-audio-types = { version = "0.3", default-features = false, features = ["CoreAudioBaseTypes"] }
+objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFDictionary"] }
+objc2-foundation = { version = "0.3", default-features = false, features = [
+    "std",
+    "NSArray",
+    "NSDictionary",
+    "NSValue",
+    "NSString",
+    "NSUUID",
+    "NSObject",
+    "NSProcessInfo",
+] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 # WGC frame capture + WASAPI loopback system audio + WinRT mic consent.

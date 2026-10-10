@@ -1,9 +1,10 @@
+mod tap;
+
 use super::{forward_chunks, warn_unsupported, PcmChunk, RawChunk, AUDIO_QUEUE_CAPACITY};
 use crate::audio::AudioSource;
 use anyhow::{anyhow, Result};
 use screencapturekit::cm::{CMSampleBuffer, CMSampleBufferExt};
 use screencapturekit::stream::configuration::SCStreamConfiguration;
-use screencapturekit::stream::content_filter::SCContentFilter;
 use screencapturekit::stream::output_type::SCStreamOutputType;
 use screencapturekit::stream::sc_stream::SCStream;
 use std::sync::atomic::AtomicBool;
@@ -21,10 +22,13 @@ struct AudioBufferBytes<'a> {
     channels: usize,
 }
 
-/// System audio captured from the primary display's ScreenCaptureKit stream.
-/// ScreenCaptureKit types stay private; consumers receive normalized chunks.
+/// System audio for the "them" channel. Prefers a CoreAudio process tap
+/// (system-audio consent only — no "Currently Sharing" screen panel);
+/// falls back to a ScreenCaptureKit audio-only stream on older macOS or
+/// tap failures. ScreenCaptureKit types stay private; consumers receive
+/// normalized chunks.
 pub struct SystemAudioSource {
-    filter: Option<SCContentFilter>,
+    tap: Option<tap::TapCapture>,
     stream: Option<SCStream>,
     input_tx: Option<SyncSender<RawChunk>>,
     worker: Option<JoinHandle<()>>,
@@ -32,15 +36,48 @@ pub struct SystemAudioSource {
 }
 
 impl SystemAudioSource {
+    /// Lazy construction — the ScreenCaptureKit content filter is only
+    /// built on the fallback path, so the tap never touches screen
+    /// consent or the sharing indicator.
     pub fn new() -> Result<Self> {
-        let (filter, _, _) = crate::capture::primary_display_source()?;
         Ok(Self {
-            filter: Some(filter),
+            tap: None,
             stream: None,
             input_tx: None,
             worker: None,
             running: false,
         })
+    }
+
+    /// ScreenCaptureKit fallback — the audio-only `SCStream` the tap
+    /// replaced. macOS still shows the "Currently Sharing" panel for it
+    /// (any live SCStream counts as sharing), which is why it is a
+    /// fallback rather than the primary path.
+    fn start_sck(&mut self, tx: SyncSender<RawChunk>) -> Result<()> {
+        let (filter, _, _) = crate::capture::primary_display_source()?;
+        let config = SCStreamConfiguration::new()
+            .with_captures_audio(true)
+            .with_excludes_current_process_audio(true);
+        let callback_tx = tx;
+        let warned = Arc::new(AtomicBool::new(false));
+        let callback_warned = warned.clone();
+        let mut stream = SCStream::new(&filter, &config);
+        if stream
+            .add_output_handler(
+                move |sample: CMSampleBuffer, _| {
+                    Self::enqueue_sample(&sample, &callback_tx, &callback_warned)
+                },
+                SCStreamOutputType::Audio,
+            )
+            .is_none()
+        {
+            return Err(anyhow!("SCStream rejected the audio output handler"));
+        }
+        stream
+            .start_capture()
+            .map_err(|error| anyhow!("failed to start system audio capture: {error}"))?;
+        self.stream = Some(stream);
+        Ok(())
     }
 
     fn enqueue_sample(sample: &CMSampleBuffer, tx: &SyncSender<RawChunk>, warned: &AtomicBool) {
@@ -96,40 +133,26 @@ impl SystemAudioSource {
 impl AudioSource for SystemAudioSource {
     fn start(&mut self, output: mpsc::Sender<PcmChunk>) -> Result<()> {
         self.stop();
-        let filter = self
-            .filter
-            .as_ref()
-            .ok_or_else(|| anyhow!("system audio filter unavailable"))?;
-        let config = SCStreamConfiguration::new()
-            .with_captures_audio(true)
-            .with_excludes_current_process_audio(true);
         let (tx, rx) = mpsc::sync_channel(AUDIO_QUEUE_CAPACITY);
         let worker = thread::spawn(move || forward_chunks(rx, output));
-        let callback_tx = tx.clone();
-        let warned = Arc::new(AtomicBool::new(false));
-        let callback_warned = warned.clone();
-        let mut stream = SCStream::new(filter, &config);
-        if stream
-            .add_output_handler(
-                move |sample: CMSampleBuffer, _| {
-                    Self::enqueue_sample(&sample, &callback_tx, &callback_warned)
-                },
-                SCStreamOutputType::Audio,
-            )
-            .is_none()
-        {
-            drop(stream);
+        let result = match tap::TapCapture::start(tx.clone()) {
+            Ok(capture) => {
+                self.tap = Some(capture);
+                Ok(())
+            }
+            Err(tap_error) => {
+                log::info!(
+                    "system audio: process tap unavailable ({tap_error}); \
+                     falling back to ScreenCaptureKit"
+                );
+                self.start_sck(tx.clone())
+            }
+        };
+        if let Err(error) = result {
             drop(tx);
             let _ = worker.join();
-            return Err(anyhow!("SCStream rejected the audio output handler"));
+            return Err(error);
         }
-        if let Err(error) = stream.start_capture() {
-            drop(stream);
-            drop(tx);
-            let _ = worker.join();
-            return Err(anyhow!("failed to start system audio capture: {error}"));
-        }
-        self.stream = Some(stream);
         self.input_tx = Some(tx);
         self.worker = Some(worker);
         self.running = true;
@@ -137,14 +160,16 @@ impl AudioSource for SystemAudioSource {
     }
 
     fn stop(&mut self) {
-        let Some(stream) = self.stream.take() else {
-            self.running = false;
-            return;
-        };
-        if let Err(error) = stream.stop_capture() {
-            log::warn!("SCStream system-audio stop failed: {error}");
+        if let Some(tap) = self.tap.as_mut() {
+            tap.stop();
         }
-        drop(stream);
+        self.tap = None;
+        if let Some(stream) = self.stream.take() {
+            if let Err(error) = stream.stop_capture() {
+                log::warn!("SCStream system-audio stop failed: {error}");
+            }
+            drop(stream);
+        }
         drop(self.input_tx.take());
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();

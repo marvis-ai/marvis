@@ -28,9 +28,8 @@ import {
   type ListenSummaryPayload,
 } from '@/lib/events';
 import { BTN_OUTLINE, BTN_SM, cn } from '@/lib/classes';
+import { useSessionPlayer } from '@/hooks/useSessionPlayer';
 import {
-  activeBlockAt,
-  audioOffset,
   buildBlocks,
   elapsedLabel,
   exportFileName,
@@ -39,7 +38,6 @@ import {
   transcriptMarkdown,
   type ListenViewing,
   type Turn,
-  type TurnBlock,
 } from '@/components/listen/model';
 import { ListenHeader } from '@/components/listen/ListenHeader';
 import { SessionPlayer } from '@/components/listen/SessionPlayer';
@@ -99,12 +97,6 @@ export const ListenSection = ({
   const [speakerOverrides, setSpeakerOverrides] = useState<Map<string, string>>(
     () => new Map(),
   );
-  const audioRef = useRef<HTMLAudioElement>(null);
-  const [audioReady, setAudioReady] = useState(false);
-  const [audioDuration, setAudioDuration] = useState(0);
-  const [audioPlaying, setAudioPlaying] = useState(false);
-  const [activeBlock, setActiveBlock] = useState<string | null>(null);
-  const [audioUnavailable, setAudioUnavailable] = useState(false);
 
   const applyConfig = (config: Config) => {
     setProvider(config.models.stt_provider || null);
@@ -320,23 +312,6 @@ export const ListenSection = ({
   const audioFile = live ? (status.audio_file ?? null) : viewing.audioFile;
   const audioEnded = live ? status.state === 'idle' : viewing.endedAt !== null;
 
-  // Playback belongs to the viewed document. Stop and clear it before a
-  // document switch, and again on unmount in case the child is still mounted.
-  useEffect(() => {
-    const audio = audioRef.current;
-    audio?.pause();
-    if (audio) audio.currentTime = 0;
-    setAudioReady(false);
-    setAudioDuration(0);
-    setAudioPlaying(false);
-    setActiveBlock(null);
-    setAudioUnavailable(false);
-    return () => {
-      audio?.pause();
-      if (audio) audio.currentTime = 0;
-    };
-  }, [audioEnded, audioFile, viewing?.id]);
-
   // Read the ids and audio path BEFORE `listenStop` — the command clears the session
   // snapshot; the card then stays open on the finished document.
   const stop = () => {
@@ -386,75 +361,15 @@ export const ListenSection = ({
     ? blocks.filter((block) => block.key === filterKey)
     : blocks;
 
-  const handleAudioTime = (seconds: number) => {
-    if (!Number.isFinite(seconds)) {
-      setActiveBlock(null);
-      return;
-    }
-    setActiveBlock(
-      audioRef.current?.ended
-        ? null
-        : activeBlockAt(blocks, startedAt, seconds),
-    );
-  };
-
-  const handleAudioSeek = (seconds: number) => {
-    setActiveBlock(activeBlockAt(blocks, startedAt, seconds));
-  };
-
-  const handleAudioReady = (duration: number) => {
-    const valid = Number.isFinite(duration) && duration > 0;
-    setAudioDuration(valid ? duration : 0);
-    setAudioReady(valid);
-    setAudioUnavailable(!valid);
-    if (!valid) setActiveBlock(null);
-  };
-
-  const handleAudioError = () => {
-    setAudioReady(false);
-    setAudioDuration(0);
-    setAudioPlaying(false);
-    setActiveBlock(null);
-    setAudioUnavailable(true);
-  };
-
-  const seekBlock = (block: TurnBlock) => {
-    const audio = audioRef.current;
-    if (!audio || startedAt == null) return;
-    const seconds = audioOffset(block, startedAt);
-    audio.currentTime = seconds;
-    setActiveBlock(activeBlockAt(blocks, startedAt, seconds));
-    void audio.play().catch(() => setActiveBlock(null));
-  };
-
-  const toggleAudio = () => {
-    const audio = audioRef.current;
-    if (!audio) return;
-    if (audio.paused) {
-      void audio.play().catch(() => setAudioPlaying(false));
-    } else {
-      audio.pause();
-    }
-  };
-
-  const skipAudio = (seconds: number) => {
-    const audio = audioRef.current;
-    if (!audio || audioDuration <= 0) return;
-    const next = Math.min(
-      Math.max(audio.currentTime + seconds, 0),
-      audioDuration,
-    );
-    audio.currentTime = next;
-    handleAudioSeek(next);
-  };
-
-  const canSeekAudio =
-    audioFile !== null &&
-    audioEnded &&
-    !audioUnavailable &&
-    audioReady &&
-    audioDuration > 0;
-  const canSaveAudio = Boolean(audioFile && audioEnded && audioReady);
+  // Ended-session audio — element, playback state, and the transcript
+  // block highlight all live in the hook; the header consumes it whole.
+  const player = useSessionPlayer({
+    file: audioFile,
+    ended: audioEnded,
+    resetKey: viewing?.id ?? null,
+    blocks,
+    startedAt,
+  });
 
   const copyAll = () => {
     void navigator.clipboard
@@ -501,7 +416,7 @@ export const ListenSection = ({
   };
 
   const saveAudio = () => {
-    if (!audioFile || !audioReady || !audioEnded) return;
+    if (!player.canSave || !audioFile) return;
     const sessionId = live ? status.session_id : viewing.id;
     if (sessionId == null) return;
     void saveAudioFile(
@@ -548,24 +463,15 @@ export const ListenSection = ({
         // The state pill and recording controls are live-only. Viewed docs
         // carry the ended-session audio controls in this header.
         hasSession={live && status.session_id != null}
-        audioReady={canSeekAudio}
-        audioPlaying={audioPlaying}
-        onAudioSkip={skipAudio}
-        onAudioToggle={toggleAudio}
+        audioReady={player.canSeek}
+        audioPlaying={player.playing}
+        onAudioSkip={player.skip}
+        onAudioToggle={player.toggle}
         onPause={() => void listenPause().catch(() => {})}
         onResume={() => void listenResume().catch(() => {})}
         onStop={stop}
+        player={<SessionPlayer player={player} />}
       />
-      {audioFile && audioEnded && !audioUnavailable && startedAt != null && (
-        <SessionPlayer
-          audioFile={audioFile}
-          audioRef={audioRef}
-          onTime={handleAudioTime}
-          onReady={handleAudioReady}
-          onError={handleAudioError}
-          onPlayingChange={setAudioPlaying}
-        />
-      )}
       {live && error && (
         <ErrorBanner
           message={error.message}
@@ -590,7 +496,7 @@ export const ListenSection = ({
         onCopyMarkdown={copyMarkdown}
         onSaveMarkdown={saveMarkdown}
         onSaveAudio={saveAudio}
-        canSaveAudio={canSaveAudio}
+        canSaveAudio={player.canSave}
       />
       <div className='relative min-h-0 flex-1'>
         <div
@@ -604,8 +510,8 @@ export const ListenSection = ({
             <TranscriptBlocks
               blocks={shown}
               startedAt={startedAt}
-              activeBlock={activeBlock}
-              onSeekBlock={canSeekAudio ? seekBlock : undefined}
+              activeBlock={player.activeBlock}
+              onSeekBlock={player.canSeek ? player.seekBlock : undefined}
               onRename={renameSpeaker}
             />
             {turns.length === 0 && !summary && (!error || !live) && (

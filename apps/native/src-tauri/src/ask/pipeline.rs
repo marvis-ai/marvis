@@ -4,6 +4,7 @@ use super::history::*;
 use super::screen::*;
 use super::stream::*;
 use super::title::*;
+use crate::session_lifecycle::{SessionHandoff, SessionLifecycle};
 
 /// The per-run fields `send_chain` consumes — resolved by `kick`
 /// (bundled the same way `ScreenInput` bundles the screen side):
@@ -48,10 +49,85 @@ pub(crate) struct ChainOpts<'a> {
     /// `[memory].enabled` resolved a usable dedicated provider in
     /// `kick`. Scheduled once, on success only.
     pub memory: Option<MemoryHook>,
+    /// The detached session compaction job — scheduled only after a
+    /// candidate answers successfully and a plan exists.
+    pub compact: Option<CompactHook>,
+    /// The production per-session handoff boundary captured synchronously by
+    /// `AskService::kick`. Direct pipeline tests may leave this `None`.
+    pub session_handoff: Option<SessionHandoff>,
+    /// Legacy direct-pipeline lifecycle fallback. Production transfers the
+    /// already-owned lease above; tests that exercise deletion can still let
+    /// `send_chain` acquire one here.
+    pub lifecycle: Option<Arc<SessionLifecycle>>,
     /// The detached title sidecar — spawned on success only, after the
     /// memory hook. `None` skips naming entirely (tests that don't
     /// exercise it).
     pub title: Option<TitleSidecar>,
+}
+
+/// Re-read compaction state after history/regenerate processing. The token
+/// captured before history is the source-incarnation snapshot; the digest and
+/// watermark come only from this post-history read so regenerate clearing is
+/// reflected in the live prompt and detached plan.
+pub(super) fn compaction_after_history(
+    db: &Db,
+    session_id: Option<i64>,
+    pre_history_token: Option<String>,
+    history_rows: &[crate::storage::Message],
+) -> (Option<String>, Option<CompactionPlan>) {
+    let (Some(sid), Some(pre_history_token)) = (session_id, pre_history_token) else {
+        return (None, None);
+    };
+    match db.session_compaction(sid) {
+        Ok(Some((post_history_token, digest, through)))
+            if post_history_token == pre_history_token =>
+        {
+            let plan = compaction_plan(
+                sid,
+                pre_history_token,
+                history_rows,
+                digest.clone(),
+                through,
+            );
+            (digest, plan)
+        }
+        Ok(Some(_)) => {
+            // The history snapshot belongs to a different incarnation. Do
+            // not expose the new row's digest or schedule old source rows.
+            (None, None)
+        }
+        Ok(None) => (None, None),
+        Err(error) => {
+            log::warn!("ask: post-history session compaction load failed: {error}");
+            (None, None)
+        }
+    }
+}
+
+fn session_token_matches(db: &Db, session_id: Option<i64>, expected_token: Option<&str>) -> bool {
+    let (Some(sid), Some(expected_token)) = (session_id, expected_token) else {
+        return session_id.is_none();
+    };
+    match db.session_compaction(sid) {
+        Ok(Some((actual_token, _, _))) => actual_token == expected_token,
+        Ok(None) => false,
+        Err(error) => {
+            log::warn!("ask: session incarnation revalidation failed: {error}");
+            false
+        }
+    }
+}
+
+fn incarnation_error(
+    emit: &(dyn Fn(&str, serde_json::Value) + Send + Sync),
+) -> LlmError {
+    let message = "The Ask session changed while the request was running";
+    emit(EV_ERROR, json!({"message": message}));
+    emit(EV_STATE, json!({"state": "idle"}));
+    LlmError::Http {
+        status: 0,
+        message: message.to_string(),
+    }
 }
 
 /// The testable core: persist → walk the failover chain → persist,
@@ -79,8 +155,9 @@ pub(crate) struct ChainOpts<'a> {
 /// 4. Every candidate failed → `ask:error{message}` (the LAST failure's
 ///    message — the most actionable one) + `ask:state{idle}`.
 ///
-/// Db failures are `log::warn`ed and ignored — a storage hiccup must
-/// never block the stream.
+/// Ordinary Db failures are `log::warn`ed and ignored — a storage hiccup must
+/// never block the stream. An incarnation mismatch is different: the run is
+/// retired before stale history or output can cross into a recreated id.
 ///
 /// Resolves to the full assistant text. Cancellation before an answer returns a
 /// `status:0`/`"cancelled"` [`LlmError::Http`] sentinel — the events, not
@@ -122,6 +199,9 @@ pub(crate) async fn send_chain(
         attachments,
         attachments_root,
         memory,
+        compact,
+        session_handoff,
+        lifecycle,
         title,
     } = opts;
     // Contract guard: a crafted invoke past the composer cap is an
@@ -160,6 +240,44 @@ pub(crate) async fn send_chain(
         }
         emit(name, payload);
     };
+    // Capture the session incarnation before history/regenerate work. In
+    // production `kick` transfers an already-owned lease and immutable token;
+    // this is what makes a queued Ask retain the original boundary even when
+    // its pipeline task is delayed. Direct pipeline tests can use the legacy
+    // lifecycle fallback below.
+    let (pre_history_token, _session_lease) = match session_id {
+        Some(sid) => match session_handoff {
+            Some(handoff) if handoff.session_id == sid => {
+                (Some(handoff.session_token), Some(handoff.lease))
+            }
+            Some(handoff) => {
+                drop(handoff);
+                return Err(incarnation_error(emit));
+            }
+            None => {
+                let lease = match lifecycle.as_ref() {
+                    Some(lifecycle) => match lifecycle.acquire(sid) {
+                        Some(lease) => Some(lease),
+                        None => return Err(incarnation_error(emit)),
+                    },
+                    None => None,
+                };
+                let token = match db.session_compaction(sid) {
+                    Ok(Some((token, _, _))) => Some(token),
+                    Ok(None) => return Err(incarnation_error(emit)),
+                    Err(error) => {
+                        log::warn!("ask: session compaction incarnation load failed: {error}");
+                        return Err(incarnation_error(emit));
+                    }
+                };
+                (token, lease)
+            }
+        },
+        None => {
+            drop(session_handoff);
+            (None, None)
+        }
+    };
     // Order matters: history is read BEFORE the new user row persists —
     // the new turn is appended separately so it can carry the frame. A
     // regenerate skips the write: its question is the session's last
@@ -167,13 +285,31 @@ pub(crate) async fn send_chain(
     // happen, `retry` resolved the question from that row — degrades
     // to a normal send).
     let (history_rows, re_asked, regen_row_id, regen_atts) = if regenerate {
-        match regenerate_tail_rows(db, session_id) {
+        match regenerate_tail_rows(db, session_id, pre_history_token.as_deref()) {
             Some((rows, mid, atts)) => (rows, true, Some(mid), atts),
             None => (message_rows(db, session_id), false, None, Vec::new()),
         }
     } else {
         (message_rows(db, session_id), false, None, Vec::new())
     };
+    // Read the digest after history/regenerate processing. The helper keeps
+    // this post-history state authoritative for prompt injection while only
+    // planning when its token still matches the pre-history snapshot.
+    let (compaction, compact_plan) = compaction_after_history(
+        db,
+        session_id,
+        pre_history_token.clone(),
+        &history_rows,
+    );
+    // The digest check alone is not enough: the rows themselves came from the
+    // earlier snapshot. Retire the run before converting or sending them when
+    // the session was deleted/recreated during history work.
+    if !session_token_matches(db, session_id, pre_history_token.as_deref()) {
+        return Err(incarnation_error(emit));
+    }
+    // Keep the raw post-history digest in `compaction` for prompt bounding;
+    // the detached plan retains its own raw CAS snapshot.
+    let compact_prompt = bounded_compaction(compaction.as_deref());
     // Prior history degrades unreadable images to markers. Current-turn
     // attachments are loaded strictly after the fresh screenshot is resolved.
     let history = {
@@ -214,8 +350,17 @@ pub(crate) async fn send_chain(
     let message_id = if re_asked {
         regen_row_id
     } else {
-        persist_user_message(db, session_id, text, preset_id)
+        persist_user_message(
+            db,
+            session_id,
+            pre_history_token.as_deref(),
+            text,
+            preset_id,
+        )
     };
+    if !session_token_matches(db, session_id, pre_history_token.as_deref()) {
+        return Err(incarnation_error(emit));
+    }
     if !re_asked && !pending.is_empty() {
         // Attachments need the user row to link to — a storage
         // hiccup that ate the row is a hard failure for an
@@ -226,16 +371,31 @@ pub(crate) async fn send_chain(
                 "Attachments couldn't be saved — the message wasn't recorded".into(),
             ));
         };
-        match persist_attachments(db, &attachments_root, mid, pending).await {
+        match persist_attachments(
+            db,
+            &attachments_root,
+            session_id,
+            pre_history_token.as_deref(),
+            mid,
+            pending,
+        )
+        .await
+        {
             Ok((images, meta)) => {
                 user_images = images;
                 run_attachments = meta;
             }
             Err(message) => {
                 // The row claims images it never got — remove it so
-                // history never silently loses the attachments.
-                if let Err(e) = db.message_delete(mid) {
-                    log::warn!("ask: attachment-failure row cleanup failed: {e}");
+                // history never silently loses the attachments. The cleanup
+                // is incarnation-bound too; a recreated id is untouchable.
+                if let (Some(sid), Some(token)) =
+                    (session_id, pre_history_token.as_deref())
+                {
+                    match db.message_delete_for_session(sid, token, &[mid]) {
+                        Ok(Some(_)) | Ok(None) => {}
+                        Err(e) => log::warn!("ask: attachment-failure row cleanup failed: {e}"),
+                    }
                 }
                 return Err(attachment_error(emit, message));
             }
@@ -303,6 +463,8 @@ pub(crate) async fn send_chain(
                 match persist_attachments(
                     db,
                     &attachments_root,
+                    session_id,
+                    pre_history_token.as_deref(),
                     mid,
                     vec![PendingImage {
                         name: "screenshot.jpg".into(),
@@ -323,6 +485,12 @@ pub(crate) async fn send_chain(
             }
             None => user_images.push(jpeg),
         }
+    }
+    // Revalidate after all current-turn persistence and immediately before the
+    // provider path. This closes the history-capture → provider window; the
+    // assistant write below has the same token guard for a later deletion.
+    if !session_token_matches(db, session_id, pre_history_token.as_deref()) {
+        return Err(incarnation_error(emit));
     }
     // `loading` announces the run's full attachment list — composer
     // picks plus any just-persisted screenshot.
@@ -350,6 +518,11 @@ pub(crate) async fn send_chain(
             retry["attempt"] = json!(i);
             emit(EV_STATE, retry);
         }
+        // Check once per candidate so a delete/recreate between failover
+        // attempts cannot send the old snapshot to the next provider.
+        if !session_token_matches(db, session_id, pre_history_token.as_deref()) {
+            return Err(incarnation_error(emit));
+        }
         match stream_candidate(
             &*cand.provider,
             emit,
@@ -365,22 +538,31 @@ pub(crate) async fn send_chain(
             language,
             instruction,
             memory_profile.as_deref(),
+            compact_prompt.as_deref(),
         )
         .await
         {
             CandidateOutcome::Done(reply) => {
+                // The provider may have completed after deletion/recreation.
+                // Do not emit or persist its answer as the new incarnation.
+                if !session_token_matches(db, session_id, pre_history_token.as_deref()) {
+                    return Err(incarnation_error(emit));
+                }
                 if let Some(u) = reply.usage {
                     usage.add(&u);
                 }
                 let usage = (!usage.is_empty()).then_some(usage);
-                persist_assistant_message(
+                if !persist_assistant_message(
                     db,
                     session_id,
+                    pre_history_token.as_deref(),
                     &reply.full,
                     &cand.id,
                     &cand.model,
                     usage,
-                );
+                ) {
+                    return Err(incarnation_error(emit));
+                }
                 emit(
                     EV_DONE,
                     json!({
@@ -408,8 +590,12 @@ pub(crate) async fn send_chain(
                     sidecar.schedule(
                         Arc::clone(&cand.provider),
                         session_id,
+                        pre_history_token.clone(),
                         text.to_string(),
                     );
+                }
+                if let (Some(hook), Some(plan)) = (compact, compact_plan) {
+                    hook.maybe_schedule(Arc::clone(&cand.provider), plan);
                 }
                 return Ok(reply.full);
             }

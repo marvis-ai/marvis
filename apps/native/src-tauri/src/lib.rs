@@ -55,6 +55,7 @@ mod permissions;
 mod presets;
 mod prompts;
 mod screen_read;
+mod session_lifecycle;
 mod sherpa_models;
 mod storage;
 pub mod stt;
@@ -86,6 +87,7 @@ use hotkey::RegisteredHotkeys;
 use keystore::Keystore;
 use listen::{ListenEvent, ListenService};
 use llm::{make_provider, ProviderKind};
+use session_lifecycle::SessionLifecycle;
 use storage::{Db, Memory, Message, Session, Summary, Transcript};
 use windows::WindowPool;
 
@@ -124,8 +126,8 @@ impl Gate {
 
 /// Everything commands, hotkey dispatch, and deep links touch. Field
 /// types follow the consumers: `Deps` borrows `&Mutex<…>` (so `keystore`,
-/// `config`, `pool` are plain `Mutex`es) while `db`/`ring`/`ask` are
-/// `Arc`s shared with spawned tasks and the capture callback.
+/// `config`, `pool` are plain `Mutex`es) while `db`/`ring`/`ask`/`lifecycle`
+/// are `Arc`s shared with spawned tasks and the capture callback.
 pub struct AppState {
     keystore: Mutex<Keystore>,
     /// `Arc`d like `db`/`ring`: the scheduled memory extraction
@@ -134,6 +136,9 @@ pub struct AppState {
     /// streams or the extraction queues on the service gate.
     config: Arc<Mutex<Config>>,
     db: Arc<Db>,
+    /// Shared per-session handoff boundary — Ask/compaction leases are
+    /// coordinated with the production session deletion command.
+    lifecycle: Arc<SessionLifecycle>,
     ring: Arc<Mutex<RingBuffer>>,
     capture: Mutex<Option<PlatformCapture>>,
     /// The settled-screen describer — fed by the capture callback and
@@ -150,6 +155,9 @@ pub struct AppState {
     /// Serialized memory extraction (`[memory]`-gated) — shared with
     /// every ask send's `MemoryHook` schedule. Owned like `ask`/`listen`.
     memory: Arc<memory::MemoryService>,
+    /// Serialized session compaction — shared with every ask send's
+    /// detached `CompactHook` schedule.
+    compact: Arc<ask::CompactService>,
     listen: Arc<ListenService>,
     dictation: Arc<DictationService>,
     /// Whisper CLI staged beside the executable by `externalBin`.
@@ -193,16 +201,18 @@ pub struct AppState {
 
 impl AppState {
     /// The ask pipeline's borrow bundle: `db`/`ring`/`reader`/`memory`/
-    /// `config` clone their `Arc`s (the spawned stream outlives the
+    /// `lifecycle`/`config` clone their `Arc`s (the spawned stream outlives the
     /// call), the rest are short-lived `&Mutex` borrows used only in
     /// pre-flight. `capture_running` snapshots the capture slot so
     /// `resolve_screen` knows whether ring frames are fresh.
     fn deps(&self) -> ask::Deps<'_> {
         ask::Deps {
             db: Arc::clone(&self.db),
+            lifecycle: Arc::clone(&self.lifecycle),
             ring: Arc::clone(&self.ring),
             reader: Arc::clone(&self.screen_reader),
             memory: Arc::clone(&self.memory),
+            compact: Arc::clone(&self.compact),
             config: Arc::clone(&self.config),
             capture_running: self
                 .capture
@@ -256,6 +266,7 @@ impl AppState {
                 Config::load_from(root.join("config.toml")).unwrap_or_default(),
             )),
             db: Arc::new(Db::at(root.join("marvis.db")).expect("test db")),
+            lifecycle: SessionLifecycle::new(),
             ring: Arc::new(Mutex::new(RingBuffer::new(RING_MAX_FRAMES, RING_MAX_BYTES))),
             capture: Mutex::new(None),
             screen_reader: Arc::new(screen_read::ScreenReader::new()),
@@ -263,6 +274,7 @@ impl AppState {
             capture_restart: Mutex::new(None),
             ask: Arc::new(AskService::new()),
             memory: memory::MemoryService::new(),
+            compact: ask::CompactService::new(),
             listen: Arc::new(ListenService::new()),
             dictation: Arc::new(DictationService::new()),
             bundled_whisper: None,
@@ -962,6 +974,7 @@ pub fn run() {
                 keystore: Mutex::new(keystore),
                 config: Arc::new(Mutex::new(cfg)),
                 db: Arc::new(db),
+                lifecycle: SessionLifecycle::new(),
                 ring: Arc::new(Mutex::new(RingBuffer::new(RING_MAX_FRAMES, RING_MAX_BYTES))),
                 capture: Mutex::new(None),
                 screen_reader: Arc::new(screen_read::ScreenReader::new()),
@@ -969,6 +982,7 @@ pub fn run() {
                 capture_restart: Mutex::new(None),
                 ask: Arc::new(AskService::new()),
                 memory: memory::MemoryService::new(),
+                compact: ask::CompactService::new(),
                 listen: Arc::new(ListenService::new()),
                 dictation: Arc::new(DictationService::new()),
                 bundled_whisper,
@@ -1213,9 +1227,10 @@ mod tests {
 
     /// The composer's stop button plus the packet identity that keeps a
     /// stream out of the wrong conversation: `ask_stop` cancels ONE
-    /// session's run through `AskService::stop` while session
-    /// boundaries deliberately DON'T — a detached run keeps writing to
-    /// its own session. The emit fold `run`-tags every `ask:*` packet
+    /// session's run through `AskService::stop`. Deletion also cancels
+    /// its run; ending/resuming sessions only detaches the view, so a
+    /// detached run keeps writing to its own session. The emit fold
+    /// `run`-tags every `ask:*` packet
     /// (in-flight deliveries of a killed run drop) and `send_chain`
     /// `session_id`-tags them (a detached run's packets drop on any
     /// view that isn't showing that session). `ask_runs` is the
@@ -1230,7 +1245,12 @@ mod tests {
         assert!(commands.contains("state.ask.stop(&app, session_id)"));
         assert!(commands.contains("pub(crate) fn ask_runs("));
         let sessions = include_str!("commands/sessions.rs");
-        assert!(!sessions.contains("state.ask.stop"));
+        assert!(sessions.contains("state.ask.stop(&app, id)"));
+        let view_boundaries = sessions
+            .split("pub(crate) fn session_end_active")
+            .nth(1)
+            .unwrap();
+        assert!(!view_boundaries.contains("state.ask.stop"));
         let ask = include_str!("ask/mod.rs");
         assert!(ask.contains("pub fn stop(&self, app: &AppHandle, session_id: i64)"));
         assert!(ask.contains("payload[\"run\"]"));

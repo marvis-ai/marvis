@@ -15,6 +15,10 @@ pub struct Session {
     /// (`"whisper large-v3"`-shaped) — listen only; NULL on ask rows
     /// and sessions written before the column existed.
     pub stt: Option<String>,
+    #[serde(skip_serializing)]
+    pub compact: Option<String>,
+    #[serde(skip_serializing)]
+    pub compact_through: Option<i64>,
     pub started_at: i64,
     pub ended_at: Option<i64>,
     pub last_active_at: i64,

@@ -110,6 +110,7 @@ pub(super) async fn stream_candidate(
     language: &str,
     instruction: Option<&str>,
     profile: Option<&str>,
+    compaction: Option<&str>,
 ) -> CandidateOutcome {
     let mut streaming = false;
     let mut msgs = build_messages(
@@ -123,6 +124,7 @@ pub(super) async fn stream_candidate(
         language,
         instruction,
         profile,
+        compaction,
     );
     let mut retried = false;
     loop {
@@ -155,6 +157,7 @@ pub(super) async fn stream_candidate(
                                     language,
                                     instruction,
                                     profile,
+                                    compaction,
                                 );
                                 continue;
                             }
@@ -178,6 +181,7 @@ pub(super) async fn stream_candidate(
                             language,
                             instruction,
                             profile,
+                            compaction,
                         );
                         continue;
                     }
@@ -245,9 +249,9 @@ pub(super) async fn stream_once(
 /// vision reader's `<attached_images>` text — and no image parts, so a
 /// text-only model sees the images' content without their bytes.
 /// The system message is
-/// `live_system_prompt_with_profile(language, instruction, profile)` —
-/// the armed `instruct` preset's text after the language directive and
-/// the memory profile block appended last as untrusted data.
+/// `live_system_prompt_with_profile(language, instruction, profile, compaction)` —
+/// the armed `instruct` preset's text after the language directive, followed
+/// by the memory profile and session digest as untrusted data.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn build_messages(
     history: &[ChatMessage],
@@ -260,11 +264,12 @@ pub(super) fn build_messages(
     language: &str,
     instruction: Option<&str>,
     profile: Option<&str>,
+    compaction: Option<&str>,
 ) -> Vec<ChatMessage> {
     let mut msgs = Vec::with_capacity(history.len() + 2);
     msgs.push(ChatMessage::text(
         Role::System,
-        live_system_prompt_with_profile(language, instruction, profile),
+        live_system_prompt_with_profile(language, instruction, profile, compaction),
     ));
     msgs.extend(history.iter().cloned());
     let request = live_user_prompt(text, listen_history, screen, attached);

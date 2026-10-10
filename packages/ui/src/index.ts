@@ -66,6 +66,7 @@ export {
   RewindIcon,
   RotateCcwClockIcon,
   RotateCcwIcon,
+  RotateCwIcon,
   SettingsIcon,
   ShareIcon,
   ShieldIcon,

@@ -64,7 +64,7 @@ broader corpus-recall and screen-memory work remains exploratory.
 
 | Item | Status | Notes |
 | --- | --- | --- |
-| Basic identity/preferences memory | in progress | Mem0-style fact extraction informed by Supermemory's user-profile model; new Ask messages only; dedicated Memory LLM config; editable/deletable facts in Preferences; no backfill, vectors, transcripts, or OCR |
+| Basic identity/preferences memory | in progress | Mem0-style fact extraction informed by Supermemory's user-profile model; new Ask messages only; dedicated Memory LLM config; editable/deletable facts in Preferences; no backfill, vectors, transcripts, or OCR. Session-local Ask compaction now preserves a rolling digest of dropped conversation rows; it is separate from durable profile facts and semantic recall. |
 | Embedding index over sessions, messages, transcripts, summaries | exploring | Future semantic layer; sqlite-vec or a bundled model can index the existing SQLite corpus after the profile slice |
 | Recall in Ask — "what did we decide last week?" | exploring | Future corpus retrieval beside `screen_context`; distinct from the initial always-injected user profile |
 | Memory browser in the history UI | exploring | Future search + browse across meetings and chats; profile management starts in Preferences |

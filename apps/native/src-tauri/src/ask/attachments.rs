@@ -74,9 +74,14 @@ pub(super) fn write_attachment_files(root: &Path, jpegs: &[Vec<u8>]) -> std::io:
 pub(super) async fn persist_attachments(
     db: &Db,
     root: &Path,
+    session_id: Option<i64>,
+    session_token: Option<&str>,
     message_id: i64,
     pending: Vec<PendingImage>,
 ) -> Result<(Vec<Vec<u8>>, Vec<MessageAttachment>), String> {
+    let (Some(session_id), Some(session_token)) = (session_id, session_token) else {
+        return Err("The session changed before its attachments could be saved".into());
+    };
     let names: Vec<String> = pending.iter().map(|p| p.name.clone()).collect();
     let jpegs: Vec<Vec<u8>> = pending.into_iter().map(|p| p.jpeg).collect();
     let user_images = jpegs.clone();
@@ -107,8 +112,14 @@ pub(super) async fn persist_attachments(
             position: offset + i as i64,
         })
         .collect();
-    match db.attachments_add(message_id, &rows) {
-        Ok(meta) => Ok((user_images, meta)),
+    match db.attachments_add_if_session_token(session_id, session_token, message_id, &rows) {
+        Ok(Some(meta)) => Ok((user_images, meta)),
+        Ok(None) => {
+            for path in &paths {
+                let _ = std::fs::remove_file(path);
+            }
+            Err("The session changed before its attachments could be saved".into())
+        }
         Err(e) => {
             for path in &paths {
                 let _ = std::fs::remove_file(path);

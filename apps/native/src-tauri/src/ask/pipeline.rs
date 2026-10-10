@@ -365,6 +365,7 @@ pub(crate) async fn send_chain(
             language,
             instruction,
             memory_profile.as_deref(),
+            None,
         )
         .await
         {

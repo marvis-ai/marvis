@@ -283,6 +283,7 @@ use super::title::*;
             "en",
             None,
             None,
+            None,
         );
         let system = match &messages[0].content[0] {
             ContentPart::Text(text) => text,
@@ -316,6 +317,7 @@ use super::title::*;
             "en",
             None,
             None,
+            None,
         );
         let parts = &messages[1].content;
         assert!(matches!(&parts[0], ContentPart::Text(t) if t.contains("what are these?")));
@@ -330,7 +332,7 @@ use super::title::*;
     #[test]
     fn build_messages_without_images_keeps_single_text_part() {
         let messages =
-            build_messages(&[], "", "q", &[], None, None, None, "en", None, None);
+            build_messages(&[], "", "q", &[], None, None, None, "en", None, None, None);
         assert_eq!(messages[1].content.len(), 1);
         assert_request_text(&messages[1], "q");
     }
@@ -350,11 +352,36 @@ use super::title::*;
             "en",
             None,
             Some("<user_profile>\n- preference/response_style: concise\n</user_profile>"),
+            None,
         );
         let system = text_of(&messages[0]);
         let request = text_of(&messages[1]);
         assert!(system.contains("<user_profile>"));
         assert!(system.contains("concise"));
+        assert_eq!(request, "What should I do?");
+    }
+
+    #[test]
+    fn build_messages_puts_compaction_in_system_and_keeps_request_in_user_message() {
+        let digest = "The current task is migrating the schema.";
+        let messages = build_messages(
+            &[],
+            "",
+            "What should I do?",
+            &[],
+            None,
+            None,
+            None,
+            "en",
+            None,
+            Some("<user_profile>\n- preference/response_style: concise\n</user_profile>"),
+            Some(digest),
+        );
+        let system = text_of(&messages[0]);
+        let request = text_of(&messages[1]);
+        assert!(system.contains("<conversation_so_far>"));
+        assert!(system.contains(digest));
+        assert!(!request.contains(digest));
         assert_eq!(request, "What should I do?");
     }
 

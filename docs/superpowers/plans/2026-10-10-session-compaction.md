@@ -641,7 +641,7 @@ let provider = MockProvider::new(vec![
 let calls = provider.calls();
 let db = Arc::new(Db::at(dir.join("marvis.db")).unwrap());
 let sid = db.session_get_or_create_active("ask").unwrap();
-for i in 0..30 {
+for i in 0..40 {
     db.message_add(sid, if i % 2 == 0 { "user" } else { "assistant" }, &format!("turn {i}"))
         .unwrap();
 }
@@ -669,7 +669,7 @@ send_chain(
 // Poll until the detached second call lands and the DB reflects it.
 ```
 
-Assert that the persisted result has `compact_through = Some(10)` and
+Assert that the persisted result has `compact_through = Some(20)` and
 `compact = Some("updated digest")`; do not assert synchronously immediately
 after `send_chain` returns because scheduling is intentionally detached.
 

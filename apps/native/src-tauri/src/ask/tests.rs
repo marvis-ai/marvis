@@ -1,3 +1,4 @@
+use super::compact::*;
 use super::stream::*;
 use super::title::*;
     use super::*;
@@ -135,6 +136,141 @@ use super::title::*;
     }
 
     #[test]
+    fn compaction_plan_waits_until_ten_rows_are_outside_history_tail() {
+        let rows = test_messages(29); // 9 dropped after HISTORY_TAIL = 20
+        assert!(compaction_plan(7, &rows, None, None).is_none());
+
+        let rows = test_messages(30); // 10 dropped
+        let plan = compaction_plan(7, &rows, None, None).unwrap();
+        assert_eq!(plan.session_id, 7);
+        assert_eq!(plan.expected_through, None);
+        assert_eq!(plan.new_through, 10);
+        assert_eq!(plan.source_rows.len(), 10);
+    }
+
+    #[test]
+    fn compaction_plan_only_sends_rows_after_the_stored_watermark() {
+        let rows = test_messages(40);
+        let plan = compaction_plan(
+            7,
+            &rows,
+            Some("old digest".to_string()),
+            Some(10),
+        )
+        .unwrap();
+        assert_eq!(plan.previous.as_deref(), Some("old digest"));
+        assert_eq!(plan.expected_through, Some(10));
+        assert_eq!(plan.new_through, 20);
+        assert_eq!(plan.source_rows.first().unwrap().id, 11);
+        assert_eq!(plan.source_rows.last().unwrap().id, 20);
+    }
+
+    #[test]
+    fn compaction_rendering_uses_bounded_rows_and_summary_blocks() {
+        let mut row = test_messages(1).pop().unwrap();
+        row.content = "界".repeat(MAX_COMPACT_ROW_CHARS + 1);
+        row.attachments = vec![test_attachment("design.png")];
+
+        let messages = compaction_messages(Some("previous digest"), &[row.clone()]);
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].role, Role::System);
+        assert_eq!(messages[1].role, Role::User);
+        let user = text_of(&messages[1]);
+        assert!(user.contains("<previous_summary>\nprevious digest\n</previous_summary>"));
+        assert!(user.contains("<new_messages>\nuser: "));
+        assert!(user.contains("[attached image: design.png]"));
+        assert!(!user.contains("/private/secret/attachment.jpg"));
+        assert!(user.contains(&"界".repeat(MAX_COMPACT_ROW_CHARS)));
+        assert!(!user.contains(&"界".repeat(MAX_COMPACT_ROW_CHARS + 1)));
+
+        let blank = compaction_messages(Some(" \n\t"), &[row]);
+        assert!(!text_of(&blank[1]).contains("<previous_summary>"));
+    }
+
+    #[test]
+    fn compaction_rendering_stops_at_the_utf8_input_bound() {
+        let mut first = test_messages(1).pop().unwrap();
+        first.content = "x".repeat(MAX_COMPACT_ROW_CHARS);
+        first.attachments = vec![test_attachment(&"a".repeat(MAX_COMPACT_INPUT_BYTES))];
+        let second = test_messages(2).pop().unwrap();
+
+        let rendered = render_compaction_rows(&[first, second]);
+        assert_eq!(rendered.len(), MAX_COMPACT_INPUT_BYTES);
+        assert!(rendered.starts_with("user: "));
+        assert!(!rendered.contains("message 2"));
+        assert!(std::str::from_utf8(rendered.as_bytes()).is_ok());
+    }
+
+    #[test]
+    fn compaction_reply_is_nonempty_and_bounded_by_unicode_chars() {
+        assert!(normalize_compaction_reply("  \n\t").is_err());
+        let reply = normalize_compaction_reply(&format!("  {}  ", "界".repeat(MAX_COMPACT_CHARS + 1)))
+            .unwrap();
+        assert_eq!(reply.chars().count(), MAX_COMPACT_CHARS);
+        assert!(reply.chars().all(|c| c == '界'));
+    }
+
+    #[tokio::test]
+    async fn compaction_service_persists_replies_and_skips_stale_plans() {
+        let dir = tmp_dir();
+        let db = Arc::new(Db::at(dir.join("marvis.db")).unwrap());
+        let sid = db.session_get_or_create_active("ask").unwrap();
+        let rows = test_messages(30);
+        let plan = compaction_plan(sid, &rows, None, None).unwrap();
+        let provider = MockProvider::new(vec![Behavior::Tokens(vec![" digest ".into()])]);
+        let calls = provider.calls();
+
+        CompactHook::new(Arc::clone(&db), CompactService::new())
+            .maybe_schedule(Arc::new(provider), plan);
+
+        for _ in 0..100 {
+            if db.session_compaction(sid).unwrap().0.is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(
+            db.session_compaction(sid).unwrap(),
+            (Some("digest".into()), Some(10))
+        );
+        assert_eq!(calls.lock().len(), 1);
+
+        let stale = compaction_plan(sid, &rows, None, None).unwrap();
+        let stale_provider = MockProvider::new(vec![Behavior::Tokens(vec!["wrong".into()])]);
+        let stale_calls = stale_provider.calls();
+        CompactHook::new(Arc::clone(&db), CompactService::new())
+            .maybe_schedule(Arc::new(stale_provider), stale);
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        assert_eq!(stale_calls.lock().len(), 0);
+        assert_eq!(db.session_compaction(sid).unwrap().0.as_deref(), Some("digest"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn compaction_service_failure_is_detached_and_warning_only() {
+        let dir = tmp_dir();
+        let db = Arc::new(Db::at(dir.join("marvis.db")).unwrap());
+        let sid = db.session_get_or_create_active("ask").unwrap();
+        let plan = compaction_plan(sid, &test_messages(30), None, None).unwrap();
+        let provider = MockProvider::new(vec![Behavior::Fail(LlmError::Auth)]);
+        let calls = provider.calls();
+
+        CompactHook::new(Arc::clone(&db), CompactService::new())
+            .maybe_schedule(Arc::new(provider), plan);
+        for _ in 0..100 {
+            if !calls.lock().is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(calls.lock().len(), 1);
+        assert_eq!(db.session_compaction(sid).unwrap(), (None, None));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn build_messages_keeps_listen_transcript_out_of_system_prompt() {
         let messages = build_messages(
             &[],
@@ -268,6 +404,36 @@ use super::title::*;
     fn ask_messages(db: &Db) -> Vec<crate::storage::Message> {
         let sid = db.session_get_or_create_active("ask").unwrap();
         db.messages_for(sid).unwrap()
+    }
+
+    fn test_messages(count: usize) -> Vec<Message> {
+        (1..=count as i64)
+            .map(|id| Message {
+                id,
+                session_id: 7,
+                role: if id % 2 == 0 { "assistant" } else { "user" }.into(),
+                content: format!("message {id}"),
+                attachments: Vec::new(),
+                provider: None,
+                model: None,
+                tokens_in: None,
+                tokens_out: None,
+                preset: None,
+                ts: id,
+            })
+            .collect()
+    }
+
+    fn test_attachment(name: &str) -> MessageAttachment {
+        MessageAttachment {
+            id: 1,
+            message_id: 1,
+            name: name.into(),
+            path: "/private/secret/attachment.jpg".into(),
+            mime: "image/jpeg".into(),
+            bytes: 12,
+            position: 0,
+        }
     }
 
     fn has_image(msg: &ChatMessage) -> bool {

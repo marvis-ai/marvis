@@ -80,12 +80,15 @@
 //! immediately instead of blocking on an LLM stream.
 
 mod attachments;
+mod compact;
 mod history;
 mod pipeline;
 mod screen;
 mod stream;
 mod title;
 
+pub(crate) use self::compact::CompactService;
+use self::compact::{compaction_plan, CompactHook, CompactionPlan};
 use self::{pipeline::*, screen::*, title::TitleSidecar};
 
 #[cfg(test)]
@@ -109,7 +112,7 @@ use crate::llm::{ChatMessage, ContentPart, LlmError, Provider, Role, StreamReply
 use crate::memory::{MemoryHook, MemoryService};
 use crate::prompts::{live_system_prompt_with_profile, live_user_prompt};
 use crate::screen_read;
-use crate::storage::{Db, MessageAttachment, MessageMeta, NewAttachment, Transcript};
+use crate::storage::{Db, Message, MessageAttachment, MessageMeta, NewAttachment, Transcript};
 use crate::windows::{WindowPool, BAR_LABEL};
 use crate::ProviderCandidate;
 
@@ -140,6 +143,12 @@ const TITLE_TIMEOUT: Duration = Duration::from_secs(30);
 /// Context window: only the trailing N persisted `messages` ride
 /// along with each ask (spec: last 20, text-only).
 const HISTORY_TAIL: usize = 20;
+
+const COMPACT_BATCH: usize = 10;
+const MAX_COMPACT_CHARS: usize = 2_000;
+const MAX_COMPACT_ROW_CHARS: usize = 1_000;
+const MAX_COMPACT_INPUT_BYTES: usize = 32_000;
+const COMPACT_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Composer images per send — matches the webview cap in
 /// `image-attachments.ts`; a crafted invoke beyond it is rejected

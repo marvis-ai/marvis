@@ -20,14 +20,14 @@ use objc2_core_audio::{
     kAudioAggregateDeviceIsPrivateKey, kAudioAggregateDeviceIsStackedKey,
     kAudioAggregateDeviceNameKey, kAudioAggregateDeviceTapAutoStartKey,
     kAudioAggregateDeviceTapListKey, kAudioAggregateDeviceUIDKey,
-    kAudioDevicePropertyNominalSampleRate, kAudioHardwarePropertyTranslatePIDToProcessObject,
-    kAudioObjectPropertyElementMain, kAudioObjectPropertyScopeGlobal, kAudioObjectSystemObject,
-    kAudioObjectUnknown, kAudioSubTapDriftCompensationKey, kAudioSubTapUIDKey,
-    kAudioTapPropertyFormat, AudioDeviceCreateIOProcID, AudioDeviceDestroyIOProcID,
-    AudioDeviceIOProcID, AudioDeviceStart, AudioDeviceStop, AudioHardwareCreateAggregateDevice,
-    AudioHardwareCreateProcessTap, AudioHardwareDestroyAggregateDevice,
-    AudioHardwareDestroyProcessTap, AudioObjectGetPropertyData, AudioObjectID,
-    AudioObjectPropertyAddress, CATapDescription, CATapMuteBehavior,
+    kAudioHardwarePropertyTranslatePIDToProcessObject, kAudioObjectPropertyElementMain,
+    kAudioObjectPropertyScopeGlobal, kAudioObjectSystemObject, kAudioObjectUnknown,
+    kAudioSubTapDriftCompensationKey, kAudioSubTapUIDKey, kAudioTapPropertyFormat,
+    AudioDeviceCreateIOProcID, AudioDeviceDestroyIOProcID, AudioDeviceIOProcID, AudioDeviceStart,
+    AudioDeviceStop, AudioHardwareCreateAggregateDevice, AudioHardwareCreateProcessTap,
+    AudioHardwareDestroyAggregateDevice, AudioHardwareDestroyProcessTap,
+    AudioObjectGetPropertyData, AudioObjectID, AudioObjectPropertyAddress, CATapDescription,
+    CATapMuteBehavior,
 };
 use objc2_core_audio_types::{
     kAudioFormatFlagIsFloat, kAudioFormatFlagIsNonInterleaved, kAudioFormatLinearPCM,
@@ -99,7 +99,9 @@ impl TapCapture {
     }
 
     fn create(&mut self, tx: SyncSender<RawChunk>) -> Result<()> {
-        let exclusions: Vec<Retained<NSNumber>> = own_process_object()
+        let process_object = own_process_object()
+            .ok_or_else(|| anyhow::anyhow!("could not resolve own CoreAudio process object"))?;
+        let exclusions: Vec<Retained<NSNumber>> = [process_object]
             .iter()
             .map(|&id| NSNumber::new_u32(id))
             .collect();
@@ -171,15 +173,7 @@ impl TapCapture {
         self.device_id = device_id;
 
         let (sample_rate, channels, bits, is_float, non_interleaved) = tap_format(tap_id)
-            .unwrap_or((
-                device_rate(device_id)
-                    .map(|rate| rate.round() as u32)
-                    .unwrap_or(48_000),
-                2,
-                32,
-                true,
-                true,
-            ));
+            .ok_or_else(|| anyhow::anyhow!("process tap format is unreadable or non-PCM"))?;
         let client = Box::into_raw(Box::new(TapClientData {
             tx,
             warned: AtomicBool::new(false),
@@ -326,9 +320,8 @@ fn own_process_object() -> Option<AudioObjectID> {
 }
 
 /// The tap's `kAudioTapPropertyFormat` ASBD, decoded into the tuple
-/// `io_proc` needs. `None` means unreadable or non-PCM — the caller then
-/// falls back to the device's nominal rate plus the documented default
-/// (float32 non-interleaved stereo).
+/// `io_proc` needs. `None` means unreadable or non-PCM — startup fails
+/// so the caller can fall back to ScreenCaptureKit.
 fn tap_format(tap_id: AudioObjectID) -> Option<TapFormat> {
     let mut address = AudioObjectPropertyAddress {
         mSelector: kAudioTapPropertyFormat,
@@ -358,27 +351,6 @@ fn tap_format(tap_id: AudioObjectID) -> Option<TapFormat> {
         asbd.mFormatFlags & kAudioFormatFlagIsFloat != 0,
         asbd.mFormatFlags & kAudioFormatFlagIsNonInterleaved != 0,
     ))
-}
-
-fn device_rate(device_id: AudioObjectID) -> Option<f64> {
-    let mut address = AudioObjectPropertyAddress {
-        mSelector: kAudioDevicePropertyNominalSampleRate,
-        mScope: kAudioObjectPropertyScopeGlobal,
-        mElement: kAudioObjectPropertyElementMain,
-    };
-    let mut rate = 0.0f64;
-    let mut size = std::mem::size_of::<f64>() as u32;
-    let status = unsafe {
-        AudioObjectGetPropertyData(
-            device_id,
-            NonNull::from(&mut address),
-            0,
-            std::ptr::null(),
-            NonNull::from(&mut size),
-            NonNull::from(&mut rate).cast(),
-        )
-    };
-    (status == 0 && rate > 0.0).then_some(rate)
 }
 
 fn process_tap_supported() -> bool {

@@ -36,13 +36,13 @@ const COMPARISONS: ComparisonRow[] = [
   {
     dimension: 'Account & Identity',
     marvis: '0 accounts; no sign-in or tracking required',
-    others: 'Mandatory user login, profile & billing',
+    others: 'Account often required; billing applies to paid plans',
     marvisGood: true,
   },
   {
     dimension: 'License & Cost',
     marvis: 'Free & Open Source (Apache-2.0)',
-    others: '$20 – $30+ / user / month subscription',
+    others: 'Free tiers exist; paid plans may cost $20 – $30+ / user / month',
     marvisGood: true,
   },
 ];

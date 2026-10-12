@@ -41,6 +41,7 @@ export const TopNav = async () => {
           <a href='#interface'>Interface</a>
           <a href='#hotkeys'>Hotkeys</a>
           <a href='#providers'>Providers</a>
+          <a href='#faq'>FAQ</a>
         </nav>
         <a
           className='btn btn-secondary'

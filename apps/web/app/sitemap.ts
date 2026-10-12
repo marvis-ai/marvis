@@ -3,9 +3,15 @@ import type { MetadataRoute } from 'next';
 const sitemap = (): MetadataRoute.Sitemap => [
   {
     url: 'https://getmarvis.com',
-    lastModified: new Date(),
+    lastModified: new Date('2025-02-01'),
+    changeFrequency: 'weekly',
+    priority: 1.0,
+  },
+  {
+    url: 'https://getmarvis.com/llms.txt',
+    lastModified: new Date('2025-02-01'),
     changeFrequency: 'monthly',
-    priority: 1,
+    priority: 0.8,
   },
 ];
 

@@ -1,0 +1,41 @@
+# Marvis AI
+
+> Marvis is a free, open-source, privacy-first desktop AI copilot for macOS, Windows, and Linux. It runs locally as a floating bar above your workspace, provides screen-aware assistance with explicit permission, transcribes meetings locally, and connects to AI providers with zero cloud storage.
+
+## Core Features
+- **Screen-Aware Context**: Press ⌘⏎ (Ctrl+Enter on Windows/Linux) to send your active screen frame along with your prompt ("explain this", "what changed", "debug this"). Screen frames are stored solely in an in-memory 60-second rolling ring (≤120 frames, ≤64 MB) and never touch the disk.
+- **Real-Time Meeting Transcription**: Transcribes mic and system audio into speaker-labeled transcripts with rolling TLDR summaries every 5 turns. Supports on-device whisper.cpp and sherpa models for 100% offline transcription, plus optional hosted Deepgram streaming.
+- **BYOK & Local LLMs**: Bring Your Own Key (BYOK) for OpenAI, Anthropic Claude, Google Gemini, and OpenRouter, or run completely local and offline using Ollama or OpenAI-compatible local endpoints.
+- **Local-First Privacy Architecture**: No user accounts, no telemetry, no cloud sync, and no Marvis servers. All data stays in `~/.marvis/` on your device.
+
+## System Architecture & Security
+- **Directory**: `~/.marvis/` (POSIX permissions 0700)
+- **API Keys**: `~/.marvis/keys.json` (permissions 0600, masked as `…last4` in UI)
+- **Configuration**: `~/.marvis/config.toml` (permissions 0644, providers, hotkeys, window geometry)
+- **Database**: `~/.marvis/marvis.db` (permissions 0600, SQLite database for sessions and transcripts)
+- **Speech Models**: `~/.marvis/models/` (on-device whisper.cpp and sherpa ASR models)
+- **Audio Workspace**: `~/.marvis/tmp/` (scratch audio processing)
+- **Screen Buffer**: In-memory ring buffer (maximum 60 seconds / 64 MB RAM, zero disk writes)
+
+## Supported Platforms
+- **macOS**: Apple Silicon & Intel (macOS 13+) via ScreenCaptureKit
+- **Windows**: Windows 10/11 x86_64 via Windows Graphics Capture (WGC) and WASAPI audio
+- **Linux**: x86_64 distributions via XDG desktop portal and PipeWire
+
+## Default Keyboard Shortcuts
+- Global: Show / hide input: `⌘ ⌥ Space` (macOS) / `Ctrl+Alt+Space` (Windows/Linux)
+- Global: Toggle screen capture: `⌘ ⌥ R` (macOS) / `Ctrl+Alt+R` (Windows/Linux)
+- Global: Start meeting transcription (Listen): `⌘ ⌥ T` (macOS) / `Ctrl+Alt+T` (Windows/Linux)
+- Global: Session history: `⌘ ⌥ H` (macOS) / `Ctrl+Alt+H` (Windows/Linux)
+- Global: Lock bar position: `⌘ ⇧ L` (macOS) / `Ctrl+Shift+L` (Windows/Linux)
+- In the Bar: Send with screen frame: `⌘ ⏎` (macOS) / `Ctrl+Enter` (Windows/Linux)
+- In the Bar: Send prompt: `Enter`
+- In the Bar: New line: `Shift+Enter`
+- In the Bar: Open settings: `⌘ ,` (macOS) / `Ctrl+,` (Windows/Linux)
+
+## Licensing & Links
+- **License**: Apache-2.0 License (100% Free & Open Source)
+- **Website**: https://getmarvis.com
+- **GitHub Repository**: https://github.com/marvis-ai/marvis
+- **Releases & Downloads**: https://github.com/marvis-ai/marvis/releases
+- **Sitemap**: https://getmarvis.com/sitemap.xml

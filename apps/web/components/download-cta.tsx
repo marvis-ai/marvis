@@ -10,12 +10,12 @@ export const DownloadCta = () => (
     <div
       className='container'
       style={{ maxWidth: '620px' }}>
-      <h2>Your screen. Your meetings. Your machine.</h2>
+      <h2>Download Marvis for macOS, Windows, and Linux</h2>
       <p
         className='lead'
         style={{ margin: '18px auto 32px' }}>
-        Free and open source under Apache-2.0. Builds for macOS, Windows, and
-        Linux ship on GitHub Releases.
+        Free and open source under Apache-2.0. Runs completely on your device
+        with zero telemetry. Builds ship directly on GitHub Releases.
       </p>
       <div className='hero-cta'>
         <a
@@ -24,7 +24,7 @@ export const DownloadCta = () => (
           target='_blank'
           rel='noopener noreferrer'
           data-od-id='cta-primary'>
-          Download
+          Download Marvis
         </a>
         <a
           className='btn btn-ghost btn-arrow'

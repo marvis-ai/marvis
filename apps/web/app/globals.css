@@ -669,6 +669,67 @@ h3 {
   white-space: nowrap;
 }
 
+/* ─── faq ─────────────────────────────────────────────────────── */
+.faq-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+}
+
+.faq-item {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg);
+  overflow: hidden;
+  transition: border-color var(--motion-fast) var(--ease-standard);
+}
+
+.faq-item[open] {
+  border-color: color-mix(in oklch, var(--fg) 25%, transparent);
+}
+
+.faq-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px 22px;
+  font-weight: 600;
+  font-size: 16px;
+  color: var(--fg-2);
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+}
+
+.faq-summary::-webkit-details-marker {
+  display: none;
+}
+
+.faq-icon {
+  width: 18px;
+  height: 18px;
+  color: var(--muted);
+  transition: transform var(--motion-base) var(--ease-standard);
+  flex-shrink: 0;
+}
+
+.faq-item[open] .faq-icon {
+  transform: rotate(180deg);
+}
+
+.faq-answer {
+  padding: 0 22px 18px;
+  color: var(--muted);
+  font-size: 15px;
+  line-height: 1.6;
+}
+
+.faq-answer p {
+  margin: 0;
+}
+
 /* ─── dark section ────────────────────────────────────────────── */
 .section-dark {
   background: var(--fg-2);

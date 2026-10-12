@@ -1,4 +1,6 @@
+import { Comparison } from '@/components/comparison';
 import { DownloadCta } from '@/components/download-cta';
+import { Faq } from '@/components/faq';
 import { Features } from '@/components/features';
 import { Hero } from '@/components/hero';
 import { Hotkeys } from '@/components/hotkeys';
@@ -19,6 +21,8 @@ const Home = () => {
         <InterfaceSection />
         <Hotkeys />
         <Providers />
+        <Comparison />
+        <Faq />
         <DownloadCta />
       </main>
       <SiteFooter />

@@ -16,13 +16,13 @@ export const Hero = () => (
     id='top'
     data-od-id='hero'>
     <div className='container hero-center'>
-      <p className='eyebrow'>Private / Personal AI for All</p>
+      <p className='eyebrow'>Marvis AI · Privacy-First Desktop Copilot</p>
       <h1 className='hero-h1'>Your screen, your meetings, your machine.</h1>
       <p className='lead'>
-        Marvis is a small floating bar that lives above your work. It sees your
-        screen only with permission, hears your meetings, and answers through
-        the AI providers you choose — your keys, history, and screen data never
-        leave your device.
+        Marvis is a private personal AI assistant for macOS, Windows, and Linux.
+        A floating bar sees your screen only with permission, transcribes your
+        meetings, and answers through the AI providers you choose — your keys,
+        history, and screen data never leave your device.
       </p>
       <div className='hero-cta'>
         <Link

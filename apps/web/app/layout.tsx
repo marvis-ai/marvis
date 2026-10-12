@@ -25,7 +25,8 @@ const outfit = Outfit({
 const SITE = {
   name: 'Marvis',
   url: 'https://getmarvis.com',
-  title: 'Marvis — a private AI for your desktop on all platforms',
+  title:
+    'Marvis AI — Privacy-first desktop AI copilot that lives on your machine.',
   description:
     'Marvis is a private AI assistant for macOS, Windows, and Linux. A floating bar sees your screen with permission, transcribes your meetings, and answers through the providers you choose — your keys and screen data never leave your device.',
 };
@@ -38,7 +39,9 @@ export const metadata: Metadata = {
   description: SITE.description,
   keywords: [
     'Marvis',
+    'Marvis AI',
     'private AI assistant',
+    'personal AI',
     'desktop AI',
     'screen-aware AI',
     'AI assistant macOS',

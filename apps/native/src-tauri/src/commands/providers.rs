@@ -1,5 +1,8 @@
 use crate::*;
 
+/// Local Ollama daemon's model list (same host the adapter streams from).
+const OLLAMA_TAGS_URL: &str = "http://localhost:11434/api/tags";
+
 /// `keystore_status` return value and `keystore:changed` payload:
 /// `{"keys": [[provider, "…last4"], …]}`. Masked only — plaintext keys
 /// never leave `Keystore`. (There is no lock state: `keys.json` is

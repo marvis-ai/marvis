@@ -26,7 +26,8 @@ concurrency:
 jobs:
   build-arm64:
     name: Build whisper-cli (arm64)
-    runs-on: macos-14
+    # macos-15: GitHub retired the macos-14 arm64 image on 2026-11-02.
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v7
 

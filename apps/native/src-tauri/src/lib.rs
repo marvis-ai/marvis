@@ -921,7 +921,16 @@ fn report_fatal(detail: &str) {
         .join(".marvis")
         .join("crash.log");
     if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
+        // keys.json/config live under this root — create it at 0700 like
+        // `paths::root()` does (a first-run crash may beat it there).
+        let mut builder = std::fs::DirBuilder::new();
+        builder.recursive(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            builder.mode(0o700);
+        }
+        let _ = builder.create(parent);
     }
     let _ = std::fs::write(&path, format!("marvis failed to start: {detail}\n"));
     #[cfg(target_os = "windows")]

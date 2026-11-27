@@ -15,10 +15,19 @@ pub(super) fn logical_work_area(m: &Monitor) -> Rect {
 }
 
 /// Live window bounds in LOGICAL pixels (outer position/size are physical).
+/// An unmapped window can report a 0×0 surface — Wayland compositors
+/// configure lazily — so a non-positive or non-finite size reads as
+/// `None` rather than a rect that would poison `bar_rect` and feed a
+/// 0-px `set_size` (GTK asserts `width > 0`; WebKitGTK can crash
+/// outright on a degenerate surface).
 pub(super) fn window_rect(win: &WebviewWindow) -> Option<Rect> {
     let scale = win.scale_factor().ok()?;
     let pos: LogicalPosition<f64> = win.outer_position().ok()?.to_logical(scale);
     let size: LogicalSize<f64> = win.outer_size().ok()?.to_logical(scale);
+    let (w, h) = (size.width, size.height);
+    if !(w.is_finite() && w > 0.0) || !(h.is_finite() && h > 0.0) {
+        return None;
+    }
     Some(Rect {
         x: pos.x,
         y: pos.y,
@@ -27,9 +36,12 @@ pub(super) fn window_rect(win: &WebviewWindow) -> Option<Rect> {
     })
 }
 
-/// Instant (non-animated) bounds application, logical pixels.
+/// Instant (non-animated) bounds application, logical pixels. Sizes
+/// floor at 1 px — a degenerate rect degrades to a sliver instead of
+/// tripping GTK's `width > 0` assertion (and the WebKitGTK crash that
+/// can follow a 0-px surface on Wayland).
 pub(super) fn set_rect(win: &WebviewWindow, r: Rect) {
-    let _ = win.set_size(LogicalSize::new(r.w, r.h));
+    let _ = win.set_size(LogicalSize::new(r.w.max(1.0), r.h.max(1.0)));
     let _ = win.set_position(LogicalPosition::new(r.x, r.y));
 }
 

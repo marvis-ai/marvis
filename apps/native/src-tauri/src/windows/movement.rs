@@ -77,7 +77,9 @@ pub fn animate(window: &WebviewWindow, to: Rect, dur: Duration) {
             *slot.last.lock().unwrap() = r;
             let win2 = win.clone();
             let _ = win.run_on_main_thread(move || {
-                let _ = win2.set_size(LogicalSize::new(r.w, r.h));
+                // Same 1 px floor as `set_rect` — a lerp starting from a
+                // degenerate rect still can't emit a 0-px `set_size`.
+                let _ = win2.set_size(LogicalSize::new(r.w.max(1.0), r.h.max(1.0)));
                 let _ = win2.set_position(LogicalPosition::new(r.x, r.y));
             });
             if t >= 1.0 {

@@ -27,9 +27,9 @@ const outfit = Outfit({
 const SITE = {
   name: 'Marvis AI',
   url: 'https://getmarvis.com',
-  title: 'Marvis AI — Privacy-First Desktop AI Copilot',
+  title: 'Marvis AI — Private, Local-First Personal AI Agent',
   description:
-    'Free, open-source personal AI assistant for macOS, Windows, and Linux. Floating bar with screen context, local meeting transcription, and zero cloud storage.',
+    'Marvis AI is a private, local-first personal AI agent for macOS, Windows, and Linux — free, open-source, screen-aware, on-device meeting transcription.',
 };
 
 const GA_ID = 'G-DRDLX9D2CV';
@@ -53,11 +53,17 @@ export const metadata: Metadata = {
   publisher: 'Marvis AI LLC',
   category: 'ProductivityApplication',
   keywords: [
-    'Marvis',
     'Marvis AI',
-    'private AI assistant',
+    'Marvis',
+    'personal AI agent',
     'personal AI',
-    'desktop AI',
+    'personal agent',
+    'local-first AI',
+    'local-first AI agent',
+    'private AI agent',
+    'private personal AI',
+    'private AI assistant',
+    'desktop AI agent',
     'screen-aware AI',
     'AI assistant macOS',
     'AI assistant Windows',
@@ -95,12 +101,13 @@ export const metadata: Metadata = {
         url: '/opengraph-image.png',
         width: 1200,
         height: 630,
-        alt: 'Marvis — private AI for your screen and your meetings',
+        alt: 'Marvis AI — a private, local-first personal AI agent for your screen and your meetings',
       },
     ],
   },
   twitter: {
     card: 'summary_large_image',
+    site: '@marvis_ai',
     title: SITE.title,
     description: SITE.description,
     creator: '@marvis_ai',
@@ -127,6 +134,7 @@ const jsonLd = {
       '@id': `${SITE.url}/#website`,
       url: SITE.url,
       name: SITE.name,
+      alternateName: 'Marvis',
       description: SITE.description,
       publisher: {
         '@id': `${SITE.url}/#organization`,
@@ -145,10 +153,11 @@ const jsonLd = {
       '@type': 'SoftwareApplication',
       '@id': `${SITE.url}/#software`,
       name: SITE.name,
+      alternateName: 'Marvis',
       description: SITE.description,
       operatingSystem: 'macOS, Windows, Linux',
       applicationCategory: 'ProductivityApplication',
-      applicationSubCategory: 'Personal Desktop AI Copilot',
+      applicationSubCategory: 'Private, Local-First Personal AI Agent',
       softwareVersion: APP_VERSION,
       license: 'https://www.apache.org/licenses/LICENSE-2.0',
       downloadUrl: GITHUB_RELEASES,

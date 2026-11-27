@@ -1,10 +1,10 @@
 import type { MetadataRoute } from 'next';
 
 const manifest = (): MetadataRoute.Manifest => ({
-  name: 'Marvis AI — Private Desktop AI Copilot',
+  name: 'Marvis AI — Private, Local-First Personal AI Agent',
   short_name: 'Marvis',
   description:
-    'Private personal AI assistant for macOS, Windows, and Linux that runs locally on your machine.',
+    'Private, local-first personal AI agent for macOS, Windows, and Linux that runs on your machine.',
   start_url: '/',
   display: 'standalone',
   background_color: '#ffffff',

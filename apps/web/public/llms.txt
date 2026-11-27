@@ -1,6 +1,6 @@
 # Marvis AI
 
-> Marvis is a free, open-source, privacy-first desktop AI copilot for macOS, Windows, and Linux. It runs locally as a floating bar above your workspace, provides screen-aware assistance with explicit permission, transcribes meetings locally, and connects to AI providers with zero cloud storage.
+> Marvis AI is a free, open-source, private and local-first personal AI agent for macOS, Windows, and Linux. It runs on your machine as a floating bar above your workspace, provides screen-aware assistance with explicit permission, transcribes meetings on-device, and connects to AI providers with zero cloud storage.
 
 ## Core Features
 - **Screen-Aware Context**: Press ⌘⏎ (Ctrl+Enter on Windows/Linux) to send your active screen frame along with your prompt ("explain this", "what changed", "debug this"). Screen frames are stored solely in an in-memory 60-second rolling ring (≤120 frames, ≤64 MB) and never touch the disk.

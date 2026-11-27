@@ -582,7 +582,7 @@ impl WindowPool {
     pub fn set_palette_height(&mut self, height: f64) {
         self.palette_h = height
             .clamp(PALETTE_MIN_H, PALETTE_MAX_H)
-            .min(self.bar_work_area().h);
+            .min(self.bar_work_area().h.max(1.0));
         let Some(win) = self.palette.clone() else {
             return;
         };
@@ -931,8 +931,14 @@ impl WindowPool {
         } else {
             (self.bar_rect.w, BAR_H, BAR_H)
         };
-        let _ = bar.set_min_size(Some(LogicalSize::new(w, min_h)));
-        let _ = bar.set_max_size(Some(LogicalSize::new(w, max_h)));
+        // Every size write must stay > 0 px — GTK asserts `width > 0`
+        // and a 0-px limit/surface can crash WebKitGTK under Wayland
+        // compositors that report degenerate sizes.
+        if !(w.is_finite() && w > 0.0) {
+            return;
+        }
+        let _ = bar.set_min_size(Some(LogicalSize::new(w, min_h.max(1.0))));
+        let _ = bar.set_max_size(Some(LogicalSize::new(w, max_h.max(1.0))));
     }
 
     /// Snap the bar back to its canonical bounds after a stray user

@@ -907,14 +907,70 @@ pub(crate) fn persist_bar_position(app: &AppHandle) {
 // Commands — keystore
 // ---------------------------------------------------------------------------
 
+/// Last-resort crash surfacing. `panic = "abort"` plus
+/// `windows_subsystem = "windows"` means a startup panic or a `.setup`
+/// `?` failure exits in TOTAL silence — nothing on screen, nothing on
+/// any console. Panic/`build` failures therefore land in
+/// `~/.marvis/crash.log` and, on Windows, a native message box that
+/// needs no webview. Deliberately bypasses `paths::root()` — this path
+/// must never panic when HOME is missing (that's itself a candidate
+/// crash).
+fn report_fatal(detail: &str) {
+    let path = dirs::home_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join(".marvis")
+        .join("crash.log");
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(&path, format!("marvis failed to start: {detail}\n"));
+    #[cfg(target_os = "windows")]
+    {
+        rfd::MessageDialog::new()
+            .set_title("Marvis failed to start")
+            .set_description(format!("{detail}\n\nDetails: {}", path.display()))
+            .set_level(rfd::MessageLevel::Error)
+            .set_buttons(rfd::MessageButtons::Ok)
+            .show();
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Chain to the default hook so a terminal-launched build still gets
+    // its stderr backtrace — the hook adds the crash.log/dialog surfacing.
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        report_fatal(&info.to_string());
+        default_hook(info);
+    }));
     // Default our crate to info so dev runs show the screen-read
     // diagnostics; `RUST_LOG` still overrides everything.
     let _ = env_logger::Builder::from_env(
         env_logger::Env::default().default_filter_or("marvis_lib=info"),
     )
     .try_init();
+    // WebKitGTK's EGL/dmabuf renderer segfaults on exotic Wayland
+    // compositors (Niri and friends) — the upstream-documented
+    // kill-switch; honored only when the user hasn't set it explicitly.
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
+        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+    }
+    // A missing/broken WebView2 runtime is Windows' classic silent
+    // killer: every `WebviewWindowBuilder::build` fails, setup returns
+    // `Err`, and the process vanishes. Check BEFORE the event loop so the
+    // user gets an actionable message instead.
+    #[cfg(target_os = "windows")]
+    if let Err(e) = tauri::webview_version() {
+        report_fatal(&format!(
+            "Marvis needs the Microsoft Edge WebView2 Runtime, which is \
+             missing or damaged ({e}). Install it from \
+             https://developer.microsoft.com/en-us/microsoft-edge/webview2/ \
+             then launch Marvis again."
+        ));
+        std::process::exit(1);
+    }
     let builder = tauri::Builder::default()
         // Order matters: the deep-link plugin must be registered before
         // `deeplink::init` resolves `app.deep_link()` inside `setup`.
@@ -1146,7 +1202,12 @@ pub fn run() {
             quit_application,
         ])
         .build(tauri::generate_context!())
-        .expect("error while building tauri application")
+        // `?`-propagated setup failures reach here — surface them
+        // (crash.log + Windows dialog) instead of aborting silently.
+        .unwrap_or_else(|e| {
+            report_fatal(&format!("application build failed: {e}"));
+            std::process::exit(1);
+        })
         .run(|app, event| {
             // Keep capture + speech teardown centralized at the application
             // boundary: this covers tray/menu quit, window-manager quit, and
